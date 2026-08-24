@@ -2,7 +2,7 @@
 // CLI 入口：加载 config（首启生成 token）-> 连通 docker -> 起服务 -> 打印 URL/token。
 import { loadConfig, CONFIG_FILE, expandTilde } from './config.js';
 import { buildServer } from './index.js';
-import { checkDocker } from './docker.js';
+import { checkDocker } from './engine/index.js';
 import { runImageCommand } from './image.js';
 import { runOpenCommand } from './open.js';
 import { sweepContainerCli } from './container-cli.js';

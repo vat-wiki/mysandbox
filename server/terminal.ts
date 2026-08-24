@@ -16,7 +16,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Duplex } from 'node:stream';
 import type { Config } from './config.js';
-import { getDocker, execRun } from './docker.js';
+import { execRun, execStream as execStreamRaw, inspectContainer } from './engine/index.js';
 
 // 控制帧：resize 调 PTY 尺寸、kill 杀整条会话（真关）。
 interface ControlMsg {
@@ -223,9 +223,6 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       return;
     }
 
-    const docker = getDocker(cfg);
-    const container = docker.getContainer(id);
-
     try {
       // useTmux 在下面的 await 串里才确定；cleanup（早断连时）经由此引用读取，
       // 未确定时按 false 收尾：不杀 pidfile、不动会话计数（此刻也确实还没认领成 tmux 路径）。
@@ -321,8 +318,8 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       socket.on('close', cleanup);
       socket.on('error', cleanup);
 
-      const info = await container.inspect();
-      if (!info.State?.Running) {
+      const info = await inspectContainer(cfg, id);
+      if (!info.running) {
         socket.close(1008, 'container not running');
         return;
       }
@@ -373,23 +370,17 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
           ]
         : [shell];
 
-      const exec = await container.exec({
+      const exec = await execStreamRaw(cfg, id, {
         Cmd: cmd,
-        AttachStdin: true,
-        AttachStdout: true,
-        AttachStderr: true,
-        Tty: true,
         User: '1000:1000',
         WorkingDir: '/home/dev',
         Env: ['TERM=xterm-256color', 'MYSANDBOX_WEB=1'],
       });
-      const stream = await exec.start({ hijack: true, stdin: true, Tty: true });
-      // 同 docker.ts execRun：destroy/超时会在流上 emit 'error'，不挂 handler 会崩整个 mysandbox。
-      stream.on('error', () => { /* noop */ });
+      const stream = exec.stream;
       execStream = stream;
       // resize 就绪后接到 exec 上；此后到达的 resize 帧即时生效。
       resizeExec = (cols, rows) => {
-        exec.resize({ w: cols, h: rows }).catch(() => {});
+        exec.resize(cols, rows).catch(() => {});
       };
 
       // 初始尺寸（来自 query）：握手期间若已有更晚到达的 resize 帧（pendingResize），以它为准。
@@ -397,7 +388,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       const init = pendingResize ?? { cols, rows };
       lastSize = `${init.cols}x${init.rows}`;
       try {
-        await exec.resize({ w: init.cols, h: init.rows });
+        await exec.resize(init.cols, init.rows);
       } catch {
         /* 容器偶发忽略 resize */
       }

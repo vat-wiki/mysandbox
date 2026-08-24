@@ -4,7 +4,7 @@
 // 还原的 /etc/hosts（Docker 管创建、我们管维持，只写声明的内容）。
 import { createHash } from 'node:crypto';
 import type { Config } from './config.js';
-import { getDocker, listManaged, inspectContainer, MANAGED_LABEL, type ExecOpts } from './docker.js';
+import { getDocker, listManaged, inspectContainer, MANAGED_LABEL, type ExecOpts } from './engine/index.js';
 import { runBatch, type BatchResult } from './batch.js';
 import { getCustomHostsContent, readHostHosts } from './hosts.js';
 import { getAllMeta, setMeta } from './state.js';
@@ -191,8 +191,7 @@ async function handleEvent(cfg: Config, ev: DockerEvent, id: string): Promise<vo
   if (ev.Actor?.Attributes?.[MANAGED_LABEL] !== 'mysandbox') {
     try {
       const info = await inspectContainer(cfg, id);
-      const networks = Object.keys(info.NetworkSettings?.Networks || {});
-      if (!networks.includes(cfg.network)) return;
+      if (!info.networks.includes(cfg.network)) return;
     } catch {
       return;
     }

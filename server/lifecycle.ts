@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type Docker from 'dockerode';
 import type { Config } from './config.js';
-import { getDocker, MANAGED_LABEL } from './docker.js';
+import { getDocker, inspectContainer, stopContainer, removeContainer, MANAGED_LABEL } from './engine/index.js';
 import { setMeta, deleteMeta } from './state.js';
 import { allocate, isFree } from './network.js';
 import { badRequest, conflict, notFound } from './errors.js';
@@ -166,16 +166,14 @@ export async function deleteManaged(
   id: string,
   opts: { deleteData?: boolean; confirmName?: string },
 ): Promise<{ ok: true; dataRemoved: boolean; name: string }> {
-  const docker = getDocker(cfg);
-  const container = docker.getContainer(id);
-  let info: Docker.ContainerInspectInfo;
+  let info: Awaited<ReturnType<typeof inspectContainer>>;
   try {
-    info = await container.inspect();
+    info = await inspectContainer(cfg, id);
   } catch {
     throw notFound(`container ${id} not found`);
   }
-  const name = (info.Name || '').replace(/^\//, '');
-  const managed = info.Config?.Labels?.[MANAGED_LABEL] === 'mysandbox';
+  const name = info.name;
+  const managed = info.managed;
   if (!managed) {
     throw conflict('only mysandbox-created containers can be deleted here');
   }
@@ -184,11 +182,11 @@ export async function deleteManaged(
   }
 
   try {
-    await container.stop({ t: 5 });
+    await stopContainer(cfg, id, 5);
   } catch {
     /* 可能已停 */
   }
-  await container.remove({ force: true });
+  await removeContainer(cfg, id, { force: true });
   await deleteMeta(name);
 
   let dataRemoved = false;

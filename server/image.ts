@@ -12,7 +12,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type Docker from 'dockerode';
 import type { Config } from './config.js';
 import { expandTilde } from './config.js';
-import { getDocker } from './docker.js';
+import { getDocker } from './engine/index.js';
 import { badRequest } from './errors.js';
 import { log } from './logger.js';
 

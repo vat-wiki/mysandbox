@@ -1,37 +1,21 @@
-// dockerode 单例 + 连通性检查 + 容器列表与生命周期。exec 封装在 M4/M6 追加。
+// docker 引擎实现：原 server/docker.ts 全量迁入，挂到 Engine 接口后（P3 重构，行为零变化）。
+// dockerode 单例与容器操作、exec 封装（demux/hijack）、events 订阅都在这里。
 import Docker from 'dockerode';
-import { PassThrough } from 'node:stream';
-import type { Config } from './config.js';
-import { getAllMeta, type ContainerMeta } from './state.js';
+import { PassThrough, type Duplex } from 'node:stream';
+import type { Config } from '../config.js';
+import { getAllMeta, type ContainerMeta } from '../state.js';
+import type {
+  Engine,
+  EngineEvent,
+  ContainerInfo,
+  ContainerView,
+  ContainerPort,
+  ExecOpts,
+  ExecResult,
+  ExecStream,
+} from './types.js';
 
 export const MANAGED_LABEL = 'mysandbox.managed-by';
-
-export interface ContainerPort {
-  ip?: string;
-  privatePort?: number;
-  publicPort?: number;
-  type: string;
-}
-
-export interface ContainerView {
-  id: string;
-  name: string;
-  displayName?: string;
-  status: string;
-  state: string;
-  image: string;
-  ip: string | null;
-  networks: string[];
-  managed: boolean; // 由 mysandbox 创建（label）
-  adopted: boolean; // sidecar 登记为纳入管理
-  description?: string;
-  tags?: string[];
-  source?: string;
-  labels: Record<string, string>;
-  ports: ContainerPort[];
-  created: number;
-  command: string;
-}
 
 let _docker: Docker | null = null;
 export function getDocker(cfg: Config): Docker {
@@ -41,14 +25,8 @@ export function getDocker(cfg: Config): Docker {
   return _docker;
 }
 
-export interface DockerStatus {
-  reachable: boolean;
-  version?: string;
-  apiVersion?: string;
-  error?: string;
-}
-
-export async function checkDocker(cfg: Config): Promise<DockerStatus> {
+// —— Engine.status：连通性检查 ——
+async function status(cfg: Config) {
   try {
     const v = await getDocker(cfg).version();
     return { reachable: true, version: v.Version, apiVersion: v.ApiVersion };
@@ -58,7 +36,7 @@ export async function checkDocker(cfg: Config): Promise<DockerStatus> {
 }
 
 // 列出受管理容器：在配置网络上 或 带 mysandbox label。合并 sidecar 元数据。
-export async function listManaged(cfg: Config): Promise<ContainerView[]> {
+async function listManaged(cfg: Config): Promise<ContainerView[]> {
   const docker = getDocker(cfg);
   const all = await docker.listContainers({ all: true });
   const meta = await getAllMeta();
@@ -104,45 +82,33 @@ export async function listManaged(cfg: Config): Promise<ContainerView[]> {
   return views;
 }
 
-// —— 生命周期（薄封装 dockerode）——
-export async function startContainer(cfg: Config, id: string): Promise<void> {
-  await getDocker(cfg).getContainer(id).start();
-}
-export async function stopContainer(cfg: Config, id: string, t = 5): Promise<void> {
-  await getDocker(cfg).getContainer(id).stop({ t });
-}
-export async function restartContainer(cfg: Config, id: string, t = 5): Promise<void> {
-  await getDocker(cfg).getContainer(id).restart({ t });
-}
-export async function renameContainer(cfg: Config, id: string, name: string): Promise<void> {
-  await getDocker(cfg).getContainer(id).rename({ name });
-}
-export async function removeContainer(
-  cfg: Config,
-  id: string,
-  opts: { force?: boolean } = {},
-): Promise<void> {
-  await getDocker(cfg).getContainer(id).remove({ force: opts.force ?? true });
-}
-export async function inspectContainer(cfg: Config, id: string): Promise<Docker.ContainerInspectInfo> {
-  return getDocker(cfg).getContainer(id).inspect();
+// —— inspect 归一：把 docker 原始 inspect 裁剪成 ContainerInfo ——
+async function inspect(cfg: Config, id: string): Promise<ContainerInfo> {
+  const info = await getDocker(cfg).getContainer(id).inspect();
+  return {
+    id: info.Id,
+    name: (info.Name || '').replace(/^\//, ''),
+    running: info.State?.Running === true,
+    stateStatus: info.State?.Status || 'unknown',
+    managed: info.Config?.Labels?.[MANAGED_LABEL] === 'mysandbox',
+    networks: Object.keys(info.NetworkSettings?.Networks || {}),
+    ports: (info.NetworkSettings?.Ports
+      ? Object.entries(info.NetworkSettings.Ports).flatMap(([key, bindings]) => {
+          const privatePort = Number(key.split('/')[0]);
+          const type = key.split('/')[1] || 'tcp';
+          return (bindings || []).map((b) => ({
+            ip: b.HostIp,
+            privatePort,
+            publicPort: b.HostPort ? Number(b.HostPort) : undefined,
+            type,
+          }));
+        })
+      : []) as ContainerPort[],
+  };
 }
 
 // 在容器内执行命令。Tty:false -> demux stdout/stderr（批量配置用）。
-export interface ExecResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-export interface ExecOpts {
-  Cmd: string[];
-  Env?: string[];
-  Tty?: boolean;
-  User?: string;
-  WorkingDir?: string;
-  timeoutMs?: number;
-}
-export async function execRun(cfg: Config, id: string, opts: ExecOpts): Promise<ExecResult> {
+async function execRun(cfg: Config, id: string, opts: ExecOpts): Promise<ExecResult> {
   const docker = getDocker(cfg);
   const container = docker.getContainer(id);
   const exec = await container.exec({
@@ -212,7 +178,7 @@ export async function execRun(cfg: Config, id: string, opts: ExecOpts): Promise<
 // execRun 的 stdin 版：把 input 喂给命令的 stdin 后半关闭（对 cat > file 即 EOF）。
 // 用途：写大文件——base64 进 argv 受 Linux 单参数 128KB 上限约束（hosts apply 那招的局限），
 // stdin 走 hijack 流无此限制且二进制安全。固定 Tty:false 才能像 execRun 一样 demux。
-export async function execFeed(
+async function execFeed(
   cfg: Config,
   id: string,
   opts: ExecOpts,
@@ -277,3 +243,113 @@ export async function execFeed(
   }
   return { exitCode, stdout, stderr };
 }
+
+// terminal.ts 的 PTY 流：docker exec hijack + Tty 单流 + resize。
+async function execStream(cfg: Config, id: string, opts: ExecOpts): Promise<ExecStream> {
+  const container = getDocker(cfg).getContainer(id);
+  const exec = await container.exec({
+    Cmd: opts.Cmd,
+    AttachStdin: true,
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: true,
+    User: opts.User || '1000:1000',
+    WorkingDir: opts.WorkingDir || '/home/dev',
+    Env: opts.Env,
+  });
+  const stream = (await exec.start({ hijack: true, stdin: true, Tty: true })) as Duplex;
+  // 同 execRun：destroy 会在流上 emit 'error'，不挂 handler 会崩整个 mysandbox。
+  stream.on('error', () => {
+    /* noop */
+  });
+  return {
+    stream,
+    resize: async (cols, rows) => {
+      await exec.resize({ w: cols, h: rows });
+    },
+  };
+}
+
+// —— 网络与事件（network.ts / hosts-sync.ts 的底座）——
+async function assignedIps(cfg: Config): Promise<Set<string>> {
+  const info = await getDocker(cfg).getNetwork(cfg.network).inspect();
+  const set = new Set<string>();
+  for (const c of Object.values(info.Containers || {})) {
+    if (c.IPv4Address) set.add(c.IPv4Address.split('/')[0]);
+  }
+  return set;
+}
+
+async function subscribeEvents(
+  cfg: Config,
+  onEvent: (ev: EngineEvent) => void,
+): Promise<{ close(): void }> {
+  const stream = await getDocker(cfg).getEvents({
+    filters: { type: ['container'], event: ['start', 'restart'] },
+  });
+  // 断流即返回由调用方重连；error 吞掉（startHostsSync 里 catch 重连）。
+  let buf = '';
+  stream.on('data', (chunk: Buffer | string) => {
+    buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    let idx: number;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).replace(/\r$/, '');
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        const ev = JSON.parse(line) as {
+          Type?: string;
+          Action?: string;
+          Actor?: { ID?: string };
+        };
+        if (ev.Type === 'container' && (ev.Action === 'start' || ev.Action === 'restart') && ev.Actor?.ID) {
+          onEvent({ containerId: ev.Actor.ID, action: ev.Action });
+        }
+      } catch {
+        continue; // 坏行丢弃
+      }
+    }
+  });
+  return {
+    close() {
+      try {
+        (stream as import('node:stream').Readable).destroy();
+      } catch {
+        /* noop */
+      }
+    },
+  };
+}
+
+// —— 导出 Engine——
+export const dockerEngine: Engine = {
+  name: 'docker',
+  status: async (cfg) => {
+    return status(cfg);
+  },
+  listManaged,
+  inspect,
+  start: async (cfg, id) => {
+    await getDocker(cfg).getContainer(id).start();
+  },
+  stop: async (cfg, id, t = 5) => {
+    await getDocker(cfg).getContainer(id).stop({ t });
+  },
+  restart: async (cfg, id, t = 5) => {
+    await getDocker(cfg).getContainer(id).restart({ t });
+  },
+  rename: async (cfg, id, name) => {
+    await getDocker(cfg).getContainer(id).rename({ name });
+  },
+  remove: async (cfg, id, opts = {}) => {
+    await getDocker(cfg).getContainer(id).remove({ force: opts.force ?? true });
+  },
+  execRun,
+  execFeed,
+  execStream,
+  assignedIps,
+  subscribeEvents,
+};
+
+// P5 前的过渡：lifecycle.ts/image.ts 仍直接 import getDocker/MANAGED_LABEL——
+// 由 index.ts 转发保持 import 路径兼容。

@@ -1,7 +1,7 @@
 // dev-lan IP 池：权威源 = network.inspect().Containers（含停掉但未删的容器）。
 // 假设 /24：前 3 段为前缀，第 4 段在 from..to 间分配。
 import type { Config } from './config.js';
-import { getDocker } from './docker.js';
+import { getDocker } from './engine/index.js';
 
 function prefix(ip: string): string {
   return ip.split('.').slice(0, 3).join('.');

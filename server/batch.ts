@@ -2,7 +2,7 @@
 // 全部走 docker exec（Tty:false demux），p-limit 限并发，统一返回每容器结果。
 import pLimit from 'p-limit';
 import type { Config } from './config.js';
-import { execRun, inspectContainer, type ExecOpts } from './docker.js';
+import { execRun, inspectContainer, type ExecOpts } from './engine/index.js';
 import { log } from './logger.js';
 
 const DEFAULT_CONCURRENCY = 4;
@@ -46,9 +46,9 @@ async function runOne(
       }
       throw e;
     }
-    name = (info.Name || '').replace(/^\//, '');
-    if (!info.State?.Running) {
-      return { id, name, ok: false, exitCode: -1, stdout: '', stderr: '', error: `container not running (${info.State?.Status || 'unknown'})` };
+    name = info.name;
+    if (!info.running) {
+      return { id, name, ok: false, exitCode: -1, stdout: '', stderr: '', error: `container not running (${info.stateStatus})` };
     }
     const r = await execRun(cfg, id, build());
     return {

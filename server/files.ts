@@ -6,7 +6,7 @@
 // 「绝对路径、无 \0、长度合理」让 exec 不被怪输入玩坏。
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
-import { execRun, execFeed } from './docker.js';
+import { execRun, execFeed } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE, sessionName } from './terminal.js';

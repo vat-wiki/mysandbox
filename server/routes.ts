@@ -11,7 +11,7 @@ import {
   inspectContainer,
   execRun,
   MANAGED_LABEL,
-} from './docker.js';
+} from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
 import { wrapDocker, conflict, HttpError } from './errors.js';
 import { createContainer, deleteManaged } from './lifecycle.js';
@@ -42,10 +42,8 @@ export async function resolve(cfg: Config, id: string): Promise<Resolved> {
   } catch (e) {
     throw wrapDocker(e, id);
   }
-  const name = (info.Name || '').replace(/^\//, '');
-  const managed = info.Config?.Labels?.[MANAGED_LABEL] === 'mysandbox';
-  const adopted = (await getMeta(name))?.managed === true;
-  return { id, name, managed, adopted, running: info.State?.Running === true };
+  const adopted = (await getMeta(info.name))?.managed === true;
+  return { id, name: info.name, managed: info.managed, adopted, running: info.running };
 }
 
 // 生命周期动作（start/stop/restart/terminal/exec）：需 managed 或 adopted
@@ -130,8 +128,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     } catch (e) {
       throw wrapDocker(e, id);
     }
-    const name = (info.Name || '').replace(/^\//, '');
-    const managed = info.Config?.Labels?.[MANAGED_LABEL] === 'mysandbox';
+    const name = info.name;
+    const managed = info.managed;
     const body = (req.body as { displayName?: string; source?: string } | null) || {};
     await setMeta(name, {
       managed: true,
