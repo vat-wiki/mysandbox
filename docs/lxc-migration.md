@@ -109,25 +109,34 @@ server/engine/
 2. ✅ `~/.config/lxc/default.conf`:D1 的 idmap + D2 的 veth 网桥(br-f0cc7d98dca0)。
 3. ✅ `/etc/lxc/lxc-usernet`(注意:是 lxc-usernet 不是 lxc-user-nic):`leon veth br-f0cc7d98dca0 20`。
 4. ✅ `/etc/sysctl.d/60-mysandbox-lxc.conf`:`kernel.apparmor_restrict_unprivileged_userns = 0`(Ubuntu 23.10+ 默认拦 unprivileged userns,不放连 unshare 都失败)。
-5. ✅ cgroup2 委派:`sudo mkdir /sys/fs/cgroup/lxc && chown leon:leon` + `+cpu +memory +pids` 进 root/subtree_control + **chown cgroup.procs/cgroup.threads**(内核对 cgroupfs 的 chmod 不生效,必须 chown)。容器 config 里配 `lxc.cgroup.dir = lxc`。
+5. ~~cgroup2 委派~~ **P4 实测证明不需要**:`sudo mkdir /sys/fs/cgroup/lxc` + chown 那套(以及容器 config 里的 `lxc.cgroup.dir = lxc`)是「在裸 shell 里跑 lxc-start」逼出来的补丁。只要命令从 systemd user manager 环境发出(mysandbox 作为 user service 跑),容器 cgroup 自然落在已委派的 `user@1000.service/app.slice/...` 下,全程无需 sudo、重启不失效。**这条比原方案简单,且没有「重启后要重新 sudo 建目录」的坑。**
 6. ✅ `sudo systemctl enable --now lxcfs`(重启后要活)。
 7. ✅ 验证:`lxc-create -t download -- -d ubuntu -r noble -a amd64`(注意用 `noble`,不能用 `24.04`——索引里没有这个别名)→ systemd 完整开机 → `lxc-attach` 可用 → 静态 IP 10.88.0.50/24 + gw 10.88.0.1 → ping 通网关、DNS、**docker 容器 10.88.0.21(跨引擎同 LAN 互通验证成功)**。
 
 ### 关键运行约束(踩坑全录,写 engine 时必读)
 
-- **LXC 命令必须在 user systemd manager 环境跑**(即「cgroup 归属 leon 的委派环境」)。裸 shell(SSH/terminal session)落在 `session-<n>.scope`(root 属主)→ `lxc-start` 报 `cgroup.threads is not writable` → 容器秒退 255。**解法:mysandbox 服务必须以 systemd user service 形态运行**(`systemctl --user`,落在已委派的 `user@1000.service`),从它 spawn 的 lxc-* 全部正常。临时验证用 `systemd-run --user --collect --wait --pipe lxc-start ...`。
+- **LXC 命令必须在 systemd user manager 环境跑**。裸 shell(SSH/terminal session)落在 `session-<n>.scope`(root 属主)→ `lxc-start` 报 `cgroup.threads is not writable`、`lxc-attach` 报 `cgroup_attach_move_into_leaf: Permission denied`。**解法:mysandbox 必须以 systemd user service 形态运行**(`systemctl --user` + linger)。`engine/lxc.ts` 的 `status()` 显式校验 `XDG_RUNTIME_DIR` 并报这条,因为部署错了的表象是「容器建好了但秒退」,极难查。
+- **P4 实测细分了「怎么发命令」**(设计阶段没料到,是本阶段最重要的发现):
+  - `lxc-attach` **直接 spawn 即可**——子进程继承 mysandbox 服务的 cgroup,已在委派环境内。不需要 `systemd-run` 包装(每次 exec 包一层瞬态单元会慢且脏)。
+  - `lxc-start` **必须放进独立瞬态单元**:`systemd-run --user --unit=mysandbox-<name> --collect --property=KillMode=mixed lxc-start -n <name> -F`。直接 spawn 的话容器进程挂在 mysandbox 自己的服务 cgroup 下,**mysandbox 一重启 systemd 就连带清杀所有容器**(实测:`systemd-run --wait` 包装下容器随包装单元退出而死)。放进 `mysandbox-<name>.service` 后容器与服务生命周期解耦。
+  - `lxc-start` 默认前台阻塞(不是 daemon),所以是 `-F` + 单元常驻,不是 `-d`。
+  - `systemd-run --user` 可以从 user service 内部再调(XDG_RUNTIME_DIR/DBUS 都在),嵌套无问题。
 - **`lxc.apparmor.profile = unconfined` 必须写进容器 config**:Ubuntu 的 `lxc-container-default-cgns` profile 不允许 systemd 挂 cgroup2([lxc#4402](https://github.com/lxc/lxc/issues/4402),上游 2026-04 才修完 profile;unprivileged+userns 下交还内核管控,不牺牲安全)。
 - 调试教训:systemd 在 strace/fork 下跑会走 telinit 分支报误导性错误(`Can't run system mode unless PID 1`);真实 PID 1 下失败是静默 exit 255,只有 dmesg 里的 AppArmor DENIED 与 `cgroup.threads not writable` 两条真线索。
-- 容器内网络:静态 IP 由 `lxc.net.0.ipv4.address/gateway` 配置(LXC 启动时生效);resolv.conf 被 systemd-resolved stub 接管,模板制作时处理。
+- 容器内网络:静态 IP 由 `lxc.net.0.ipv4.address/gateway` 配置(LXC 启动时生效)。**静态 IP 无 DHCP → systemd-resolved 没有上游 DNS**,容器内域名全解析失败(apt 直接不可用)。模板必须写 `/etc/systemd/resolved.conf.d/mysandbox.conf`:`[Resolve]` + `DNS=10.88.0.1 114.114.114.114`(实测有效)。
 - 已知无害噪音:`sys-kernel-config.mount`/`sys-kernel-debug.mount` failed(userns 下预期),`systemctl is-system-running` 显示 degraded 属正常。
+- download 模板的 ubuntu noble 自带 `ubuntu` 用户占 uid 1000,模板契约要的是 `dev`:`usermod -l dev -d /home/dev -m ubuntu && groupmod -n dev ubuntu`。
 
 ## 开放验证点(PoC 已回答)
 
 - ✅ ~~unprivileged 容器 bind mount `~/.ssh`~~ — 推迟到模板制作阶段验证(uid 直通已理论保证)。
-- ✅ `lxc-attach` 可用(`--clear-env` + `--` 分隔参数,注意 systemd-run 包装)。
+- ✅ `lxc-attach` 可用(`--clear-env` + `--` 分隔参数;P4 起由 engine 直接 spawn)。
 - ✅ systemd 完整开机(journald/udevd/resolved 全部起来了)。
 - ✅ 静态 IP + 网关 + 与 docker 容器互通(同 br-f0cc7d98dca0 桥)。
-- ⏳ 宿主直读 home、ssh 挂载、tmux 持久 — 模板容器做好后验证。
+- ✅ **宿主直读 home(D1 核心假设)**:容器内以 uid 1000 写的文件,宿主侧 `ls -l` 属主就是 `leon`,`cat` 无需 sudo。`files.ts` 的宿主直读方案成立,基座换成 `<lxcpath>/<name>/rootfs/home/dev`。
+- ✅ **tmux 持久会话 + PTY**:`script(1)` 包 `lxc-attach` 给出真 pty,往返/resize(`stty -F` 落到子进程 pts)/`MYSANDBOX_WEB` 经 tmux 全局环境注入/detach 后会话存活 —— 与 docker 引擎语义一致。
+- ✅ **克隆**:`lxc-copy` 冷克隆约 0.9s(dir 后端,rootfs 复制)。克隆继承源 config 的 IP 与 uts.name,**必须由 lifecycle 改写**(P5)。
+- ⏳ ssh 挂载(`~/.ssh` 只读进容器)— 模板制作阶段。
 
 ## 波及面与阶段
 
@@ -135,12 +144,19 @@ server/engine/
 |---|---|---|
 | P0 基线 | git init + 提交 | ✅ `18dd953` |
 | P1 设计 | 本文档 | ✅ |
-| P2 宿主 | 上面清单 + 模板 PoC | attach 进克隆,whoami=dev,zsh 可用 |
-| P3 engine | 接口抽取,docker 挂接口后 | typecheck 绿,行为零变化 |
-| P4 lxc engine | `engine/lxc.ts` 全函数 | 单台克隆走 engine 起停删 |
+| P2 宿主 | 上面清单 + 模板 PoC | ✅ attach 进容器、systemd 真开机、跨引擎互通 |
+| P3 engine | 接口抽取,docker 挂接口后 | ✅ `247c61f`+`P3` typecheck 绿、行为零变化(起服务实测 list/start/batch) |
+| P4 lxc engine | `engine/lxc.ts` 全函数 + `cfg.engine` 切换 | ✅ 全方法对活容器实测(见 commit) |
 | P5 业务层 | lifecycle/files/terminal/batch 适配 | 建容器走 LXC,终端/文件面板/批量全通 |
 | P6 模板层 | image.ts 收缩 + web 模板页 | clone/export/import |
 | P7 收尾 | 全流程 + CLAUDE.md 更新 | 端到端 + 文档反映现实 |
+
+### P5 待解决的具体点(P4 实测暴露)
+
+- **克隆后必须改写 config**:IP(源 IP 会撞)、`lxc.uts.name`(容器 hostname)。
+- **`deleteData` 语义变了**:D4 下 home 在 rootfs 内,`lxc-destroy` 一把连数据删掉——docker 时代「删容器保留 data 目录」的选项在 LXC 下需要重新定义(要么导出 home 再删,要么去掉这个选项)。
+- **rename 需要先停容器**(LXC 无 live rename),web 侧要相应提示。
+- 模板契约的两个固定步骤(P4 手工验证过,P6 写进模板制作脚本):`usermod -l dev` 改 uid 1000 用户名;写 `resolved.conf.d/mysandbox.conf` 配 DNS。
 
 ## 回退
 
