@@ -15,6 +15,7 @@ import {
   type ContainerView,
 } from '@/lib/api'
 import { containerColor } from '@/lib/utils'
+import { baseLabel } from '@/lib/caps'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -45,10 +46,10 @@ export interface OpenReq {
   seq: number
 }
 
-const props = defineProps<{ imagePresent?: boolean | null; openReq?: OpenReq | null }>()
+const props = defineProps<{ baseReady?: boolean | null; openReq?: OpenReq | null }>()
 const emit = defineEmits<{
   (e: 'unauthorized'): void
-  (e: 'open-image'): void
+  (e: 'open-base'): void
   (e: 'open-hosts'): void
   (e: 'open-handled'): void
 }>()
@@ -845,8 +846,8 @@ onUnmounted(() => {
           size="sm"
           variant="outline"
           class="w-full"
-          :disabled="imagePresent === false"
-          :title="imagePresent === false ? '基础镜像未构建' : ''"
+          :disabled="baseReady === false"
+          :title="baseReady === false ? `${baseLabel}未就绪` : ''"
           @click="showCreate = true"
           >＋ 新建容器</Button
         >
@@ -856,11 +857,11 @@ onUnmounted(() => {
     <!-- 右侧终端主区：tab 栏 + 分屏，占满剩余空间 -->
     <div class="flex min-w-0 flex-1 flex-col">
       <div
-        v-if="imagePresent === false"
+        v-if="baseReady === false"
         class="flex items-center gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
       >
-        <span>基础镜像未构建 —— 新建容器前请先构建或拉取镜像。</span>
-        <Button variant="destructive" size="xs" class="ml-auto" @click="emit('open-image')">构建镜像</Button>
+        <span>{{ baseLabel }}未就绪 —— 新建容器前先去处理（{{ baseLabel }}管理）。</span>
+        <Button variant="destructive" size="xs" class="ml-auto" @click="emit('open-base')">{{ baseLabel }}管理</Button>
       </div>
 
       <!-- tab 栏：每组一个 tab，色条=容器色，·N=pane 数（>1 才显示） -->

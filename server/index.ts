@@ -12,7 +12,7 @@ import { registerFileRoutes } from './files.js';
 import { registerTerminal } from './terminal.js';
 import { registerHostTerminal } from './hostTerminal.js';
 import { registerHostFileRoutes } from './hostFiles.js';
-import { registerImageRoutes } from './image.js';
+import { registerBaseRoutes } from './base.js';
 import { HttpError, wrapDocker } from './errors.js';
 import { getVersion } from './version.js';
 import { loggerOptions } from './logger.js';
@@ -56,7 +56,7 @@ export async function buildServer(cfg: Config) {
   await registerTerminal(app, cfg);
   await registerHostTerminal(app, cfg);
   await registerHostFileRoutes(app);
-  await registerImageRoutes(app, cfg);
+  await registerBaseRoutes(app, cfg);
 
   // 前端静态资源（web/dist）。开发期未构建则回退占位。
   const webDist = findWebDist();

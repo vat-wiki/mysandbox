@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // header 常驻徽标：点击打开 HostsPanel（全局 /etc/hosts 统一配置）。
-// 静态徽标——无状态轮询（不像 ImageBadge 需要查镜像是否存在）。
+// 静态徽标——无状态轮询（不像 BaseBadge 需要查基座是否就绪）。
 import { Badge } from '@/components/ui/badge'
 
 defineEmits<{ (e: 'click'): void }>()

@@ -61,7 +61,7 @@ async function api(path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(path, {
     ...init,
     // 10s 超时：后端挂死（TCP 半开不断连）时 fetch 会无限等待，UI 卡在「刷新中…」。
-    // 普通请求都应在秒级返回；SSE 流式（streamImageOp）不走这条路径，不受影响。
+    // 普通请求都应在秒级返回；SSE 流式（streamBaseAction）不走这条路径，不受影响。
     signal: AbortSignal.timeout(10_000),
     headers: {
       'x-sandbox-token': getToken() ?? '',
@@ -83,10 +83,13 @@ export const verifyToken = () => api('/api/containers?limit=1') as Promise<{ ite
 
 // 引擎能力（后端 EngineCaps，见 server/engine/types.ts）。UI 差异一律判 caps，
 // 不要判 engine 名——将来加引擎时才不用改前端。
+export type BaseAction = 'build' | 'pull' | 'push' | 'export' | 'import' | 'clone'
 export interface EngineCaps {
   dataInsideContainer: boolean // true：home 在容器内，删容器必连数据一起删
   liveRename: boolean // false：改名前必须先停容器
   portMappings: boolean // false：固定 IP 直连，无端口映射
+  baseKind: 'image' | 'template' // 基座形态：镜像 / 模板容器（决定文案）
+  baseActions: BaseAction[] // 可用动作（决定按钮）：docker=build/pull/push，lxc=clone/export/import
 }
 export interface Health {
   ok: boolean
@@ -166,54 +169,71 @@ export const batchClaude = (ids: string[], prompt: string, timeoutMs?: number) =
 export const batchExec = (ids: string[], command: string, timeoutMs?: number) =>
   postJson('/api/batch/exec', { ids, command, timeoutMs }) as Promise<BatchResult>
 
-// —— 镜像管理 ——
-export interface ImageStatusView {
-  exists: boolean
-  // 当前构建上下文路径（外部 imageDir 或内置 image/）；定位失败为 null + contextError
-  context?: string | null
-  contextError?: string
-  image?: {
-    id: string
-    repoTags: string[]
-    created: string
-    size: number
-    labels: Record<string, string>
-  }
-}
-export const getImageStatus = () => api('/api/image') as Promise<ImageStatusView>
-
 // —— 宿主终端 ——
 // 会话活跃 pane 的 cwd（信息条显示「宿主 · <镜像目录>」用；轮询）。
 // 复用 getTermCwd：HOST_ID 哨兵会落到 /api/host-terminal/cwd（文件 API 端点切换同源）。
 export const getHostCwd = (termId: string) => getTermCwd(HOST_ID, termId)
+// —— 基座（docker=基础镜像 / lxc=模板容器）——
+// 后端 BaseStatus（server/engine/types.ts）。两个引擎归一到同一形状，
+// 差异只在 caps.baseKind（文案）与 caps.baseActions（可用按钮）。
+export interface BaseStatus {
+  kind: 'image' | 'template'
+  name: string
+  exists: boolean
+  // 能否直接建容器。docker 下 exists 即 ready；LXC 模板在运行时 exists 但 !ready
+  ready: boolean
+  notReady?: string
+  // 制作来源：docker=构建上下文目录；lxc=模板制作脚本路径
+  context?: string | null
+  contextError?: string
+  size?: number
+  createdAt?: string
+  // 引擎特有展示项（docker: id/tags；lxc: state/rootfs/source），原样列出
+  detail?: Record<string, string>
+}
+export const getBaseStatus = () => api('/api/base') as Promise<BaseStatus>
+// 体积单独取：LXC 下要遍历整个 rootfs（秒级），不能塞进被轮询的 status
+export const getBaseSize = () => api('/api/base/size') as Promise<{ size: number | null }>
+
 // SSE 事件：progress（流式进度）/ done（完成，带 result）/ error（失败，带 message）
-export interface ImageProgressEvent {
+export interface BaseProgressEvent {
   type: 'progress' | 'done' | 'error'
   stream?: string
   status?: string
   id?: string
   progress?: string
-  result?: { tag?: string; ref?: string; image?: string }
+  // 各动作的返回值不同（build: tag；pull/push: ref；export: path/size；clone/import: template）
+  result?: Record<string, string | number>
   message?: string
+}
+
+// 基座动作的输入。后端 BaseActionOpts，未知字段忽略。
+export interface BaseActionOpts {
+  tag?: string
+  ref?: string
+  path?: string
+  from?: string
+  noCache?: boolean
+  force?: boolean
 }
 
 // 读 SSE 流：fetch POST → 逐块 decode → 按 \n\n 分帧 → 解析 data: 行 → onEvent。
 // 服务端发 error 帧时，先把事件交给 onEvent（用于落日志），读完流后抛错让调用方报错。
-async function streamImageOp(
-  path: string,
-  body: unknown,
-  onEvent: (e: ImageProgressEvent) => void,
+export async function streamBaseAction(
+  action: string,
+  opts: BaseActionOpts,
+  onEvent: (e: BaseProgressEvent) => void,
 ): Promise<void> {
-  const res = await fetch(path, {
+  const res = await fetch(`/api/base/${action}`, {
     method: 'POST',
     headers: {
       'x-sandbox-token': getToken() ?? '',
       'content-type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(opts),
   })
   if (res.status === 401) throw new Unauthorized()
-  if (!res.ok || !res.body) throw new Error(`image op failed: ${res.status}`)
+  if (!res.ok || !res.body) throw new Error(`${action} failed: ${res.status}`)
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
@@ -228,31 +248,18 @@ async function streamImageOp(
       buf = buf.slice(idx + 2)
       const data = frame.startsWith('data: ') ? frame.slice(6) : frame
       if (!data) continue
-      let evt: ImageProgressEvent
+      let evt: BaseProgressEvent
       try {
         evt = JSON.parse(data)
       } catch {
         continue
       }
       onEvent(evt)
-      if (evt.type === 'error') lastErr = evt.message || 'image op failed'
+      if (evt.type === 'error') lastErr = evt.message || `${action} failed`
     }
   }
   if (lastErr) throw new Error(lastErr)
 }
-
-export const streamImageBuild = (
-  opts: { tag?: string; noCache?: boolean },
-  onEvent: (e: ImageProgressEvent) => void,
-) => streamImageOp('/api/image/build', opts, onEvent)
-export const streamImagePull = (
-  ref: string | undefined,
-  onEvent: (e: ImageProgressEvent) => void,
-) => streamImageOp('/api/image/pull', { ref }, onEvent)
-export const streamImagePush = (
-  ref: string | undefined,
-  onEvent: (e: ImageProgressEvent) => void,
-) => streamImageOp('/api/image/push', { ref }, onEvent)
 
 // —— 全局 hosts 配置 ——
 export interface HostsView {

@@ -2,8 +2,8 @@
 // CLI 入口：加载 config（首启生成 token）-> 连通 docker -> 起服务 -> 打印 URL/token。
 import { loadConfig, CONFIG_FILE, expandTilde } from './config.js';
 import { buildServer } from './index.js';
-import { checkDocker } from './engine/index.js';
-import { runImageCommand } from './image.js';
+import { getEngine } from './engine/index.js';
+import { runBaseCommand } from './base.js';
 import { runOpenCommand } from './open.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
@@ -44,8 +44,10 @@ const HELP = `mysandbox ${getVersion()} — dev container control panel
 Usage: mysandbox [--port 7321] [--host 127.0.0.1]
   Starts the web UI (default http://127.0.0.1:7321).
 
-  mysandbox image <build|pull|push|status>
-      Manage the base image (one-shot; does not start the server).
+  mysandbox base <status|build|pull|push|clone|export|import>
+      Manage the container base — the base image (docker) or the template
+      container (lxc). Available actions depend on the engine; run
+      \`mysandbox base status\` to see them. (\`mysandbox image\` is an alias.)
 
   mysandbox open <path> [--container <name>]
       Open a container file (editor) or directory (file panel) in the browser
@@ -70,15 +72,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 一次性子命令：mysandbox image build|pull|push|status（不启动 server）。
-  if (process.argv[2] === 'image') {
+  // 一次性子命令：mysandbox base|image <action>（不启动 server）。
+  // image 是 base 的别名——docker 引擎下语义完全一致，lxc 引擎下 base 才有 clone/export/import。
+  if (process.argv[2] === 'base' || process.argv[2] === 'image') {
     const { config } = await loadConfig();
-    const d = await checkDocker(config);
+    const engine = getEngine(config);
+    const d = await engine.status(config);
     if (!d.reachable) {
-      process.stderr.write(`>> cannot reach docker at ${config.docker.socketPath}: ${d.error}\n`);
+      process.stderr.write(`>> cannot reach ${engine.name}: ${d.error}\n`);
       process.exit(1);
     }
-    await runImageCommand(process.argv.slice(3), config);
+    await runBaseCommand(process.argv.slice(3), config);
     return;
   }
 
@@ -96,16 +100,22 @@ async function main(): Promise<void> {
   if (args.port) config.listen.port = args.port;
   if (args.host) config.listen.host = args.host;
 
-  const imageDirErr = validateImageDir(config);
+  // imageDir 只在 docker 引擎下有意义（lxc 的基座是模板容器，见 engine/template.ts）。
+  const imageDirErr = config.engine === 'docker' ? validateImageDir(config) : null;
   if (imageDirErr) {
     process.stderr.write(`>> fatal: ${imageDirErr}\n`);
     process.exit(1);
   }
 
-  const d = await checkDocker(config);
+  // 引擎连通性。docker=socket 可连；lxc=CLI 在 + systemd user manager 环境对
+  // （后者是最常见的部署错误，engine.status 会给人话提示）。
+  const engine = getEngine(config);
+  const d = await engine.status(config);
   if (!d.reachable) {
-    process.stderr.write(`>> cannot reach docker at ${config.docker.socketPath}: ${d.error}\n`);
-    process.stderr.write('>> ensure docker is running and your user is in the docker group.\n');
+    process.stderr.write(`>> cannot reach ${engine.name}: ${d.error}\n`);
+    if (engine.name === 'docker') {
+      process.stderr.write('>> ensure docker is running and your user is in the docker group.\n');
+    }
     process.exit(1);
   }
 
@@ -117,7 +127,9 @@ async function main(): Promise<void> {
   startHostsEventSync(config);
   await app.listen({ host: config.listen.host, port: config.listen.port });
 
-  process.stdout.write(`>> mysandbox ${getVersion()}  docker ${d.version} (api ${d.apiVersion})\n`);
+  process.stdout.write(
+    `>> mysandbox ${getVersion()}  ${engine.name} ${d.version ?? '?'}${d.apiVersion ? ` (api ${d.apiVersion})` : ''}\n`,
+  );
   process.stdout.write(`>> web UI:  http://${config.listen.host}:${config.listen.port}\n`);
   if (firstRun || tokenGenerated) {
     process.stdout.write(`>> first run — config written: ${CONFIG_FILE}\n`);

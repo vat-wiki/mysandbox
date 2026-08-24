@@ -19,15 +19,22 @@ import type {
   ExecOpts,
   ExecResult,
   ExecStream,
+  BaseAction,
+  BaseActionOpts,
+  BaseProgress,
+  BaseStatus,
 } from './types.js';
 
 export const MANAGED_LABEL = 'mysandbox.managed-by';
 
-// docker 形态的能力：home 是 bind mount 的宿主目录（删容器不动数据）、支持 live rename、有 NAT 端口映射。
+// docker 形态的能力：home 是 bind mount 的宿主目录（删容器不动数据）、支持 live rename、
+// 有 NAT 端口映射；基座是镜像，动作 = build/pull/push（有 registry 这个分发形态）。
 const CAPS: EngineCaps = {
   dataInsideContainer: false,
   liveRename: true,
   portMappings: true,
+  baseKind: 'image',
+  baseActions: ['build', 'pull', 'push'],
 };
 
 let _docker: Docker | null = null;
@@ -426,6 +433,30 @@ function hostHomePath(cfg: Config, name: string): string {
   return join(cfg.dataRoot, name);
 }
 
+// —— 基座（镜像）：实现在 ../image.ts（build/pull/push + status）——
+// 动态 import 而非顶部静态：image.ts 依赖本模块的 getDocker，静态互引会成环。
+// 基座动作都是用户触发的低频操作，那一次 import 的开销无所谓。
+async function baseStatus(cfg: Config): Promise<BaseStatus> {
+  const { imageBaseStatus } = await import('../image.js');
+  return imageBaseStatus(cfg);
+}
+
+async function runBaseAction(
+  cfg: Config,
+  action: BaseAction,
+  opts: BaseActionOpts,
+  onProgress?: (e: BaseProgress) => void,
+): Promise<Record<string, unknown>> {
+  const { buildImage, pullImage, pushImage, resolveImageRef } = await import('../image.js');
+  if (action === 'build') {
+    return buildImage(cfg, { tag: opts.tag || cfg.image, noCache: !!opts.noCache }, onProgress);
+  }
+  if (action === 'pull') return pullImage(cfg, resolveImageRef(cfg, opts.ref), onProgress);
+  if (action === 'push') return pushImage(cfg, resolveImageRef(cfg, opts.ref), onProgress);
+  const { badRequest } = await import('../errors.js');
+  throw badRequest(`engine docker does not support base action "${action}"`);
+}
+
 // —— 导出 Engine——
 export const dockerEngine: Engine = {
   name: 'docker',
@@ -456,6 +487,8 @@ export const dockerEngine: Engine = {
   execStream,
   assignedIps,
   subscribeEvents,
+  baseStatus,
+  runBaseAction,
   nameExists,
   hostHomePath,
 };

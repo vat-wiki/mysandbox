@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
-import { getToken, setToken, clearToken, health, verifyToken, getImageStatus, Unauthorized } from '@/lib/api'
+import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, Unauthorized } from '@/lib/api'
 import { setEngineInfo, engineName } from '@/lib/caps'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
-import ImageBadge from '@/components/ImageBadge.vue'
-import ImagePanel from '@/components/ImagePanel.vue'
+import BaseBadge from '@/components/BaseBadge.vue'
+import BasePanel from '@/components/BasePanel.vue'
 import HostsBadge from '@/components/HostsBadge.vue'
 // 异步加载 hosts 面板：Monaco 编辑器较重（~700KB gzip），只在点 hosts 徽标时才下载，不拖累首屏。
 const HostsPanel = defineAsyncComponent(() => import('@/components/HostsPanel.vue'))
@@ -19,17 +19,18 @@ const dockerOk = ref<boolean | null>(null)
 const checking = ref(false)
 const checkErr = ref('')
 
-// 基础镜像状态：header 徽标 + ContainerList 新建守卫用。轮询保持新鲜。
-const imageExists = ref<boolean | null>(null)
-const imageBuilding = ref(false)
-const showImagePanel = ref(false)
+// 基座状态（docker=基础镜像 / lxc=模板容器）：header 徽标 + ContainerList 新建守卫用。
+// 存 ready 而非 exists：LXC 模板存在但在运行时不能克隆，新建守卫要拦的是「不可用」。
+const baseReady = ref<boolean | null>(null)
+const baseBusy = ref(false)
+const showBasePanel = ref(false)
 const showHostsPanel = ref(false)
-let imageTimer: ReturnType<typeof setInterval> | null = null
+let baseTimer: ReturnType<typeof setInterval> | null = null
 
-async function refreshImageStatus() {
+async function refreshBaseStatus() {
   if (!token.value) return
   try {
-    imageExists.value = (await getImageStatus()).exists
+    baseReady.value = (await getBaseStatus()).ready
   } catch {
     /* 状态拉取失败不打扰主流程 */
   }
@@ -49,7 +50,7 @@ async function verify(t: string): Promise<boolean> {
     // caps 写进全局单例：删除/改名/端口映射的 UI 分支都读它（见 lib/caps.ts）
     setEngineInfo(h.engine ?? 'docker', h.caps)
     token.value = t
-    refreshImageStatus()
+    refreshBaseStatus()
     return true
   } catch (e) {
     if (e instanceof Unauthorized) checkErr.value = 'token 无效，请检查后重试'
@@ -66,7 +67,7 @@ function logout() {
   clearToken()
   token.value = null
   dockerOk.value = null
-  imageExists.value = null
+  baseReady.value = null
 }
 
 const ready = computed(() => !!token.value)
@@ -91,11 +92,11 @@ function onOpenHandled() {
 
 onMounted(() => {
   pendingOpen.value = parseOpenHash()
-  refreshImageStatus()
-  imageTimer = setInterval(refreshImageStatus, 15000)
+  refreshBaseStatus()
+  baseTimer = setInterval(refreshBaseStatus, 15000)
 })
 onUnmounted(() => {
-  if (imageTimer) clearInterval(imageTimer)
+  if (baseTimer) clearInterval(baseTimer)
 })
 </script>
 
@@ -121,11 +122,11 @@ onUnmounted(() => {
           class="border-transparent bg-destructive/15 text-destructive"
           >{{ engineName }} unreachable</Badge
         >
-        <ImageBadge
+        <BaseBadge
           v-if="ready"
-          :exists="imageExists"
-          :building="imageBuilding"
-          @click="showImagePanel = true"
+          :ready="baseReady"
+          :busy="baseBusy"
+          @click="showBasePanel = true"
         />
         <HostsBadge v-if="ready" @click="showHostsPanel = true" />
         <div class="ml-auto" />
@@ -145,18 +146,18 @@ onUnmounted(() => {
       <ContainerList
         v-else
         class="h-full"
-        :image-present="imageExists"
+        :base-ready="baseReady"
         :open-req="pendingOpen"
         @unauthorized="logout"
-        @open-image="showImagePanel = true"
+        @open-base="showBasePanel = true"
         @open-hosts="showHostsPanel = true"
         @open-handled="onOpenHandled"
       />
-      <ImagePanel
-        v-if="showImagePanel"
-        @close="showImagePanel = false"
-        @changed="refreshImageStatus"
-        @running="imageBuilding = $event"
+      <BasePanel
+        v-if="showBasePanel"
+        @close="showBasePanel = false"
+        @changed="refreshBaseStatus"
+        @running="baseBusy = $event"
       />
       <HostsPanel v-if="showHostsPanel" @close="showHostsPanel = false" />
     </main>

@@ -96,10 +96,36 @@ export interface CreateSpec {
   portMappings?: Record<string, Array<{ HostPort: string; HostIp?: string }>>;
 }
 
+// —— 「基座」：新建容器的来源物 ——
+// docker 是镜像（cfg.image），lxc 是模板容器（cfg.lxc.template，D3）。两者角色相同、
+// 可做的事不同，所以状态归一到 BaseStatus，动作集由 caps.baseActions 声明。
+export type BaseAction = 'build' | 'pull' | 'push' | 'export' | 'import' | 'clone';
+
+export interface BaseStatus {
+  kind: 'image' | 'template';
+  // 基座名（docker=cfg.image；lxc=cfg.lxc.template）
+  name: string;
+  exists: boolean;
+  // 是否可直接用于建容器。docker 下 exists 即可用；LXC 模板必须 STOPPED
+  // （lxc-copy 对运行中的源静默失败），所以 exists 与 ready 是两件事。
+  ready: boolean;
+  // ready=false 时的人话原因（前端直接显示）
+  notReady?: string;
+  // 制作来源：docker=构建上下文目录；lxc=模板制作脚本路径。定位失败为 null + contextError。
+  // 独立于 exists 计算（App 轮询此接口，context 出错不能拖垮基座存在性判断）。
+  context?: string | null;
+  contextError?: string;
+  size?: number; // 字节；LXC 是 rootfs 实际占用（算起来慢，见 template.ts）
+  createdAt?: string; // ISO 串
+  // 引擎特有的展示项（docker: id/tags；lxc: state/rootfs/来源容器），前端原样列出，
+  // 加字段不用改前端类型——基座细节差异不值得为它设计跨引擎结构。
+  detail?: Record<string, string>;
+}
+
 // —— 引擎能力声明 ——
 // 两个引擎的语义差异不是「实现细节」，而是会一路冒到 UI 的产品差异（删数据、重命名、
-// 端口映射）。与其让业务层散落 `cfg.engine === 'lxc'` 判断，不如让引擎自报能力，
-// 业务层与 web 按能力分支（/api/health 把这个结构透给前端）。
+// 端口映射、基座能做什么）。与其让业务层散落 `cfg.engine === 'lxc'` 判断，不如让引擎
+// 自报能力，业务层与 web 按能力分支（/api/health 把这个结构透给前端）。
 export interface EngineCaps {
   // 容器数据是否在容器内部（LXC：home 在 rootfs 内，删容器必然连带删数据，
   // docker 时代「删容器保留 data 目录」的选项在 LXC 下不存在）。
@@ -108,6 +134,34 @@ export interface EngineCaps {
   liveRename: boolean;
   // 是否支持端口映射（LXC 固定 IP 直连，不做 NAT）。
   portMappings: boolean;
+  // 基座形态：镜像 or 模板容器（决定前端文案：「镜像」/「模板」）。
+  baseKind: 'image' | 'template';
+  // 基座支持的动作。/api/base/<action> 用它做准入（不在表里 → 400），
+  // 前端也按它渲染按钮，不必自己记哪个引擎能干什么。
+  baseActions: BaseAction[];
+}
+
+// 基座动作的输入。两个引擎的动作参数交集很小，所以是个宽松的可选集合，
+// 由各引擎实现自行取用（未知字段忽略）。
+export interface BaseActionOpts {
+  // docker build 的 tag / pull-push 的 ref；lxc export-import 的文件路径
+  tag?: string;
+  ref?: string;
+  noCache?: boolean;
+  path?: string;
+  // clone：把哪个容器固化成模板（lxc 专属）
+  from?: string;
+  // import / clone 覆盖已存在的基座（默认拒绝，避免误删模板）
+  force?: boolean;
+}
+
+// 基座动作的进度事件（形状与 sse.ts ProgressEvent 一致，此处独立声明避免 engine 依赖路由层）。
+export interface BaseProgress {
+  stream?: string;
+  status?: string;
+  id?: string;
+  progress?: string;
+  error?: string;
 }
 
 // —— IP 池权威源（network.ts）：当前网内已占 IP（含停掉未删的容器）——
@@ -148,6 +202,19 @@ export interface Engine {
     cfg: import('../config.js').Config,
     onEvent: (ev: EngineEvent) => void,
   ): Promise<EventSubscription>;
+
+  // —— 基座（镜像 / 模板容器）——
+  // 状态查询（App 轮询 + CLI status）。**不能因 context 定位失败而抛**：exists 与
+  // context 独立计算，见 BaseStatus 注释。
+  baseStatus(cfg: import('../config.js').Config): Promise<BaseStatus>;
+  // 执行基座动作。caps.baseActions 之外的动作由路由层拒掉，实现里可以只认自己声明的那些。
+  // onProgress 逐条推给 SSE / CLI stdout；返回值进 SSE 的 done 帧。
+  runBaseAction(
+    cfg: import('../config.js').Config,
+    action: BaseAction,
+    opts: BaseActionOpts,
+    onProgress?: (e: BaseProgress) => void,
+  ): Promise<Record<string, unknown>>;
 
   // —— 宿主侧路径与查重（建容器/种子/CLI 推断用）——
   // 容器名是否已被占用（docker 查容器列表；lxc 查 lxc-ls）。建容器前置查重。

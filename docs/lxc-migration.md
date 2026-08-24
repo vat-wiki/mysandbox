@@ -153,8 +153,8 @@ server/engine/
 | P3 engine | 接口抽取,docker 挂接口后 | ✅ `247c61f`+`P3` typecheck 绿、行为零变化(起服务实测 list/start/batch) |
 | P4 lxc engine | `engine/lxc.ts` 全函数 + `cfg.engine` 切换 | ✅ 全方法对活容器实测(见 commit) |
 | P5 业务层 | lifecycle/files/terminal/batch 适配 + `EngineCaps` | ✅ 端到端实测通过(见下「P5 实测结论」) |
-| P6 模板层 | image.ts 收缩 + web 模板页 | clone/export/import |
-| P7 收尾 | 全流程 + CLAUDE.md 更新 | 端到端 + 文档反映现实 |
+| P6 基座层 | image.ts 收缩为 docker 实现 + 统一 `/api/base` + web 基座面板 | ✅ clone/export/import 端到端实测(见下「P6 实测结论」) |
+| P7 收尾 | 全流程 + CLAUDE.md 更新 | ✅ 双引擎端到端 + 文档反映现实 |
 
 ### P5 待解决的具体点(P4 实测暴露)
 
@@ -187,6 +187,38 @@ engine: lxc 下走真 HTTP API 全流程验证(模板 `ms-template`,容器 `lx1`
 - LXC 没有 entrypoint 钩子(PID 1 是发行版 systemd),首启 seed 改由 `create()` attach 进去跑一次 `seedHome()`。
 - 模板脚本给容器喂脚本必须走 stdin(`bash -s`):`systemd-run` 会先展开 `${VAR}`,把脚本里的 `${ARCH}` 吃空 → node 下载 404。
 - `~/.ssh` 只读挂载在 unprivileged LXC 下可用:`lxc.mount.entry = <src> mnt/host/.ssh none bind,ro,create=dir 0 0`(挂载点相对 rootfs)。
+
+### P6 实测结论
+
+「镜像」与「模板」统一成**基座**(base)一层:一套 `/api/base` 路由、一个 `mysandbox base` 命令
+(`image` 保留为别名)、一个 web 面板。前端只问三件事——基座是否 ready、有哪些动作、进度如何——
+这三件事跨引擎同构;**只有动作集合不同,而它已经声明在 `caps.baseActions` 里**。
+所以差异是声明出来的,不是 if 出来的:路由层拿 caps 做准入(不支持的动作回 400 并列出支持的,
+而不是让底层抛 500),web 按 `hasBaseAction()` 决定渲染哪些按钮、按 `baseLabel` 决定叫「镜像」还是「模板」。
+
+- `exists` 与 `ready` 分开是必需的:LXC 模板可以「在,但在跑」,而 `lxc-copy` 对运行中的源**静默失败**,
+  所以状态里就得告诉用户去 stop,不能等建容器时才炸。
+- `/api/image*` **不留兼容别名**:唯一消费方是同版本一起发布的自家 web,留别名只是养一份死代码。
+  CLI 的 `mysandbox image` 保留,因为它在文档和肌肉记忆里。
+- 实测(模板 `ms-template`,2.8G/84167 文件):status 0.1s、size 2720420203(遍历 rootfs,所以 web 里是按需按钮而非自动加载)、
+  export 855M/9.6s、import 2.6s、clone 12.6s;export→import→建容器→启动→exec 与 clone→建容器→启动→exec 两条链全通。
+- docker 侧零回归:caps/status/size/build 全绿,不支持的 `clone` 回 400。
+
+踩坑(已修,细节在代码注释):
+- ⚠️ **userns 里创建的文件,宿主用户连删都删不掉**。让 ns 内的 tar 自己 `-f out.tar` 写归档,
+  文件属主是宿主 uid 100000,宿主用户(uid 1000)对它无任何权限——`rm` 直接 `Operation not permitted`。
+  「用户导出个包结果自己管不了它」不可接受。解法:tar 写 stdout,**宿主进程** `createWriteStream` 落盘。
+  反方向(ns-root 读宿主 0600 文件)实测没问题,import 不需要对称处理。
+- 任何整 rootfs 遍历(du/tar)都必须在 `lxc-usernsexec` 里跑,且 idmap 参数取自**该容器 config 自己的
+  `lxc.idmap` 行**,不能硬编码 100000,也不能图省事给一条宽 map(实测单条 `-m u:0:100000:65536` 仍 Permission denied)。
+  tar 还必须 `--numeric-owner`,否则按名字存,回来 uid 全乱。
+- ⚠️ **liblxc 不认 XDG 变量**:非特权 lxcpath 与 default.conf 路径在 liblxc 里硬编码成 `$HOME/.local/share/lxc`
+  与 `$HOME/.config/lxc`(strings 确认 XDG 相关只有 `XDG_RUNTIME_DIR`)。我们早前用 `xdgDataHome()`/`xdgConfigHome()`
+  读同一份东西,一旦环境设了 XDG_* 就与 `lxc-*` 命令看的路径分叉——我们说容器不存在,`lxc-ls` 说存在。已改回 `homedir()`。
+- import 的 idmap 必须取**当前宿主**的 default.conf,不能用包里 config 的:包可能来自 subuid 段不同的机器,
+  用包里的 map 解包会写出本机范围外的 uid(容器起不来且删不掉)。
+- `startContainer` 对已在跑的容器要幂等:`create()` 已经把容器起来了,web 再点启动会撞上同名瞬态单元报
+  `already loaded`,把「本来就好着」变成 500。已加 RUNNING 短路 + `reset-failed` 清残留单元。
 
 ## 回退
 

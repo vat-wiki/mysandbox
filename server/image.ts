@@ -1,20 +1,23 @@
-// 基础镜像生命周期：build / pull / push / status。dockerode 直连，与容器侧同 socket、同权限模型。
+// docker 基础镜像：build / pull / push / status。dockerode 直连，与容器侧同 socket、同权限模型。
+// 引擎无关的入口在 base.ts（`/api/base*` + `mysandbox base`），本文件是 docker 引擎的基座实现
+// （LXC 的对应物是 engine/template.ts 的模板容器）。
 // 设计：build 与 pull 对称——两者落地后本地都有名为 cfg.image 的可用镜像；push 是 pull 的逆。
 //   - build：用内置 image/ 构建上下文，产物 tag = cfg.image（默认 dev），立即可被 createContainer 用。
 //   - pull：拉 ${registry}:${imageTag}，再 retag 成 cfg.image。
 //   - push：把本地 cfg.image tag 成 ${registry}:${imageTag} 后推。
-// 进度流：CLI 走 stdout 实时打印（followProgress）；HTTP 端点同步等待完成（流式 SSE 留作 follow-up）。
+// 进度流：CLI 走 stdout 实时打印（followProgress）；HTTP 端点由 base.ts 转成 SSE。
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, relative, isAbsolute, resolve, sep } from 'node:path';
+import { join, dirname, isAbsolute, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import type { FastifyInstance, FastifyReply } from 'fastify';
 import type Docker from 'dockerode';
 import type { Config } from './config.js';
 import { expandTilde } from './config.js';
 import { getDocker } from './engine/index.js';
+import type { BaseStatus } from './engine/index.js';
 import { badRequest } from './errors.js';
 import { log } from './logger.js';
+import type { ProgressEvent } from './sse.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -23,15 +26,7 @@ const IMAGE_CONTEXT_FILES = ['Dockerfile', 'entrypoint.sh', 'zshrc.docker'];
 // 打到自建镜像上的 label，便于辨识 mysandbox 产物。
 export const IMAGE_LABEL = 'mysandbox.image-built-by';
 
-// dockerode followProgress 事件（取会用到的字段）。
-interface ProgressEvent {
-  stream?: string;
-  status?: string;
-  id?: string;
-  progress?: string;
-  error?: string;
-  aux?: unknown;
-}
+// dockerode followProgress 事件用 sse.ts 的 ProgressEvent（两处形状一致，别再定义一份）。
 
 // —— 定位镜像构建上下文：配置 imageDir（外部目录）优先，否则内置 image/（dev: server/../image；packaged: dist/server/../../image）——
 // 内置定位与 config.ts:loadDefaultYaml / index.ts:findWebDist 同款双候选。发布时 image/ 必须在 package.json files[] 里。
@@ -141,6 +136,29 @@ export async function imageStatus(cfg: Config): Promise<ImageStatus> {
   } catch {
     return base;
   }
+}
+
+// —— 归一到引擎无关的 BaseStatus（docker 引擎的 baseStatus 实现，见 engine/types.ts）——
+// docker 下 exists 即 ready（镜像没有「在运行所以不能用」这种状态，LXC 模板才有）。
+// id/tags 这类 docker 特有字段进 detail，前端原样列出、不为它设跨引擎结构。
+export async function imageBaseStatus(cfg: Config): Promise<BaseStatus> {
+  const s = await imageStatus(cfg);
+  const detail: Record<string, string> = {};
+  if (s.image) {
+    detail.id = s.image.id;
+    detail.tags = s.image.repoTags.join(', ') || '—';
+  }
+  return {
+    kind: 'image',
+    name: cfg.image,
+    exists: s.exists,
+    ready: s.exists,
+    ...(s.exists ? {} : { notReady: `基础镜像 ${cfg.image} 本地不存在——先构建或拉取一个` }),
+    context: s.context,
+    ...(s.contextError ? { contextError: s.contextError } : {}),
+    ...(s.image ? { size: s.image.size, createdAt: s.image.created } : {}),
+    detail,
+  };
 }
 
 // ref 缺省时回退 ${registry}:${imageTag}；都没则报清晰错误。
@@ -295,183 +313,8 @@ export function registryHostOf(ref: string): string {
   return 'https://index.docker.io/v1/';
 }
 
-// —— REST 路由（鉴权由 index.ts 全局 hook 覆盖 /api/*）——
-
-// SSE：把 build/pull/push 的 followProgress 事件逐条推给前端（data: {...}\n\n），done/error 收尾。
-// reply.hijack() 接管响应手动写 text/event-stream；鉴权仍在 hijack 前由全局 onRequest 完成。
-// finalize 接 thunk：ref 解析 / 构建过程中任一抛错都转成 SSE error 帧，保持"要么流式进度、要么流式错误"的契约。
-function beginSse(reply: FastifyReply): {
-  sink: (e: ProgressEvent) => void;
-  finalize: (thunk: () => Promise<unknown>) => Promise<void>;
-} {
-  reply.hijack();
-  reply.raw.writeHead(200, {
-    'content-type': 'text/event-stream',
-    'cache-control': 'no-cache',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no', // 防 nginx 等反向代理缓冲
-  });
-  const write = (obj: Record<string, unknown>): void => {
-    if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`);
-  };
-  return {
-    sink: (e) =>
-      write({ type: 'progress', stream: e.stream, status: e.status, id: e.id, progress: e.progress }),
-    finalize: async (thunk) => {
-      try {
-        const result = await thunk();
-        write({ type: 'done', result });
-      } catch (err) {
-        write({ type: 'error', message: err instanceof Error ? err.message : String(err) });
-      } finally {
-        if (!reply.raw.writableEnded) reply.raw.end();
-      }
-    },
-  };
-}
-
-export async function registerImageRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
-  app.get('/api/image', async () => imageStatus(cfg));
-
-  app.post('/api/image/build', async (req, reply) => {
-    const body = (req.body as Record<string, unknown> | null) || {};
-    const tag = body.tag ? String(body.tag) : cfg.image;
-    const noCache = !!body.noCache;
-    const { sink, finalize } = beginSse(reply);
-    await finalize(() => buildImage(cfg, { tag, noCache }, sink));
-  });
-
-  app.post('/api/image/pull', async (req, reply) => {
-    const body = (req.body as Record<string, unknown> | null) || {};
-    const { sink, finalize } = beginSse(reply);
-    await finalize(() => {
-      const resolved = resolveImageRef(cfg, body.ref ? String(body.ref) : undefined);
-      return pullImage(cfg, resolved, sink);
-    });
-  });
-
-  app.post('/api/image/push', async (req, reply) => {
-    const body = (req.body as Record<string, unknown> | null) || {};
-    const { sink, finalize } = beginSse(reply);
-    await finalize(() => {
-      const resolved = resolveImageRef(cfg, body.ref ? String(body.ref) : undefined);
-      return pushImage(cfg, resolved, sink);
-    });
-  });
-}
-
-// —— CLI 子命令分发：mysandbox image build|pull|push|status ——
-const IMAGE_HELP = `mysandbox image <command> — manage the base image
-
-Usage:
-  mysandbox image build [--tag <name>] [--no-cache]
-      Build the base image from the bundled image/ context, tagged cfg.image (default: dev).
-  mysandbox image pull [<ref>]
-      Pull <ref> (default \${registry}:\${imageTag}) and retag as cfg.image.
-  mysandbox image push [<ref>]
-      Tag cfg.image as <ref> (default \${registry}:\${imageTag}) and push.
-  mysandbox image status
-      Show whether cfg.image is present locally + inspect summary.
-
-Config: registry / imageTag in the config file drive push/pull defaults when <ref> is omitted.
-`;
-
-const BOOL_FLAGS = new Set(['no-cache']);
-
-interface ParsedImageArgs {
-  positionals: string[];
-  flags: Record<string, string>;
-}
-
-function parseImageArgs(argv: string[]): ParsedImageArgs {
-  const positionals: string[] = [];
-  const flags: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith('--')) {
-      const eq = a.indexOf('=');
-      const name = eq >= 0 ? a.slice(2, eq) : a.slice(2);
-      if (BOOL_FLAGS.has(name)) {
-        flags[name] = 'true';
-      } else if (eq >= 0) {
-        flags[name] = a.slice(eq + 1);
-      } else {
-        flags[name] = argv[++i] ?? '';
-      }
-    } else {
-      positionals.push(a);
-    }
-  }
-  return { positionals, flags };
-}
-
-function cliProgress(e: ProgressEvent): void {
-  if (e.stream) {
-    process.stdout.write(e.stream); // Dockerfile 步骤输出自带换行
-    return;
-  }
-  if (e.error) {
-    process.stderr.write(`>> docker: ${e.error}\n`);
-    return;
-  }
-  if (e.status) {
-    const id = e.id ? `${e.id}: ` : '';
-    process.stdout.write(`${id}${e.status}\n`);
-  }
-}
-
-export async function runImageCommand(argv: string[], cfg: Config): Promise<void> {
-  const { positionals, flags } = parseImageArgs(argv);
-  const sub = positionals[0];
-
-  if (!sub || sub === 'help' || sub === '-h' || sub === '--help') {
-    process.stdout.write(IMAGE_HELP);
-    return;
-  }
-
-  if (sub === 'build') {
-    const tag = flags.tag || cfg.image;
-    const noCache = 'no-cache' in flags;
-    process.stdout.write(`>> building from ${findImageContext(cfg)} -> ${tag}\n`);
-    await buildImage(cfg, { tag, noCache }, cliProgress);
-    process.stdout.write(`>> built: ${tag}\n`);
-    return;
-  }
-
-  if (sub === 'pull') {
-    const ref = resolveImageRef(cfg, positionals[1]);
-    process.stdout.write(`>> pulling ${ref} -> retag as ${cfg.image}\n`);
-    await pullImage(cfg, ref, cliProgress);
-    process.stdout.write(`>> pulled: ${ref} (available as ${cfg.image})\n`);
-    return;
-  }
-
-  if (sub === 'push') {
-    const ref = resolveImageRef(cfg, positionals[1]);
-    process.stdout.write(`>> pushing ${cfg.image} -> ${ref}\n`);
-    await pushImage(cfg, ref, cliProgress);
-    process.stdout.write(`>> pushed: ${ref}\n`);
-    return;
-  }
-
-  if (sub === 'status') {
-    const s = await imageStatus(cfg);
-    if (s.exists && s.image) {
-      const im = s.image;
-      process.stdout.write(`>> image ${cfg.image}: present\n`);
-      process.stdout.write(`   id:      ${im.id}\n`);
-      process.stdout.write(`   tags:    ${im.repoTags.join(', ') || '(none)'}\n`);
-      process.stdout.write(`   created: ${im.created}\n`);
-      process.stdout.write(`   size:    ${(im.size / 1024 / 1024).toFixed(1)} MB\n`);
-    } else {
-      process.stdout.write(`>> image ${cfg.image}: NOT FOUND locally\n`);
-      process.stdout.write(`   build: mysandbox image build\n`);
-      process.stdout.write(`   pull:  mysandbox image pull\n`);
-    }
-    if (s.context) process.stdout.write(`   context: ${s.context}\n`);
-    else if (s.contextError) process.stdout.write(`   context: ERROR — ${s.contextError}\n`);
-    return;
-  }
-
-  throw new Error(`unknown image subcommand "${sub}". Run \`mysandbox image help\`.`);
-}
+// —— REST 路由已收编到 base.ts ——
+// `/api/base` + `/api/base/<action>` 是引擎无关的基座入口（docker=镜像，lxc=模板容器），
+// build/pull/push 经 dockerEngine.runBaseAction 转发到本文件的函数。
+// `/api/image*` 不再保留：唯一消费方是自家 web，同版本一起发布，留兼容别名只是养一份死代码。
+// CLI 侧 `mysandbox image …` 仍作为 `base …` 的别名保留（写进文档和肌肉记忆了，见 cli.ts）。

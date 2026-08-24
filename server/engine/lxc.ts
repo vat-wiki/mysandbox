@@ -26,13 +26,21 @@ import { promisify } from 'node:util';
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { Duplex } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import type { Config } from '../config.js';
-import { xdgDataHome } from '../config.js';
 import { getAllMeta, type ContainerMeta } from '../state.js';
 import { log } from '../logger.js';
-import { notFound, conflict } from '../errors.js';
+import { notFound, conflict, badRequest } from '../errors.js';
+import {
+  templateStatus,
+  templateSize,
+  cloneTemplate,
+  exportTemplate,
+  importTemplate,
+  type TemplateDeps,
+} from './template.js';
 import type {
   Engine,
   EngineEvent,
@@ -44,6 +52,10 @@ import type {
   ExecOpts,
   ExecResult,
   ExecStream,
+  BaseAction,
+  BaseActionOpts,
+  BaseProgress,
+  BaseStatus,
 } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -53,10 +65,14 @@ const execFileAsync = promisify(execFile);
 //   「删容器保留数据」不存在——业务层/web 据此改文案与选项。
 // - liveRename：LXC 无 rename 原语，lxc-copy -R 要求容器已停。
 // - portMappings：固定 IP 直连（D2），不做 NAT。
+// - baseKind/baseActions：基座是「模板容器」而非镜像，没有 registry 所以没有 build/pull/push；
+//   clone（把调好的容器固化成模板）+ export/import（打包成 tar.zst 当分发形态）见 template.ts。
 const CAPS: EngineCaps = {
   dataInsideContainer: true,
   liveRename: false,
   portMappings: false,
+  baseKind: 'template',
+  baseActions: ['clone', 'export', 'import'],
 };
 
 // 受管理标记（D5：LXC 没有 label，用 config 里的纯文本键；可 diff、可手改）。
@@ -65,8 +81,12 @@ export const MANAGED_KEY = 'MYSANDBOX_MANAGED';
 const MANAGED_LINE = `lxc.environment = ${MANAGED_KEY}=true`;
 
 // 容器根目录（unprivileged LXC 默认 lxcpath）。rootfs 在 <lxcpath>/<name>/rootfs（D4：home 在 rootfs 内）。
+// ⚠️ 这里**不能**用 xdgDataHome()：liblxc 把非特权 lxcpath 硬编码成 `$HOME/.local/share/lxc`，
+// 不认 XDG_DATA_HOME（strings liblxc 只有该字面量，XDG 相关仅 XDG_RUNTIME_DIR）。跟着 XDG 走
+// 会在设了该变量的环境里与 lxc-* 命令看的路径分叉——我们说容器不存在，lxc-ls 说存在。
+// 同理 template.ts 读 default.conf 必须走 $HOME/.config/lxc，不走 xdgConfigHome()。
 export function lxcPath(): string {
-  return join(xdgDataHome(), 'lxc');
+  return join(homedir(), '.local', 'share', 'lxc');
 }
 export function containerDir(name: string): string {
   return join(lxcPath(), name);
@@ -455,6 +475,13 @@ exit 0
 // --collect：单元退出后自动回收，不留 failed 残骸。
 async function startContainer(_cfg: Config, id: string): Promise<void> {
   const name = assertName(id);
+  // 幂等：已在跑就直接返回（对齐 docker start 已启动容器不报错）。少这一步，systemd-run 会
+  // 撞上同名单元报「already loaded」，把「本来就好着」变成 500。
+  const cur = await infoLines(name);
+  if ((cur?.State ?? 'STOPPED').toUpperCase() === 'RUNNING') return;
+  // 容器已停但单元还挂着（异常退出没被 --collect 回收）：先清掉占位，否则同名单元冲突。
+  // 单元不存在时 reset-failed 报错无害，忽略。
+  await run(['systemctl', '--user', 'reset-failed', unitName(name)], 5_000);
   const r = await run(
     [
       'systemd-run', '--user', `--unit=${unitName(name)}`, '--collect',
@@ -798,6 +825,40 @@ async function subscribeEvents(
   };
 }
 
+// —— 基座（模板容器）：实现在 template.ts，这里只做依赖注入与动作分发 ——
+// deps 注入而非让 template.ts 直接 import 本文件：本文件已经 import template.ts，
+// 反向 import 会成环（ESM 能跑但初始化顺序脆，不值当）。
+const templateDeps: TemplateDeps = {
+  readConfig,
+  configPath,
+  containerDir,
+  infoLines,
+  stop: (cfg, name) => stopContainer(cfg, name),
+  remove: (cfg, name) => removeContainer(cfg, name, { force: true }),
+  assertName,
+};
+
+async function baseStatus(cfg: Config): Promise<BaseStatus> {
+  return templateStatus(cfg, templateDeps);
+}
+
+async function runBaseAction(
+  cfg: Config,
+  action: BaseAction,
+  opts: BaseActionOpts,
+  onProgress?: (e: BaseProgress) => void,
+): Promise<Record<string, unknown>> {
+  if (action === 'clone') return cloneTemplate(cfg, templateDeps, opts, onProgress);
+  if (action === 'export') return exportTemplate(cfg, templateDeps, opts, onProgress);
+  if (action === 'import') return importTemplate(cfg, templateDeps, opts, onProgress);
+  throw badRequest(`engine lxc does not support base action "${action}"`);
+}
+
+// 模板 rootfs 占用（单独接口：算一次要遍历 2.8G 的 rootfs，不能塞进被轮询的 baseStatus）。
+export async function lxcTemplateSize(cfg: Config): Promise<number | null> {
+  return templateSize(cfg, templateDeps);
+}
+
 export const lxcEngine: Engine = {
   name: 'lxc',
   caps: CAPS,
@@ -815,6 +876,8 @@ export const lxcEngine: Engine = {
   execStream,
   assignedIps,
   subscribeEvents,
+  baseStatus,
+  runBaseAction,
   nameExists,
   hostHomePath: (_cfg, name) => containerHomePath(name),
 };
