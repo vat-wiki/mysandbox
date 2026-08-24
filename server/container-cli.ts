@@ -1,14 +1,17 @@
-// 容器内 mysandbox 命令：宿主直接往 dataRoot/<name>/.local/bin/mysandbox 写脚本（不动镜像、
-// 不 exec——容器停着也能写，bind mount 下即容器内 ~/.local/bin/mysandbox，PATH 第一项）。
+// 容器内 mysandbox 命令：宿主直接往容器 home 写脚本（不动镜像/模板、不 exec——容器停着
+// 也能写）。宿主侧 home 路径由引擎给出（docker=dataRoot/<name> bind mount 源；
+// lxc=<lxcpath>/<name>/rootfs/home/dev，D1 uid 直通所以同样可直写），落盘即容器内
+// ~/.local/bin/mysandbox，PATH 第一项。
 // 在 web 终端里执行时打印 OSC 7677 序列，前端 Terminal.vue 捕获后定位文件面板/打开编辑器；
-// 非 web 环境（宿主 docker exec / ssh 直连）只打一行中文提示，不污染终端。
+// 非 web 环境（宿主 exec / ssh 直连）只打一行中文提示，不污染终端。
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config } from './config.js';
+import { getEngine } from './engine/index.js';
 import { getAllMeta } from './state.js';
 import { log } from './logger.js';
 
-// 容器内路径（= 宿主 dataRoot/<name> + 此相对路径）。
+// 容器内路径（= 宿主侧 home 目录 + 此相对路径）。
 export const CONTAINER_CLI_PATH = '/home/dev/.local/bin/mysandbox';
 
 // POSIX sh：zsh/bash 都能跑；只依赖 printf/readlink/[ ]。
@@ -48,8 +51,9 @@ fi
 exit 0
 `;
 
-// 幂等种子（缺失才写，与 entrypoint.sh 的种子语义一致）：宿主 uid 1000 = 容器 dev，
-// bind mount 下直接落盘。失败记日志不抛——种子失败不阻塞建容器/启动。
+// 幂等种子（缺失才写，与 entrypoint.sh / 模板首启 seed 的语义一致）：宿主 uid 1000 = 容器 dev
+// （docker 走 bind mount，lxc 走 D1 uid 直通），直接落盘。
+// 失败记日志不抛——种子失败不阻塞建容器/启动。
 export function seedContainerCli(dataDir: string): void {
   const bin = join(dataDir, '.local/bin');
   const target = join(bin, 'mysandbox');
@@ -61,8 +65,9 @@ export function seedContainerCli(dataDir: string): void {
   }
 }
 
-// 启动扫描：给 sidecar 已知、且宿主可见 dataRoot 的存量容器补种子（幂等）。
-// adopted 外部容器没有 dataRoot 挂载，宿主写不进它的 home——超出范围，文档已注明。
+// 启动扫描：给 sidecar 已知、且宿主侧 home 可见的存量容器补种子（幂等）。
+// adopted 的外部 docker 容器没有 dataRoot 挂载，宿主写不进它的 home——超出范围，文档已注明。
+// LXC 侧所有受管理容器的 home 都在 rootfs 内、必然可见。
 export async function sweepContainerCli(cfg: Config): Promise<void> {
   let names: string[] = [];
   try {
@@ -70,8 +75,9 @@ export async function sweepContainerCli(cfg: Config): Promise<void> {
   } catch {
     return; // state.json 读不了就算了，不影响起服务
   }
+  const engine = getEngine(cfg);
   for (const name of names) {
-    const home = join(cfg.dataRoot, name);
-    if (existsSync(home)) seedContainerCli(home);
+    const home = engine.hostHomePath(cfg, name);
+    if (home && existsSync(home)) seedContainerCli(home);
   }
 }

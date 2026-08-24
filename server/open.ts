@@ -5,6 +5,8 @@ import { realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { posix } from 'node:path';
 import type { Config } from './config.js';
+import { getEngine } from './engine/index.js';
+import { getAllMeta } from './state.js';
 
 interface ParsedArgs {
   positionals: string[];
@@ -35,11 +37,11 @@ export const OPEN_HELP = `mysandbox open — 在浏览器中打开容器内的�
 Usage: mysandbox open <path> [--container <name>|-c <name>]
 
   <path>   容器内绝对路径，或相对路径（基于 /home/dev）。
-           若宿主当前目录在 dataRoot/<容器名>/ 下，相对路径会自动映射回容器视角。
+           若宿主当前目录在某容器的 home 目录下，相对路径会自动映射回容器视角。
 
 容器解析顺序：
   1. --container/-c 指定（容器名或显示名）
-  2. 宿主 cwd 位于 dataRoot/<容器名>/ 下时自动识别
+  2. 宿主 cwd 位于某容器 home 目录下时自动识别
   3. 恰好只有一个运行中的受管理容器时用它
   4. 否则列出候选并要求 --container
 
@@ -91,28 +93,47 @@ function pickByName(items: ContainerSummary[], want: string): ContainerSummary {
   return hit;
 }
 
-// 宿主 cwd 在 dataRoot/<容器名>/ 下 -> {容器名, cwd 相对 dataRoot/<name> 的部分}。
+// 宿主 cwd 在某容器的 home 目录下 -> {容器名, cwd 相对该 home 的部分}。
+// 容器 home 在宿主侧的位置随引擎不同（docker=dataRoot/<name>；lxc=<lxcpath>/<name>/rootfs/home/dev），
+// 所以按「所有已知容器逐个比对其 hostHomePath」推断，而不是假设某个共同父目录。
 async function inferFromCwd(cfg: Config): Promise<{ name: string; rel: string } | null> {
   let cwd: string;
-  let root: string;
   try {
-    [cwd, root] = await Promise.all([realpath(process.cwd()), realpath(cfg.dataRoot)]);
+    cwd = await realpath(process.cwd());
   } catch {
-    return null; // dataRoot 不存在等：无从推断
+    return null;
   }
-  if (cwd === root) return { name: '', rel: '' }; // 正好在 dataRoot 下：没有具体容器
-  if (!cwd.startsWith(root + '/')) return null;
-  const under = cwd.slice(root.length + 1);
-  const name = under.split('/')[0];
-  if (!name) return null;
-  return { name, rel: under.slice(name.length) }; // rel 以 / 开头或空
+  const engine = getEngine(cfg);
+  let names: string[];
+  try {
+    names = Object.keys(await getAllMeta());
+  } catch {
+    return null; // state.json 读不了：无从推断
+  }
+  // 最长匹配优先：容器名互为前缀时（dev / dev2）短的会先命中错的容器。
+  let best: { name: string; rel: string; len: number } | null = null;
+  for (const name of names) {
+    const home = engine.hostHomePath(cfg, name);
+    if (!home) continue;
+    let root: string;
+    try {
+      root = await realpath(home);
+    } catch {
+      continue; // home 不存在（容器已删/adopted 无挂载）
+    }
+    if (cwd !== root && !cwd.startsWith(root + '/')) continue;
+    if (!best || root.length > best.len) {
+      best = { name, rel: cwd.slice(root.length), len: root.length }; // rel 以 / 开头或空
+    }
+  }
+  return best ? { name: best.name, rel: best.rel } : null;
 }
 
-// 相对路径 -> 容器绝对路径。dataRoot 场景：宿主 cwd 对应容器内 /home/dev/<rel>。
+// 相对路径 -> 容器绝对路径。命中容器 home 时：宿主 cwd 对应容器内 /home/dev/<rel>。
 function toContainerPath(input: string, cwdInfo: { name: string; rel: string } | null): string {
   if (input.startsWith('/')) return posix.normalize(input);
   if (cwdInfo && cwdInfo.name) {
-    // 宿主 cwd = dataRoot/<name><rel>  <=>  容器内 /home/dev<rel>
+    // 宿主 cwd = <容器 home><rel>  <=>  容器内 /home/dev<rel>
     return posix.normalize(posix.join('/home/dev', cwdInfo.rel, input));
   }
   return posix.normalize(posix.join('/home/dev', input));

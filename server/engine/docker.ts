@@ -1,21 +1,34 @@
 // docker 引擎实现：原 server/docker.ts 全量迁入，挂到 Engine 接口后（P3 重构，行为零变化）。
 // dockerode 单例与容器操作、exec 封装（demux/hijack）、events 订阅都在这里。
+// P5 起还包含建容器（create）——原 lifecycle.ts 里那段 ContainerCreateOptions 组装，
+// 因为它与 LXC 的「克隆模板 + 改写 config」毫无共同点，属引擎特定路径。
 import Docker from 'dockerode';
 import { PassThrough, type Duplex } from 'node:stream';
+import { join } from 'node:path';
 import type { Config } from '../config.js';
 import { getAllMeta, type ContainerMeta } from '../state.js';
 import type {
   Engine,
   EngineEvent,
+  EngineCaps,
+  EventSubscription,
   ContainerInfo,
   ContainerView,
   ContainerPort,
+  CreateSpec,
   ExecOpts,
   ExecResult,
   ExecStream,
 } from './types.js';
 
 export const MANAGED_LABEL = 'mysandbox.managed-by';
+
+// docker 形态的能力：home 是 bind mount 的宿主目录（删容器不动数据）、支持 live rename、有 NAT 端口映射。
+const CAPS: EngineCaps = {
+  dataInsideContainer: false,
+  liveRename: true,
+  portMappings: true,
+};
 
 let _docker: Docker | null = null;
 export function getDocker(cfg: Config): Docker {
@@ -283,11 +296,19 @@ async function assignedIps(cfg: Config): Promise<Set<string>> {
 async function subscribeEvents(
   cfg: Config,
   onEvent: (ev: EngineEvent) => void,
-): Promise<{ close(): void }> {
+): Promise<EventSubscription> {
   const stream = await getDocker(cfg).getEvents({
     filters: { type: ['container'], event: ['start', 'restart'] },
   });
-  // 断流即返回由调用方重连；error 吞掉（startHostsSync 里 catch 重连）。
+  // closed：流 end/close/error 任一即视为断开（error 吞掉不外抛，由调用方退避重连）。
+  let resolveClosed: () => void;
+  const closed = new Promise<void>((r) => {
+    resolveClosed = r;
+  });
+  const readable = stream as import('node:stream').Readable;
+  readable.on('end', () => resolveClosed());
+  readable.on('close', () => resolveClosed());
+  readable.on('error', () => resolveClosed());
   let buf = '';
   stream.on('data', (chunk: Buffer | string) => {
     buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
@@ -313,22 +334,108 @@ async function subscribeEvents(
   return {
     close() {
       try {
-        (stream as import('node:stream').Readable).destroy();
+        readable.destroy();
       } catch {
         /* noop */
       }
     },
+    closed,
   };
+}
+
+// —— 建容器（原 lifecycle.ts 的 docker 路径，行为逐字保留）——
+// 前置（IP 分配、data 目录预建、种子、hosts 解析）在 lifecycle.ts；这里只组装 docker 对象并起。
+async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
+  const docker = getDocker(cfg);
+  const binds = [
+    `${cfg.dataRoot}/${spec.name}:/home/dev:rw`,
+    `${cfg.sshSource}:/mnt/host/.ssh:ro`,
+  ];
+  if (cfg.claudeSettingsTemplate) {
+    binds.push(`${cfg.claudeSettingsTemplate}:/mnt/claude-settings.template:ro`);
+  }
+
+  const opts: Docker.ContainerCreateOptions = {
+    name: spec.name,
+    Image: cfg.image,
+    Hostname: spec.name,
+    User: '1000:1000',
+    WorkingDir: '/home/dev',
+    Env: [
+      'TZ=Asia/Singapore',
+      'HOME=/home/dev',
+      `GIT_AUTHOR_NAME=${spec.gitName}`,
+      `GIT_AUTHOR_EMAIL=${spec.gitEmail}`,
+      `GIT_COMMITTER_NAME=${spec.gitName}`,
+      `GIT_COMMITTER_EMAIL=${spec.gitEmail}`,
+      'PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      'DEBIAN_FRONTEND=noninteractive',
+      'LANG=C.UTF-8',
+      'PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright',
+    ],
+    Cmd: ['sleep', 'infinity'],
+    Entrypoint: ['/usr/local/bin/entrypoint.sh'],
+    Tty: true,
+    OpenStdin: true,
+    StdinOnce: false,
+    Labels: {
+      [MANAGED_LABEL]: 'mysandbox',
+      'mysandbox.created-at': new Date().toISOString(),
+      'mysandbox.role': spec.role,
+    },
+    HostConfig: {
+      Binds: binds,
+      NetworkMode: cfg.network,
+      Init: true,
+      RestartPolicy: { Name: cfg.restartPolicy },
+      ...(spec.portMappings ? { PortBindings: spec.portMappings } : {}),
+      ...(spec.extraHosts.length ? { ExtraHosts: spec.extraHosts } : {}),
+    },
+    NetworkingConfig: {
+      EndpointsConfig: {
+        [cfg.network]: { IPAMConfig: { IPv4Address: spec.ip } },
+      },
+    },
+  };
+
+  const container = await docker.createContainer(opts);
+  try {
+    await container.start();
+  } catch (e) {
+    // start 失败：删除容器，保留 data 目录（破坏性操作留用户）
+    try {
+      await container.remove({ force: true });
+    } catch {
+      /* noop */
+    }
+    throw e;
+  }
+  return { id: container.id };
+}
+
+// 建容器前置查重（含已停止的容器：docker 名字唯一性跨状态）。
+async function nameExists(cfg: Config, name: string): Promise<boolean> {
+  const all = await getDocker(cfg).listContainers({ all: true });
+  return all.some((c) => c.Names.some((n) => n.replace(/^\//, '') === name));
+}
+
+// 容器 home 的宿主路径 = bind mount 源。adopted 的外部容器没有这个挂载，
+// 宿主直写方案对它不成立（container-cli 的种子扫描据此跳过）——但路径本身照算，
+// 由调用方用 existsSync 判定可见性（与 P5 前 sweepContainerCli 的行为一致）。
+function hostHomePath(cfg: Config, name: string): string {
+  return join(cfg.dataRoot, name);
 }
 
 // —— 导出 Engine——
 export const dockerEngine: Engine = {
   name: 'docker',
+  caps: CAPS,
   status: async (cfg) => {
     return status(cfg);
   },
   listManaged,
   inspect,
+  create,
   start: async (cfg, id) => {
     await getDocker(cfg).getContainer(id).start();
   },
@@ -349,7 +456,6 @@ export const dockerEngine: Engine = {
   execStream,
   assignedIps,
   subscribeEvents,
+  nameExists,
+  hostHomePath,
 };
-
-// P5 前的过渡：lifecycle.ts/image.ts 仍直接 import getDocker/MANAGED_LABEL——
-// 由 index.ts 转发保持 import 路径兼容。

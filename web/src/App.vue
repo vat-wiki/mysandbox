@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { getToken, setToken, clearToken, health, verifyToken, getImageStatus, Unauthorized } from '@/lib/api'
+import { setEngineInfo, engineName } from '@/lib/caps'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import ContainerList from '@/components/ContainerList.vue'
@@ -45,6 +46,8 @@ async function verify(t: string): Promise<boolean> {
     await verifyToken()
     version.value = h.version
     dockerOk.value = h.docker.reachable
+    // caps 写进全局单例：删除/改名/端口映射的 UI 分支都读它（见 lib/caps.ts）
+    setEngineInfo(h.engine ?? 'docker', h.caps)
     token.value = t
     refreshImageStatus()
     return true
@@ -110,13 +113,13 @@ onUnmounted(() => {
           v-if="dockerOk === true"
           variant="outline"
           class="border-transparent bg-emerald-500/15 text-emerald-500"
-          >docker ok</Badge
+          >{{ engineName }} ok</Badge
         >
         <Badge
           v-else-if="dockerOk === false"
           variant="outline"
           class="border-transparent bg-destructive/15 text-destructive"
-          >docker unreachable</Badge
+          >{{ engineName }} unreachable</Badge
         >
         <ImageBadge
           v-if="ready"

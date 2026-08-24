@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { createContainer, getHosts, Unauthorized } from '@/lib/api'
+import { caps } from '@/lib/caps'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -40,10 +41,16 @@ onMounted(() => {
     })
 })
 
+// 端口映射只在支持 NAT 的引擎上有意义：LXC 侧容器是固定 IP 直连（D2），宿主与其他容器
+// 直接按 IP 访问任意端口，映射概念不存在——整块 UI 隐藏，也不往请求里塞 portMappings
+// （后端 lifecycle 会对不支持的引擎直接拒绝）。
+const showPorts = computed(() => caps.portMappings)
+
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/
 const nameOk = computed(() => NAME_RE.test(name.value.trim()))
 
 function parsePorts(): Record<string, Array<{ HostPort: string }>> | undefined {
+  if (!showPorts.value) return undefined
   const out: Record<string, Array<{ HostPort: string }>> = {}
   for (const part of ports.value.split(',').map((s) => s.trim()).filter(Boolean)) {
     const m = part.match(/^(\d+):(\d+)$/)
@@ -93,7 +100,7 @@ async function submit() {
     <DialogContent class="max-w-md">
       <DialogHeader>
         <DialogTitle>新建容器</DialogTitle>
-        <DialogDescription>配置名称、IP 与端口映射。</DialogDescription>
+        <DialogDescription>{{ showPorts ? '配置名称、IP 与端口映射。' : '配置名称与 IP。' }}</DialogDescription>
       </DialogHeader>
 
       <div class="space-y-3">
@@ -125,10 +132,13 @@ async function submit() {
           <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.0.30" />
         </div>
 
-        <div class="space-y-1.5">
+        <div v-if="showPorts" class="space-y-1.5">
           <Label for="c-ports">端口映射（可选，hostPort:containerPort，逗号分隔）</Label>
           <Input id="c-ports" v-model="ports" placeholder="6500:6200" />
         </div>
+        <p v-else class="text-xs leading-relaxed text-muted-foreground">
+          容器为固定 IP 直连，宿主与其他容器可直接访问其任意端口，无需端口映射。
+        </p>
 
         <!-- 全局 hosts 提示：自动生效、可跳转编辑，与批量配置/HostsPanel 的互跳模式一致 -->
         <p class="text-xs leading-relaxed text-muted-foreground">

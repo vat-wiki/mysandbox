@@ -81,7 +81,21 @@ async function api(path: string, init: RequestInit = {}): Promise<any> {
 // 必鉴权的轻量接口做实质校验。
 export const verifyToken = () => api('/api/containers?limit=1') as Promise<{ items: ContainerView[] }>
 
-export const health = () => api('/api/health') as Promise<{ ok: boolean; version: string; docker: { reachable: boolean; version?: string } }>
+// 引擎能力（后端 EngineCaps，见 server/engine/types.ts）。UI 差异一律判 caps，
+// 不要判 engine 名——将来加引擎时才不用改前端。
+export interface EngineCaps {
+  dataInsideContainer: boolean // true：home 在容器内，删容器必连数据一起删
+  liveRename: boolean // false：改名前必须先停容器
+  portMappings: boolean // false：固定 IP 直连，无端口映射
+}
+export interface Health {
+  ok: boolean
+  version: string
+  docker: { reachable: boolean; version?: string }
+  engine: 'docker' | 'lxc'
+  caps: EngineCaps
+}
+export const health = () => api('/api/health') as Promise<Health>
 export const listContainers = () => api('/api/containers') as Promise<{ items: ContainerView[] }>
 
 async function postJson(path: string, body?: unknown): Promise<any> {

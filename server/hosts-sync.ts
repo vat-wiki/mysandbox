@@ -4,7 +4,7 @@
 // 还原的 /etc/hosts（Docker 管创建、我们管维持，只写声明的内容）。
 import { createHash } from 'node:crypto';
 import type { Config } from './config.js';
-import { getDocker, listManaged, inspectContainer, MANAGED_LABEL, type ExecOpts } from './engine/index.js';
+import { listManaged, inspectContainer, subscribeEvents, type ExecOpts } from './engine/index.js';
 import { runBatch, type BatchResult } from './batch.js';
 import { getCustomHostsContent, readHostHosts } from './hosts.js';
 import { getAllMeta, setMeta } from './state.js';
@@ -103,7 +103,7 @@ function hostsHash(content: string): string {
   return createHash('sha256').update(content).digest('hex').slice(0, 16);
 }
 
-// —— docker events 自动重刷 ——
+// —— 容器事件自动重刷 ——
 
 // 模块级串行队列：事件稀疏但 restart 风暴时防并发 exec；失败吞掉不连锁。
 let chain: Promise<void> = Promise.resolve();
@@ -113,30 +113,24 @@ function enqueue(fn: () => Promise<void>): void {
   });
 }
 
-interface DockerEvent {
-  Type?: string;
-  Action?: string;
-  // 容器 id 在 Actor.ID（顶层无 id 字段，实测 docker 29 事件结构）
-  Actor?: { ID?: string; Attributes?: Record<string, string> };
-}
-
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// 订阅 docker events（container start/restart），断线指数退避重连。
-// 永不抛、永不崩进程：流 error 吞掉（terminal.ts/docker.ts 同款先例），重连即自愈。
+// 订阅引擎事件（容器 start/restart），断线指数退避重连。
+// 永不抛、永不崩进程：引擎侧已吞掉流 error（docker events / lxc-monitor 各自实现），
+// 断流即返回，这里退避重连即自愈。
 export function startHostsEventSync(cfg: Config): void {
   void (async () => {
     let delay = 1_000;
     for (;;) {
       try {
-        const stream = await getDocker(cfg).getEvents({
-          filters: { type: ['container'], event: ['start', 'restart'] },
+        const sub = await subscribeEvents(cfg, (ev) => {
+          enqueue(() => handleEvent(cfg, ev.containerId));
         });
         delay = 1_000; // 连上即复位
-        log.info('hosts event sync: subscribed');
+        log.info({ engine: cfg.engine }, 'hosts event sync: subscribed');
         // 重连后全量补刷一次，补断线窗口内错过的事件（hash 跳过，近零成本）
         enqueue(() => sweepHosts(cfg));
-        await consumeStream(cfg, stream); // 正常返回 = 流断 -> 退避重连
+        await sub.closed; // resolve = 底层断流（引擎侧判定）-> 退避重连
       } catch (e) {
         log.warn({ err: String(e), retryMs: delay }, 'hosts event sync: subscribe failed, retrying');
       }
@@ -146,59 +140,18 @@ export function startHostsEventSync(cfg: Config): void {
   })();
 }
 
-// 消费事件流：\n 分帧（剥 \r），坏行丢弃保留 remainder；error 吞掉（end/close/error 都 resolve）。
-function consumeStream(cfg: Config, stream: NodeJS.ReadableStream): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let buf = '';
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      resolve();
-    };
-    stream.on('error', (e) => {
-      log.warn({ err: String(e) }, 'hosts event sync: stream error');
-      finish();
-    });
-    stream.on('end', finish);
-    stream.on('close', finish);
-    stream.on('data', (chunk: Buffer | string) => {
-      buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      let idx: number;
-      while ((idx = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, idx).replace(/\r$/, '');
-        buf = buf.slice(idx + 1);
-        if (!line) continue;
-        let ev: DockerEvent;
-        try {
-          ev = JSON.parse(line) as DockerEvent;
-        } catch {
-          continue; // 坏行丢弃
-        }
-        const id = ev.Actor?.ID;
-        if (ev.Type === 'container' && (ev.Action === 'start' || ev.Action === 'restart') && id) {
-          enqueue(() => handleEvent(cfg, ev, id));
-        }
-      }
-    });
-  });
-}
-
-async function handleEvent(cfg: Config, ev: DockerEvent, id: string): Promise<void> {
-  // 受管理判定：label 命中零调用（events 的 Actor.Attributes 内联全部容器 labels）；
-  // 未命中 inspect 一次查网络（Attributes 不含 network 信息）。异常一律当不受管理，
+async function handleEvent(cfg: Config, id: string): Promise<void> {
+  // 受管理判定：inspect 一次查标记与网络。异常一律当不受管理——
   // 容器删除瞬间的 start 竞态等不该炸事件循环。
-  if (ev.Actor?.Attributes?.[MANAGED_LABEL] !== 'mysandbox') {
-    try {
-      const info = await inspectContainer(cfg, id);
-      if (!info.networks.includes(cfg.network)) return;
-    } catch {
-      return;
-    }
+  try {
+    const info = await inspectContainer(cfg, id);
+    if (!info.managed && !info.networks.includes(cfg.network)) return;
+  } catch {
+    return;
   }
-  // start/restart 后 Docker 已把 /etc/hosts 还原成镜像+ExtraHosts 的初始态——即使
-  // 内容与 meta hash 相同也必须重写。事件路径不跳过（skipUnchanged 只用于启动补刷
-  // 的断线窗口去重）。
+  // docker 侧 start/restart 后 /etc/hosts 被还原成镜像+ExtraHosts 的初始态——即使内容与
+  // meta hash 相同也必须重写。LXC 侧容器内 /etc/hosts 是 rootfs 里的真文件、重启不还原，
+  // 重刷是幂等的空操作。事件路径统一不跳过（skipUnchanged 只用于启动补刷的断线窗口去重）。
   await applyHostsToContainers(cfg, { ids: [id], reason: 'event' });
 }
 

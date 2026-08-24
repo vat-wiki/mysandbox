@@ -10,7 +10,7 @@ import {
   renameContainer,
   inspectContainer,
   execRun,
-  MANAGED_LABEL,
+  getEngine,
 } from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
 import { wrapDocker, conflict, HttpError } from './errors.js';
@@ -60,9 +60,12 @@ function requireOwned(r: Resolved): void {
 }
 
 export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
+  // engine + caps 暴露给前端：删除/改名/端口映射的 UI 差异由 caps 驱动，
+  // 前端不要自己判 engine 名（见 web/src/lib/api.ts 的 Health 类型）。
   app.get('/api/health', async () => {
     const docker = await checkDocker(cfg);
-    return { ok: true, version: getVersion(), docker };
+    const engine = getEngine(cfg);
+    return { ok: true, version: getVersion(), docker, engine: engine.name, caps: engine.caps };
   });
 
   app.get('/api/containers', async () => ({ items: await listManaged(cfg) }));

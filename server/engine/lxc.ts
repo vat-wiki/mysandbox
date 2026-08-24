@@ -31,18 +31,33 @@ import type { ChildProcess } from 'node:child_process';
 import type { Config } from '../config.js';
 import { xdgDataHome } from '../config.js';
 import { getAllMeta, type ContainerMeta } from '../state.js';
-import { notFound } from '../errors.js';
+import { log } from '../logger.js';
+import { notFound, conflict } from '../errors.js';
 import type {
   Engine,
   EngineEvent,
+  EngineCaps,
+  EventSubscription,
   ContainerInfo,
   ContainerView,
+  CreateSpec,
   ExecOpts,
   ExecResult,
   ExecStream,
 } from './types.js';
 
 const execFileAsync = promisify(execFile);
+
+// LXC 形态的能力（见 types.ts EngineCaps）：
+// - dataInsideContainer：D4 决定 home 在 rootfs 内，lxc-destroy 连数据一起删，
+//   「删容器保留数据」不存在——业务层/web 据此改文案与选项。
+// - liveRename：LXC 无 rename 原语，lxc-copy -R 要求容器已停。
+// - portMappings：固定 IP 直连（D2），不做 NAT。
+const CAPS: EngineCaps = {
+  dataInsideContainer: true,
+  liveRename: false,
+  portMappings: false,
+};
 
 // 受管理标记（D5：LXC 没有 label，用 config 里的纯文本键；可 diff、可手改）。
 // lxc.environment 是唯一「随容器走、启动时注入、不被 LXC 校验拒绝」的自定义键。
@@ -148,6 +163,26 @@ export async function markManaged(name: string): Promise<void> {
   if (isManagedConfig(content)) return;
   const sep = content.endsWith('\n') ? '' : '\n';
   await writeFile(configPath(name), `${content}${sep}${MANAGED_LINE}\n`);
+}
+
+// 改写 config 里某个键（最后一次出现的那行原地替换；不存在则追加）。
+// 「最后一次为准」与 configValue 的读取语义对称——LXC 自身也是后覆盖前。
+export function setConfigValue(content: string, key: string, value: string): string {
+  const lines = content.split('\n');
+  let lastIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    if (line.slice(0, eq).trim() === key) lastIdx = i;
+  }
+  if (lastIdx >= 0) {
+    lines[lastIdx] = `${key} = ${value}`;
+    return lines.join('\n');
+  }
+  const sep = content.endsWith('\n') || content === '' ? '' : '\n';
+  return `${content}${sep}${key} = ${value}\n`;
 }
 
 // —— 状态查询 ——
@@ -288,6 +323,132 @@ async function inspect(cfg: Config, id: string): Promise<ContainerInfo> {
 }
 
 // —— 生命周期 ——
+// 建容器 = 克隆模板容器（D3：镜像的替代物）+ 改写 config。
+//
+// 实测约束（写这段时踩到的，勿改）：
+//   - **lxc-copy 要求源容器已停**。源在跑时它 exit 1 且 **stderr 全空**——没有任何错误信息，
+//     所以必须自己前置检查并给人话错误，否则用户只会看到「建容器失败，原因不明」。
+//   - lxc-copy **已经**帮我们改好 `lxc.rootfs.path` 与 `lxc.uts.name`（实测 diff 确认），
+//     所以只需改 IP。（设计文档原先说 uts.name 也要手改，是错的，已回写修正。）
+//   - 克隆继承源的静态 IP → 必撞，改写是强制的，不是优化。
+async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
+  const name = assertName(spec.name);
+  const template = cfg.lxc.template;
+  assertName(template);
+
+  // 模板存在性：给「先建模板」的明确指引，不让 lxc-copy 抛看不懂的东西
+  // （对齐 docker 引擎「镜像不在本地时返回清晰提示」的语义）。
+  if ((await readConfig(template)) == null) {
+    throw notFound(
+      `LXC template container "${template}" not found. Create it first (see docs/lxc-migration.md), or set lxc.template in config.`,
+    );
+  }
+  const tInfo = await infoLines(template);
+  const tState = (tInfo?.State ?? 'STOPPED').toUpperCase();
+  if (tState !== 'STOPPED') {
+    throw new Error(
+      `LXC template "${template}" must be stopped before cloning (currently ${tState}). ` +
+        'lxc-copy fails silently on a running source.',
+    );
+  }
+
+  const r = await run(['lxc-copy', '-n', template, '-N', name], 300_000);
+  if (!r.ok) {
+    throw new Error(
+      `lxc-copy from "${template}" failed: ${r.stderr.trim() || 'no error output (is the template running?)'}`,
+    );
+  }
+
+  try {
+    // 克隆后改写 config：IP（继承源的必撞）+ 受管理标记 + 网桥对齐当前配置 + ssh 只读挂载。
+    const content = await readConfig(name);
+    if (content == null) throw new Error(`clone succeeded but config missing for ${name}`);
+    let next = setConfigValue(content, 'lxc.net.0.ipv4.address', `${spec.ip}/24`);
+    const bridge = await resolveBridge(cfg);
+    if (bridge) next = setConfigValue(next, 'lxc.net.0.link', bridge);
+    // 宿主 ~/.ssh 只读进容器（对齐 docker 的 `${cfg.sshSource}:/mnt/host/.ssh:ro` bind）。
+    // 相对路径 + create=dir：LXC 的挂载点相对 rootfs，挂载点不存在时自动建。
+    // unprivileged 下实测可读、写被 ro 挡住——首启 seed 与 batch ssh reseed 都依赖它。
+    next = setConfigValue(
+      next,
+      'lxc.mount.entry',
+      `${cfg.sshSource} mnt/host/.ssh none bind,ro,create=dir 0 0`,
+    );
+    if (cfg.claudeSettingsTemplate) {
+      next = `${next.endsWith('\n') ? next : next + '\n'}lxc.mount.entry = ${cfg.claudeSettingsTemplate} mnt/claude-settings.template none bind,ro,create=file 0 0\n`;
+    }
+    if (!isManagedConfig(next)) {
+      const sep = next.endsWith('\n') ? '' : '\n';
+      next = `${next}${sep}${MANAGED_LINE}\n`;
+    }
+    await writeFile(configPath(name), next);
+
+    await startContainer(cfg, name);
+    // 首启 seed：docker 侧由镜像的 entrypoint.sh 干（每次起容器跑一遍、缺才写）；
+    // LXC 侧 PID 1 是真 systemd、不存在 entrypoint 钩子，所以由引擎在建完后 attach 进去跑一次。
+    // 语义保持「缺失才写」——用户后续改了 ~/.zshrc / ~/.gitconfig 不会被覆盖。
+    await seedHome(name, spec);
+  } catch (e) {
+    // 半成品清理（对齐 docker 引擎 start 失败即 remove）。LXC 下 rootfs 就是数据，
+    // 一起删——此时容器刚克隆出来还没有用户数据，删掉是安全的。
+    try {
+      await removeContainer(cfg, name, { force: true });
+    } catch {
+      /* noop */
+    }
+    throw e;
+  }
+  return { id: name };
+}
+
+// 首启 home seed：LXC 版的 image/entrypoint.sh。
+//
+// 为什么在这儿而不是容器内的某个 unit：docker 侧每次起容器都跑 entrypoint（幂等、缺才写），
+// LXC 侧 PID 1 是发行版自己的 systemd，塞一个 mysandbox 专属 unit 进 rootfs 等于给模板
+// 加隐式契约（模板换了就静默失效）。建容器是唯一需要 seed 的时刻——克隆出来的 home 就是
+// 模板的 home，之后归用户——所以放在 create 里跑一次，语义更准也更好排查。
+//
+// 「缺失才写」逐条对齐 entrypoint.sh：用户改过的文件绝不覆盖。
+// 失败只 warn 不抛：容器已经建好并跑起来了，seed 半途失败不该把它回滚掉
+// （对齐 lifecycle.ts 里 applyInitialHosts 的取舍）。
+async function seedHome(name: string, spec: CreateSpec): Promise<void> {
+  const script = `
+set -u
+cd /home/dev || exit 0
+[ -f "$HOME/.zshrc" ] || { [ -f /etc/skel-home/.zshrc ] && cp /etc/skel-home/.zshrc "$HOME/.zshrc"; }
+mkdir -p "$HOME/.local/bin" "$HOME/.claude"
+[ -e "$HOME/.local/bin/claude" ] || ln -s /usr/local/bin/claude "$HOME/.local/bin/claude" 2>/dev/null
+[ -e "$HOME/.claude.json" ] || printf '%s' '{}' > "$HOME/.claude.json"
+if [ ! -f "$HOME/.claude/settings.json" ] && [ -f /mnt/claude-settings.template ]; then
+  cp /mnt/claude-settings.template "$HOME/.claude/settings.json"
+fi
+if [ ! -d "$HOME/.claude/skills/playwright-cli" ] && [ -d /etc/skel-home/.claude/skills/playwright-cli ]; then
+  mkdir -p "$HOME/.claude/skills"
+  cp -a /etc/skel-home/.claude/skills/playwright-cli "$HOME/.claude/skills/"
+fi
+# ssh：从只读挂载的宿主 key 拷一份可写副本（挂载点见 create 里的 lxc.mount.entry）
+if [ -d /mnt/host/.ssh ] && [ ! -d "$HOME/.ssh" ]; then
+  cp -a /mnt/host/.ssh "$HOME/.ssh"
+  chmod 700 "$HOME/.ssh"
+  chmod 600 "$HOME/.ssh"/id_* 2>/dev/null || true
+fi
+if [ ! -f "$HOME/.gitconfig" ]; then
+  printf '[user]\\n\\tname = %s\\n\\temail = %s\\n[init]\\n\\tdefaultBranch = main\\n' \
+    ${shq(spec.gitName)} ${shq(spec.gitEmail)} > "$HOME/.gitconfig"
+fi
+exit 0
+`;
+  const r = await runAttach(name, {
+    Cmd: ['sh', '-c', script],
+    User: '1000:1000',
+    Tty: false,
+    timeoutMs: 30_000,
+  }, null);
+  if (r.exitCode !== 0) {
+    log.warn({ name, exitCode: r.exitCode, stderr: r.stderr.slice(0, 500) }, 'lxc home seed failed');
+  }
+}
+
 // 启动：必须放进**独立的** systemd user 瞬态单元（见文件头）。`-F`（前台）+ 单元常驻，
 // 这样容器 cgroup 挂在 mysandbox-<name>.service 而非 mysandbox 自己的服务下——
 // mysandbox 重启/升级不会连带杀掉所有容器（实测直接 spawn 会被清杀）。
@@ -347,19 +508,20 @@ async function restartContainer(cfg: Config, id: string, t = 5): Promise<void> {
 }
 
 // 重命名：LXC 无 rename 原语。lxc-copy -R 是「移动」（改名不复制数据），但要求容器已停。
+// 与 create 同款坑：源在跑时 lxc-copy exit 1 且 stderr 全空，故先自行检查状态给人话错误。
 async function renameContainer(_cfg: Config, id: string, newName: string): Promise<void> {
   const name = assertName(id);
   assertName(newName);
   const info = await infoLines(name);
   if ((info?.State ?? 'STOPPED').toUpperCase() !== 'STOPPED') {
-    throw new Error('container must be stopped before rename (LXC has no live rename)');
+    throw conflict('container must be stopped before rename (LXC has no live rename)');
   }
   const r = await run(['lxc-copy', '-n', name, '-N', newName, '-R'], 60_000);
   if (!r.ok) throw new Error(`rename failed: ${r.stderr.trim() || 'unknown error'}`);
-  // uts.name（容器 hostname）跟着改，否则新名字容器里 hostname 还是旧的。
+  // uts.name（容器 hostname）：lxc-copy 通常会改，但 -R 路径不保证，显式对齐一次（幂等）。
   const content = await readConfig(newName);
   if (content != null) {
-    const next = content.replace(/^lxc\.uts\.name\s*=.*$/m, `lxc.uts.name = ${newName}`);
+    const next = setConfigValue(content, 'lxc.uts.name', newName);
     if (next !== content) await writeFile(configPath(newName), next);
   }
 }
@@ -402,16 +564,27 @@ function attachArgs(name: string, opts: ExecOpts): string[] {
   return args;
 }
 
-// docker 的 "1000:1000" 形式 → uid/gid。LXC 要分开给 -u/-g。
+// docker 的 User 形式 → uid/gid。LXC 的 `lxc-attach -u/-g` **只吃数字**，
+// 而 docker 的 exec User 既收数字也收用户名（'root'、'root:root'、'1000:1000' 全合法，
+// 调用方混着用：hosts-sync/lifecycle 传 'root:root'，terminal 传 'root'，files 传 '1000:1000'）。
+// 所以这里必须自己把名字映射成数字——早前只 Number() 转换，'root' 变 NaN 后落回默认
+// 1000，导致「以 root 写 /etc/hosts」实际以 dev 身份跑、Permission denied。
+// 容器内 passwd 不去查：镜像契约钉死了 root=0 / dev=1000（模板脚本 verify 段断言），
+// 查 passwd 要多一次 attach，不值当。未知名字保守落 dev（1000）而非 root。
+const USER_IDS: Record<string, number> = { root: 0, dev: 1000 };
+function toId(token: string | undefined, fallback: number): number {
+  if (token == null || token === '') return fallback;
+  const n = Number(token);
+  if (Number.isInteger(n) && n >= 0) return n;
+  return USER_IDS[token] ?? 1000;
+}
 function parseUser(user: string | undefined): { uid: number; gid: number } {
   if (!user) return { uid: 1000, gid: 1000 };
   const [u, g] = user.split(':');
-  const uid = Number(u);
-  const gid = g == null ? uid : Number(g);
-  return {
-    uid: Number.isFinite(uid) ? uid : 1000,
-    gid: Number.isFinite(gid) ? gid : 1000,
-  };
+  const uid = toId(u, 1000);
+  // 'root'（无冒号）应当是 root:root：gid 缺省跟随 uid，与 docker 一致。
+  const gid = toId(g, uid);
+  return { uid, gid };
 }
 
 // 单引号 shell 转义（只用于上面那句 cd，路径来自 WorkingDir 配置）。
@@ -580,6 +753,12 @@ async function assignedIps(_cfg: Config): Promise<Set<string>> {
   return set;
 }
 
+// —— 建容器前置查重 ——
+// lxc-ls 列的是「已定义」的容器（含停止的），正是 LXC 的名字唯一性范围。
+async function nameExists(_cfg: Config, name: string): Promise<boolean> {
+  return (await listNames()).includes(name);
+}
+
 // —— 事件 ——
 // LXC 有 lxc-monitor，但它按 lxcpath 监听、输出是行文本状态迁移。hosts-sync 只关心
 // 「容器起来了，去刷 /etc/hosts」，所以订阅 RUNNING 迁移即可。
@@ -587,10 +766,17 @@ async function assignedIps(_cfg: Config): Promise<Set<string>> {
 async function subscribeEvents(
   _cfg: Config,
   onEvent: (ev: EngineEvent) => void,
-): Promise<{ close(): void }> {
+): Promise<EventSubscription> {
   const child = spawn('lxc-monitor', [], { stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout?.on('error', () => { /* noop */ });
   child.stderr?.on('error', () => { /* noop */ });
+  // closed：monitor 进程退出/起不来即视为断开，调用方退避重连（同 docker 的断流语义）。
+  let resolveClosed: () => void;
+  const closed = new Promise<void>((r) => {
+    resolveClosed = r;
+  });
+  child.on('exit', () => resolveClosed());
+  child.on('error', () => resolveClosed());
   let buf = '';
   child.stdout?.on('data', (chunk: Buffer) => {
     buf += chunk.toString('utf8');
@@ -608,14 +794,17 @@ async function subscribeEvents(
     close() {
       try { child.kill('SIGTERM'); } catch { /* noop */ }
     },
+    closed,
   };
 }
 
 export const lxcEngine: Engine = {
   name: 'lxc',
+  caps: CAPS,
   status,
   listManaged,
   inspect,
+  create,
   start: startContainer,
   stop: stopContainer,
   restart: restartContainer,
@@ -626,4 +815,6 @@ export const lxcEngine: Engine = {
   execStream,
   assignedIps,
   subscribeEvents,
+  nameExists,
+  hostHomePath: (_cfg, name) => containerHomePath(name),
 };

@@ -33,6 +33,14 @@ export const ConfigSchema = z.object({
   docker: z.object({
     socketPath: z.string().default('/var/run/docker.sock'),
   }),
+  // LXC 引擎专属配置（engine: lxc 时生效）。
+  lxc: z
+    .object({
+      // 模板容器名：建容器 = lxc-copy 克隆它（D3，取代 docker 镜像）。
+      // 克隆要求模板处于 STOPPED（lxc-copy 对运行中的源静默失败）。
+      template: z.string().default('ms-template'),
+    })
+    .default({ template: 'ms-template' }),
   image: z.string().default('dev'),
   // 远程镜像仓库（host/path，如 ghcr.io/leon/mysandbox）；空=未配，push/pull 需显式给 ref。
   registry: z.string().default(''),
@@ -138,6 +146,7 @@ export async function loadConfig(): Promise<LoadResult> {
       listen: parsed.listen,
       engine: parsed.engine,
       docker: parsed.docker,
+      lxc: parsed.lxc,
       image: parsed.image,
       registry: parsed.registry,
       imageTag: parsed.imageTag,

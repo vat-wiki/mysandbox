@@ -19,6 +19,12 @@ engine: docker
 docker:
   socketPath: /var/run/docker.sock   # 宿主 docker socket；你的用户需在 docker 组
 
+# LXC 引擎专属（engine: lxc 时生效）。
+lxc:
+  # 模板容器名：新建容器 = lxc-copy 克隆它（取代 docker 的镜像）。
+  # ⚠️ 克隆时模板必须处于 STOPPED——lxc-copy 对运行中的源会静默失败（exit 1、无输出）。
+  template: ms-template
+
 # 新建容器所用镜像与网络。镜像需满足「镜像契约」（见 README）——内置 image/ 可直接构建：mysandbox image build
 image: dev
 # 远程镜像仓库（host/path，如 ghcr.io/leon/mysandbox），用于 push/pull；空=不配，push/pull 需显式给 ref。

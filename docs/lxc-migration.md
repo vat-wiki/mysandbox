@@ -135,7 +135,12 @@ server/engine/
 - ✅ 静态 IP + 网关 + 与 docker 容器互通(同 br-f0cc7d98dca0 桥)。
 - ✅ **宿主直读 home(D1 核心假设)**:容器内以 uid 1000 写的文件,宿主侧 `ls -l` 属主就是 `leon`,`cat` 无需 sudo。`files.ts` 的宿主直读方案成立,基座换成 `<lxcpath>/<name>/rootfs/home/dev`。
 - ✅ **tmux 持久会话 + PTY**:`script(1)` 包 `lxc-attach` 给出真 pty,往返/resize(`stty -F` 落到子进程 pts)/`MYSANDBOX_WEB` 经 tmux 全局环境注入/detach 后会话存活 —— 与 docker 引擎语义一致。
-- ✅ **克隆**:`lxc-copy` 冷克隆约 0.9s(dir 后端,rootfs 复制)。克隆继承源 config 的 IP 与 uts.name,**必须由 lifecycle 改写**(P5)。
+- ✅ **克隆**:`lxc-copy` 冷克隆约 0.9s(dir 后端,rootfs 复制)。
+  - **勘误**(P5 实测 diff 源/克隆 config):`lxc-copy` **已经**帮你改好 `lxc.rootfs.path` 与 `lxc.uts.name`,
+    只有静态 IP(`lxc.net.0.ipv4.address`)会与源撞、需要 lifecycle 改写。本文档早前写「uts.name 也要手改」是错的。
+  - ⚠️ **`lxc-copy` 对运行中的源静默失败**:exit 1 且 stderr **完全为空**(在 `systemd-run --user --pipe` 下
+    复现,排除 cgroup 环境因素)。所以 `create()` 必须自己前置检查模板存在 + STOPPED,并给人话错误,
+    否则用户只会看到「建容器失败,原因不明」。
 - ⏳ ssh 挂载(`~/.ssh` 只读进容器)— 模板制作阶段。
 
 ## 波及面与阶段
@@ -147,16 +152,41 @@ server/engine/
 | P2 宿主 | 上面清单 + 模板 PoC | ✅ attach 进容器、systemd 真开机、跨引擎互通 |
 | P3 engine | 接口抽取,docker 挂接口后 | ✅ `247c61f`+`P3` typecheck 绿、行为零变化(起服务实测 list/start/batch) |
 | P4 lxc engine | `engine/lxc.ts` 全函数 + `cfg.engine` 切换 | ✅ 全方法对活容器实测(见 commit) |
-| P5 业务层 | lifecycle/files/terminal/batch 适配 | 建容器走 LXC,终端/文件面板/批量全通 |
+| P5 业务层 | lifecycle/files/terminal/batch 适配 + `EngineCaps` | ✅ 端到端实测通过(见下「P5 实测结论」) |
 | P6 模板层 | image.ts 收缩 + web 模板页 | clone/export/import |
 | P7 收尾 | 全流程 + CLAUDE.md 更新 | 端到端 + 文档反映现实 |
 
 ### P5 待解决的具体点(P4 实测暴露)
 
-- **克隆后必须改写 config**:IP(源 IP 会撞)、`lxc.uts.name`(容器 hostname)。
-- **`deleteData` 语义变了**:D4 下 home 在 rootfs 内,`lxc-destroy` 一把连数据删掉——docker 时代「删容器保留 data 目录」的选项在 LXC 下需要重新定义(要么导出 home 再删,要么去掉这个选项)。
-- **rename 需要先停容器**(LXC 无 live rename),web 侧要相应提示。
+- ✅ **克隆后改写 config**:只需改 IP(源 IP 会撞);`rootfs.path`/`uts.name` 由 `lxc-copy` 自己搞定。
+- ✅ **`deleteData` 语义**:引入 `EngineCaps`(`server/engine/types.ts`)声明引擎能力,业务层与 web 判能力而非判引擎名。
+  - `dataInsideContainer`:LXC 为 true。`deleteManaged` 据此把「输容器名确认」从「勾了删数据时」升级为**无条件**——
+    数据反正会没,所以不给假选项,但也绝不静默删。docker 侧行为零变化。
+  - `liveRename` / `portMappings`:LXC 均为 false。前者由 `rename` 抛 `conflict` 要求先停;后者 `createContainer` 直接拒绝,
+    web 的端口映射输入框整块隐藏(固定 IP 直连,映射概念不存在)。
+  - caps 经 `/api/health` 下发,前端存在 `web/src/lib/caps.ts` 单例(默认取 docker 语义,health 未回来时按老行为渲染)。
 - 模板契约的两个固定步骤(P4 手工验证过,P6 写进模板制作脚本):`usermod -l dev` 改 uid 1000 用户名;写 `resolved.conf.d/mysandbox.conf` 配 DNS。
+
+### P5 实测结论
+
+engine: lxc 下走真 HTTP API 全流程验证(模板 `ms-template`,容器 `lx1`/`lxnet`):
+
+- ✅ **建容器** ~8s(克隆 2.8G rootfs + 起 systemd + seed)。IP 自动分配 10.88.0.22、hostname 正确、`managed=true`。
+- ✅ **home seed**:`.zshrc`/`.gitconfig`/`.ssh`(从只读挂载拷)/`.claude*` 全部到位;`~/.local/bin/mysandbox` 已种。
+- ✅ **宿主直读 home**(D1):`<lxcpath>/lx1/rootfs/home/dev` 属主 `leon`,无 sudo 可读写。
+- ✅ **文件面板** 列目录/读/写(含中文内容往返)、`/api/containers/:id/cwd` 跟随 tmux pane。
+- ✅ **终端** WS:tmux 会话 `ms-lx1-<termId>`、zsh 以 dev 跑、状态栏/ANSI/prompt 正常。
+- ✅ **批量** exec/git/hosts-apply;hosts 事件订阅(lxc-monitor)在容器 start 后自动重刷。
+- ✅ **caps 守卫**:运行中改名 → 409;删除缺/错 `confirmName` → 400;正确则 `dataRemoved:true`、rootfs 与 sidecar 一起清干净、无残留 systemd unit。
+- ✅ **跨引擎互通**(D2):LXC↔docker 容器双向 TCP 通、宿主可达 LXC、LXC 出外网 + DNS 正常。
+- ✅ **docker 引擎零回归**:同一份代码切回 `engine: docker`,列表/exec/文件面板/IP 池照旧。
+- ⚠️ **IP 池必须合并两引擎**:共用网桥,`network.ts assignedIps` 改为同时查 docker network 与各 LXC config,否则过渡期撞 IP。
+
+踩坑(已修,细节在代码注释):
+- `parseUser` 只做 `Number()` → `'root'` 变 NaN 落回 1000,「以 root 写 /etc/hosts」静默变 dev 身份 → Permission denied。`lxc-attach -u/-g` 只吃数字,必须自己映射名字。
+- LXC 没有 entrypoint 钩子(PID 1 是发行版 systemd),首启 seed 改由 `create()` attach 进去跑一次 `seedHome()`。
+- 模板脚本给容器喂脚本必须走 stdin(`bash -s`):`systemd-run` 会先展开 `${VAR}`,把脚本里的 `${ARCH}` 吃空 → node 下载 404。
+- `~/.ssh` 只读挂载在 unprivileged LXC 下可用:`lxc.mount.entry = <src> mnt/host/.ssh none bind,ro,create=dir 0 0`(挂载点相对 rootfs)。
 
 ## 回退
 

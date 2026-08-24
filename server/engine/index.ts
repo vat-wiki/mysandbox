@@ -1,12 +1,24 @@
 // engine 入口：消费方唯一 import 点，按 cfg.engine 选 docker / lxc 实现。
-// lifecycle.ts/image.ts 仍用 getDocker/MANAGED_LABEL 直调 dockerode（建容器/镜像构建
-// 是引擎特定路径，P5/P6 收编），由此转发。
+// image.ts 仍用 getDocker 直调 dockerode（镜像 build/pull/push 是 docker 特有路径，
+// LXC 侧对应「模板容器」，P6 收编），由此转发。
 import type { Config } from '../config.js';
 import type { Engine } from './types.js';
 import { dockerEngine, getDocker, MANAGED_LABEL } from './docker.js';
 import { lxcEngine } from './lxc.js';
 
-export type { Engine, ExecOpts, ExecResult, ExecStream, ContainerInfo, ContainerView, ContainerPort, EngineEvent } from './types.js';
+export type {
+  Engine,
+  EngineCaps,
+  ExecOpts,
+  ExecResult,
+  ExecStream,
+  ContainerInfo,
+  ContainerView,
+  ContainerPort,
+  EngineEvent,
+  EventSubscription,
+  CreateSpec,
+} from './types.js';
 export { dockerEngine, getDocker, MANAGED_LABEL, lxcEngine };
 
 // 当前引擎（cfg.engine 决定，默认 docker）。

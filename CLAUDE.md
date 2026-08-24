@@ -2,7 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-mysandbox：本地 dev 容器的网页控制台。后端 fastify + dockerode 直连 `/var/run/docker.sock`；前端 Vue 3 + Vite + Tailwind v4（shadcn-vue 风格，reka-ui）。注释与文档均用中文，新代码保持一致。
+mysandbox：本地 dev 容器的网页控制台。后端 fastify，**双引擎**（docker 经 dockerode 直连 `/var/run/docker.sock`；LXC 经 `lxc-*` 命令行，unprivileged 系统容器）；前端 Vue 3 + Vite + Tailwind v4（shadcn-vue 风格，reka-ui）。注释与文档均用中文，新代码保持一致。
+
+引擎由 `cfg.engine`（`docker` | `lxc`）选，业务层只 import `server/engine/index.js`。LXC 迁移的设计与实测记录在 `docs/lxc-migration.md`——碰引擎相关的东西先读它。
 
 ## 常用命令
 
@@ -20,35 +22,70 @@ node dist/server/cli.js    # 跑产物验证
 
 没有测试框架；改动后验证方式是 `npm run typecheck` + `npm -C web run build` + 实际起服务走一遍流程。
 
-CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox image build|pull|push|status`，`mysandbox open <路径>`。日志级别 `MYSANDBOX_LOG_LEVEL=debug`。
+CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox image build|pull|push|status`（docker 引擎），`mysandbox open <路径>`。日志级别 `MYSANDBOX_LOG_LEVEL=debug`。
+
+LXC 引擎的模板制作：`scripts/lxc-template.sh <容器名>`（取代 Dockerfile，见下「引擎与容器契约」）。
 
 ## 安全模型（改动前必读）
 
-服务直连宿主 `docker.sock`，拿到 token 等于宿主 root。因此：
+**拿到 token 等于拿到宿主的高权限能力**，两个引擎都成立，只是路径不同：
+
+- docker 引擎直连 `docker.sock` → 等于宿主 **root**（docker daemon 是 root，容器可挂任意宿主路径）。
+- LXC 引擎跑 unprivileged 容器（容器 root → 宿主 uid 100000），拿不到宿主 root；但**容器内 uid 1000 直通宿主 `leon`**（D1），且服务能读写宿主 `~/.ssh`、跑宿主终端（`/ws/host-terminal`）→ 等于宿主 **leon 用户**的完整权限。
+
+所以无论哪个引擎，约束不变：
 
 - 只监听 `127.0.0.1`（默认）；非 localhost 监听时 CLI 必须打印警告。
-- 所有 `/api/*` 与 `/ws/*`（除 `/api/health`）经 `server/auth.ts` 的 token 鉴权 hook；新路由注册在 `routes.ts` / `image.ts` / `terminal.ts` 即自动被覆盖，不要绕过。
+- 所有 `/api/*` 与 `/ws/*`（除 `/api/health`）经 `server/auth.ts` 的 token 鉴权 hook；新路由注册在 `routes.ts` / `image.ts` / `terminal.ts` / `hostTerminal.ts` 即自动被覆盖，不要绕过。
 - sidecar 文件（state.json、hosts.txt、config.yaml）权限 `0600`。
+- `/api/health` 免鉴权，所以它只暴露版本/引擎连通性/`caps`——**不要往里加容器名、路径、配置值**。
 
 ## 架构
 
 ### server/（NodeNext ESM，import 要带 `.js` 后缀）
 
-请求流：`cli.ts`（入口/参数/config 加载）→ `index.ts buildServer()`（websocket + static + 鉴权 hook + 错误处理）→ 路由四块：`routes.ts`（REST）、`image.ts`（镜像 build/pull/push）、`terminal.ts`（`/ws/terminal`，docker exec PTY）、`hostTerminal.ts`（`/ws/host-terminal` + `/api/host-terminal/cwd`，宿主 PTY）。
+请求流：`cli.ts`（入口/参数/config 加载）→ `index.ts buildServer()`（websocket + static + 鉴权 hook + 错误处理）→ 路由四块：`routes.ts`（REST）、`image.ts`（镜像 build/pull/push）、`terminal.ts`（`/ws/terminal`，容器 PTY）、`hostTerminal.ts`（`/ws/host-terminal` + `/api/host-terminal/cwd`，宿主 PTY）。
 
 关键设计：
 
-- **dockerode 单例与容器操作**在 `docker.ts`；创建/删除在 `lifecycle.ts`（IP 分配 + data 目录预建 + 固定 IP），IP 池计算在 `network.ts`。
-- **受管理容器的判定**：在配置的网络上，或带 mysandbox 标签。标签不可变，所以易变元数据（displayName、adopted、tags 等）走 **sidecar JSON**（`state.ts`，存 XDG data 目录，容器名作 key）。adopt 外部容器只写 sidecar，不动 docker 对象。
-- **批量操作**（git 身份 / ssh reseed / claude -p / 任意命令）在 `batch.ts`，用 p-limit 并发，底层 exec 走 `docker.ts` 的 execRun。
+- **引擎抽象**在 `server/engine/`：`types.ts` 定接口 + `EngineCaps`，`docker.ts` / `lxc.ts` 两个实现，`index.ts` 是消费方唯一 import 点（`getEngine(cfg)` + 一堆便捷转发）。业务层不写 `cfg.engine === 'lxc'` 分支，**判 `engine.caps`**（见下）。
+- 创建/删除在 `lifecycle.ts`（IP 分配 + home 种子 + 初始 hosts），引擎特定的建容器动作在各自 engine 的 `create()` 里。IP 池计算在 `network.ts`——`assignedIps` **同时查两个引擎**，因为两者共用同一座网桥，过渡期不合并会撞 IP。
+- **受管理容器的判定**：在配置的网络上，或带 mysandbox 标记（docker 是 label `mysandbox.managed-by`；LXC 没有 label，用 config 里的 `lxc.environment = MYSANDBOX_MANAGED=true` 纯文本行，可 diff 可手改）。标记不可变，所以易变元数据（displayName、adopted、tags 等）走 **sidecar JSON**（`state.ts`，存 XDG data 目录，容器名作 key）。adopt 外部容器只写 sidecar，不动容器对象。
+- **批量操作**（git 身份 / ssh reseed / claude -p / 任意命令）在 `batch.ts`，用 p-limit 并发，底层走 engine 的 `execRun`。
 - **hosts**：`hosts.ts` 是全局 hosts 的单一事实源（routes 和 lifecycle 都 import）。自定义内容存 `hosts.txt` sidecar 纯文本；宿主 `/etc/hosts` 实时读取不缓存。
 - **错误处理**：抛 `errors.ts` 的 `HttpError`（带 code/status），`wrapDocker` 把 dockerode 404 映射为 `not_found`。
 - **配置**：`config.ts` 从 `config.default.yaml` 读默认 + `~/.config/mysandbox/config.yaml` 覆盖，首启生成随机 token。
-- **容器内 mysandbox 命令**（`container-cli.ts`）：脚本由宿主种子写入 `dataRoot/<name>/.local/bin/mysandbox`（建容器时 + 启动扫描，幂等缺失才写）。web 终端（`terminal.ts`）注入 `MYSANDBOX_WEB` 标记——exec 的 Env 到不了 tmux server 起的 shell，所以挂 tmux 全局环境（`set-environment -g`），同时开 `allow-passthrough`（否则 tmux 吞掉未知 OSC）。命令运行时探测标记，web 下打印 OSC 7677（tmux 下 DCS passthrough 包裹），`Terminal.vue` 注册 OSC handler 捕获后冒泡 `ContainerList.vue` 定位文件面板/开编辑器（与 CLI `mysandbox open` 深链共用 `locateContainerPath`）。非 web 环境只打提示。
+- **容器内 mysandbox 命令**（`container-cli.ts`）：脚本由宿主种子写入 `engine.hostHomePath(cfg,name)/.local/bin/mysandbox`（docker 是 `dataRoot/<name>`，LXC 是 `<lxcpath>/<name>/rootfs/home/dev`）（建容器时 + 启动扫描，幂等缺失才写）。web 终端（`terminal.ts`）注入 `MYSANDBOX_WEB` 标记——exec 的 Env 到不了 tmux server 起的 shell，所以挂 tmux 全局环境（`set-environment -g`），同时开 `allow-passthrough`（否则 tmux 吞掉未知 OSC）。命令运行时探测标记，web 下打印 OSC 7677（tmux 下 DCS passthrough 包裹），`Terminal.vue` 注册 OSC handler 捕获后冒泡 `ContainerList.vue` 定位文件面板/开编辑器（与 CLI `mysandbox open` 深链共用 `locateContainerPath`）。非 web 环境只打提示。
 
-### 镜像契约
+### 引擎与容器契约
 
-创建容器假设镜像满足（`image/` 的 Dockerfile 是参考实现，构建上下文随包发布）：uid:gid `1000:1000`（home `/home/dev`）、`/usr/local/bin/entrypoint.sh` 首启 seed（缺才写，不覆盖预写配置）、`sleep infinity` 常驻。容器 home 挂 `dataRoot/<name>:/home/dev`；宿主 `~/.ssh` 只读挂 `/mnt/host/.ssh`。改 entrypoint 行为时保持「缺失才写」语义。镜像不在本地时返回清晰错误提示 `image build/pull`，不让 docker 抛 NotFound。
+两个引擎共享同一份**容器内契约**：uid:gid `1000:1000`（用户名 `dev`，home `/home/dev`）、zsh/git/tmux/node/AI CLI 就位、`/etc/skel-home/.zshrc` 作首启模板、宿主 `~/.ssh` 只读可见于 `/mnt/host/.ssh`。差别只在「谁来满足它」与「谁来 seed」：
+
+| | docker | LXC |
+|---|---|---|
+| 容器来源 | 镜像（`image/Dockerfile` 参考实现，上下文随包发布） | 模板容器 + `lxc-copy` 克隆（`scripts/lxc-template.sh` 制作） |
+| PID 1 | `sleep infinity` + tini（`Init: true`） | 发行版自己的 systemd（真系统容器） |
+| home | bind mount `dataRoot/<name>:/home/dev` | 在 rootfs 内 `<lxcpath>/<name>/rootfs/home/dev` |
+| 首启 seed | 镜像内 `entrypoint.sh`，每次起容器跑（幂等、缺才写） | 引擎 `create()` 里 attach 进去跑一次 `seedHome()`（同样缺才写） |
+| 不满足前置时 | 镜像不在本地 → 提示 `image build/pull`，不让 docker 抛 NotFound | 模板不存在/未 STOPPED → 明确报错（`lxc-copy` 对运行中的源**静默失败**，exit 1 无输出） |
+
+改 seed 行为时两边都要保持「**缺失才写**」语义——用户改过的 `~/.zshrc`、`~/.gitconfig` 绝不覆盖。
+
+**`EngineCaps`（`engine/types.ts`）是引擎差异的唯一出口**，业务层与 web 都判它，不判引擎名：
+
+- `dataInsideContainer`（LXC true）：home 在 rootfs 内 → 删容器必连数据一起删。`deleteManaged` 据此把「输容器名确认」从「勾了 deleteData 时」升级为**无条件**；`DeleteContainerDialog.vue` 相应换成说明文案而非一个留不住数据的假选项。
+- `liveRename`（LXC false）：改名前必须先停容器，`rename` 抛 `conflict`。
+- `portMappings`（LXC false）：固定 IP 直连，`createContainer` 拒绝 portMappings，`CreateDialog.vue` 整块隐藏。
+
+caps 经 `/api/health` 下发，前端存在 `web/src/lib/caps.ts` 单例（默认取 docker 语义，health 未回来时按老行为渲染）。**加引擎差异时先在这里加一项 cap**，别在业务层撒 if。
+
+### LXC 引擎的运行环境约束（`engine/lxc.ts` 文件头有详版）
+
+- mysandbox **必须以 systemd user service 形态跑**（cgroup 委派）。`lxc-attach` 可直接 spawn（继承 cgroup），但 `lxc-start` 必须进独立瞬态单元（`systemd-run --user --unit=mysandbox-<name> ... lxc-start -n <name> -F`），否则重启 mysandbox 会连带杀掉所有容器。
+- LXC veth 挂在 docker 的 dev-lan 网桥上（`br-*`）→ 跨引擎同网段互通（实测双向 TCP + 宿主可达）。
+- 静态 IP 无 DHCP → 容器内 systemd-resolved 没有上游 DNS，模板必须写 `/etc/systemd/resolved.conf.d/mysandbox.conf`（模板脚本已做）。
+- `lxc-attach -u/-g` **只吃数字**，而调用方传的 User 混着名字（`'root'`/`'root:root'`/`'1000:1000'`）——`parseUser` 负责映射，改它时小心：早前 `Number('root')` → NaN 落回 1000，导致「以 root 写 /etc/hosts」静默变成 dev 身份、Permission denied。
+- `scripts/lxc-template.sh` 里给容器喂脚本必须走 **stdin**（`bash -s`）而非 `bash -c "<脚本>"`：systemd-run 会先展开自己的 `${VAR}` 规格符，把脚本里的 `${ARCH}` 吃成空串。
 
 ### 镜像目录外部化与宿主终端
 
@@ -65,6 +102,6 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox image build|pull|push
 
 ## 环境备注
 
-- 仓库不是 git（本地开发中）。
-- 跑 mysandbox 的用户须在 `docker` 组。
+- 跑 mysandbox 的用户须在 `docker` 组（docker 引擎）；LXC 引擎需 `/etc/subuid`/`subgid` 有 `leon:100000:65536`、且 mysandbox 以 systemd user service 跑。
+- LXC 版本是 apt 的 **5.0.3**（刻意不用源码编译的 7.0）。容器落 `~/.local/share/lxc/<name>/`。
 - 容器内 `ls` 无颜色的成因是 zsh 没有 ls alias（`image/zshrc.docker` 已补 `alias ls='ls --color=auto'`），不是 coreutils 9.4 的问题——实测容器内 `ls --color=auto` 正常输出 ANSI 颜色码。老容器的 `~/.zshrc` 是首启 seed 的持久化副本，不会被新镜像覆盖，需手工从 `/etc/skel-home/.zshrc` 重新拷或自行补 alias。

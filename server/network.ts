@@ -1,7 +1,12 @@
-// dev-lan IP 池：权威源 = network.inspect().Containers（含停掉但未删的容器）。
+// dev-lan IP 池：docker 侧权威源 = network.inspect().Containers（含停掉但未删的容器），
+// LXC 侧 = 各容器 config 里的 lxc.net.0.ipv4.address。
 // 假设 /24：前 3 段为前缀，第 4 段在 from..to 间分配。
+//
+// 关键：**两个引擎共用同一座网桥**（见 docs/lxc-migration.md D2），所以分配新 IP 时必须
+// 同时看两边已占用的地址，否则迁移过渡期（docker 老容器 + LXC 新容器并存）会撞 IP。
+// 单边不可达（比如切到 lxc 后 docker 没装）不算错，当空集处理。
 import type { Config } from './config.js';
-import { getDocker } from './engine/index.js';
+import { dockerEngine, lxcEngine } from './engine/index.js';
 
 function prefix(ip: string): string {
   return ip.split('.').slice(0, 3).join('.');
@@ -9,21 +14,20 @@ function prefix(ip: string): string {
 function lastOctet(ip: string): number {
   return Number(ip.split('.')[3]) || 0;
 }
-function bare(ipWithCidr: string): string {
-  return ipWithCidr.split('/')[0];
-}
 
 export async function assignedIps(cfg: Config): Promise<Set<string>> {
-  try {
-    const info = await getDocker(cfg).getNetwork(cfg.network).inspect();
-    const set = new Set<string>();
-    for (const c of Object.values(info.Containers || {})) {
-      if (c.IPv4Address) set.add(bare(c.IPv4Address));
-    }
-    return set;
-  } catch {
-    return new Set();
-  }
+  const sets = await Promise.all(
+    [dockerEngine, lxcEngine].map(async (e) => {
+      try {
+        return await e.assignedIps(cfg);
+      } catch {
+        return new Set<string>();
+      }
+    }),
+  );
+  const all = new Set<string>();
+  for (const s of sets) for (const ip of s) all.add(ip);
+  return all;
 }
 
 export async function isFree(cfg: Config, ip: string): Promise<boolean> {
