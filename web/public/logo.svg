@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img">
+  <title>BoxHub Logo</title>
+  <!-- 悬浮的顶盖 -->
+  <polygon points="120,56 174,83 120,110 66,83" fill="#FFC53D"/>
+  <polygon points="66,83 120,110 120,124 66,97" fill="#FF9E2C"/>
+  <polygon points="120,110 174,83 174,97 120,124" fill="#EF7215"/>
+  <!-- 缝隙阴影 -->
+  <polygon points="66,97 120,124 120,134 66,107" fill="#B8860B"/>
+  <polygon points="120,124 174,97 174,107 120,134" fill="#B8860B"/>
+  <!-- 盒身 -->
+  <polygon points="66,107 120,134 120,184 66,157" fill="#FF9E2C"/>
+  <polygon points="120,134 174,107 174,157 120,184" fill="#EF7215"/>
+  <!-- 瓦楞纹 -->
+  <g stroke="#FFDE8F" stroke-width="4" stroke-linecap="round" opacity="0.45" fill="none">
+    <line x1="79.5" y1="114" x2="79.5" y2="164"/>
+    <line x1="93" y1="120.5" x2="93" y2="170.5"/>
+    <line x1="106.5" y1="127" x2="106.5" y2="177"/>
+    <line x1="133.5" y1="127" x2="133.5" y2="177"/>
+    <line x1="147" y1="120.5" x2="147" y2="170.5"/>
+    <line x1="160.5" y1="114" x2="160.5" y2="164"/>
+  </g>
+</svg>

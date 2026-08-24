@@ -1,0 +1,50 @@
+# mysandbox 默认配置（随包发布）。
+# 用户覆盖：~/.config/mysandbox/config.yaml（首启自动生成，含随机 token，权限 0600）。
+# 这里留空的字段（dataRoot / sshSource）首启按 XDG / 宿主用户自动填充。
+#
+# ⚠️ 安全：mysandbox 直连 docker.sock，等于把宿主 root 交给持有 token 的人。
+#   - 永远只 listen 127.0.0.1（默认），除非你在受控网络内明确要远程访问。
+#   - token 是唯一凭据，config 文件务必保持 0600。
+
+# Web 监听。host 改成非 127.0.0.1 会触发启动警告（见 CLI 输出）。
+listen:
+  host: 127.0.0.1
+  port: 7321
+
+docker:
+  socketPath: /var/run/docker.sock   # 宿主 docker socket；你的用户需在 docker 组
+
+# 新建容器所用镜像与网络。镜像需满足「镜像契约」（见 README）——内置 image/ 可直接构建：mysandbox image build
+image: dev
+# 远程镜像仓库（host/path，如 ghcr.io/leon/mysandbox），用于 push/pull；空=不配，push/pull 需显式给 ref。
+registry: ""
+# push/pull 用的 tag（本地容器基础镜像仍由 image 字段决定）。
+imageTag: latest
+# 镜像构建上下文目录（外部化）；空=用随包 image/。支持 ~，须绝对路径。
+imageDir: ""
+network: dev-lan
+
+# 容器 home 的宿主存放目录；留空= ~/.local/share/mysandbox/data
+dataRoot: ""
+# 宿主 ~/.ssh 源，以只读挂到容器 /mnt/host/.ssh，供 entrypoint seed 与批量 reseed。
+sshSource: ""
+# claude settings 模板路径；留空则不挂载（容器内 entrypoint 会跳过 settings seed）。
+claudeSettingsTemplate: ""
+
+# 自动分配的固定 IP 池（/24 前缀取前 3 段）。reserved 永不分配（如网关、已固定服务）。
+ipPool:
+  from: 10.88.0.20
+  to: 10.88.0.250
+  reserved:
+    - 10.88.0.1
+    - 10.88.0.2
+
+restartPolicy: unless-stopped   # 容器 HostConfig.RestentionPolicy.Name
+
+# 新建容器的默认 git 身份（可被批量配置覆盖）。
+git:
+  name: dev
+  email: dev@local
+
+ui:
+  defaultShell: zsh   # 网页终端默认 shell；可在 URL ?shell= 覆盖
