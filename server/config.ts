@@ -27,6 +27,9 @@ export const ConfigSchema = z.object({
     host: z.string().default('127.0.0.1'),
     port: z.number().int().default(7321),
   }),
+  // 容器引擎：'docker'（原形态）| 'lxc'（系统容器，见 docs/lxc-migration.md）。
+  // 迁移期可切换回退；两者容器共用同一座网桥，同 LAN 互通。
+  engine: z.enum(['docker', 'lxc']).default('docker'),
   docker: z.object({
     socketPath: z.string().default('/var/run/docker.sock'),
   }),
@@ -133,6 +136,7 @@ export async function loadConfig(): Promise<LoadResult> {
     await mkdir(CONFIG_DIR, { recursive: true });
     const out = yamlDump({
       listen: parsed.listen,
+      engine: parsed.engine,
       docker: parsed.docker,
       image: parsed.image,
       registry: parsed.registry,

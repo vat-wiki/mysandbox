@@ -11,6 +11,11 @@ listen:
   host: 127.0.0.1
   port: 7321
 
+# 容器引擎：docker（原形态）| lxc（系统容器：真 systemd init、私有 rootfs，见 docs/lxc-migration.md）。
+# lxc 需要 mysandbox 以 systemd user service 形态运行（cgroup 委派），否则容器起不来——
+# 详见 server/engine/lxc.ts 文件头的运行环境约束。
+engine: docker
+
 docker:
   socketPath: /var/run/docker.sock   # 宿主 docker socket；你的用户需在 docker 组
 
