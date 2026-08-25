@@ -12,11 +12,12 @@ export const notFound = (m: string) => new HttpError(404, m, 'not_found');
 export const conflict = (m: string) => new HttpError(409, m, 'conflict');
 export const badRequest = (m: string) => new HttpError(400, m, 'bad_request');
 
-// dockerode 错误 -> HttpError（404 映射）。kind 区分 container/image，避免镜像 404 被误报成 container。
-export function wrapDocker(
+// 引擎错误 -> HttpError 归一（404 形状映射 not_found）。
+// LXC 侧多数路径直接抛 HttpError，这里兜住其余 Error 形状。
+export function wrapEngineError(
   e: unknown,
   idHint = '',
-  kind: 'container' | 'image' = 'container',
+  kind: 'container' | 'template' = 'container',
 ): Error {
   const err = e as { statusCode?: number; message?: string };
   if (err && err.statusCode === 404) {

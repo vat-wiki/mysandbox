@@ -1,7 +1,7 @@
-// LXC 引擎实现：与 docker 引擎同接口（见 types.ts），底层是 lxc-* CLI + 容器 config 纯文本。
+// LXC 引擎实现（接口见 types.ts），底层是 lxc-* CLI + 容器 config 纯文本。
 //
 // 「容器 = 一台开机的机器」是这层的核心语义差异：LXC 容器跑真 systemd（PID 1），
-// 起停就是开关机，没有 docker 的 Cmd/Entrypoint/镜像即真相那套概念。
+// 起停就是开关机，没有 Cmd/Entrypoint/镜像那套概念。
 //
 // ## 运行环境硬约束（PoC 实测，改这个文件前必读）
 //
@@ -19,7 +19,7 @@
 //
 // ## PTY
 //
-// LXC 无 docker exec 的 hijack 流。终端复用 hostTerminal.ts 的方案：`script(1)` 提供 PTY
+// 终端复用 hostTerminal.ts 的方案：`script(1)` 提供 PTY
 // 包住 `lxc-attach`，resize 走子进程 pts 上的 `stty -F`（详见 execStream 注释）。
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -27,18 +27,21 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import type { Config } from '../config.js';
 import { getAllMeta, type ContainerMeta } from '../state.js';
 import { log } from '../logger.js';
 import { notFound, conflict, badRequest } from '../errors.js';
+import { gatewayOf } from '../network.js';
 import {
   templateStatus,
   templateSize,
   cloneTemplate,
   exportTemplate,
   importTemplate,
+  resetMachineId,
   type TemplateDeps,
 } from './template.js';
 import type {
@@ -99,7 +102,7 @@ export function containerHomePath(name: string): string {
   return join(containerDir(name), 'rootfs', 'home', 'dev');
 }
 
-// LXC 里「id」就是容器名（无 docker 的 64 位 hex id）。engine 接口的 id 参数一律当名字用。
+// LXC 里「id」就是容器名。engine 接口的 id 参数一律当名字用。
 // 名字校验挡住 shell 元字符与路径穿越——所有 lxc-* 调用都用 execFile/spawn 数组参数（无 shell），
 // 这里再挡一层是为了不让脏名字进 config 路径拼接。
 const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
@@ -108,7 +111,7 @@ function assertName(id: string): string {
   return id;
 }
 
-// 跑一条外部命令（lxc-* 为主，resolveBridge 也用它问一次 docker）。
+// 跑一条外部命令（lxc-* 为主）。
 // 不加 systemd-run 包装：本进程已在 user manager 环境里（见文件头注释），子进程继承 cgroup 即可。
 // 失败不抛，返回 ok:false 由调用方按语义处理（lxc CLI 大量用非零退出表达「没这个容器」/
 // 「没在跑」这类正常状态）。
@@ -205,6 +208,13 @@ export function setConfigValue(content: string, key: string, value: string): str
   return `${content}${sep}${key} = ${value}\n`;
 }
 
+// 本地管理段（02:)的随机 MAC，给克隆出来的容器一个与模板无关的身份（见 create 注释）。
+function randomMac(): string {
+  const b = randomBytes(6);
+  b[0] = (b[0] | 0x02) & 0xfe; // locally administered, unicast
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join(':');
+}
+
 // —— 状态查询 ——
 // lxc-info -n X 的输出是 `Key:<空白>Value` 行。一次调用取全（state/pid/ip），避免多次 fork。
 async function infoLines(name: string): Promise<Record<string, string> | null> {
@@ -228,7 +238,7 @@ async function listNames(): Promise<string[]> {
   return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
-// LXC 的 STOPPED/RUNNING/FROZEN → 对齐 docker 的 state 字符串，让 web 侧无需分引擎判断。
+// LXC 的 STOPPED/RUNNING/FROZEN → web 侧约定的 state 字符串（running/exited/...）。
 function mapState(lxcState: string): { state: string; running: boolean } {
   const s = (lxcState || '').toUpperCase();
   if (s === 'RUNNING') return { state: 'running', running: true };
@@ -238,13 +248,16 @@ function mapState(lxcState: string): { state: string; running: boolean } {
   return { state: 'exited', running: false };
 }
 
-// 列出受管理容器：config 有标记 或 挂在配置的网桥上（对齐 docker 引擎「在网络上或有 label」）。
+// 列出受管理容器：config 有标记 或 挂在配置的网桥上。
+// 模板容器本身不算——它两条判定都命中（克隆来源带标记、网桥共用），但它是「基座」不是工作容器，
+// 「基座不出现在容器列表」。assignedIps 独立扫全部 config，模板 IP 仍算占用。
 async function listManaged(cfg: Config): Promise<ContainerView[]> {
   const names = await listNames();
   const meta = await getAllMeta();
   const bridge = await resolveBridge(cfg);
   const views: ContainerView[] = [];
   for (const name of names) {
+    if (name === cfg.lxc.template) continue;
     const content = await readConfig(name);
     if (content == null) continue;
     const managed = isManagedConfig(content);
@@ -255,7 +268,7 @@ async function listManaged(cfg: Config): Promise<ContainerView[]> {
     const info = await infoLines(name);
     const { state, running } = mapState(info?.State ?? 'STOPPED');
     // IP：跑起来的读 lxc-info（真实态）；停的读 config 静态配置（LXC 的 IP 是配出来的，
-    // 不像 docker IPAM 要等运行才知道——停机容器也能显示它的固定 IP，UI 体验更好）。
+    // 停机容器也能显示它的固定 IP，UI 体验更好）。
     const ip = running
       ? info?.IP || null
       : (configValue(content, 'lxc.net.0.ipv4.address') || '').split('/')[0] || null;
@@ -294,29 +307,16 @@ function createdAtMs(m: ContainerMeta | undefined): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
-// 配置的网络名 → 宿主网桥名（D2：复用 docker 的 dev-lan = br-<netid 前 12 位>）。
-// LXC config 里存的是网桥设备名，而 cfg.network 是 docker 网络名，需要一次映射。
-// 缓存：网桥名在 docker 网络生命周期内不变，每次列表都查 docker 太浪费。
+// 配置的网桥设备名 → 存在性确认（cfg.network 必须直接给桥名，如 br-f0cc7d98dca0）。
+// 桥目前由 docker 的 dev-lan 网络拥有（重建后桥名会变，见 config 注释）——彻底脱离是待办。
+// 缓存：桥名只在配置里变，查一次 /sys/class/net 足够。
 let bridgeCache: { network: string; bridge: string | null } | null = null;
 export async function resolveBridge(cfg: Config): Promise<string | null> {
   if (bridgeCache && bridgeCache.network === cfg.network) return bridgeCache.bridge;
-  let bridge: string | null = null;
-  // 网桥名可直接给（cfg.network 本身就是 br-*/自建桥名）——先认这种。
-  if (/^br-|^br\d|bridge$/.test(cfg.network) && existsSync(`/sys/class/net/${cfg.network}`)) {
-    bridge = cfg.network;
-  } else {
-    // 否则问 docker 要 docker 网络对应的桥（迁移期两引擎共享同一座桥）。
-    const r = await run(
-      ['docker', 'network', 'inspect', cfg.network, '--format', '{{.Id}}'],
-      5_000,
-    );
-    if (r.ok) {
-      const id = r.stdout.trim();
-      if (id) {
-        const candidate = `br-${id.slice(0, 12)}`;
-        if (existsSync(`/sys/class/net/${candidate}`)) bridge = candidate;
-      }
-    }
+  const bridge = existsSync(`/sys/class/net/${cfg.network}`) ? cfg.network : null;
+  if (bridge == null) {
+    // 不存在的桥是最早会撞上的部署错误（容器建好了起不来网），给足上下文。
+    log.warn(`bridge "${cfg.network}" not found in /sys/class/net — set network: to the host bridge device name`);
   }
   bridgeCache = { network: cfg.network, bridge };
   return bridge;
@@ -357,7 +357,7 @@ async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
   assertName(template);
 
   // 模板存在性：给「先建模板」的明确指引，不让 lxc-copy 抛看不懂的东西
-  // （对齐 docker 引擎「镜像不在本地时返回清晰提示」的语义）。
+  // （缺模板时返回清晰提示，不让 lxc-copy 抛晦涩错误）。
   if ((await readConfig(template)) == null) {
     throw notFound(
       `LXC template container "${template}" not found. Create it first (see docs/lxc-migration.md), or set lxc.template in config.`,
@@ -380,13 +380,20 @@ async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
   }
 
   try {
-    // 克隆后改写 config：IP（继承源的必撞）+ 受管理标记 + 网桥对齐当前配置 + ssh 只读挂载。
+    // 克隆后改写 config：IP（继承源的必撞）+ 网关（网段可能已与模板不同）+ 受管理标记
+    // + 网桥对齐当前配置 + ssh 只读挂载。
     const content = await readConfig(name);
     if (content == null) throw new Error(`clone succeeded but config missing for ${name}`);
     let next = setConfigValue(content, 'lxc.net.0.ipv4.address', `${spec.ip}/24`);
+    next = setConfigValue(next, 'lxc.net.0.ipv4.gateway', gatewayOf(cfg));
+    // MAC：克隆继承模板的 machine-id，容器内 udev 的 MACAddressPolicy=persistent 按
+    // machine-id 哈希出**同一个** MAC——两个同 MAC 接口挂同一座桥，fdb 端口来回摆，
+    // 容器间 ARP 永远达不成（实测：宿主→容器通、容器→容器 No route to host）。
+    // config 写死 hwaddr 后 LXC 直接用它，不落在 udev 的哈希路径上。
+    next = setConfigValue(next, 'lxc.net.0.hwaddr', randomMac());
     const bridge = await resolveBridge(cfg);
     if (bridge) next = setConfigValue(next, 'lxc.net.0.link', bridge);
-    // 宿主 ~/.ssh 只读进容器（对齐 docker 的 `${cfg.sshSource}:/mnt/host/.ssh:ro` bind）。
+    // 宿主 ~/.ssh 只读进容器 /mnt/host/.ssh。
     // 相对路径 + create=dir：LXC 的挂载点相对 rootfs，挂载点不存在时自动建。
     // unprivileged 下实测可读、写被 ro 挡住——首启 seed 与 batch ssh reseed 都依赖它。
     next = setConfigValue(
@@ -403,13 +410,17 @@ async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
     }
     await writeFile(configPath(name), next);
 
+    // 首启前清空 machine-id（systemd 会重新生成）：克隆连身份一起拷，所有容器
+    // 共享模板的 machine-id（见 template.ts resetMachineId 注释的踩坑记录）。
+    await resetMachineId(containerDir(name), next);
+
     await startContainer(cfg, name);
-    // 首启 seed：docker 侧由镜像的 entrypoint.sh 干（每次起容器跑一遍、缺才写）；
+    // 首启 seed：
     // LXC 侧 PID 1 是真 systemd、不存在 entrypoint 钩子，所以由引擎在建完后 attach 进去跑一次。
     // 语义保持「缺失才写」——用户后续改了 ~/.zshrc / ~/.gitconfig 不会被覆盖。
     await seedHome(name, spec);
   } catch (e) {
-    // 半成品清理（对齐 docker 引擎 start 失败即 remove）。LXC 下 rootfs 就是数据，
+    // 半成品清理。LXC 下 rootfs 就是数据，
     // 一起删——此时容器刚克隆出来还没有用户数据，删掉是安全的。
     try {
       await removeContainer(cfg, name, { force: true });
@@ -423,7 +434,7 @@ async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
 
 // 首启 home seed：LXC 版的 image/entrypoint.sh。
 //
-// 为什么在这儿而不是容器内的某个 unit：docker 侧每次起容器都跑 entrypoint（幂等、缺才写），
+// 为什么在这儿而不是容器内的某个 unit：每次起容器都查一遍成本高且不可靠，
 // LXC 侧 PID 1 是发行版自己的 systemd，塞一个 mysandbox 专属 unit 进 rootfs 等于给模板
 // 加隐式契约（模板换了就静默失效）。建容器是唯一需要 seed 的时刻——克隆出来的 home 就是
 // 模板的 home，之后归用户——所以放在 create 里跑一次，语义更准也更好排查。
@@ -475,7 +486,7 @@ exit 0
 // --collect：单元退出后自动回收，不留 failed 残骸。
 async function startContainer(_cfg: Config, id: string): Promise<void> {
   const name = assertName(id);
-  // 幂等：已在跑就直接返回（对齐 docker start 已启动容器不报错）。少这一步，systemd-run 会
+  // 幂等：已在跑就直接返回。少这一步，systemd-run 会
   // 撞上同名单元报「already loaded」，把「本来就好着」变成 500。
   const cur = await infoLines(name);
   if ((cur?.State ?? 'STOPPED').toUpperCase() === 'RUNNING') return;
@@ -513,12 +524,12 @@ async function waitState(name: string, want: string, timeoutMs: number): Promise
   }
 }
 
-// 停止：lxc-stop 给容器 init 发关机信号（真关机，不是 docker 的 SIGTERM 给 PID 1 应用）。
+// 停止：lxc-stop 给容器 init 发关机信号（真关机）。
 // -t 是宽限秒数，超时后强杀。
 async function stopContainer(_cfg: Config, id: string, t = 5): Promise<void> {
   const name = assertName(id);
   const r = await run(['lxc-stop', '-n', name, '-t', String(t)], (t + 20) * 1000);
-  // 已经停了：lxc-stop 报错但语义上是成功（对齐 docker stop 已停容器的幂等）。
+  // 已经停了：lxc-stop 报错但语义上是成功。
   if (!r.ok) {
     const info = await infoLines(name);
     if ((info?.State ?? 'STOPPED').toUpperCase() !== 'STOPPED') {
@@ -572,8 +583,8 @@ async function removeContainer(cfg: Config, id: string, opts: { force?: boolean 
 
 // —— exec ——
 // lxc-attach 直接 spawn（本进程已在 user manager 环境，子进程继承 cgroup）。
-// --clear-env：不把 mysandbox 服务的环境泄进容器（对齐 docker exec 的干净环境语义）；
-// 需要的变量用 -v 显式带。-u/-g 走容器内 uid（默认 1000 dev，同 docker 引擎的 User 默认）。
+// --clear-env：不把 mysandbox 服务的环境泄进容器；
+// 需要的变量用 -v 显式带。-u/-g 走容器内 uid（默认 1000 dev）。
 function attachArgs(name: string, opts: ExecOpts): string[] {
   const { uid, gid } = parseUser(opts.User);
   const args = ['lxc-attach', '-n', name, '--clear-env', '-u', String(uid), '-g', String(gid)];
@@ -591,8 +602,8 @@ function attachArgs(name: string, opts: ExecOpts): string[] {
   return args;
 }
 
-// docker 的 User 形式 → uid/gid。LXC 的 `lxc-attach -u/-g` **只吃数字**，
-// 而 docker 的 exec User 既收数字也收用户名（'root'、'root:root'、'1000:1000' 全合法，
+// ExecOpts 的 User 字符串 → uid/gid。`lxc-attach -u/-g` **只吃数字**，
+// 而调用方传的 User 混着名字（'root'、'root:root'、'1000:1000'），
 // 调用方混着用：hosts-sync/lifecycle 传 'root:root'，terminal 传 'root'，files 传 '1000:1000'）。
 // 所以这里必须自己把名字映射成数字——早前只 Number() 转换，'root' 变 NaN 后落回默认
 // 1000，导致「以 root 写 /etc/hosts」实际以 dev 身份跑、Permission denied。
@@ -609,7 +620,7 @@ function parseUser(user: string | undefined): { uid: number; gid: number } {
   if (!user) return { uid: 1000, gid: 1000 };
   const [u, g] = user.split(':');
   const uid = toId(u, 1000);
-  // 'root'（无冒号）应当是 root:root：gid 缺省跟随 uid，与 docker 一致。
+  // 'root'（无冒号）应当是 root:root：gid 缺省跟随 uid。
   const gid = toId(g, uid);
   return { uid, gid };
 }
@@ -619,14 +630,14 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-// 跑命令收结果。docker 引擎靠 hijack 流 + demux；这里 spawn 天然分离 stdout/stderr，更简单。
-// 超时语义与 docker 引擎逐字对齐（stderr 追加 [mysandbox: timeout]、exitCode -1），
+// 跑命令收结果。spawn 天然分离 stdout/stderr。
+// 超时语义：stderr 追加 [mysandbox: timeout]、exitCode -1，
 // 因为 batch.ts/files.ts 依赖这个约定。
 async function execRun(_cfg: Config, id: string, opts: ExecOpts): Promise<ExecResult> {
   return runAttach(assertName(id), opts, null);
 }
 
-// stdin 版：喂完 input 后半关闭（对 `cat > file` 即 EOF）。用途同 docker 引擎的 execFeed：
+// stdin 版：喂完 input 后半关闭（对 `cat > file` 即 EOF）。用途：
 // 写大文件绕开 argv 128KB 上限。
 async function execFeed(
   _cfg: Config,
@@ -679,10 +690,10 @@ function runAttach(name: string, opts: ExecOpts, input: Buffer | null): Promise<
 }
 
 // —— PTY 流（terminal.ts 的底座）——
-// LXC 无 docker exec hijack。复用 hostTerminal.ts 的 script(1) 方案：
+// PTY：复用 hostTerminal.ts 的 script(1) 方案：
 //   script -q -f -e -c '<cmd>' /dev/null 给命令开一个真 pty；
 //   resize 走子进程的 pts 上 `stty -F <pts> cols N rows M`（tmux 3.4 refresh-client 不支持 -x/-y）。
-// stdin/stdout 用 PassThrough 拼成 Duplex，对上层伪装成 docker 的 Tty 单流（stderr 合入 stdout）。
+// stdin/stdout 用 PassThrough 拼成 Duplex，上层拿到 Tty 单流语义（stderr 合入 stdout）。
 async function execStream(_cfg: Config, id: string, opts: ExecOpts): Promise<ExecStream> {
   const name = assertName(id);
   // script 的 -c 收单个字符串命令，所以 attach 参数要拼成 shell 串。所有片段单引号转义，
@@ -700,7 +711,7 @@ async function execStream(_cfg: Config, id: string, opts: ExecOpts): Promise<Exe
   child.stderr?.on('error', () => { /* noop */ });
 
   // 双向壳：write → script stdin；script stdout+stderr → push 出去（Tty 单流语义，
-  // 对上层伪装成 docker exec 的 hijack 流）。destroy() 由 Duplex 的 _destroy 转成杀进程。
+  // ）。destroy() 由 Duplex 的 _destroy 转成杀进程。
   const duplex = new Duplex({
     read() { /* push 由下面的 stdout/stderr 监听驱动 */ },
     write(chunk, _enc, cb) {
@@ -714,7 +725,7 @@ async function execStream(_cfg: Config, id: string, opts: ExecOpts): Promise<Exe
       cb(err);
     },
   });
-  // destroy 触发的 'error' 不吞会崩进程（同 docker 引擎 execStream 的教训）。
+  // destroy 触发 'error' 不吞会崩进程。
   duplex.on('error', () => { /* noop */ });
   child.stdout?.on('data', (d: Buffer) => duplex.push(d));
   child.stderr?.on('data', (d: Buffer) => duplex.push(d));
@@ -765,7 +776,7 @@ async function applyTtySize(pts: string, cols: number, rows: number): Promise<vo
 
 // —— 网络 ——
 // 已占 IP：LXC 的 IP 是 config 里配死的（D2 静态分配），所以扫全部容器 config 就是权威源——
-// 比 docker 的「问网络要 IPAM 表」更直接，且停机容器的 IP 也算占用（不会被重新分配）。
+// 停机容器的 IP 也算占用（不会被重新分配）。
 async function assignedIps(_cfg: Config): Promise<Set<string>> {
   const set = new Set<string>();
   for (const name of await listNames()) {
@@ -797,7 +808,7 @@ async function subscribeEvents(
   const child = spawn('lxc-monitor', [], { stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout?.on('error', () => { /* noop */ });
   child.stderr?.on('error', () => { /* noop */ });
-  // closed：monitor 进程退出/起不来即视为断开，调用方退避重连（同 docker 的断流语义）。
+  // closed：monitor 进程退出/起不来即视为断开，调用方退避重连。
   let resolveClosed: () => void;
   const closed = new Promise<void>((r) => {
     resolveClosed = r;

@@ -1,18 +1,18 @@
 // 宿主终端：WS /ws/host-terminal?token=&shell=&cols=&rows=&termId=（无容器 id）。
 //
 // 与 terminal.ts（容器终端）同协议、同语义（60s 宽限、kill 帧、activeCount 多窗口），
-// 但 PTY 由本进程在宿主侧管理，不走 docker exec：
+// 但 PTY 由本进程在宿主侧管理，不走 lxc-attach：
 //   - 宿主 tmux 用专用 socket `-L mysandbox-host`（不碰用户自己的 tmux server），会话名 h-<termId>；
 //   - `script(1)` 给 `tmux attach` 提供 PTY（node 无内置 pty，不引 native 依赖）；script 进程
 //     退出 = detach，会话保留——刷新重连同 termId 即复活（对齐容器终端）；
 //   - resize：script 的 pts 上 `stty -F <pts> cols N rows M`（实测 tmux 3.4 的 refresh-client
 //     不支持 -x/-y）。初始尺寸在 attach 前就 stty 落盘，防 shrink-then-grow 重排。
 //
-// 会话 cwd = 镜像构建上下文目录（findImageContext：外部 imageDir 或内置 image/）——
-// 用途即在镜像目录下改 Dockerfile / 跑构建。目录不可用时回落 ~，不拒连。
+// 会话 cwd = 宿主 home。
 //
 // 降级：宿主无 tmux → script 直接跑 shell（一次性，断开即死、无宽限）；无 script → 报错关闭。
-// token 本就等价宿主 root（docker.sock），宿主终端不扩大权限面，只是把它摆上 UI。
+// token 本就等价宿主 leon 用户（uid 1000 直通，见 CLAUDE.md 安全模型），宿主终端不扩大
+// 权限面，只是把它摆上 UI。
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
@@ -20,7 +20,6 @@ import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import type { ChildProcess } from 'node:child_process';
 import { TERMID_RE } from './terminal.js';
-import { findImageContext } from './image.js';
 import { notFound, badRequest } from './errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -224,16 +223,8 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       }
       const useTmux = env === 'tmux';
 
-      // 会话 cwd = 镜像构建上下文。不可用（imageDir 配错/包内缺 image/）回落 ~，不拒连。
-      let cwd = homedir();
-      try {
-        cwd = findImageContext(cfg);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        try {
-          socket.send(Buffer.from(`\x1b[2m>> 镜像目录不可用：${msg}，已回落 ~\x1b[0m\r\n`));
-        } catch { /* socket 已关就忽略 */ }
-      }
+      // 会话 cwd = 宿主 home。
+      const cwd = homedir();
 
       const session = hostSessionName(termId);
       if (useTmux) {

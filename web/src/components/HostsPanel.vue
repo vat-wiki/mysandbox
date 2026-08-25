@@ -250,7 +250,7 @@ async function doApply() {
           <span v-if="busy === 'save'">保存并应用中…</span>保存并应用
         </Button>
         <Button variant="outline" size="sm" :disabled="!!busy" @click="apply">
-          <span v-if="busy === 'apply'">应用中…</span>强制应用到运行中容器…
+          <span v-if="busy === 'apply'">应用中…</span>强制应用到运行中容器
         </Button>
       </div>
     </DialogContent>

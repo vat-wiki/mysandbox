@@ -1,9 +1,8 @@
-// 「基座」入口：新建容器的来源物，docker 下是镜像、lxc 下是模板容器（见 engine/types.ts BaseStatus）。
+// 「基座」入口：新建容器的来源物 = 模板容器（见 engine/types.ts BaseStatus）。
 //
-// 为什么合成一个入口而不是两套路由：前端只需要回答三个问题——基座就绪吗？能做哪些动作？
-// 做的时候进度是什么？这三个问题两个引擎完全同构，只有「动作集」不同，而动作集已经由
-// caps.baseActions 声明了。所以路由是 `/api/base` + `/api/base/<action>`，准入查 caps，
-// 具体实现落到 engine.runBaseAction（docker -> image.ts，lxc -> engine/template.ts）。
+// 前端只需要回答三个问题——基座就绪吗？能做哪些动作？做的时候进度是什么？
+// 动作集由 caps.baseActions 声明。路由是 `/api/base` + `/api/base/<action>`，
+// 准入查 caps，具体实现落到 engine.runBaseAction（engine/template.ts）。
 //
 // 鉴权由 index.ts 的全局 hook 覆盖 /api/*（本文件不做也不能绕过）。
 import type { FastifyInstance } from 'fastify';
@@ -27,22 +26,16 @@ function parseOpts(body: unknown): BaseActionOpts {
   };
 }
 
-const ALL_ACTIONS: BaseAction[] = ['build', 'pull', 'push', 'export', 'import', 'clone'];
+const ALL_ACTIONS: BaseAction[] = ['export', 'import', 'clone'];
 
 export async function registerBaseRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
   // 基座状态。App 轮询这个接口，所以实现里 context 定位失败不能变 500（见 BaseStatus 注释）。
   app.get('/api/base', async () => getEngine(cfg).baseStatus(cfg));
 
-  // 体积单独一个接口：LXC 下算一次要遍历整个 rootfs（2.8G），不能塞进被轮询的 status。
-  // docker 侧 inspect 直接带 size，顺手返回，前端无需分引擎。
+  // 体积单独一个接口：算一次要遍历整个 rootfs（2.8G），不能塞进被轮询的 status。
   app.get('/api/base/size', async () => {
-    const engine = getEngine(cfg);
-    if (engine.name === 'lxc') {
-      const { lxcTemplateSize } = await import('./engine/lxc.js');
-      return { size: await lxcTemplateSize(cfg) };
-    }
-    const s = await engine.baseStatus(cfg);
-    return { size: s.size ?? null };
+    const { lxcTemplateSize } = await import('./engine/lxc.js');
+    return { size: await lxcTemplateSize(cfg) };
   });
 
   // 动作。SSE 流式进度：耗时从秒（clone 小模板）到十几分钟（build / export 2.8G）不等，
@@ -67,28 +60,18 @@ export async function registerBaseRoutes(app: FastifyInstance, cfg: Config): Pro
 }
 
 // —— CLI：mysandbox base <action> ——
-// `mysandbox image build|pull|push|status` 保留为别名（见 cli.ts 分发），
-// 因为它已经写进文档和肌肉记忆里；docker 引擎下两者完全等价。
-const BASE_HELP = `mysandbox base <command> — manage the container base
-                   (docker: the base image; lxc: the template container)
+// `mysandbox image ...` 保留为历史别名（见 cli.ts 分发）。
+const BASE_HELP = `mysandbox base <command> — manage the template container
 
 Usage:
   mysandbox base status
-      Show whether the base is present and ready to create containers from.
-  mysandbox base build [--tag <name>] [--no-cache]     (docker only)
-      Build the base image from the image/ build context.
-  mysandbox base pull [<ref>]                          (docker only)
-      Pull <ref> (default \${registry}:\${imageTag}) and retag as cfg.image.
-  mysandbox base push [<ref>]                          (docker only)
-      Tag cfg.image as <ref> (default \${registry}:\${imageTag}) and push.
-  mysandbox base clone --from <container> [--force]     (lxc only)
+      Show whether the template is present and ready to create containers from.
+  mysandbox base clone --from <container> [--force]
       Freeze an existing container into the template (stops it first).
-  mysandbox base export [<path>] [--force]             (lxc only)
+  mysandbox base export [<path>] [--force]
       Pack the template into <path> (default ~/<template>.tar.zst).
-  mysandbox base import <path> [--force]               (lxc only)
+  mysandbox base import <path> [--force]
       Restore the template from an archive.
-
-Which actions are available depends on the engine — \`base status\` prints the list.
 `;
 
 const BOOL_FLAGS = new Set(['no-cache', 'force']);
@@ -144,9 +127,8 @@ export async function runBaseCommand(argv: string[], cfg: Config): Promise<void>
 
   if (sub === 'status') {
     const s = await engine.baseStatus(cfg);
-    const label = s.kind === 'image' ? 'image' : 'template';
     process.stdout.write(
-      `>> ${label} ${s.name}: ${s.exists ? (s.ready ? 'ready' : 'present but NOT ready') : 'NOT FOUND'}\n`,
+      `>> template ${s.name}: ${s.exists ? (s.ready ? 'ready' : 'present but NOT ready') : 'NOT FOUND'}\n`,
     );
     if (s.notReady) process.stdout.write(`   ${s.notReady}\n`);
     for (const [k, v] of Object.entries(s.detail ?? {})) {
@@ -171,11 +153,11 @@ export async function runBaseCommand(argv: string[], cfg: Config): Promise<void>
     );
   }
 
-  // 位置参数按动作映射：pull/push 收 ref，export/import 收路径（与 HTTP 的 body 字段同名）。
+  // 位置参数按动作映射：export/import 收路径（与 HTTP 的 body 字段同名）。
   const positional = positionals[1];
   const opts: BaseActionOpts = {
     tag: flags.tag,
-    ref: action === 'pull' || action === 'push' ? positional : undefined,
+    ref: undefined,
     path: action === 'export' || action === 'import' ? positional || flags.path : undefined,
     from: flags.from,
     noCache: 'no-cache' in flags,

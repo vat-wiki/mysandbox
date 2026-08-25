@@ -1,5 +1,5 @@
 // 容器内 mysandbox 命令：宿主直接往容器 home 写脚本（不动镜像/模板、不 exec——容器停着
-// 也能写）。宿主侧 home 路径由引擎给出（docker=dataRoot/<name> bind mount 源；
+// 也能写）。宿主侧 home 路径由引擎给出
 // lxc=<lxcpath>/<name>/rootfs/home/dev，D1 uid 直通所以同样可直写），落盘即容器内
 // ~/.local/bin/mysandbox，PATH 第一项。
 // 在 web 终端里执行时打印 OSC 7677 序列，前端 Terminal.vue 捕获后定位文件面板/打开编辑器；
@@ -52,7 +52,7 @@ exit 0
 `;
 
 // 幂等种子（缺失才写，与 entrypoint.sh / 模板首启 seed 的语义一致）：宿主 uid 1000 = 容器 dev
-// （docker 走 bind mount，lxc 走 D1 uid 直通），直接落盘。
+// （lxc 走 D1 uid 直通），直接落盘。
 // 失败记日志不抛——种子失败不阻塞建容器/启动。
 export function seedContainerCli(dataDir: string): void {
   const bin = join(dataDir, '.local/bin');
@@ -66,7 +66,7 @@ export function seedContainerCli(dataDir: string): void {
 }
 
 // 启动扫描：给 sidecar 已知、且宿主侧 home 可见的存量容器补种子（幂等）。
-// adopted 的外部 docker 容器没有 dataRoot 挂载，宿主写不进它的 home——超出范围，文档已注明。
+// adopted 的外部容器若宿主写不进它的 home——超出范围，文档已注明。
 // LXC 侧所有受管理容器的 home 都在 rootfs 内、必然可见。
 export async function sweepContainerCli(cfg: Config): Promise<void> {
   let names: string[] = [];

@@ -10,10 +10,12 @@ import { requireToken } from './auth.js';
 import { registerRoutes } from './routes.js';
 import { registerFileRoutes } from './files.js';
 import { registerTerminal } from './terminal.js';
+import { registerDesktop } from './desktop.js';
 import { registerHostTerminal } from './hostTerminal.js';
 import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
-import { HttpError, wrapDocker } from './errors.js';
+import { registerServices } from './services.js';
+import { HttpError, wrapEngineError } from './errors.js';
 import { getVersion } from './version.js';
 import { loggerOptions } from './logger.js';
 
@@ -41,9 +43,9 @@ export async function buildServer(cfg: Config) {
     }
   });
 
-  // 错误处理：HttpError -> 状态码 + {error}；docker 404 -> not_found；其余 500。
+  // 错误处理：HttpError -> 状态码 + {error}；引擎 404 -> not_found；其余 500。
   app.setErrorHandler((err, _req, reply) => {
-    const mapped = wrapDocker(err);
+    const mapped = wrapEngineError(err);
     if (mapped instanceof HttpError) {
       return reply.code(mapped.status).send({ error: { code: mapped.code, message: mapped.message } });
     }
@@ -54,9 +56,11 @@ export async function buildServer(cfg: Config) {
   await registerRoutes(app, cfg);
   await registerFileRoutes(app, cfg);
   await registerTerminal(app, cfg);
+  await registerDesktop(app, cfg);
   await registerHostTerminal(app, cfg);
   await registerHostFileRoutes(app);
   await registerBaseRoutes(app, cfg);
+  registerServices(app, cfg);
 
   // 前端静态资源（web/dist）。开发期未构建则回退占位。
   const webDist = findWebDist();

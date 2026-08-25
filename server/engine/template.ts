@@ -3,9 +3,9 @@
 // 「模板容器」是 D3 的产物：没有镜像仓库、没有分层，一个手工调好的 STOPPED 容器就是基座，
 // 建容器 = `lxc-copy` 克隆它（见 engine/lxc.ts create）。由此四个动作的语义：
 //   - status：模板存在？STOPPED（可克隆）？多大？制作脚本在哪？
-//   - clone ：把某个现有容器固化成模板（等价 docker commit：调好一个容器 → 变成新基座）
-//   - export：模板打包成 tar.zst（等价 docker push，只是「仓库」是一个文件）
-//   - import：从 tar.zst 恢复模板（等价 docker pull）
+//   - clone ：把某个现有容器固化成模板（调好一个容器 → 变成新基座）
+//   - export：模板打包成 tar.zst（「仓库」就是一个文件）
+//   - import：从 tar.zst 恢复模板
 //
 // ## unprivileged 的 uid 折叠问题（这个文件的核心难点）
 //
@@ -80,6 +80,24 @@ function nsRun(
     );
   }
   return spawnCollect('lxc-usernsexec', [...maps, '--', ...argv], onProgress, timeoutMs, io);
+}
+
+// 克隆去重：清空 rootfs 的 /etc/machine-id（空文件 systemd 首启会重新生成）。
+// 不清的话所有克隆共享模板身份——实测踩坑正是它：容器内 udev 的 MACAddressPolicy=persistent
+// 按 machine-id 哈希出 MAC，两个容器同 MAC 挂同一座桥，桥 fdb 端口摆动、容器间 ARP 永远
+// 达不成（网络层修法是 lxc.ts create() 写死随机 hwaddr，这里把 machine-id 碰撞一并消掉）。
+// 文件属主是容器 root（宿主 uid 100000），宿主用户写不了，必须在 ns 里 truncate。
+// 失败只 warn：hwaddr 已兜住网络层，这里失败不该让建容器回滚。
+export async function resetMachineId(containerDir: string, config: string): Promise<void> {
+  try {
+    const target = join(containerDir, 'rootfs', 'etc', 'machine-id');
+    const r = await nsRun(config, ['truncate', '-s', '0', target], undefined, 30_000);
+    if (!r.ok) {
+      log.warn({ stderr: r.stderr.slice(0, 300) }, 'reset machine-id failed (continuing)');
+    }
+  } catch (e) {
+    log.warn({ err: String(e) }, 'reset machine-id failed (continuing)');
+  }
 }
 
 // spawn + 收集输出 + 把 stderr 逐行当进度推出去（lxc/tar 的进度都走 stderr）。
@@ -215,7 +233,7 @@ export interface TemplateDeps {
   assertName(name: string): string;
 }
 
-// —— clone：把现有容器固化成模板（docker commit 的对应物）——
+// —— clone：把现有容器固化成模板 ——
 // 语义：源容器先停（lxc-copy 要求），克隆成 cfg.lxc.template，源容器保持停止状态交还用户
 // （不自动重启：用户可能正是想「调好就停在这」，重启反而多一次意外的开机副作用）。
 export async function cloneTemplate(

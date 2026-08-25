@@ -1,9 +1,9 @@
 // 宿主文件浏览/编辑 REST 路由（浏览 + 编辑 + 新建/重命名/删除）。
 // 与 files.ts（容器侧）一比一对齐：路由形状、错误码、2MB 上限、binary 判定、mtime 乐观锁
 // 语义完全一致，前端 api.ts 按 '__host__' 哨兵切端点后 FilePanel/FileEditorDialog 零改动。
-// 实现差异仅在执行层：容器侧走 docker exec（find/base64/cat），本文件走 node:fs 直操作。
+// 实现差异仅在执行层：容器侧走 execRun（find/base64/cat），本文件走 node:fs 直操作。
 //
-// 安全边界：token 本就等价宿主 root（docker.sock，见 hostTerminal.ts 头注），文件路由不
+// 安全边界：token 本就等价宿主 leon 用户（uid 1000 直通，见 CLAUDE.md 安全模型），文件路由不
 // 扩大权限面；实际权限受 server 运行用户约束，EACCES/EPERM 如实反馈 403（与容器侧 400
 // 的唯一刻意差异——容器内以 uid 1000 执行，宿主侧无这层包装）。
 import { stat, lstat, readdir, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';

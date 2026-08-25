@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { createContainer, getHosts, Unauthorized } from '@/lib/api'
-import { caps } from '@/lib/caps'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -20,13 +19,12 @@ const emit = defineEmits<{ (e: 'created'): void; (e: 'close'): void; (e: 'open-h
 const name = ref('')
 const description = ref('')
 // git 身份不放这里：批量配置一次能管所有容器，逐个新建时填是重复劳动。
-// 新建对话框回归容器本身的参数：名字/描述/IP/端口。
+// 新建对话框回归容器本身的参数：名字/描述/IP。
 const ipMode = ref<'auto' | 'manual' | string>('auto')
 const manualIp = ref('')
-const ports = ref('') // 形如 6500:6200,7000:7000
 const busy = ref(false)
 const err = ref('')
-// 全局 hosts 提示：新建容器经 --add-host 自动带上，这里只告知会带什么、要改去哪改，
+// 全局 hosts 提示：新建容器创建时会自动应用，这里只告知会带什么、要改去哪改，
 // 不做编辑入口（hosts 是全局共享资产，编辑归 HostsPanel，避免 per-container 误解）。
 const hostsCount = ref<number | null>(null)
 
@@ -41,24 +39,8 @@ onMounted(() => {
     })
 })
 
-// 端口映射只在支持 NAT 的引擎上有意义：LXC 侧容器是固定 IP 直连（D2），宿主与其他容器
-// 直接按 IP 访问任意端口，映射概念不存在——整块 UI 隐藏，也不往请求里塞 portMappings
-// （后端 lifecycle 会对不支持的引擎直接拒绝）。
-const showPorts = computed(() => caps.portMappings)
-
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/
 const nameOk = computed(() => NAME_RE.test(name.value.trim()))
-
-function parsePorts(): Record<string, Array<{ HostPort: string }>> | undefined {
-  if (!showPorts.value) return undefined
-  const out: Record<string, Array<{ HostPort: string }>> = {}
-  for (const part of ports.value.split(',').map((s) => s.trim()).filter(Boolean)) {
-    const m = part.match(/^(\d+):(\d+)$/)
-    if (!m) throw new Error(`端口映射格式错误: ${part}（应为 hostPort:containerPort）`)
-    out[`${m[2]}/tcp`] = [{ HostPort: m[1] }]
-  }
-  return Object.keys(out).length ? out : undefined
-}
 
 function onClose() {
   emit('close')
@@ -72,19 +54,10 @@ async function submit() {
   busy.value = true
   err.value = ''
   try {
-    let portMappings: Record<string, Array<{ HostPort: string }>> | undefined
-    try {
-      portMappings = parsePorts()
-    } catch (e) {
-      err.value = e instanceof Error ? e.message : String(e)
-      busy.value = false
-      return
-    }
     await createContainer({
       name: name.value.trim(),
       description: description.value || undefined,
       ip: ipMode.value === 'manual' ? manualIp.value.trim() || undefined : undefined,
-      portMappings,
     })
     emit('created')
   } catch (e) {
@@ -100,7 +73,7 @@ async function submit() {
     <DialogContent class="max-w-md">
       <DialogHeader>
         <DialogTitle>新建容器</DialogTitle>
-        <DialogDescription>{{ showPorts ? '配置名称、IP 与端口映射。' : '配置名称与 IP。' }}</DialogDescription>
+        <DialogDescription>配置名称与 IP。</DialogDescription>
       </DialogHeader>
 
       <div class="space-y-3">
@@ -129,14 +102,10 @@ async function submit() {
               <Label for="ip-manual" class="font-normal">手动</Label>
             </div>
           </RadioGroup>
-          <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.0.30" />
+          <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.10.30" />
         </div>
 
-        <div v-if="showPorts" class="space-y-1.5">
-          <Label for="c-ports">端口映射（可选，hostPort:containerPort，逗号分隔）</Label>
-          <Input id="c-ports" v-model="ports" placeholder="6500:6200" />
-        </div>
-        <p v-else class="text-xs leading-relaxed text-muted-foreground">
+        <p class="text-xs leading-relaxed text-muted-foreground">
           容器为固定 IP 直连，宿主与其他容器可直接访问其任意端口，无需端口映射。
         </p>
 

@@ -44,7 +44,7 @@ function submit() {
             :class="err ? 'border-destructive focus-visible:ring-destructive' : ''"
             @keyup.enter="submit"
           />
-          <Button :disabled="checking || !input.trim()">
+          <Button :disabled="checking || !input.trim()" @click="submit">
             {{ checking ? '验证中…' : '进入' }}
           </Button>
         </div>

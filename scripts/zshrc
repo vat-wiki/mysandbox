@@ -1,0 +1,30 @@
+# 容器内 zsh 配置：oh-my-zsh 基座 + 容器特有补丁（独立、无宿主路径噪声）。
+# 框架装在 /usr/share/oh-my-zsh（模板脚本下载、root 持有，随 lxc-copy 进每个容器）。
+# history（share_history/去重/50000 条）、menu select + 大小写不敏感补全、ls 颜色（--color=tty
+# + LS_COLORS）、git 别名体系（gst/gsb/gd/glo/glog……）omz 都自带——别再手搓，
+# 这份文件只放 omz 没有的东西。注意 omz 的 gl 是 git pull，看 log 用 glo/glog。
+export PATH="$HOME/.local/bin:$PATH"
+
+export ZSH=/usr/share/oh-my-zsh
+if [[ -f $ZSH/oh-my-zsh.sh ]]; then
+  ZSH_THEME="af-magic"   # 与宿主机 ~/.zshrc 同款（powerline 符号，终端字体需带 powerline 字形）
+  # z: 按 frecency 跳目录（z <片段>）；sudo: 权限不够时 Ctrl+U 自动改写成 sudo（容器已配免密）
+  plugins=(git z sudo)
+  # 模板是冻结快照、/usr/share 归 root——自动更新没意义还会在非交互终端刷提示，关掉。
+  zstyle ':omz:update' mode disabled
+  # omz 默认 SAVEHIST=10000，维持原来的 50000。
+  SAVEHIST=50000
+  source "$ZSH/oh-my-zsh.sh"
+  # omz 不含的俩插件走 apt（模板已装，文件在 /usr/share，不能指望 plugins= 按名加载）：
+  # autosuggestions = 历史灰字建议、Tab 采纳；syntax-highlighting = 命令行实时语法高亮，必须放最后 source。
+  source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+  source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+else
+  # 老容器手动拷了新 zshrc 但还没装 omz：退回原手搓提示符，别每次开 shell 报错。
+  alias ls='ls --color=auto'
+  PROMPT='%F{cyan}%~%f %F{green}❯%f '
+fi
+
+# ll/la omz 不带，自己留（alias 展开会递归吃到上面 omz 的 ls 颜色 alias）。
+alias ll='ls -lah'
+alias la='ls -A'

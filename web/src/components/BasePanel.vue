@@ -1,8 +1,7 @@
 <script setup lang="ts">
 // 基座管理面板：状态详情 + 动作按钮 + 内联流式日志（SSE）。
-// 「基座」= 新建容器的来源物：docker 下是基础镜像（build/pull/push），
-// lxc 下是模板容器（clone/export/import）。按钮由 caps.baseActions 决定，
-// 文案由 caps.baseKind 决定——本组件不判引擎名（见 web/src/lib/caps.ts）。
+// 「基座」= 新建容器的来源物 = 模板容器（clone/export/import）。
+// 按钮由 caps.baseActions 决定，文案由 caps.baseKind 决定（见 web/src/lib/caps.ts）。
 // 完成后 emit changed（让 header 徽标刷新）。鉴权失败 emit close（由 App 触发登出）。
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import {
@@ -32,18 +31,16 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void; (e: 'running', v: boolean): void }>()
 
-const status = ref<BaseStatus>({ kind: 'image', name: '', exists: false, ready: false })
+const status = ref<BaseStatus>({ kind: 'template', name: '', exists: false, ready: false })
 const loading = ref(false)
 // 当前进行中的动作（''=空闲）
 const op = ref<BaseAction | ''>('')
 const log = ref<string[]>([])
 const err = ref('')
-// 各动作的输入。空=用后端默认（pull/push 取 config 的 ${registry}:${imageTag}；export 取 ~/<模板>.tar.zst）
-const pullRef = ref('')
-const pushRef = ref('')
+// 各动作的输入。空=用后端默认（export 取 ~/<模板>.tar.zst）
 const archivePath = ref('')
 const cloneFrom = ref('')
-// 体积按需取（LXC 下要遍历整个 rootfs，秒级）
+// 体积按需取（要遍历整个 rootfs，秒级）
 const size = ref<number | null>(null)
 const sizeLoading = ref(false)
 const copied = ref('')
@@ -114,10 +111,9 @@ function appendLog(e: BaseProgressEvent) {
   else if (e.status) log.value.push((e.id ? `${e.id}: ` : '') + e.status)
 }
 
-// 确认文案：会销毁/覆盖既有物或对外发布的动作必须先确认。null = 无需确认。
+// 确认文案：会销毁/覆盖既有物的动作必须先确认。null = 无需确认。
 function confirmDesc(action: BaseAction): string | null {
   const label = baseLabel.value
-  if (action === 'push') return '将把本地镜像推送到 registry（对外发布）。'
   if (action === 'export') return null // 只写一个文件，无破坏性
   if (!status.value.exists) return null // 首次制作，没有可覆盖的东西
   if (action === 'clone') {
@@ -126,17 +122,15 @@ function confirmDesc(action: BaseAction): string | null {
   if (action === 'import') {
     return `将销毁当前${label} ${status.value.name} 并从包恢复。已有容器不受影响。`
   }
-  return `${action === 'build' ? '重建' : '拉取'}将覆盖本地当前${label}（运行中的容器不受影响，新建容器用新${label}）。`
+  return null
 }
 
 // force：clone/import 覆盖既有基座时后端要求显式 force（防误删模板）。
 function optsFor(action: BaseAction): BaseActionOpts {
-  if (action === 'pull') return { ref: pullRef.value.trim() || undefined }
-  if (action === 'push') return { ref: pushRef.value.trim() || undefined }
   if (action === 'export') return { path: archivePath.value.trim() || undefined, force: true }
   if (action === 'import') return { path: archivePath.value.trim() || undefined, force: true }
   if (action === 'clone') return { from: cloneFrom.value.trim(), force: true }
-  return { noCache: false }
+  return {}
 }
 
 interface PendingOp {
@@ -193,23 +187,18 @@ function onConfirm() {
 
 // 动作按钮的中文名（顺序即渲染顺序，caps.baseActions 之外的不渲染）
 const ACTION_TEXT: Record<BaseAction, { idle: string; busy: string }> = {
-  build: { idle: '构建镜像', busy: '构建中…' },
-  pull: { idle: '拉取', busy: '拉取中…' },
-  push: { idle: '发布', busy: '发布中…' },
   clone: { idle: '从容器固化', busy: '克隆中…' },
   export: { idle: '导出包', busy: '打包中…' },
   import: { idle: '从包导入', busy: '导入中…' },
 }
-const ORDER: BaseAction[] = ['build', 'clone', 'pull', 'import', 'push', 'export']
+const ORDER: BaseAction[] = ['clone', 'import', 'export']
 const actions = computed(() => ORDER.filter((a) => hasBaseAction(a)))
 // 第一个动作是「主动作」（制作基座），用实心按钮；其余 outline。
 const primary = computed(() => actions.value[0])
 
 const title = computed(() => `${baseLabel.value}管理`)
 const description = computed(() =>
-  caps.baseKind === 'template'
-    ? '模板容器 = 新建容器的来源（克隆它）。可从现有容器固化，或与 tar.zst 包互转。'
-    : '构建 / 拉取 / 发布基础镜像，日志实时流式显示。',
+  '模板容器 = 新建容器的来源（克隆它）。可从现有容器固化，或与 tar.zst 包互转。',
 )
 
 function fmtSize(bytes: number): string {
@@ -314,16 +303,8 @@ async function copyVal(v: string) {
             </Button>
           </div>
 
-          <!-- 动作参数：只渲染当前引擎用得上的 -->
+          <!-- 动作参数 -->
           <div class="grid grid-cols-2 gap-2">
-            <div v-if="hasBaseAction('pull')">
-              <Label for="base-pull-ref" class="text-xs text-muted-foreground">拉取 ref（空=默认）</Label>
-              <Input id="base-pull-ref" v-model="pullRef" placeholder="${registry}:${imageTag}" class="h-8 text-xs" />
-            </div>
-            <div v-if="hasBaseAction('push')">
-              <Label for="base-push-ref" class="text-xs text-muted-foreground">发布 ref（空=默认）</Label>
-              <Input id="base-push-ref" v-model="pushRef" placeholder="${registry}:${imageTag}" class="h-8 text-xs" />
-            </div>
             <div v-if="hasBaseAction('clone')">
               <Label for="base-clone-from" class="text-xs text-muted-foreground">固化来源容器</Label>
               <select

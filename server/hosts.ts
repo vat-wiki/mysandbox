@@ -34,9 +34,9 @@ export async function readHostHosts(): Promise<string> {
   }
 }
 
-// 把传统 /etc/hosts 文本解析成 Docker ExtraHosts（["hostname:ip", ...]）。
+// 把传统 /etc/hosts 文本解析成 host:ip 对（["hostname:ip", ...]）。
 // 传统行 `IP HOSTNAME [ALIAS...]`，ExtraHosts 格式 host 在前；alias 各发一条；跳过 loopback/localhost
-// （Docker 自己注入）。绝不抛——容器创建不能被畸形 hosts 行阻断；未解析行进 skipped[] 供日志。
+// 绝不抛——容器创建不能被畸形 hosts 行阻断；未解析行进 skipped[] 供日志。
 export function parseExtraHosts(s: string): { extraHosts: string[]; skipped: string[] } {
   const extraHosts: string[] = [];
   const skipped: string[] = [];
@@ -50,7 +50,7 @@ export function parseExtraHosts(s: string): { extraHosts: string[]; skipped: str
       continue;
     }
     const ip = tokens[0];
-    // loopback/localhost：Docker 始终自注入，重复是噪音
+    // loopback/localhost：容器 init 始终自注入，重复是噪音
     if (ip.startsWith('127.') || ip === '::1' || ip.startsWith('::1%')) {
       continue;
     }
@@ -64,4 +64,27 @@ export function parseExtraHosts(s: string): { extraHosts: string[]; skipped: str
     }
   }
   return { extraHosts, skipped };
+}
+
+// —— docker 服务块（服务发现：容器内 `psql -h <服务名>` 的通路） ——
+// 服务行是**派生数据**（源头是 docker 里 running 的服务容器），不落盘 hosts.txt——落盘会
+// 污染用户资产、造成双事实源。组合发生在写容器 /etc/hosts 的每条路径上（hosts-sync 四路径
+// + lifecycle 初始 hosts），内容现算。
+
+export const SERVICES_BLOCK_BEGIN = '# --- mysandbox services（自动生成，勿手改） ---';
+
+// 服务行（`<ip> <服务名>`，按名排序保证稳定输出——hostsHash 按最终内容算，顺序抖动会击穿 skip）。
+export function serviceBlockLines(endpoints: { name: string; ip: string }[]): string[] {
+  return [...endpoints]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((e) => `${e.ip} ${e.name}`);
+}
+
+// 用户内容 + 服务块 → 最终写进容器的 hosts。幂等（同输入同输出）；base 为空且无服务行时
+// 返回空串（调用方的空内容防御：绝不清空容器 hosts）。
+export function composeHostsContent(base: string, svcLines: string[]): string {
+  if (svcLines.length === 0) return base;
+  const head = base.trimEnd();
+  const sep = head ? (head.endsWith(SERVICES_BLOCK_BEGIN) ? '' : '\n\n') : '';
+  return `${head}${sep}${SERVICES_BLOCK_BEGIN}\n${svcLines.join('\n')}\n`;
 }

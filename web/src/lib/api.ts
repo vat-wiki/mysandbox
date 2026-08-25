@@ -83,26 +83,29 @@ export const verifyToken = () => api('/api/containers?limit=1') as Promise<{ ite
 
 // 引擎能力（后端 EngineCaps，见 server/engine/types.ts）。UI 差异一律判 caps，
 // 不要判 engine 名——将来加引擎时才不用改前端。
-export type BaseAction = 'build' | 'pull' | 'push' | 'export' | 'import' | 'clone'
+export type BaseAction = 'export' | 'import' | 'clone'
 export interface EngineCaps {
   dataInsideContainer: boolean // true：home 在容器内，删容器必连数据一起删
   liveRename: boolean // false：改名前必须先停容器
   portMappings: boolean // false：固定 IP 直连，无端口映射
-  baseKind: 'image' | 'template' // 基座形态：镜像 / 模板容器（决定文案）
-  baseActions: BaseAction[] // 可用动作（决定按钮）：docker=build/pull/push，lxc=clone/export/import
+  baseKind: 'image' | 'template' // 基座形态：模板容器（决定文案）
+  baseActions: BaseAction[] // 可用动作（决定按钮）：clone/export/import
 }
 export interface Health {
   ok: boolean
   version: string
-  docker: { reachable: boolean; version?: string }
-  engine: 'docker' | 'lxc'
+  engineStatus: { reachable: boolean; version?: string }
+  engine: 'lxc'
   caps: EngineCaps
+  services?: { available: boolean }
 }
 export const health = () => api('/api/health') as Promise<Health>
 export const listContainers = () => api('/api/containers') as Promise<{ items: ContainerView[] }>
 
+// POST 空 body 时不能带 content-type: application/json——Fastify 对「声明 JSON 却无 body」
+// 的请求直接 400（FST_ERR_CTP_EMPTY_JSON_BODY），无参的 start/stop 会被挡掉。
 async function postJson(path: string, body?: unknown): Promise<any> {
-  return api(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined })
+  return api(path, body ? { method: 'POST', body: JSON.stringify(body) } : { method: 'POST' })
 }
 async function patchJson(path: string, body: unknown): Promise<any> {
   return api(path, { method: 'PATCH', body: JSON.stringify(body) })
@@ -124,7 +127,6 @@ export interface CreateInput {
   gitEmail?: string
   role?: string
   description?: string
-  portMappings?: Record<string, Array<{ HostPort: string; HostIp?: string }>>
 }
 export const createContainer = (input: CreateInput) =>
   postJson('/api/containers', input) as Promise<{ id: string; name: string; ip: string }>
@@ -173,22 +175,21 @@ export const batchExec = (ids: string[], command: string, timeoutMs?: number) =>
 // 会话活跃 pane 的 cwd（信息条显示「宿主 · <镜像目录>」用；轮询）。
 // 复用 getTermCwd：HOST_ID 哨兵会落到 /api/host-terminal/cwd（文件 API 端点切换同源）。
 export const getHostCwd = (termId: string) => getTermCwd(HOST_ID, termId)
-// —— 基座（docker=基础镜像 / lxc=模板容器）——
-// 后端 BaseStatus（server/engine/types.ts）。两个引擎归一到同一形状，
-// 差异只在 caps.baseKind（文案）与 caps.baseActions（可用按钮）。
+// —— 基座（模板容器）——
+// 后端 BaseStatus（server/engine/types.ts）。
 export interface BaseStatus {
   kind: 'image' | 'template'
   name: string
   exists: boolean
-  // 能否直接建容器。docker 下 exists 即 ready；LXC 模板在运行时 exists 但 !ready
+  // 能否直接建容器。LXC 模板在运行时 exists 但 !ready
   ready: boolean
   notReady?: string
-  // 制作来源：docker=构建上下文目录；lxc=模板制作脚本路径
+  // 制作来源：模板制作脚本路径
   context?: string | null
   contextError?: string
   size?: number
   createdAt?: string
-  // 引擎特有展示项（docker: id/tags；lxc: state/rootfs/source），原样列出
+  // 引擎特有展示项（state/rootfs/source），原样列出
   detail?: Record<string, string>
 }
 export const getBaseStatus = () => api('/api/base') as Promise<BaseStatus>
@@ -202,7 +203,7 @@ export interface BaseProgressEvent {
   status?: string
   id?: string
   progress?: string
-  // 各动作的返回值不同（build: tag；pull/push: ref；export: path/size；clone/import: template）
+  // 各动作的返回值不同（export: path/size；clone/import: template）
   result?: Record<string, string | number>
   message?: string
 }
@@ -219,21 +220,22 @@ export interface BaseActionOpts {
 
 // 读 SSE 流：fetch POST → 逐块 decode → 按 \n\n 分帧 → 解析 data: 行 → onEvent。
 // 服务端发 error 帧时，先把事件交给 onEvent（用于落日志），读完流后抛错让调用方报错。
-export async function streamBaseAction(
-  action: string,
-  opts: BaseActionOpts,
+// 泛型实现（streamOp）：基座动作与服务创建共用同一协议。
+export async function streamOp(
+  path: string,
+  body: unknown,
   onEvent: (e: BaseProgressEvent) => void,
 ): Promise<void> {
-  const res = await fetch(`/api/base/${action}`, {
+  const res = await fetch(path, {
     method: 'POST',
     headers: {
       'x-sandbox-token': getToken() ?? '',
       'content-type': 'application/json',
     },
-    body: JSON.stringify(opts),
+    body: JSON.stringify(body),
   })
   if (res.status === 401) throw new Unauthorized()
-  if (!res.ok || !res.body) throw new Error(`${action} failed: ${res.status}`)
+  if (!res.ok || !res.body) throw new Error(`${path} failed: ${res.status}`)
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
@@ -255,11 +257,84 @@ export async function streamBaseAction(
         continue
       }
       onEvent(evt)
-      if (evt.type === 'error') lastErr = evt.message || `${action} failed`
+      if (evt.type === 'error') lastErr = evt.message || `${path} failed`
     }
   }
   if (lastErr) throw new Error(lastErr)
 }
+
+export async function streamBaseAction(
+  action: string,
+  opts: BaseActionOpts,
+  onEvent: (e: BaseProgressEvent) => void,
+): Promise<void> {
+  await streamOp(`/api/base/${action}`, opts, onEvent)
+}
+
+// —— docker 服务层 ——
+
+export interface ServiceView {
+  name: string
+  preset: string
+  image: string
+  ip: string | null
+  state: string
+  status: string
+  running: boolean
+  volume: string | null
+  ports: number[]
+  envKeys: string[]
+  description?: string
+  createdAt?: string
+  command?: string[]
+  metaMissing?: boolean
+}
+
+export interface ServicesStatus {
+  enabled: boolean
+  reachable: boolean
+  version?: string
+  error?: string
+  network: { name: string; bridgeOk: boolean; subnet: string | null; detail?: string }
+  pool: { from: string; to: string; reserved: string[]; assigned: string[]; free: string[] }
+}
+
+export interface ServicePresetView {
+  key: string
+  label: string
+  image: string
+  description: string
+  volumePath: string | null
+  ports: number[]
+  fixedEnv: Record<string, string>
+  userEnv: { key: string; label: string; required?: boolean; secret?: boolean }[]
+  command?: string[]
+  hint: string
+}
+
+export interface CreateServiceInput {
+  name: string
+  preset: string
+  image?: string
+  env?: Record<string, string>
+  command?: string
+  ip?: string
+  description?: string
+}
+
+export const listServices = () =>
+  api('/api/services') as Promise<{ items: ServiceView[]; status: ServicesStatus }>
+export const getServicePresets = () =>
+  api('/api/services/presets') as Promise<{ presets: ServicePresetView[] }>
+export const startService = (name: string) => postJson(`/api/services/${name}/start`)
+export const stopService = (name: string) => postJson(`/api/services/${name}/stop`)
+export const restartService = (name: string) => postJson(`/api/services/${name}/restart`)
+export const deleteService = (name: string, opts: { deleteData?: boolean; confirmName?: string }) =>
+  api(`/api/services/${name}`, { method: 'DELETE', body: JSON.stringify(opts) })
+export const getServiceLogs = (name: string, tail = 200) =>
+  api(`/api/services/${name}/logs?tail=${tail}`) as Promise<{ logs: string }>
+export const streamCreateService = (input: CreateServiceInput, onEvent: (e: BaseProgressEvent) => void) =>
+  streamOp('/api/services', input, onEvent)
 
 // —— 全局 hosts 配置 ——
 export interface HostsView {

@@ -1,12 +1,9 @@
-// dev-lan IP 池：docker 侧权威源 = network.inspect().Containers（含停掉但未删的容器），
-// LXC 侧 = 各容器 config 里的 lxc.net.0.ipv4.address。
+// LXC IP 池：权威源 = 各容器 config 里的 lxc.net.0.ipv4.address（停机容器的 IP 也算占用）。
 // 假设 /24：前 3 段为前缀，第 4 段在 from..to 间分配。
-//
-// 关键：**两个引擎共用同一座网桥**（见 docs/lxc-migration.md D2），所以分配新 IP 时必须
-// 同时看两边已占用的地址，否则迁移过渡期（docker 老容器 + LXC 新容器并存）会撞 IP。
-// 单边不可达（比如切到 lxc 后 docker 没装）不算错，当空集处理。
+// 网关约定为 <前缀>.1（宿主在网桥上的副 IP，见 docs/lxc-migration.md P8 与
+// /etc/systemd/system/mysandbox-bridge-subnet.service）。
 import type { Config } from './config.js';
-import { dockerEngine, lxcEngine } from './engine/index.js';
+import { lxcEngine } from './engine/index.js';
 
 function prefix(ip: string): string {
   return ip.split('.').slice(0, 3).join('.');
@@ -15,19 +12,12 @@ function lastOctet(ip: string): number {
   return Number(ip.split('.')[3]) || 0;
 }
 
+export function gatewayOf(cfg: Config): string {
+  return `${prefix(cfg.ipPool.from)}.1`;
+}
+
 export async function assignedIps(cfg: Config): Promise<Set<string>> {
-  const sets = await Promise.all(
-    [dockerEngine, lxcEngine].map(async (e) => {
-      try {
-        return await e.assignedIps(cfg);
-      } catch {
-        return new Set<string>();
-      }
-    }),
-  );
-  const all = new Set<string>();
-  for (const s of sets) for (const ip of s) all.add(ip);
-  return all;
+  return lxcEngine.assignedIps(cfg);
 }
 
 export async function isFree(cfg: Config, ip: string): Promise<boolean> {

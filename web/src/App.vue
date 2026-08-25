@@ -10,12 +10,16 @@ import TokenGate from '@/components/TokenGate.vue'
 import BaseBadge from '@/components/BaseBadge.vue'
 import BasePanel from '@/components/BasePanel.vue'
 import HostsBadge from '@/components/HostsBadge.vue'
+import ServicesBadge from '@/components/ServicesBadge.vue'
 // 异步加载 hosts 面板：Monaco 编辑器较重（~700KB gzip），只在点 hosts 徽标时才下载，不拖累首屏。
 const HostsPanel = defineAsyncComponent(() => import('@/components/HostsPanel.vue'))
+const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
 
 const token = ref<string | null>(getToken())
 const version = ref<string>('')
-const dockerOk = ref<boolean | null>(null)
+const engineOk = ref<boolean | null>(null)
+// docker 服务层可用性（health.services；null = 未知，false = docker 不可达，徽标变红）
+const servicesOk = ref<boolean | null>(null)
 const checking = ref(false)
 const checkErr = ref('')
 
@@ -25,6 +29,7 @@ const baseReady = ref<boolean | null>(null)
 const baseBusy = ref(false)
 const showBasePanel = ref(false)
 const showHostsPanel = ref(false)
+const showServicesPanel = ref(false)
 let baseTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshBaseStatus() {
@@ -41,14 +46,15 @@ async function verify(t: string): Promise<boolean> {
   checkErr.value = ''
   try {
     setToken(t)
-    // health 不鉴权（错误 token 也 200），只用来看后端/docker 状态；
+    // health 不鉴权（错误 token 也 200），只用来看后端/引擎状态；
     // 真伪校验走必鉴权的 verifyToken，401 会在下面 catch 成明确的「token 无效」。
     const h = await health()
     await verifyToken()
     version.value = h.version
-    dockerOk.value = h.docker.reachable
+    engineOk.value = h.engineStatus.reachable
+    servicesOk.value = h.services?.available ?? null
     // caps 写进全局单例：删除/改名/端口映射的 UI 分支都读它（见 lib/caps.ts）
-    setEngineInfo(h.engine ?? 'docker', h.caps)
+    setEngineInfo(h.engine, h.caps)
     token.value = t
     refreshBaseStatus()
     return true
@@ -66,7 +72,8 @@ async function verify(t: string): Promise<boolean> {
 function logout() {
   clearToken()
   token.value = null
-  dockerOk.value = null
+  engineOk.value = null
+  servicesOk.value = null
   baseReady.value = null
 }
 
@@ -111,13 +118,13 @@ onUnmounted(() => {
           >v{{ version }}</Badge
         >
         <Badge
-          v-if="dockerOk === true"
+          v-if="engineOk === true"
           variant="outline"
           class="border-transparent bg-emerald-500/15 text-emerald-500"
           >{{ engineName }} ok</Badge
         >
         <Badge
-          v-else-if="dockerOk === false"
+          v-else-if="engineOk === false"
           variant="outline"
           class="border-transparent bg-destructive/15 text-destructive"
           >{{ engineName }} unreachable</Badge
@@ -129,6 +136,7 @@ onUnmounted(() => {
           @click="showBasePanel = true"
         />
         <HostsBadge v-if="ready" @click="showHostsPanel = true" />
+        <ServicesBadge v-if="ready" :available="servicesOk" @click="showServicesPanel = true" />
         <div class="ml-auto" />
         <Button
           v-if="ready"
@@ -160,6 +168,7 @@ onUnmounted(() => {
         @running="baseBusy = $event"
       />
       <HostsPanel v-if="showHostsPanel" @close="showHostsPanel = false" />
+      <ServicesPanel v-if="showServicesPanel" @close="showServicesPanel = false" />
     </main>
   </div>
 </template>

@@ -1,5 +1,5 @@
 // 容器文件浏览/编辑 REST 路由（浏览 + 编辑 + 新建/重命名/删除）。
-// 全部走 docker exec（find -printf 列目录、base64 读、stdin cat > 写），对 managed 与
+// 全部走 execRun（find -printf 列目录、base64 读、stdin cat > 写），对 managed 与
 // adopted 容器一视同仁（adopted 无 dataRoot 挂载，宿主 fs 直读方案对它不成立）。
 //
 // 安全边界：容器即沙箱（终端 exec 本就任意命令），故不做 .. 防护；路径校验只保证

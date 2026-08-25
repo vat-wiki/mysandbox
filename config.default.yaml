@@ -1,8 +1,10 @@
 # mysandbox 默认配置（随包发布）。
 # 用户覆盖：~/.config/mysandbox/config.yaml（首启自动生成，含随机 token，权限 0600）。
-# 这里留空的字段（dataRoot / sshSource）首启按 XDG / 宿主用户自动填充。
+# 这里留空的字段（sshSource）首启按宿主用户自动填充。
 #
-# ⚠️ 安全：mysandbox 直连 docker.sock，等于把宿主 root 交给持有 token 的人。
+# ⚠️ 安全：mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），拿不到
+#   宿主 root；但容器内 uid 1000 直通宿主当前用户（D1），且服务能读写宿主 ~/.ssh、
+#   跑宿主终端（/ws/host-terminal）→ 等于宿主用户账号的完整权限。
 #   - 永远只 listen 127.0.0.1（默认），除非你在受控网络内明确要远程访问。
 #   - token 是唯一凭据，config 文件务必保持 0600。
 
@@ -11,46 +13,44 @@ listen:
   host: 127.0.0.1
   port: 7321
 
-# 容器引擎：docker（原形态）| lxc（系统容器：真 systemd init、私有 rootfs，见 docs/lxc-migration.md）。
-# lxc 需要 mysandbox 以 systemd user service 形态运行（cgroup 委派），否则容器起不来——
-# 详见 server/engine/lxc.ts 文件头的运行环境约束。
-engine: docker
-
-docker:
-  socketPath: /var/run/docker.sock   # 宿主 docker socket；你的用户需在 docker 组
-
-# LXC 引擎专属（engine: lxc 时生效）。
 lxc:
-  # 模板容器名：新建容器 = lxc-copy 克隆它（取代 docker 的镜像）。
+  # 模板容器名：新建容器 = lxc-copy 克隆它。
   # ⚠️ 克隆时模板必须处于 STOPPED——lxc-copy 对运行中的源会静默失败（exit 1、无输出）。
+  # 制作模板：scripts/lxc-template.sh <容器名>（见 docs/lxc-migration.md）。
   template: ms-template
 
-# 新建容器所用镜像与网络。镜像需满足「镜像契约」（见 README）——内置 image/ 可直接构建：mysandbox image build
-image: dev
-# 远程镜像仓库（host/path，如 ghcr.io/leon/mysandbox），用于 push/pull；空=不配，push/pull 需显式给 ref。
-registry: ""
-# push/pull 用的 tag（本地容器基础镜像仍由 image 字段决定）。
-imageTag: latest
-# 镜像构建上下文目录（外部化）；空=用随包 image/。支持 ~，须绝对路径。
-imageDir: ""
-network: dev-lan
+# 容器 veth 挂的宿主网桥设备名（不是 docker 网络名）。必须是 /sys/class/net 下存在的桥。
+# 网关 = <ipPool 前缀>.1，由宿主在桥上的副 IP 提供（/etc/systemd/system/mysandbox-bridge-subnet.service）。
+# ⚠️ 桥 br-f0cc7d98dca0 目前由 docker 的 dev-lan 网络拥有：docker 里重建 dev-lan 后桥名会变，
+# 需更新此值与上述 unit。彻底脱离 docker 桥是待办（docs/lxc-migration.md P8）。
+network: br-f0cc7d98dca0
 
-# 容器 home 的宿主存放目录；留空= ~/.local/share/mysandbox/data
-dataRoot: ""
-# 宿主 ~/.ssh 源，以只读挂到容器 /mnt/host/.ssh，供 entrypoint seed 与批量 reseed。
+# docker 服务层：配套服务（数据库等）由 mysandbox 启动并管理，挂在 dev-lan 上与 LXC 容器同桥互通。
+# 服务 = 单容器 + 固定 IP + 命名卷 mysandbox-svc-<名称>；不发布端口到宿主（LXC 容器按服务名直连，
+# hosts 自动注入 <ip> <服务名>）。mysandbox 只管理自己创建的服务（label 标记），不碰外部容器。
+services:
+  enabled: true
+  # docker 网络名（≠ 上面 network 的桥设备名，两者经 br-<网络id前12位> 对应，面板会校验一致性）。
+  # ⚠️ 必须是现有网络：docker 新建网络会落到 10.201.0.0/16 地址池，不在 LXC 同桥。
+  network: dev-lan
+  # 服务静态 IP 池（docker 动态分配从 .2 顺排，.200+ 天然隔离）。
+  ipPool:
+    from: 10.88.0.200
+    to: 10.88.0.240
+    reserved: []
+
+# 宿主 ~/.ssh 源，以只读挂到容器 /mnt/host/.ssh，供首启 seed 与批量 reseed。
 sshSource: ""
-# claude settings 模板路径；留空则不挂载（容器内 entrypoint 会跳过 settings seed）。
+# claude settings 模板路径；留空则不挂载（容器内 seed 会跳过 settings 部分）。
 claudeSettingsTemplate: ""
 
 # 自动分配的固定 IP 池（/24 前缀取前 3 段）。reserved 永不分配（如网关、已固定服务）。
 ipPool:
-  from: 10.88.0.20
-  to: 10.88.0.250
+  from: 10.88.10.20
+  to: 10.88.10.250
   reserved:
-    - 10.88.0.1
-    - 10.88.0.2
-
-restartPolicy: unless-stopped   # 容器 HostConfig.RestentionPolicy.Name
+    - 10.88.10.1
+    - 10.88.10.2
 
 # 新建容器的默认 git 身份（可被批量配置覆盖）。
 git:

@@ -12,7 +12,7 @@
 // tmux 不在镜像里时：首次开终端用 root apt 装一次并缓存（tmuxReady），装失败则退回普通一次性 shell
 // （刷新即丢，但至少能用）。镜像里内置 tmux 后这一步只是一次 ~毫秒级 command -v 检查。
 //
-// 传输：docker exec Tty:true 单流（不 demux）。控制帧（resize/kill）走文本帧 JSON，stdin 走二进制。
+// 传输：lxc-attach Tty 单流。控制帧（resize/kill）走文本帧 JSON，stdin 走二进制。
 import type { FastifyInstance } from 'fastify';
 import type { Duplex } from 'node:stream';
 import type { Config } from './config.js';
@@ -88,8 +88,8 @@ async function installTmux(
   return false;
 }
 
-// 杀掉本次 docker exec 在容器内起的 tmux 客户端进程（见下面 cleanup 的注释）。
-// 为什么用 pidfile 而非 exec.inspect().Pid：docker 的 exec inspect 在本环境下 Pid 恒为 0
+// 杀掉本次连接在容器内起的 tmux 客户端进程（见下面 cleanup 的注释）。
+// 为什么用 pidfile 而非子进程 pid：detach 后拿不到，
 // （实测），拿不到容器内 PID。改成让 sh 自己把 $$（=容器内 PID，exec tmux 后同 PID）写进
 // 唯一 pidfile，关闭时读出来按 comm 校验后 kill。每个 WS 连接一个唯一 pidfile，并发 tab 不打架。
 // comm 校验：tmux 客户端进程 /proc/<pid>/comm 是 "tmux: client"（server 是 "tmux: server"），
@@ -260,7 +260,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
           /* noop */
         }
         // 杀本次连接的 attach 客户端进程（保留会话本身，供刷新重连/别的窗口继续用）。
-        // docker exec.inspect().Pid 在本环境恒为 0，故用 pidfile：sh 起来时已把 $$ 写进 pidfile，
+        // 故用 pidfile：sh 起来时已把 $$ 写进 pidfile，
         // 这里读出来按 comm="tmux: client" 校验后 kill -9。comm 校验防 PID 复用误杀、绝不误杀 server。
         if (useTmuxRef.v) killExecClient(cfg, id, pidfile);
         activePidfiles.delete(pidfile); // 释放认领，允许后续 reaper 回收（若 killExecClient 没杀成）
@@ -297,7 +297,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
             if (m.type === 'resize') {
               const size = { cols: m.cols ?? 80, rows: m.rows ?? 24 };
               // 尺寸不变跳过：前端 15s 心跳帧也带 resize 对账 payload（防丢帧后尺寸永陈旧），
-              // 无条件转 exec.resize 就是每 15s 一次无谓的 docker API 调用。
+              // 无条件转 resize 就是每 15s 一次无谓的 lxc-attach 调用。
               if (`${size.cols}x${size.rows}` === lastSize) return;
               lastSize = `${size.cols}x${size.rows}`;
               if (resizeExec) resizeExec(size.cols, size.rows);
@@ -344,7 +344,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       // 先收割孤儿 tmux 客户端 + 旧式单会话：清掉上次服务重启/异常断连残留的僵尸。
       // 必须在生成新 pidfile 之前跑--此时容器里还没有本次连接的 pidfile，reap 只会碰到旧孤儿。
       if (useTmux) await reapOrphanClients(cfg, id);
-      // tmux 持久会话。一条 docker exec、用 sh -c 串四步（无额外往返）：
+      // tmux 持久会话。一次 attach、用 sh -c 串四步（无额外往返）：
       //   0) echo $$ > pidfile：sh 把自己的 PID（容器内 PID，exec tmux 后同 PID）写进唯一 pidfile，
       //      关闭时 killExecClient 据此找到并杀掉对应 tmux 客户端（exec.inspect().Pid 恒为 0，用不了）；
       //   1) has-session || new-session -d：有会话则复用、没有则 detached 新建（server+shell 起来但不 attach）；

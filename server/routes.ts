@@ -1,8 +1,9 @@
 // REST 路由。/api/health 免鉴权；其余 /api/* + /ws/* 需 token（见 index.ts onRequest）。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from './config.js';
+import { dockerStatus } from './docker.js';
 import {
-  checkDocker,
+  checkEngine,
   listManaged,
   startContainer,
   stopContainer,
@@ -13,7 +14,7 @@ import {
   getEngine,
 } from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
-import { wrapDocker, conflict, HttpError } from './errors.js';
+import { wrapEngineError, conflict, HttpError } from './errors.js';
 import { createContainer, deleteManaged } from './lifecycle.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
@@ -40,7 +41,7 @@ export async function resolve(cfg: Config, id: string): Promise<Resolved> {
   try {
     info = await inspectContainer(cfg, id);
   } catch (e) {
-    throw wrapDocker(e, id);
+    throw wrapEngineError(e, id);
   }
   const adopted = (await getMeta(info.name))?.managed === true;
   return { id, name: info.name, managed: info.managed, adopted, running: info.running };
@@ -63,9 +64,20 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   // engine + caps 暴露给前端：删除/改名/端口映射的 UI 差异由 caps 驱动，
   // 前端不要自己判 engine 名（见 web/src/lib/api.ts 的 Health 类型）。
   app.get('/api/health', async () => {
-    const docker = await checkDocker(cfg);
+    const engineStatus = await checkEngine(cfg);
     const engine = getEngine(cfg);
-    return { ok: true, version: getVersion(), docker, engine: engine.name, caps: engine.caps };
+    return {
+      ok: true,
+      version: getVersion(),
+      engineStatus,
+      engine: engine.name,
+      caps: engine.caps,
+      // docker 服务层可用性（1.5s 快败，不拖死 health）。只回 bool：health 免鉴权，
+      // 不放名字/路径/配置值（约束见 CLAUDE.md）。
+      services: {
+        available: cfg.services.enabled ? (await dockerStatus()).reachable : false,
+      },
+    };
   });
 
   app.get('/api/containers', async () => ({ items: await listManaged(cfg) }));
@@ -82,7 +94,6 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       gitEmail: body.gitEmail ? String(body.gitEmail) : undefined,
       role: body.role ? String(body.role) : undefined,
       description: body.description ? String(body.description) : undefined,
-      portMappings: body.portMappings as Record<string, Array<{ HostPort: string; HostIp?: string }>> | undefined,
     });
     return result;
   });
@@ -129,7 +140,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     try {
       info = await inspectContainer(cfg, id);
     } catch (e) {
-      throw wrapDocker(e, id);
+      throw wrapEngineError(e, id);
     }
     const name = info.name;
     const managed = info.managed;
@@ -296,7 +307,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       Tty: false,
       timeoutMs: 8_000,
     });
-    if (res.exitCode !== 0) throw wrapDocker(new Error(res.stderr.trim() || `listen scan failed`), id);
+    if (res.exitCode !== 0) throw wrapEngineError(new Error(res.stderr.trim() || `listen scan failed`), id);
     const ports = [...new Set(
       res.stdout
         .split('\n')

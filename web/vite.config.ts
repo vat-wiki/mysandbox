@@ -15,6 +15,11 @@ export default defineConfig({
       'monaco-editor/api': fileURLToPath(
         new URL('node_modules/monaco-editor/esm/vs/editor/editor.api.js', import.meta.url),
       ),
+      // @novnc/novnc 的 exports 字段是非法形状（字符串而非映射），vite 解析成 subpath 'undefined'
+      // 直接失败。同 Monaco 手法：别名到磁盘上的 rfb.js。
+      '@novnc/novnc/core/rfb.js': fileURLToPath(
+        new URL('node_modules/@novnc/novnc/core/rfb.js', import.meta.url),
+      ),
     },
   },
   server: {
@@ -24,5 +29,7 @@ export default defineConfig({
       '/ws': { target: 'ws://127.0.0.1:7321', ws: true },
     },
   },
-  build: { outDir: 'dist', emptyOutDir: true },
+  // es2022：@novnc/novnc 1.7 的 rfb.js 用了 top-level await（浏览器动态导入指纹），
+  // 默认 target（es2020/chrome87）不认。我们只跑自托管现代浏览器，直接放宽。
+  build: { outDir: 'dist', emptyOutDir: true, target: 'es2022' },
 })

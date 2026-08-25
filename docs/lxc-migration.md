@@ -223,3 +223,50 @@ engine: lxc 下走真 HTTP API 全流程验证(模板 `ms-template`,容器 `lx1`
 ## 回退
 
 git 基线在手;P3 是零行为变化重构,P2–P6 任何一步不满意 `git checkout` 回 docker 形态。dener 全家不迁移,直到 LXC 路径跑顺。
+
+## P8：docker 引擎移除 + 网段切换（2026-08-25）
+
+迁移完成后的清场：删掉 docker 引擎代码（`engine/docker.ts`、`image.ts`、`image/`、dockerode 依赖）、
+config schema 的 docker 字段（engine/docker/image/registry/imageTag/imageDir/dataRoot/restartPolicy）、
+`/api/health` 的 `docker:` 字段改名 `engineStatus:`、web caps 默认值改 LXC 语义。`getEngine()` 保留
+（恒返回 lxcEngine）维持「业务层不 import 具体实现」的约定。`image` CLI 名保留为 base 的历史别名。
+
+**网段切换 10.88.0.0/24 → 10.88.10.0/24**（彻底离开 docker 的 IPAM 范围）：
+
+- 网关 10.88.10.1 = 宿主在桥上的副 IP。持久化：系统级 `mysandbox-bridge-subnet.service`
+  （After=docker.service，`ip addr replace` 幂等）——桥是 docker 建的，重启后要等 docker 先把桥建回来。
+- `network.ts` 加 `gatewayOf(cfg)`（= ipPool 前缀 + `.1`），`create()` 克隆后同时写
+  `lxc.net.0.ipv4.gateway`（此前继承模板值，同网段碰巧成立，跨网段必须显式写）。
+- `resolveBridge()` 删掉 shell 调 `docker network inspect` 的分支：cfg.network 直接配桥设备名。
+
+**踩坑（本轮实测）**：
+
+- **桥内跨网段互通不是 L2 自动的事**。同网段（10.88.0.x ↔ 10.88.0.x）是纯桥转发不进宿主栈；
+  跨网段（10.88.10.x → 10.88.0.x）要经宿主路由，包会过 FORWARD 链——而 docker 的 DOCKER-BRIDGE 链
+  把「出接口是桥」的新连接送进 DOCKER 链，那里只有已发布端口的 ACCEPT，结尾全 DROP。
+  解法：`-A ufw-before-forward -i <桥> -o <桥> -j ACCEPT`（已写进 /etc/ufw/before.rules，reload 生效）。
+  验证时注意：dener-web-1-1 等容器服务绑 127.0.0.1，宿主直连也被拒——不是网络问题，挑服务绑 0.0.0.0 的容器测。
+- 容器 rootfs 内 `/etc` 下的文件属主是宿主 uid 100000，**宿主 leon 用 sed -i 改不动（临时文件建不了）**。
+  sudo 直接改即可（root 无视属主），不必绕 lxc-usernsexec。
+- **克隆容器共享模板的 MAC —— 容器间同网段不通的真凶**。现象：宿主→容器通、容器→docker 跨网段通、
+  唯独 LXC 容器↔容器 `No route to host`（dev 的 ARP 表里对端 `FAILED`）。链路：`lxc-copy` 连
+  `/etc/machine-id` 一起拷 → 容器内 udev 的 `MACAddressPolicy=persistent`（99-default.link）按
+  **machine-id + 接口名**哈希出 MAC → 所有克隆同 MAC → 同 MAC 接口挂同一座桥，fdb 端口来回摆，
+  ARP 回应永远送不到正确端口。解法两层（都在 create() 里固化）：
+  - config 写死 `lxc.net.0.hwaddr = <随机本地管理段 MAC>`（`randomMac()`）——网络层根治；
+  - 首启前经 `lxc-usernsexec` truncate rootfs 的 `/etc/machine-id`（`template.ts resetMachineId()`），
+    systemd 首启重新生成——身份层根治（machine-id 还影响 DHCP client-id 等一切派生身份）。
+  存量容器（修复前克隆的）要手工补：stop → config 加 hwaddr 行 + `sudo truncate -s 0 rootfs/etc/machine-id`
+  → start。注意 machine-id 文件属主 uid 100000 且 ro 挂载，truncate 需要 sudo。
+- 排查时 exec 里起的后台监听（`nohup ... &`）会随 lxc-attach 的会话被杀，`ss -tln` 查不到就是它——
+  要用 `setsid` 脱离会话再起，别误判成网络问题。
+- docker 容器删除后 dataRoot 下 bind mount 源目录保留在磁盘（`docker rm` 不动它）——cet/myservice 的
+  home 数据在 `~/.local/share/mysandbox/data/` 留存，确认无用后手工删。
+- state.json 里 docker 时代的 12 条容器记录已清（sweep 会对每个名字白跑 hostHomePath）。
+
+**剩余的 docker 依赖（待办，本轮刻意不做）**：
+
+- **网桥本身还是 docker 的**（dev-lan = br-f0cc7d98dca0）。重建 dev-lan → 桥名变 → 要更新 config.network
+  与 mysandbox-bridge-subnet.service。彻底解耦：用 systemd-networkd 建原生桥替代，迁移 LXC 容器 veth，
+  然后才能动 dev-lan / 卸 docker。
+- 宿主上还有 7 个 dener-* docker 容器在跑（外部工作负载），mysandbox 已不管它们。

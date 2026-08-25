@@ -1,0 +1,376 @@
+// docker CLI 客户端：配套服务层（数据库等）的原语集。
+//
+// 角色边界：docker 在 mysandbox 里不再是容器引擎（那是 LXC 的活），而是「服务提供方」——
+// mysandbox 用它起 postgres/redis 这类配套服务，挂在与 LXC 同一座网桥上供容器固定 IP 直连。
+// 所以这个模块**不在 engine/ 里**：Engine 接口是容器生命周期形状（create/exec/terminal），
+// 服务是另一种生命周期；「业务层只 import engine/index.js」的约定限于容器引擎。
+// docker 本身的编排（预设表/路由/SSE）在 services.ts，这里只有无业务语义的 docker 原语。
+//
+// 实现约定（对齐 engine/lxc.ts 的 run() 模式）：
+//   - 一律 execFile/spawn 数组参数，无 shell——env 值里的特殊字符天然安全。
+//   - 机器可读输出统一 `--format '{{json .}}'`：network inspect 是单对象，ps/volume ls 是
+//     逐行 JSON，dockerJson 与 dockerJsonLines 分开，别共用假设。
+//   - 失败不抛，返回 ok:false（调用方决定怎么翻译错误）；dockerJson 系列坏输出才抛。
+//   - 权限：宿主用户在 docker 组（免 sudo 直连 /var/run/docker.sock）。systemd user service
+//     里同样可用——group 成员在 user manager 启动时快照，后加组需 daemon-restart。
+//
+// 管理边界（结构性，不靠约定）：所有针对「我们的服务」的操作都带 SERVICE_FILTER（label
+// mysandbox.kind=service）。宿主上其它 docker 容器（如 dener-*）没有该 label，永远不进列表、
+// 对它们的服务操作只会 404。
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import type { ChildProcess } from 'node:child_process';
+import type { Config } from './config.js';
+import { log } from './logger.js';
+
+const execFileAsync = promisify(execFile);
+
+// label 方案（与被删的 docker 引擎同款 managed-by，加 kind 区分服务）。
+export const MANAGED_LABEL = 'mysandbox.managed-by'; // 值恒 'mysandbox'
+export const KIND_LABEL = 'mysandbox.kind'; // 值恒 'service'
+export const SERVICE_FILTER = [
+  '--filter', `label=${MANAGED_LABEL}=mysandbox`,
+  '--filter', `label=${KIND_LABEL}=service`,
+];
+
+export function serviceVolumeName(name: string): string {
+  return `mysandbox-svc-${name}`;
+}
+
+async function dockerExec(
+  args: string[],
+  timeoutMs = 15_000,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync('docker', args, {
+      timeout: timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return { ok: true, stdout, stderr };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    return { ok: false, stdout: err.stdout ?? '', stderr: err.stderr ?? err.message ?? '' };
+  }
+}
+
+// 末尾追加 --format 的单对象 JSON（network inspect 等）。
+async function dockerJson<T>(args: string[], timeoutMs?: number): Promise<T> {
+  const r = await dockerExec([...args, '--format', '{{json .}}'], timeoutMs);
+  if (!r.ok) throw new Error(`docker ${args[0]} failed: ${r.stderr.trim() || 'no output'}`);
+  try {
+    return JSON.parse(r.stdout) as T;
+  } catch {
+    throw new Error(`docker ${args[0]} returned unparseable output`);
+  }
+}
+
+// 逐行 JSON（ps / volume ls / events 流之外的批量查询）。
+async function dockerJsonLines<T>(args: string[], timeoutMs?: number): Promise<T[]> {
+  const r = await dockerExec([...args, '--format', '{{json .}}'], timeoutMs);
+  if (!r.ok) throw new Error(`docker ${args[0]} failed: ${r.stderr.trim() || 'no output'}`);
+  const out: T[] = [];
+  for (const line of r.stdout.split('\n')) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      out.push(JSON.parse(s) as T);
+    } catch {
+      // 坏行丢弃
+    }
+  }
+  return out;
+}
+
+// —— 探活：/api/health 也走这里，必须快败，绝不能把 health 拖死 ——
+export async function dockerStatus(): Promise<{ reachable: boolean; version?: string; error?: string }> {
+  const r = await dockerExec(['version', '--format', '{{.Server.Version}}'], 1_500);
+  if (!r.ok) {
+    return { reachable: false, error: r.stderr.trim().split('\n')[0] || 'docker unreachable' };
+  }
+  return { reachable: true, version: r.stdout.trim() };
+}
+
+// —— 网络 ——
+export interface NetworkInfo {
+  name: string;
+  id: string;
+  subnet: string | null;
+  gateway: string | null;
+  // docker 用户网络桥设备名 = br-<网络id前12位>（本机 dev-lan 实测吻合）。与 cfg.network
+  // （桥设备名）的一致性校验靠它——dev-lan 被重建后桥名变，面板要能指出来。
+  bridge: string | null;
+  endpoints: { name: string; ip: string }[];
+}
+
+interface RawNetwork {
+  Name?: string;
+  Id?: string;
+  IPAM?: { Config?: { Subnet?: string; Gateway?: string }[] };
+  Containers?: Record<string, { Name?: string; IPv4Address?: string }>;
+}
+
+export async function inspectNetwork(name: string): Promise<NetworkInfo | null> {
+  let raw: RawNetwork | null = null;
+  try {
+    raw = await dockerJson<RawNetwork>(['network', 'inspect', name]);
+  } catch {
+    return null;
+  }
+  const ipam = raw.IPAM?.Config?.[0];
+  const endpoints = Object.values(raw.Containers || {})
+    .map((c) => ({ name: c.Name ?? '', ip: (c.IPv4Address ?? '').split('/')[0] }))
+    .filter((e) => e.name && e.ip);
+  return {
+    name: raw.Name ?? name,
+    id: raw.Id ?? '',
+    subnet: ipam?.Subnet ?? null,
+    gateway: ipam?.Gateway ?? null,
+    bridge: raw.Id ? `br-${raw.Id.slice(0, 12)}` : null,
+    endpoints,
+  };
+}
+
+// —— 容器（服务）——
+export interface DockerContainerRow {
+  ID: string;
+  Names: string; // --format 下是逗号拼接字符串，取第一段
+  Image: string;
+  State: string; // running / exited / restarting…
+  Status: string; // 人话状态（Up 2 hours / Restarting (1) 3s ago…）
+  CreatedAt: string;
+  Labels: Record<string, string>;
+  Networks: string;
+}
+
+function rowName(row: DockerContainerRow): string {
+  return row.Names.split(',')[0].replace(/^\//, '');
+}
+
+// ⚠️ network inspect 只列 running 端点：停机服务的静态 IP 不在这里——占用判定必须
+// 并上 state.services 里登记的 IP（见 services.ts allocateServiceIp）。
+export async function listServiceContainers(): Promise<DockerContainerRow[]> {
+  try {
+    return await dockerJsonLines<DockerContainerRow>(['ps', '-a', ...SERVICE_FILTER]);
+  } catch (e) {
+    log.warn({ err: String(e) }, 'docker ps failed');
+    return [];
+  }
+}
+
+export async function serviceNameExists(name: string): Promise<boolean> {
+  // 全量查重（含 dener-* 等外部容器）：docker 容器名全局唯一，撞名 create 会失败，
+  // 与其让 create 报晦涩错误不如前置给 409。
+  const rows = await dockerJsonLines<{ Names: string }>(['ps', '-a']);
+  return rows.some((r) => r.Names.split(',')[0].replace(/^\//, '') === name);
+}
+
+export interface CreateServiceArgs {
+  name: string;
+  image: string;
+  ip: string;
+  network: string;
+  labels: Record<string, string>;
+  env: Record<string, string>;
+  volume?: { source: string; target: string } | null;
+  command?: string[];
+}
+
+export async function createServiceContainer(args: CreateServiceArgs): Promise<void> {
+  const argv = [
+    'create',
+    '--name', args.name,
+    '--hostname', args.name,
+    '--network', args.network,
+    '--ip', args.ip,
+    '--restart', 'unless-stopped',
+  ];
+  for (const [k, v] of Object.entries(args.labels)) argv.push('--label', `${k}=${v}`);
+  if (args.volume) argv.push('--mount', `source=${args.volume.source},target=${args.volume.target}`);
+  for (const [k, v] of Object.entries(args.env)) argv.push('--env', `${k}=${v}`);
+  argv.push(args.image);
+  if (args.command?.length) argv.push(...args.command);
+  const r = await dockerExec(argv, 60_000);
+  if (!r.ok) {
+    throw new Error(`docker create failed: ${r.stderr.trim() || 'no output'}`);
+  }
+}
+
+// 停机容器的静态 IP（IPAMConfig 是 create 时的期望值，停机也在）。
+export async function containerIpamIp(name: string): Promise<string | null> {
+  try {
+    const raw = await dockerJson<{
+      NetworkSettings?: { Networks?: Record<string, { IPAMConfig?: { IPv4Address?: string } }> };
+    }>(['container', 'inspect', name]);
+    for (const n of Object.values(raw.NetworkSettings?.Networks ?? {})) {
+      if (n.IPAMConfig?.IPv4Address) return n.IPAMConfig.IPv4Address;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function startContainer(name: string): Promise<void> {
+  const r = await dockerExec(['start', name], 60_000);
+  if (!r.ok) throw new Error(`docker start failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+export async function stopContainer(name: string, t = 5): Promise<void> {
+  const r = await dockerExec(['stop', '-t', String(t), name], 60_000);
+  if (!r.ok) throw new Error(`docker stop failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+export async function restartContainer(name: string, t = 5): Promise<void> {
+  const r = await dockerExec(['restart', '-t', String(t), name], 90_000);
+  if (!r.ok) throw new Error(`docker restart failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+export async function removeContainer(name: string): Promise<void> {
+  const r = await dockerExec(['rm', '-f', name], 60_000);
+  if (!r.ok) throw new Error(`docker rm failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+// logs 的 stdout/stderr 都要收：不少镜像（mysql 8 实测）把常规输出走 stderr。
+export async function containerLogs(name: string, tail = 200): Promise<string> {
+  const r = await dockerExec(['logs', '--tail', String(tail), name], 15_000);
+  if (!r.ok) throw new Error(`docker logs failed: ${r.stderr.trim() || 'no output'}`);
+  return `${r.stdout}${r.stderr}`;
+}
+
+// 镜像是否已在本地（按引用名查，tag 或 digest 均可）。
+export async function imageExistsLocal(image: string): Promise<boolean> {
+  const r = await dockerExec(['image', 'inspect', image], 5_000);
+  return r.ok;
+}
+
+// docker pull 的流式进度：JSON 行，逐行回调给 SSE。
+// 镜像已在本地时跳过（调用方 imageExistsLocal 判定）：pull 对本地已有的 tag 也会去
+// registry 校验 manifest——离线/网络受限环境下白白失败（实测 docker 29）。
+export async function pullImageStream(image: string, onLine: (line: string) => void): Promise<void> {
+  await new Promise<void>((resolveP, rejectP) => {
+    const child = spawn('docker', ['pull', image], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let err = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10 * 60_000);
+    const feed = (buf: Buffer) => {
+      for (const line of buf.toString('utf8').split('\n')) {
+        const s = line.trim();
+        if (s) onLine(s);
+      }
+    };
+    child.stdout?.on('data', feed);
+    child.stderr?.on('data', (b: Buffer) => {
+      feed(b);
+      err += b.toString('utf8');
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      rejectP(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolveP();
+      else rejectP(new Error(err.trim().split('\n').pop() || `docker pull exited ${code}`));
+    });
+  });
+}
+
+// —— 卷 ——
+
+export async function volumeExists(volume: string): Promise<boolean> {
+  try {
+    const rows = await dockerJsonLines<{ Name: string }>(['volume', 'ls']);
+    return rows.some((r) => r.Name === volume);
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureVolume(volume: string): Promise<void> {
+  if (await volumeExists(volume)) return;
+  const r = await dockerExec([
+    'volume', 'create', '--label', `${MANAGED_LABEL}=mysandbox`, volume,
+  ]);
+  if (!r.ok) throw new Error(`docker volume create failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+export async function removeVolume(volume: string): Promise<void> {
+  const r = await dockerExec(['volume', 'rm', volume], 30_000);
+  if (!r.ok) throw new Error(`docker volume rm failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+// —— 事件订阅（服务 hosts 追平用） ——
+
+export interface ServiceEventSubscription {
+  close(): void;
+  closed: Promise<void>;
+}
+
+// start/die/destroy：服务起来了/停了/没了，三种都影响 hosts 里的服务行。
+// closed 在流 end/close/error 任一时 resolve（error 吞掉，调用方退避重连）。
+export function subscribeServiceEvents(
+  onEvent: (ev: { name: string; action: string }) => void,
+): ServiceEventSubscription {
+  const child: ChildProcess = spawn('docker', [
+    'events',
+    '--filter', 'type=container',
+    '--filter', 'event=start',
+    '--filter', 'event=die',
+    '--filter', 'event=destroy',
+    ...SERVICE_FILTER,
+    '--format', '{{json .}}',
+  ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+  let resolveClosed: () => void;
+  const closed = new Promise<void>((r) => {
+    resolveClosed = r;
+  });
+  child.on('exit', () => resolveClosed());
+  child.on('error', () => resolveClosed());
+
+  let buf = '';
+  child.stdout?.on('data', (chunk: Buffer) => {
+    buf += chunk.toString('utf8');
+    let idx: number;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).replace(/\r$/, '');
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        const ev = JSON.parse(line) as {
+          Action?: string;
+          Actor?: { Attributes?: { name?: string } };
+        };
+        const name = ev.Actor?.Attributes?.name;
+        if (ev.Action && name) onEvent({ name, action: ev.Action });
+      } catch {
+        // 坏行丢弃
+      }
+    }
+  });
+
+  return {
+    close() {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* noop */
+      }
+    },
+    closed,
+  };
+}
+
+// —— hosts 注入素材 ——
+// running 的服务容器 → [{name, ip}]。这是 hosts 块的唯一事实源（applyHostsToContainers /
+// lifecycle 初始 hosts 都经它）。docker 不可达返回 []：hosts 路径永不因 docker 挂掉而 500，
+// 等价于「没有服务」，容器里旧的服务行下次 docker 恢复后被追平。
+export async function listServiceEndpoints(cfg: Config): Promise<{ name: string; ip: string }[]> {
+  const net = await inspectNetwork(cfg.services.network);
+  if (!net) return [];
+  const rows = await listServiceContainers();
+  const running = new Set(rows.filter((r) => r.State === 'running').map(rowName));
+  return net.endpoints
+    .filter((e) => running.has(e.name))
+    .map((e) => ({ name: e.name, ip: e.ip }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}

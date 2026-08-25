@@ -4,10 +4,10 @@
 // reply.hijack() 接管响应手动写 text/event-stream；鉴权仍在 hijack 前由全局 onRequest 完成。
 import type { FastifyReply } from 'fastify';
 
-// 进度事件（docker followProgress 的字段子集 + 自产事件复用同一形状）。
+// 进度事件（脚本 stdout / 自产步骤状态复用同一形状）。
 export interface ProgressEvent {
-  stream?: string; // 带换行的原始输出（Dockerfile 步骤 / 脚本 stdout）
-  status?: string; // 单行状态（docker layer 进度 / 自产步骤名）
+  stream?: string; // 带换行的原始输出（脚本 stdout）
+  status?: string; // 单行状态（自产步骤名）
   id?: string;
   progress?: string;
   error?: string;

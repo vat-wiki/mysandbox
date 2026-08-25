@@ -1,5 +1,5 @@
 // 批量配置：对一组容器并发执行 git/ssh/claude/通用 exec，逐容器收敛 ok/error/exitCode/stdout。
-// 全部走 docker exec（Tty:false demux），p-limit 限并发，统一返回每容器结果。
+// 全部走 execRun（lxc-attach，Tty:false），p-limit 限并发，统一返回每容器结果。
 import pLimit from 'p-limit';
 import type { Config } from './config.js';
 import { execRun, inspectContainer, type ExecOpts } from './engine/index.js';

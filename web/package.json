@@ -11,6 +11,7 @@
     "@fontsource-variable/cascadia-code": "^5.3.0",
     "@guolao/vue-monaco-editor": "^1.6.0",
     "@lucide/vue": "^1.32.0",
+    "@novnc/novnc": "^1.7.0",
     "@vueuse/core": "^14.4.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",

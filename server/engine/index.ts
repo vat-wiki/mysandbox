@@ -1,9 +1,7 @@
-// engine 入口：消费方唯一 import 点，按 cfg.engine 选 docker / lxc 实现。
-// image.ts 仍用 getDocker 直调 dockerode——那是 docker 引擎的**基座实现**（镜像 build/pull/push），
-// 由 dockerEngine.runBaseAction 转发过去；LXC 侧对应物是 engine/template.ts 的模板容器。
+// engine 入口：消费方唯一 import 点。单引擎（LXC）后 getEngine 只是稳定 API 的形状，
+// 保留它以维持「业务层不直接 import 具体实现」的约定（见 CLAUDE.md）。
 import type { Config } from '../config.js';
 import type { Engine } from './types.js';
-import { dockerEngine, getDocker, MANAGED_LABEL } from './docker.js';
 import { lxcEngine } from './lxc.js';
 
 export type {
@@ -23,16 +21,15 @@ export type {
   BaseProgress,
   BaseStatus,
 } from './types.js';
-export { dockerEngine, getDocker, MANAGED_LABEL, lxcEngine };
+export { lxcEngine };
 
-// 当前引擎（cfg.engine 决定，默认 docker）。
-export function getEngine(cfg: Config): Engine {
-  return cfg.engine === 'lxc' ? lxcEngine : dockerEngine;
+export function getEngine(_cfg: Config): Engine {
+  return lxcEngine;
 }
 
-// 便捷转发：消费方按名直接用，与原 docker.ts 的函数签名一致。
-// 名字仍叫 checkDocker（cli.ts 启动检查），查的是当前引擎的连通性。
-export function checkDocker(cfg: Config) {
+// 便捷转发：消费方按名直接用。
+// checkEngine（cli.ts 启动检查）查 LXC 运行环境（systemd user manager、lxc 命令）。
+export function checkEngine(cfg: Config) {
   return getEngine(cfg).status(cfg);
 }
 export async function listManaged(cfg: Config) {
@@ -70,11 +67,11 @@ export async function execFeed(
 export async function assignedIps(cfg: Config) {
   return getEngine(cfg).assignedIps(cfg);
 }
-// terminal.ts 的 PTY 流（exec hijack + resize）。engine 抽象前 terminal.ts 内联这段。
+// terminal.ts 的 PTY 流（lxc-attach + resize）。
 export async function execStream(cfg: Config, id: string, opts: import('./types.js').ExecOpts) {
   return getEngine(cfg).execStream(cfg, id, opts);
 }
-// hosts-sync.ts 的事件订阅（docker events / 将来 lxc monitor）。
+// hosts-sync.ts 的事件订阅（lxc-monitor）。
 export async function subscribeEvents(
   cfg: Config,
   onEvent: (ev: import('./types.js').EngineEvent) => void,

@@ -1,6 +1,6 @@
 // CLI 子命令 mysandbox open <path> [--container <name>]：在浏览器打开容器文件/目录。
 // 本仓库首个 CLI -> HTTP 调用（Node 20 全局 fetch，token 来自 loadConfig 与服务共享）。
-// CLI 全程只走 HTTP + 读配置，不碰 docker——服务没起就明确报错。
+// CLI 全程只走 HTTP + 读配置，不碰 LXC——服务没起就明确报错。
 import { realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { posix } from 'node:path';
@@ -94,7 +94,7 @@ function pickByName(items: ContainerSummary[], want: string): ContainerSummary {
 }
 
 // 宿主 cwd 在某容器的 home 目录下 -> {容器名, cwd 相对该 home 的部分}。
-// 容器 home 在宿主侧的位置随引擎不同（docker=dataRoot/<name>；lxc=<lxcpath>/<name>/rootfs/home/dev），
+// 容器 home 的宿主侧路径 = <lxcpath>/<name>/rootfs/home/dev，
 // 所以按「所有已知容器逐个比对其 hostHomePath」推断，而不是假设某个共同父目录。
 async function inferFromCwd(cfg: Config): Promise<{ name: string; rel: string } | null> {
   let cwd: string;

@@ -37,6 +37,8 @@ import FilePanel from '@/components/FilePanel.vue'
 const Terminal = defineAsyncComponent(() => import('@/components/Terminal.vue'))
 // 文件编辑器（Monaco 较重）同理：点开文件才下载。
 const FileEditorDialog = defineAsyncComponent(() => import('@/components/FileEditorDialog.vue'))
+// 桌面查看器（noVNC，较重）：点「桌面」才下载。
+const DesktopDialog = defineAsyncComponent(() => import('@/components/DesktopDialog.vue'))
 
 // CLI `mysandbox open` 深链请求（App 解析 #open hash 后传入；seq 自增触发消费）。
 export interface OpenReq {
@@ -226,6 +228,8 @@ watch(
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // 文件编辑器目标（v1 单编辑器：已有目标时轻提示换文件需先关）。
 const editorTarget = ref<{ containerId: string; containerName: string; path: string } | null>(null)
+// 桌面查看目标：null 关；打开时存容器 id/显示名。
+const desktopTarget = ref<{ containerId: string; containerName: string } | null>(null)
 function openFile(cId: string, cName: string, path: string) {
   if (editorTarget.value) {
     err.value = '已有文件在编辑，先关闭它再打开新文件'
@@ -796,21 +800,24 @@ onUnmounted(() => {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" class="w-44">
               <template v-if="!c.managed && !c.adopted">
-                <DropdownMenuItem @click="onAdopt(c)">纳入管理…</DropdownMenuItem>
+                <DropdownMenuItem @click="onAdopt(c)">纳入管理</DropdownMenuItem>
               </template>
               <template v-else>
                 <DropdownMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')"
-                  >停止…</DropdownMenuItem
+                  >停止</DropdownMenuItem
                 >
                 <DropdownMenuItem v-else @click="act(c.id, () => startContainer(c.id))"
                   >启动</DropdownMenuItem
                 >
-                <DropdownMenuItem @click="onPower(c, 'restart')">重启…</DropdownMenuItem>
+                <DropdownMenuItem v-if="c.state === 'running'" @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
+                  >桌面</DropdownMenuItem
+                >
+                <DropdownMenuItem @click="onPower(c, 'restart')">重启</DropdownMenuItem>
                 <DropdownMenuItem
                   v-if="c.managed"
                   class="text-destructive"
                   @click="onDelete(c)"
-                  >删除…</DropdownMenuItem
+                  >删除</DropdownMenuItem
                 >
               </template>
             </DropdownMenuContent>
@@ -1040,6 +1047,13 @@ onUnmounted(() => {
         :path="editorTarget.path"
         @close="editorTarget = null"
         @saved="onEditorSaved"
+      />
+
+      <DesktopDialog
+        v-if="desktopTarget"
+        :container-id="desktopTarget.containerId"
+        :container-name="desktopTarget.containerName"
+        @close="desktopTarget = null"
       />
     </div>
   </div>

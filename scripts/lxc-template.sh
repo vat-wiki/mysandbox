@@ -53,12 +53,13 @@ if [ "$state" != "RUNNING" ]; then
 fi
 
 # ---------- dns：静态 IP 无 DHCP，resolved 没有上游 ----------
+# 网关 10.88.10.1 是宿主在网桥上的副 IP（见 docs/lxc-migration.md P8）。
 step dns
 attsh <<'EOS'
 mkdir -p /etc/systemd/resolved.conf.d
 cat > /etc/systemd/resolved.conf.d/mysandbox.conf <<CONF
 [Resolve]
-DNS=10.88.0.1 114.114.114.114
+DNS=10.88.10.1 114.114.114.114
 CONF
 systemctl restart systemd-resolved
 getent hosts archive.ubuntu.com >/dev/null || { echo "DNS 仍不可用" >&2; exit 1; }
@@ -85,18 +86,43 @@ chmod 440 /etc/sudoers.d/dev
 EOS
 
 # ---------- apt 基础包（对齐 Dockerfile 第一层）----------
+# 源先换 aliyun：官方源被 fake-ip DNS 污染（198.18.x → clash/mihomo），容器直连拉不动；
+# aliyun 实测直连可达（见 docs）。幂等：已是 aliyun 则 sed 无命中、不改动。
 step apt
 attsh <<'EOS'
 export DEBIAN_FRONTEND=noninteractive
+sed -i "s|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g" /etc/apt/sources.list
 apt-get update
 apt-get install -y --no-install-recommends \
   zsh git openssh-client ca-certificates jq curl less vim-tiny xz-utils tzdata tmux \
   zsh-autosuggestions zsh-syntax-highlighting \
-  python3 make g++ sudo bsdutils
+  python3 make g++ sudo bsdutils \
+  xvfb x11vnc xfce4 xfce4-terminal dbus-x11
 ln -sf /usr/share/zoneinfo/Asia/Singapore /etc/localtime
 echo Asia/Singapore > /etc/timezone
 rm -rf /var/lib/apt/lists/*
 chsh -s /usr/bin/zsh dev
+EOS
+
+# ---------- oh-my-zsh：zsh 框架（apt 无包，git clone 系统级装到 /usr/share）----------
+# 不用官方 install.sh：它装到 $HOME、还会改写 zshrc/chsh——模板要的是 root 持有、随 rootfs 克隆。
+# 幂等：已在位即跳过；模板是冻结快照，不 git 追新（zshrc 里也关了 omz 自动更新）。
+# zsh-autosuggestions / zsh-syntax-highlighting 仍是上面的 apt 包——omz 不含这两个，删不得。
+# ⚠️ git clone 建的目录是 775：omz 的 compaudit 对 group/other 可写目录拒载补全（实测报
+# Insecure completion-dependent directories）——clone 后必须 chmod g-w,o-w。
+step omz
+attsh <<'EOS'
+if [ -f /usr/share/oh-my-zsh/oh-my-zsh.sh ]; then
+  echo "oh-my-zsh 已在位，跳过 clone"
+else
+  for _ in 1 2 3; do   # GitHub 偶发抖动，对齐 node/gh 步的重试策略
+    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /usr/share/oh-my-zsh && break
+    sleep 3
+  done
+fi
+rm -rf /usr/share/oh-my-zsh/.git        # 冻结快照不留 .git（omz compdump 元数据退化为无 rev，跨启动稳定）
+chmod -R g-w,o-w /usr/share/oh-my-zsh
+test -f /usr/share/oh-my-zsh/oh-my-zsh.sh
 EOS
 
 # ---------- node（官方 tarball 到 /usr/local，对齐 Dockerfile）----------
@@ -150,17 +176,17 @@ fi
 EOS
 
 # ---------- skel-home：首启 seed 模板（对齐 Dockerfile 的 /etc/skel-home）----------
-# zshrc 从宿主的 image/zshrc.docker 拷进去——同一份文件两个引擎共用，别分叉。
+# zshrc 从宿主的 scripts/zshrc 拷进去——同一份文件两个引擎共用，别分叉。
 step skel
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-if [ -f "$here/image/zshrc.docker" ]; then
+if [ -f "$here/scripts/zshrc" ]; then
   # 经 base64 走位置参数，免去 quoting 与「宿主路径在容器内不可见」的问题
-  attsh "$(base64 -w0 < "$here/image/zshrc.docker")" <<'EOS'
+  attsh "$(base64 -w0 < "$here/scripts/zshrc")" <<'EOS'
 mkdir -p /etc/skel-home
 printf %s "$1" | base64 -d > /etc/skel-home/.zshrc
 EOS
 else
-  echo "warn: $here/image/zshrc.docker 不存在，跳过 zshrc 模板" >&2
+  echo "warn: $here/scripts/zshrc 不存在，跳过 zshrc 模板" >&2
   attsh <<'EOS'
 mkdir -p /etc/skel-home
 EOS
@@ -183,6 +209,9 @@ chk "claude"              'command -v claude'
 chk "gh"                  'command -v gh'
 chk "sudo 免密"           '[ -f /etc/sudoers.d/dev ]'
 chk "skel zshrc"          '[ -f /etc/skel-home/.zshrc ]'
+chk "oh-my-zsh"           '[ -f /usr/share/oh-my-zsh/oh-my-zsh.sh ]'
+chk "ghost 建议插件"      '[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]'
+chk "语法高亮插件"        '[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]'
 chk "DNS"                 'getent hosts github.com'
 [ $fail -eq 0 ] || { echo "模板契约未满足" >&2; exit 1; }
 EOS

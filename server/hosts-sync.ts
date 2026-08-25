@@ -1,12 +1,13 @@
-// 全局 hosts 的「应用」共享逻辑 + docker events 自动重刷。
+// 全局 hosts 的「应用」共享逻辑 + lxc-monitor 事件自动重刷。
 // routes 的 apply 路由、保存即生效、事件监听三方共用 applyHostsToContainers；
-// 事件路径让全局 hosts 变「真全局」——容器重启后 mysandbox 自动追平被 Docker
-// 还原的 /etc/hosts（Docker 管创建、我们管维持，只写声明的内容）。
+// 事件路径让全局 hosts 变「真全局」——容器重启后 mysandbox 自动追平
+// 需要重写的 /etc/hosts（只写声明的内容）。
 import { createHash } from 'node:crypto';
 import type { Config } from './config.js';
 import { listManaged, inspectContainer, subscribeEvents, type ExecOpts } from './engine/index.js';
 import { runBatch, type BatchResult } from './batch.js';
-import { getCustomHostsContent, readHostHosts } from './hosts.js';
+import { getCustomHostsContent, readHostHosts, composeHostsContent, serviceBlockLines } from './hosts.js';
+import { listServiceEndpoints } from './docker.js';
 import { getAllMeta, setMeta } from './state.js';
 import { log } from './logger.js';
 
@@ -38,11 +39,16 @@ export type ApplyHostsResult = BatchResult & { skipped: number };
 const EMPTY_RESULT: ApplyHostsResult = { total: 0, ok: 0, failed: 0, skipped: 0, items: [] };
 
 // 批量把内容覆写进容器 /etc/hosts（root exec）。空内容防御式返回——绝不把容器 hosts 清空。
+// 内容 = 用户内容（resolveHostsContent）+ docker 服务块（listServiceEndpoints 现算）：
+// 四条路径（save/manual/event/startup）统一在这里组合，hash 对组合后内容计算——
+// 服务集变化 → hash 变 → 自动重刷，无需各路径单独感知。
 export async function applyHostsToContainers(
   cfg: Config,
   opts: ApplyHostsOpts = {},
 ): Promise<ApplyHostsResult> {
-  const { content } = await resolveHostsContent(opts.content);
+  const resolved = await resolveHostsContent(opts.content);
+  const svcLines = cfg.services.enabled ? serviceBlockLines(await listServiceEndpoints(cfg)) : [];
+  const content = composeHostsContent(resolved.content, svcLines);
   if (!content) return { ...EMPTY_RESULT };
 
   // 目标容器：显式 ids 原样用；缺省枚举全部运行中受管理容器。
@@ -116,7 +122,7 @@ function enqueue(fn: () => Promise<void>): void {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // 订阅引擎事件（容器 start/restart），断线指数退避重连。
-// 永不抛、永不崩进程：引擎侧已吞掉流 error（docker events / lxc-monitor 各自实现），
+// 永不抛、永不崩进程：引擎侧已吞掉流 error（lxc-monitor 进程退出），
 // 断流即返回，这里退避重连即自愈。
 export function startHostsEventSync(cfg: Config): void {
   void (async () => {
@@ -127,7 +133,7 @@ export function startHostsEventSync(cfg: Config): void {
           enqueue(() => handleEvent(cfg, ev.containerId));
         });
         delay = 1_000; // 连上即复位
-        log.info({ engine: cfg.engine }, 'hosts event sync: subscribed');
+        log.info({ engine: 'lxc' }, 'hosts event sync: subscribed');
         // 重连后全量补刷一次，补断线窗口内错过的事件（hash 跳过，近零成本）
         enqueue(() => sweepHosts(cfg));
         await sub.closed; // resolve = 底层断流（引擎侧判定）-> 退避重连
@@ -149,20 +155,23 @@ async function handleEvent(cfg: Config, id: string): Promise<void> {
   } catch {
     return;
   }
-  // docker 侧 start/restart 后 /etc/hosts 被还原成镜像+ExtraHosts 的初始态——即使内容与
+  // 容器 start/restart 后重刷一次——即使内容与
   // meta hash 相同也必须重写。LXC 侧容器内 /etc/hosts 是 rootfs 里的真文件、重启不还原，
   // 重刷是幂等的空操作。事件路径统一不跳过（skipUnchanged 只用于启动补刷的断线窗口去重）。
   await applyHostsToContainers(cfg, { ids: [id], reason: 'event' });
 }
 
 // 启动补刷（类比 sweepContainerCli）：服务重启期间容器可能被外部 restart（错过事件窗口）。
-// 门控：仅 hosts.txt 存在（isCustom）才自动刷——用户从未保存过时回退内容是宿主
-// /etc/hosts，自动应用等于「容器一启动就被静默改写」，超出用户表达过的意图。
+// 门控：仅 hosts.txt 存在（isCustom）**或存在运行中服务**才自动刷。前者是用户表达过的意图；
+// 后者是 mysandbox 自己的产物——服务存在时容器 /etc/hosts 里就该有服务行，否则 LXC 容器
+// 重启后 `pg` 这类名字解析丢失。用户从未保存过且无服务时，回退内容是宿主 /etc/hosts，
+// 自动应用等于「容器一启动就被静默改写」，超出用户表达过的意图。
 // 手动「应用」按钮不受此门控（显式动作）。
 export async function sweepHosts(cfg: Config): Promise<void> {
   try {
     const { content, isCustom } = await resolveHostsContent();
-    if (!isCustom || !content) return;
+    const svcLines = cfg.services.enabled ? serviceBlockLines(await listServiceEndpoints(cfg)) : [];
+    if ((!isCustom && svcLines.length === 0) || (!content && svcLines.length === 0)) return;
     const r = await applyHostsToContainers(cfg, { content, skipUnchanged: true, reason: 'startup' });
     log.info({ ok: r.ok, skipped: r.skipped, failed: r.failed }, 'hosts startup sweep done');
   } catch (e) {

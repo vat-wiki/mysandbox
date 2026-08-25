@@ -27,29 +27,34 @@ export const ConfigSchema = z.object({
     host: z.string().default('127.0.0.1'),
     port: z.number().int().default(7321),
   }),
-  // 容器引擎：'docker'（原形态）| 'lxc'（系统容器，见 docs/lxc-migration.md）。
-  // 迁移期可切换回退；两者容器共用同一座网桥，同 LAN 互通。
-  engine: z.enum(['docker', 'lxc']).default('docker'),
-  docker: z.object({
-    socketPath: z.string().default('/var/run/docker.sock'),
-  }),
-  // LXC 引擎专属配置（engine: lxc 时生效）。
+  // 模板容器：建容器 = lxc-copy 克隆它。
+  // 克隆要求模板处于 STOPPED（lxc-copy 对运行中的源静默失败）。
   lxc: z
     .object({
-      // 模板容器名：建容器 = lxc-copy 克隆它（D3，取代 docker 镜像）。
-      // 克隆要求模板处于 STOPPED（lxc-copy 对运行中的源静默失败）。
       template: z.string().default('ms-template'),
     })
     .default({ template: 'ms-template' }),
-  image: z.string().default('dev'),
-  // 远程镜像仓库（host/path，如 ghcr.io/leon/mysandbox）；空=未配，push/pull 需显式给 ref。
-  registry: z.string().default(''),
-  // push/pull 用的 tag（本地基础镜像仍由 image 字段决定）。
-  imageTag: z.string().default('latest'),
-  // 镜像构建上下文目录（外部化）；空=随包内置 image/ 自动定位。支持 ~，须为绝对路径。
-  imageDir: z.string().default(''),
+  // 容器 veth 挂的宿主网桥设备名（如 br-f0cc7d98dca0）。
   network: z.string().default('dev-lan'),
-  dataRoot: z.string(),
+  // docker 服务层：配套服务（数据库等）跑在 docker 里，与 LXC 容器同桥互通。
+  services: z
+    .object({
+      enabled: z.boolean().default(true),
+      // docker 网络名（⚠️ 不是顶层 network 的桥设备名；两者经 br-<网络id前12位> 对应，
+      // services.ts 的 bridgeOk 校验这个关系）。服务必须挂现有网络——新建 docker 网络
+      // 会落到 daemon.json 的 10.201.0.0/16 池，不在 LXC 同桥。
+      network: z.string().default('dev-lan'),
+      // 服务静态 IP 池（docker 动态分配从 .2 顺排，.200+ 天然隔离；占用判定见
+      // services.ts allocateServiceIp——网络端点 ∪ state.services ∪ reserved）。
+      ipPool: z
+        .object({
+          from: z.string().default('10.88.0.200'),
+          to: z.string().default('10.88.0.240'),
+          reserved: z.array(z.string()).default([]),
+        })
+        .default({ from: '10.88.0.200', to: '10.88.0.240', reserved: [] }),
+    })
+    .default({ enabled: true, network: 'dev-lan', ipPool: { from: '10.88.0.200', to: '10.88.0.240', reserved: [] } }),
   sshSource: z.string(),
   claudeSettingsTemplate: z.string().default(''),
   ipPool: z.object({
@@ -57,7 +62,6 @@ export const ConfigSchema = z.object({
     to: z.string(),
     reserved: z.array(z.string()).default([]),
   }),
-  restartPolicy: z.string().default('unless-stopped'),
   git: z.object({
     name: z.string().default('dev'),
     email: z.string().default('dev@local'),
@@ -71,7 +75,6 @@ export type Config = z.infer<typeof ConfigSchema>;
 
 function defaultPaths() {
   return {
-    dataRoot: join(STATE_DIR, 'data'),
     sshSource: join(homedir(), '.ssh'),
   };
 }
@@ -121,7 +124,6 @@ export interface LoadResult {
 export async function loadConfig(): Promise<LoadResult> {
   const defaults = await loadDefaultYaml();
   const paths = defaultPaths();
-  if (!defaults.dataRoot) defaults.dataRoot = paths.dataRoot;
   if (!defaults.sshSource) defaults.sshSource = paths.sshSource;
 
   const fileExisted = existsSync(CONFIG_FILE);
@@ -144,19 +146,12 @@ export async function loadConfig(): Promise<LoadResult> {
     await mkdir(CONFIG_DIR, { recursive: true });
     const out = yamlDump({
       listen: parsed.listen,
-      engine: parsed.engine,
-      docker: parsed.docker,
       lxc: parsed.lxc,
-      image: parsed.image,
-      registry: parsed.registry,
-      imageTag: parsed.imageTag,
-      imageDir: parsed.imageDir,
       network: parsed.network,
-      dataRoot: parsed.dataRoot,
+      services: parsed.services,
       sshSource: parsed.sshSource,
       claudeSettingsTemplate: parsed.claudeSettingsTemplate,
       ipPool: parsed.ipPool,
-      restartPolicy: parsed.restartPolicy,
       git: parsed.git,
       ui: parsed.ui,
       token: parsed.token,
