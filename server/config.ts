@@ -53,8 +53,11 @@ export const ConfigSchema = z.object({
           reserved: z.array(z.string()).default([]),
         })
         .default({ from: '10.88.0.200', to: '10.88.0.240', reserved: [] }),
+      // 镜像拉取硬超时（毫秒，默认 30 分钟）。慢速网络下兜底用；正常卡死会被
+      // 5 分钟无输出看门狗先拦下（见 docker.ts pullImageStream 的 idleMs）。
+      pullTimeoutMs: z.number().int().default(1_800_000),
     })
-    .default({ enabled: true, network: 'dev-lan', ipPool: { from: '10.88.0.200', to: '10.88.0.240', reserved: [] } }),
+    .default({ enabled: true, network: 'dev-lan', ipPool: { from: '10.88.0.200', to: '10.88.0.240', reserved: [] }, pullTimeoutMs: 1_800_000 }),
   sshSource: z.string(),
   claudeSettingsTemplate: z.string().default(''),
   ipPool: z.object({

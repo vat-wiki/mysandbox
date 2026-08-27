@@ -10,6 +10,13 @@ import { execRun, execFeed } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE, sessionName } from './terminal.js';
+import {
+  parsePorcelainZ,
+  mapGitExit,
+  type GitStatusView,
+  type GitDiffView,
+  type GitDiffSide,
+} from './gitpanel.js';
 
 // 读/写一致的内容上限：超限返回 413（PUT 的路由级 bodyLimit 放得更宽，因 JSON 转义最坏
 // 膨胀 ~6x：2MB 内容 -> ~12MB body，留余量到 16MB）。hostFiles.ts 复用同一上限。
@@ -325,4 +332,115 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
     return { cwd };
   });
+
+  // —— git 仓库状态（面板「Git 变更」区块数据源）——
+  // 协议：首行 toplevel（rev-parse --show-toplevel 打印的规范绝对路径，git 自身保证不含
+  // 换行，按首个 \n 切分安全），其后整段是 porcelain -z 的 NUL 流。非仓库是正常态不是
+  // 错误：exit 7 -> {repo:false} 200 返回，前端整块隐藏。--no-optional-locks 让只读
+  // status 不写 index 锁（多客户端轮询不打架，git 2.22+）。timeoutMs 略大于前端 10s。
+  app.get('/api/containers/:id/git/status', async (req): Promise<GitStatusView> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" status --porcelain=v1 -z --branch',
+        'sh', path,
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) return { repo: false };
+    const err = mapGitExit(res, 'status');
+    if (err) throw err;
+
+    const nl = res.stdout.indexOf('\n');
+    const toplevel = res.stdout.slice(0, nl); // 空串/异常形状按非仓库兜底
+    if (nl < 0 || !toplevel.startsWith('/')) return { repo: false };
+    return { repo: true, toplevel, ...parsePorcelainZ(res.stdout.slice(nl + 1)) };
+  });
+
+  // —— git 变更对比（HEAD 版本 vs 工作区，Monaco diff 视图数据源）——
+  // 单次 exec 完成双侧探测 + base64 输出（避免双请求竞态）。协议：
+  //   FLAGS <unborn> <bflag> <wflag> <bsize> <wsz>\n @@BASE@@\n<b64> @@WORK@@\n<b64>
+  //   flag：n = 不存在（HEAD 无此路径 / 工作区已删）、b/B = 可读/超限、w/W 同理；
+  //   超限与不存在都不流内容（局部降级由 Node 侧组装，不抛 413 断掉整个视图）。
+  //   标记用 @@ 包裹：@ 不在 base64 字母表（A-Za-z0-9+/）内，indexOf 不会撞进内容里
+  //   产生假标记（裸 "WORK\n" 理论上可由 base64 行尾拼出，属静默损坏）。
+  // exit 8 = 工作区/HEAD 路径不在 toplevel 下（400）。R 条目的旧路径由前端经 headPath
+  // 传入（默认等于 path）。MAX_BYTES 沿用文件读上限（同一常量，语义一致：可对比的内容
+  // 与可编辑的内容同量级）。
+  app.get('/api/containers/:id/git/diff', async (req): Promise<GitDiffView> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const headPath = q.headPath ? cleanPath(q.headPath, 'headPath') : path;
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'w="$1"; h="$2"',
+          't=$(git -C "${w%/*}" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          // ${VAR#"$t"/} 引号展开防路径内特殊字符被当模式
+          'case "$w" in "$t"|"$t"/*) wr=${w#"$t"}; wr=${wr#/} ;; *) exit 8 ;; esac',
+          'case "$h" in "$t"|"$t"/*) hr=${h#"$t"}; hr=${hr#/} ;; *) exit 8 ;; esac',
+          'unb=0; git -C "$t" rev-parse -q --verify HEAD >/dev/null 2>&1 || unb=1',
+          'bsize=""; [ "$unb" = 0 ] && bsize=$(git -C "$t" cat-file -s "HEAD:$hr" 2>/dev/null) || :',
+          'wsz=""; [ -f "$w" ] && wsz=$(stat -c %s "$w")',
+          'bf=n; [ -n "$bsize" ] && { [ "$bsize" -le ' + MAX_BYTES + ' ] && bf=b || bf=B; }',
+          'wf=n; [ -n "$wsz" ] && { [ "$wsz" -le ' + MAX_BYTES + ' ] && wf=w || wf=W; }',
+          'printf "FLAGS %s %s %s %s %s\\n" "$unb" "$bf" "$wf" "${bsize:-0}" "${wsz:-0}"',
+          'printf "@@BASE@@\\n"; [ "$bf" = b ] && git -C "$t" show "HEAD:$hr" | base64 || :',
+          'printf "@@WORK@@\\n"; [ "$wf" = w ] && base64 "$w" || :',
+        ].join('\n'),
+        'sh', path, headPath,
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 30_000,
+    });
+    if (res.exitCode === 7) return { repo: false, toplevel: '', file: path, base: {}, work: {} };
+    const err = mapGitExit(res, 'diff');
+    if (err) throw err;
+
+    return parseDiffProto(res.stdout, path, headPath);
+  });
+}
+
+// diff 脚本输出协议 -> GitDiffView（宿主侧 hostFiles.ts 复用同一解析）。
+// FLAGS 行后两段 @@BASE@@/@@WORK@@ 各接 base64。binary 判定复用 classifyContent（单源）。
+export function parseDiffProto(stdout: string, path: string, headPath: string): GitDiffView {
+  const nl = stdout.indexOf('\n');
+  const flags = (nl >= 0 ? stdout.slice(0, nl) : '').split(' ');
+  const [, unb, bf, wf, bsizeS, wszS] = flags;
+  const body = nl >= 0 ? stdout.slice(nl + 1) : '';
+  const M_BASE = '@@BASE@@\n';
+  const M_WORK = '@@WORK@@\n';
+  const bBase = body.indexOf(M_BASE);
+  const bWork = body.indexOf(M_WORK);
+  const mkSide = (
+    flag: string | undefined,
+    sizeS: string | undefined,
+    b64: string,
+    absent: GitDiffSide['absent'],
+  ): GitDiffSide => {
+    const size = Number(sizeS) || 0;
+    if (flag === 'B' || flag === 'W') return { absent: 'too_large', size };
+    if (flag === 'n') return { absent, ...(absent ? {} : { size }) };
+    const buf = Buffer.from(b64, 'base64');
+    const { binary, content } = classifyContent(buf);
+    return { ...(binary ? { binary: true } : { content }), size };
+  };
+  const base = mkSide(bf, bsizeS, bBase >= 0 ? body.slice(bBase + M_BASE.length, bWork) : '', 'no_head_path');
+  const work = mkSide(wf, wszS, bWork >= 0 ? body.slice(bWork + M_WORK.length) : '', 'deleted');
+  return {
+    repo: true,
+    toplevel: '',
+    file: path,
+    ...(headPath !== path ? { headFile: headPath } : {}),
+    base: unb === '1' ? { absent: 'unborn' } : base,
+    work,
+  };
 }

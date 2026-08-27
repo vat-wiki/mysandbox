@@ -8,6 +8,8 @@
 // 的唯一刻意差异——容器内以 uid 1000 执行，宿主侧无这层包装）。
 import { stat, lstat, readdir, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import {
@@ -15,10 +17,14 @@ import {
   parentOf,
   MAX_BYTES,
   classifyContent,
+  parseDiffProto,
   type FileEntry,
   type FilesView,
   type FileView,
 } from './files.js';
+import { parsePorcelainZ, type GitStatusView, type GitDiffView } from './gitpanel.js';
+
+const execFileAsync = promisify(execFile);
 
 // mtime 统一浮点秒（容器侧 find %T@ / date +%s.%N 同单位；前端只做等值比较与透传）。
 const mtimeOf = (st: { mtimeMs: number }): number => st.mtimeMs / 1000;
@@ -237,5 +243,127 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       throw mapErr(e, 'delete failed');
     }
     return { ok: true };
+  });
+
+  // —— git 仓库状态 / 变更对比（与容器侧 files.ts 两端点一比一对齐，解析单源 gitpanel.ts）——
+  // 宿主没有 engine exec 抽象，直接 execFile git（数组参数，无 shell 拼接）。非仓库 ->
+  // {repo:false} 200（同容器侧）；git 未装 -> 400 git_missing（不能伪装成非仓库）；
+  // dubious ownership 等其余失败按 500 抛 git 原话——不做 safe.directory 放权（安全模型：
+  // token 等价 leon 用户，但不主动抹平系统防护）。
+  app.get('/api/host-terminal/git/status', async (req): Promise<GitStatusView> => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
+      return { repo: false }; // rev-parse 失败 = 非仓库（正常态）
+    }
+    const out = await gitExec([
+      '--no-optional-locks', '-C', top, 'status', '--porcelain=v1', '-z', '--branch',
+    ]);
+    return { repo: true, toplevel: top, ...parsePorcelainZ(out) };
+  });
+
+  app.get('/api/host-terminal/git/diff', async (req): Promise<GitDiffView> => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const headPath = q.headPath ? cleanPath(q.headPath, 'headPath') : path;
+
+    let top: string;
+    try {
+      top = (await gitExec(['-C', dirname(path), 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
+      return { repo: false, toplevel: '', file: path, base: {}, work: {} };
+    }
+    // 与容器侧脚本同形的探测（unborn / 双侧尺寸 / 越界），只是逐条用 node API 跑。
+    const relOf = (abs: string): string | null => {
+      if (abs === top) return '';
+      if (abs.startsWith(top + '/')) return abs.slice(top.length + 1);
+      return null;
+    };
+    const wr = relOf(path);
+    const hr = relOf(headPath);
+    if (wr === null || hr === null) throw badRequest('path 不在该 git 仓库内');
+
+    let unb = false;
+    try {
+      await gitExec(['-C', top, 'rev-parse', '-q', '--verify', 'HEAD']);
+    } catch {
+      unb = true; // 无任何提交：HEAD 校验失败但仓库存在（toplevel 刚 rev-parse 成功）
+    }
+    // HEAD 侧：cat-file -s 拿尺寸；show 流式读取至 MAX_BYTES+1 截断（防巨型 blob 进内存）。
+    let bsize = 0;
+    let bbuf: Buffer | null = null;
+    if (!unb) {
+      try {
+        bsize = Number((await gitExec(['-C', top, 'cat-file', '-s', `HEAD:${hr}`])).trim()) || 0;
+      } catch {
+        bsize = -1; // HEAD 无此路径（untracked / 新增）
+      }
+      if (bsize > 0 && bsize <= MAX_BYTES) {
+        bbuf = await gitShowBuffer(top, `HEAD:${hr}`);
+      }
+    }
+    // 工作区侧：stat（跟随尾部 symlink，同容器 [ -f ]）+ readFile。
+    let wsz = -1;
+    let wbuf: Buffer | null = null;
+    try {
+      const st = await stat(path);
+      if (st.isFile()) {
+        wsz = st.size;
+        if (wsz <= MAX_BYTES) wbuf = await readFile(path);
+      }
+    } catch {
+      wsz = -1; // 已删除
+    }
+
+    // 组协议文本后复用容器侧的 parseDiffProto（FLAGS + BASE/WORK base64 段），保证两侧
+    // 解析语义单源。flag 编码对齐脚本侧：n 不存在 / 小写可读 / 大写超限。
+    const f = (size: number): string => (size < 0 ? 'n' : size > MAX_BYTES ? 'B' : 'b');
+    const wflag = wsz < 0 ? 'n' : wsz > MAX_BYTES ? 'W' : 'w';
+    const proto =
+      `FLAGS ${unb ? 1 : 0} ${bsize < 0 ? 'n' : f(bsize)} ${wflag} ${bsize < 0 ? 0 : bsize} ${wsz < 0 ? 0 : wsz}\n` +
+      `@@BASE@@\n${bbuf ? bbuf.toString('base64') : ''}` +
+      `@@WORK@@\n${wbuf ? wbuf.toString('base64') : ''}`;
+    const view = parseDiffProto(proto, path, headPath);
+    return { ...view, toplevel: top };
+  });
+}
+
+// git 子进程封装：数组参数、10s 超时、ENOENT（git 未装）映射 400 git_missing。
+async function gitExec(args: string[]): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException & { code?: string | number };
+    if (err.code === 'ENOENT') {
+      throw new HttpError(400, '宿主未安装 git', 'git_missing');
+    }
+    throw e;
+  }
+}
+
+// `git show` 的输出收集：流式累计到 MAX_BYTES+1 即 kill（巨型 blob 不进全量内存，
+// execFile 的 maxBuffer 是事后兜底不是流中截断）。
+function gitShowBuffer(top: string, spec: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const child = spawn('git', ['-C', top, 'show', spec], { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', (c: Buffer) => {
+      chunks.push(c);
+      total += c.length;
+      if (total > MAX_BYTES) child.kill('SIGKILL'); // 已超限，内容反正不用
+    });
+    child.stdout.on('end', () => resolve(Buffer.concat(chunks)));
+    child.on('error', reject);
+    child.stderr?.on('data', () => {}); // 排空 stderr 防阻塞；错误语义由退出码兜
   });
 }

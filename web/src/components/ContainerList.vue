@@ -290,15 +290,32 @@ watch(
 )
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // 文件编辑器目标（v1 单编辑器：已有目标时轻提示换文件需先关）。
-const editorTarget = ref<{ containerId: string; containerName: string; path: string } | null>(null)
+// diff 存在 = git 变更对比模式（FileEditorDialog 走 getGitDiff 只读快照分支）。
+const editorTarget = ref<{
+  containerId: string
+  containerName: string
+  path: string
+  diff?: { headPath?: string }
+} | null>(null)
 // 桌面查看目标：null 关；打开时存容器 id/显示名。
 const desktopTarget = ref<{ containerId: string; containerName: string } | null>(null)
-function openFile(cId: string, cName: string, path: string) {
+function openFile(cId: string, cName: string, path: string, diff?: { headPath?: string }) {
   if (editorTarget.value) {
     err.value = '已有文件在编辑，先关闭它再打开新文件'
     return
   }
-  editorTarget.value = { containerId: cId, containerName: cName, path }
+  editorTarget.value = diff ? { containerId: cId, containerName: cName, path, diff } : { containerId: cId, containerName: cName, path }
+}
+// git 面板点变更条目：以 diff 对比模式打开（FilePanelGit 组装好绝对路径）。
+function onOpenChange(cId: string, cName: string, c: { absPath: string; oldAbsPath?: string }) {
+  openFile(cId, cName, c.absPath, c.oldAbsPath ? { headPath: c.oldAbsPath } : {})
+}
+// diff 对话框「以普通方式打开」：清 diff 标记，dialog 的 watch(diff) 自动重走普通加载。
+function onOpenNormal() {
+  if (editorTarget.value) {
+    const { containerId, containerName, path } = editorTarget.value
+    editorTarget.value = { containerId, containerName, path }
+  }
 }
 function onEditorSaved() {
   // 保存后刷新面板列表（若面板开着且指向同容器）。
@@ -1304,6 +1321,7 @@ onUnmounted(() => {
           :has-terminal="!!activeGroup"
           @close="showFiles = false"
           @open-file="(p: string) => activeGroup && openFile(activeGroup.containerId, activeGroup.name, p)"
+          @open-change="(c) => activeGroup && onOpenChange(activeGroup.containerId, activeGroup.name, c)"
           @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
         />
       </div>
@@ -1314,7 +1332,9 @@ onUnmounted(() => {
         :container-id="editorTarget.containerId"
         :container-name="editorTarget.containerName"
         :path="editorTarget.path"
+        :diff="editorTarget.diff"
         @close="editorTarget = null"
+        @open-normal="onOpenNormal"
         @saved="onEditorSaved"
       />
 

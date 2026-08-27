@@ -37,6 +37,13 @@ import '../../node_modules/monaco-editor/esm/vs/languages/definitions/ruby/regis
 import '../../node_modules/monaco-editor/esm/vs/languages/definitions/cpp/register.js'
 import '../../node_modules/monaco-editor/esm/vs/languages/definitions/graphql/register.js'
 
+// 编辑器功能贡献（features/*）：editor.api 只有内核，任何交互功能都要显式注册。
+// 路径形状与上面的语言 register 同构（磁盘直指绕 exports map，内部相对引用回落同一份
+// editor.api.js，Monaco 单例不重复）。升级 monaco 若挪走这些入口，构建期即报错，不会静默丢功能。
+import '../../node_modules/monaco-editor/esm/vs/features/codicon/register.js' // 图标字体 CSS（不引则查找框图标空白）
+import '../../node_modules/monaco-editor/esm/vs/features/find/register.js' // Ctrl+F 查找（FindController + FindWidget）
+import '../../node_modules/monaco-editor/esm/vs/features/diffEditor/register.js' // diff 视图的命令/菜单贡献
+
 ;(self as unknown as { MonacoEnvironment: { getWorker: () => Worker } }).MonacoEnvironment = {
   getWorker: () => new editorWorker(),
 }

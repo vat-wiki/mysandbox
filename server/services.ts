@@ -10,7 +10,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import { badRequest, conflict, notFound } from './errors.js';
-import { beginSse, type ProgressEvent } from './sse.js';
 import { applyHostsToContainers } from './hosts-sync.js';
 import { log } from './logger.js';
 import {
@@ -30,6 +29,7 @@ import {
   containerLogs,
   imageExistsLocal,
   pullImageStream,
+  registryMirrors,
   ensureVolume,
   removeVolume,
   subscribeServiceEvents,
@@ -41,6 +41,19 @@ import {
   deleteServiceMeta,
   type ServiceMeta,
 } from './state.js';
+import {
+  reservedServiceIps,
+  tryReserveJobName,
+  releaseJobName,
+  reserveJobIp,
+  releaseJobIp,
+  startServiceJob,
+  listServiceJobs,
+  getServiceJob,
+  cancelServiceJob,
+  type JobCtx,
+  type ServicePlan,
+} from './jobs.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
 
@@ -63,14 +76,14 @@ export const SERVICE_PRESETS: ServicePreset[] = [
     key: 'postgres',
     label: 'PostgreSQL',
     image: 'postgres:17',
-    description: 'PostgreSQL 17，默认库/用户 app',
+    description: 'PostgreSQL 17，默认库 app / 用户 mysandbox',
     volumePath: '/var/lib/postgresql/data',
     ports: [5432],
-    fixedEnv: { POSTGRES_DB: 'app', POSTGRES_USER: 'app' },
+    fixedEnv: { POSTGRES_DB: 'app', POSTGRES_USER: 'mysandbox' },
     userEnv: [
       { key: 'POSTGRES_PASSWORD', label: '密码（POSTGRES_PASSWORD）', required: true, secret: true },
     ],
-    hint: '容器内：psql -h <服务名> -U app -d app',
+    hint: '容器内：psql -h <服务名> -U mysandbox -d app',
   },
   {
     key: 'redis',
@@ -105,8 +118,32 @@ export function findPreset(key: string): ServicePreset | undefined {
   return SERVICE_PRESETS.find((p) => p.key === key);
 }
 
+// 现成连接命令：从 preset + env 拼出可直接运行的命令。主机名用服务名（容器内 hosts
+// 注入可解析；宿主直连换 IP——前端「连接信息」对话框有提示）。拼装所需 env 缺一个
+// 都不出（meta 缺失时宁可没有，不出半截命令误导）。
+function composeConnect(presetKey: string, name: string, env: Record<string, string>, ports: number[]): string[] {
+  const port = ports[0];
+  switch (presetKey) {
+    case 'postgres': {
+      const u = env.POSTGRES_USER;
+      const db = env.POSTGRES_DB;
+      const pw = env.POSTGRES_PASSWORD;
+      return u && db && pw ? [`psql "host=${name} port=${port ?? 5432} user=${u} dbname=${db} password=${pw}"`] : [];
+    }
+    case 'redis':
+      return [`redis-cli -h ${name}${port ? ` -p ${port}` : ''}`];
+    case 'mysql': {
+      const pw = env.MYSQL_ROOT_PASSWORD;
+      return pw ? [`mysql -h ${name}${port ? ` -P ${port}` : ''} -u root --password="${pw}"`] : [];
+    }
+    default:
+      return [];
+  }
+}
+
 // —— 视图 ——
-// envKeys 只回 key：env 值含密码，绝不出 API（state.json 0600 落盘是另一回事）。
+// env 全量回值（含密码）：token = 宿主完整权限，鉴权边界已在 token 上收住，
+// UI 需要直接展示连接凭据（state.json 落盘 0600 不变）。
 export interface ServiceView {
   name: string;
   preset: string;
@@ -118,6 +155,8 @@ export interface ServiceView {
   volume: string | null;
   ports: number[];
   envKeys: string[];
+  env: Record<string, string>; // 全量 env（含密码值），供 UI 展示/复制
+  connect: string[]; // 预设感知的现成连接命令（容器内服务名口径）
   description?: string;
   createdAt?: string;
   command?: string[];
@@ -136,6 +175,9 @@ export interface ServicesStatus {
     detail?: string; // bridgeOk=false 时的人话说明
   };
   pool: { from: string; to: string; reserved: string[]; assigned: string[]; free: string[] };
+  // daemon 的 registry-mirrors（docker info）。undefined = 探测失败省略；[] = 直连
+  // Docker Hub，网络受限环境下拉取常超时——前端据此给 amber 提示。
+  registryMirrors?: string[];
 }
 
 export interface CreateServiceInput {
@@ -163,10 +205,11 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
   for (const row of rows) {
     const name = rowName(row.Names);
     const m = meta[name];
+    const presetKey = m?.preset ?? row.Labels['mysandbox.service-preset'] ?? 'custom';
     const ip = (await containerIpamIp(name)) ?? m?.ip ?? null;
     items.push({
       name,
-      preset: m?.preset ?? row.Labels['mysandbox.service-preset'] ?? 'custom',
+      preset: presetKey,
       image: m?.image ?? row.Image,
       ip,
       state: row.State,
@@ -175,6 +218,8 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
       volume: m?.volume ?? null,
       ports: m?.ports ?? [],
       envKeys: m ? Object.keys(m.env) : [],
+      env: m ? m.env : {},
+      connect: m ? composeConnect(presetKey, name, m.env, m.ports ?? []) : [],
       description: m?.description,
       createdAt: m?.createdAt ?? row.CreatedAt,
       command: m?.command,
@@ -183,6 +228,16 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
   }
   items.sort((a, b) => a.name.localeCompare(b.name));
   return { items, status };
+}
+
+// registry-mirrors 的 60s TTL 缓存：值只在 daemon.json 改动并重启 docker 后才变，
+// 而 servicesStatus 被 15s 轮询——没必要每次都 spawn docker info（快，但省着点）。
+let mirrorsCache: { at: number; val: string[] | null } | null = null;
+async function cachedRegistryMirrors(): Promise<string[] | null> {
+  if (mirrorsCache && Date.now() - mirrorsCache.at < 60_000) return mirrorsCache.val;
+  const val = await registryMirrors();
+  mirrorsCache = { at: Date.now(), val };
+  return val;
 }
 
 export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
@@ -197,6 +252,7 @@ export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
     pool: poolView,
   };
   if (!docker.reachable) return status;
+  status.registryMirrors = await cachedRegistryMirrors();
   const net = await inspectNetwork(cfg.services.network);
   if (!net) {
     status.network.detail = `docker 网络 "${cfg.services.network}" 不存在——在 docker 里创建它（或改 services.network 配置）`;
@@ -213,7 +269,8 @@ export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
 }
 
 // 服务池视图：占用 = 网络 running 端点（10.88.0.x 全体，含非服务容器）∪ state.services
-// 登记 IP ∪ reserved。与 network.ts 的容器池互不相交（服务在 .200+，容器在 10.88.10.x）。
+// 登记 IP ∪ reserved ∪ 进行中任务预占的 IP（jobs.ts）。与 network.ts 的容器池互不相交
+// （服务在 .200+，容器在 10.88.10.x）。
 async function servicePoolView(
   cfg: Config,
 ): Promise<ServicesStatus['pool']> {
@@ -227,6 +284,7 @@ async function servicePoolView(
     }
   }
   for (const m of Object.values(await getAllServiceMeta())) used.add(m.ip);
+  for (const ip of reservedServiceIps()) used.add(ip);
   const assigned: string[] = [];
   const free: string[] = [];
   const pFrom = Number(from.split('.')[3]);
@@ -372,6 +430,8 @@ export async function createService(
     volume: meta.volume,
     ports: meta.ports ?? [],
     envKeys: Object.keys(env),
+    env,
+    connect: composeConnect(meta.preset, name, env, meta.ports ?? []),
     description: meta.description,
     createdAt: meta.createdAt,
     command,

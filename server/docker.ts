@@ -243,34 +243,163 @@ export async function imageExistsLocal(image: string): Promise<boolean> {
   return r.ok;
 }
 
-// docker pull 的流式进度：JSON 行，逐行回调给 SSE。
-// 镜像已在本地时跳过（调用方 imageExistsLocal 判定）：pull 对本地已有的 tag 也会去
+// daemon 的全局 registry-mirrors（daemon.json 的 registry-mirrors）。拉 docker.io 走它；
+// 为空 = 直连，国内网络/代理环境下常超时（本机实测：daemon.json 无 mirrors 且宿主在
+// fake-ip 网络下时 auth.docker.io 直接 EOF）。返回 null = 探测失败（调用方省略字段，不猜）。
+// 注意不走 dockerJson——它会在末尾追加自己的 --format，与参数里的冲突。只看 Mirrors，
+// 别解析 IndexConfigs（私有 insecure registry 在那，与 docker.io 拉取无关）。
+export async function registryMirrors(): Promise<string[] | null> {
+  const r = await dockerExec(['info', '--format', '{{json .RegistryConfig}}'], 3_000);
+  if (!r.ok) return null;
+  try {
+    const c = JSON.parse(r.stdout) as { Mirrors?: unknown };
+    return Array.isArray(c.Mirrors) ? (c.Mirrors as string[]) : [];
+  } catch {
+    return null;
+  }
+}
+
+export interface PullOpts {
+  timeoutMs?: number; // 硬超时（默认 30min）：到点 SIGKILL——兜底防呆，正常该先被 idle 看门狗拦下
+  idleMs?: number; // 无输出看门狗（默认 5min）：TLS 握手卡死的 pull 完全静默，等硬超时纯属干等
+  signal?: AbortSignal; // 取消：SIGKILL 子进程，以带 canceled 标记的错误 reject
+}
+
+// docker pull 的流式进度。无 TTY 下 docker CLI 输出 JSON 行，逐行解析后聚合：
+//   - {status} 无 id/progress（Pulling from / Digest / Status / Verifying Checksum…）→ 立即透传
+//   - {id, progressDetail} → 层进度聚合，每 2s flush 一行摘要（原始每层 ~500ms 一条
+//     带 [===>] 进度条的行，直接透传全是垃圾）
+//   - {error} → 记为致命错误
+// JSON.parse 失败的行原样透传（防 CLI 混入非 JSON 输出）。
+// 镜像已在本地时调用方跳过（imageExistsLocal 判定）：pull 对本地已有的 tag 也会去
 // registry 校验 manifest——离线/网络受限环境下白白失败（实测 docker 29）。
-export async function pullImageStream(image: string, onLine: (line: string) => void): Promise<void> {
+export async function pullImageStream(image: string, onLine: (line: string) => void, opts: PullOpts = {}): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
+  const idleMs = opts.idleMs ?? 5 * 60_000;
   await new Promise<void>((resolveP, rejectP) => {
     const child = spawn('docker', ['pull', image], { stdio: ['ignore', 'pipe', 'pipe'] });
     let err = '';
-    const timer = setTimeout(() => child.kill('SIGKILL'), 10 * 60_000);
-    const feed = (buf: Buffer) => {
-      for (const line of buf.toString('utf8').split('\n')) {
-        const s = line.trim();
-        if (s) onLine(s);
+    let done = false; // close 只处理一次（超时/取消先 kill，close 跟着触发）
+    let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let killReason: 'timeout' | 'idle' | 'cancel' | null = null;
+
+    const finish = (fn: () => void): void => {
+      if (done) return;
+      done = true;
+      if (hardTimer) clearTimeout(hardTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+      fn();
+    };
+
+    // —— 层进度聚合 ——
+    const layers = new Map<string, { current: number; total: number }>();
+    let lastSummary = '';
+    const flushSummary = (): void => {
+      let cur = 0;
+      let total = 0;
+      for (const l of layers.values()) {
+        if (l.total > 0) {
+          cur += l.current;
+          total += l.total;
+        }
+      }
+      if (total === 0) return;
+      const mb = (n: number): string => `${(n / 1024 / 1024).toFixed(1)}MB`;
+      const pct = Math.floor((cur / total) * 100);
+      const s = `层进度：${layers.size} 层 · ${mb(cur)}/${mb(total)}（${pct}%）`;
+      if (s !== lastSummary) {
+        // 数字没变（卡住）就不重复刷行——停滞靠 idle 看门狗报，不靠刷屏
+        lastSummary = s;
+        onLine(s);
       }
     };
+    const summaryTimer = setInterval(flushSummary, 2_000);
+
+    const armIdle = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        killReason = 'idle';
+        child.kill('SIGKILL');
+      }, idleMs);
+    };
+    hardTimer = setTimeout(() => {
+      killReason = 'timeout';
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    armIdle();
+
+    const feed = (buf: Buffer): void => {
+      armIdle(); // 任何输出都算「活着」
+      for (const rawLine of buf.toString('utf8').split('\n')) {
+        const s = rawLine.trim();
+        if (!s) continue;
+        let ev: {
+          status?: string;
+          id?: string;
+          progressDetail?: { current?: number; total?: number };
+          error?: string;
+          errorDetail?: { message?: string };
+        } | null = null;
+        try {
+          ev = JSON.parse(s);
+        } catch {
+          onLine(s); // 非 JSON 输出原样透传
+          continue;
+        }
+        if (ev.error || ev.errorDetail?.message) {
+          err += `${ev.error ?? ev.errorDetail?.message}\n`;
+          continue;
+        }
+        if (ev.id && ev.progressDetail) {
+          layers.set(ev.id, {
+            current: ev.progressDetail.current ?? 0,
+            total: ev.progressDetail.total ?? 0,
+          });
+          continue;
+        }
+        if (ev.status && !ev.progress) onLine(ev.status);
+      }
+    };
+
     child.stdout?.on('data', feed);
     child.stderr?.on('data', (b: Buffer) => {
       feed(b);
       err += b.toString('utf8');
     });
     child.on('error', (e) => {
-      clearTimeout(timer);
-      rejectP(e);
+      clearInterval(summaryTimer);
+      finish(() => rejectP(e));
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolveP();
-      else rejectP(new Error(err.trim().split('\n').pop() || `docker pull exited ${code}`));
+      clearInterval(summaryTimer);
+      if (code === 0) {
+        flushSummary(); // 收尾刷最后一行（层全部完成后）
+        finish(resolveP);
+        return;
+      }
+      finish(() => {
+        if (killReason === 'cancel' || opts.signal?.aborted) {
+          rejectP(Object.assign(new Error(`已取消拉取 ${image}`), { canceled: true }));
+        } else if (killReason === 'timeout') {
+          rejectP(new Error(`拉取超时（${Math.round(timeoutMs / 60_000)} 分钟）——镜像 ${image}`));
+        } else if (killReason === 'idle') {
+          rejectP(new Error(`拉取停滞（${Math.round(idleMs / 60_000)} 分钟无输出）——网络受限或 registry 不可达，镜像 ${image}`));
+        } else {
+          rejectP(new Error(err.trim().split('\n').pop() || `docker pull exited ${code}`));
+        }
+      });
     });
+    if (opts.signal) {
+      opts.signal.addEventListener(
+        'abort',
+        () => {
+          killReason = 'cancel';
+          child.kill('SIGKILL');
+        },
+        { once: true },
+      );
+    }
   });
 }
 

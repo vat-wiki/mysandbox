@@ -311,6 +311,8 @@ export interface ServiceView {
   volume: string | null
   ports: number[]
   envKeys: string[]
+  env: Record<string, string>
+  connect: string[]
   description?: string
   createdAt?: string
   command?: string[]
@@ -424,3 +426,43 @@ export const deleteEntry = (id: string, path: string) =>
 export const getListenPorts = (id: string) =>
   // ports：全部监听端口；web：其中实测返回 HTML 的（真网页，可放心点击打开）
   api(`/api/containers/${id}/listen`) as Promise<{ ports: number[]; web: number[] }>
+
+// —— git 面板（容器/宿主双端，filesBase 哨兵同文件 API）——
+export interface GitChange {
+  file: string
+  x: string
+  y: string
+  oldFile?: string
+}
+export interface GitStatusView {
+  repo: boolean
+  toplevel?: string
+  branch?: string | null
+  label?: string
+  unborn?: boolean
+  ahead?: number
+  behind?: number
+  changes?: GitChange[]
+  truncated?: boolean
+}
+export interface GitDiffSide {
+  absent?: 'unborn' | 'no_head_path' | 'deleted' | 'too_large'
+  binary?: boolean
+  content?: string
+  size?: number
+}
+export interface GitDiffView {
+  repo: boolean
+  toplevel: string
+  file: string
+  headFile?: string
+  base: GitDiffSide
+  work: GitDiffSide
+}
+export const getGitStatus = (id: string, path: string) =>
+  api(`${filesBase(id)}/git/status?path=${encodeURIComponent(path)}`) as Promise<GitStatusView>
+export const getGitDiff = (id: string, path: string, headPath?: string) =>
+  api(
+    `${filesBase(id)}/git/diff?path=${encodeURIComponent(path)}` +
+      (headPath ? `&headPath=${encodeURIComponent(headPath)}` : ''),
+  ) as Promise<GitDiffView>

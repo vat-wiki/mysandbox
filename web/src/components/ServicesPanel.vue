@@ -55,6 +55,8 @@ const showCreate = ref(!!props.initialCreate)
 const logs = ref<Record<string, string>>({})
 // 删除确认：null 关闭；{name, deleteData} 打开
 const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
+// 连接信息对话框：展示 env 凭据与现成连接命令（null 关闭）
+const connectOf = ref<ServiceView | null>(null)
 
 async function refresh() {
   try {
@@ -216,6 +218,7 @@ function stateCls(s: ServiceView): string {
                       <Button variant="ghost" size="sm" :disabled="busyName === s.name">⋯</Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" class="w-36">
+                      <DropdownMenuItem v-if="Object.keys(s.env).length" @click="connectOf = s">连接信息</DropdownMenuItem>
                       <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                       <DropdownMenuItem v-if="s.running" @click="op(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
                       <DropdownMenuItem @click="op(s.name, () => restartService(s.name))">重启</DropdownMenuItem>
@@ -253,6 +256,48 @@ function stateCls(s: ServiceView): string {
         @confirm="confirmDelete"
         @cancel="pendingDelete = null"
       />
+
+      <Dialog :open="connectOf != null" @update:open="(v: boolean) => !v && (connectOf = null)">
+        <DialogContent class="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>连接信息 · {{ connectOf?.name }}</DialogTitle>
+            <DialogDescription>
+              容器内按服务名直连；宿主上直连时把服务名换成 IP {{ connectOf?.ip ?? '?' }}。
+            </DialogDescription>
+          </DialogHeader>
+          <div v-if="connectOf" class="space-y-3 text-sm">
+            <div v-if="connectOf.connect.length">
+              <p class="mb-1 text-xs text-muted-foreground">连接命令（点击复制）：</p>
+              <div v-for="c in connectOf.connect" :key="c" class="rounded-md border p-2">
+                <button
+                  type="button"
+                  class="block w-full cursor-pointer break-all text-left font-mono text-xs hover:bg-muted/50"
+                  :title="copied === c ? '已复制' : '点击复制'"
+                  @click="copyVal(c)"
+                >
+                  {{ copied === c ? '已复制' : c }}
+                </button>
+              </div>
+            </div>
+            <div v-if="Object.keys(connectOf.env).length">
+              <p class="mb-1 text-xs text-muted-foreground">环境变量（点击值复制）：</p>
+              <div class="divide-y rounded-md border">
+                <div v-for="(v, k) in connectOf.env" :key="k" class="flex gap-3 px-3 py-1.5 font-mono text-xs">
+                  <span class="w-44 shrink-0 text-muted-foreground">{{ k }}</span>
+                  <button
+                    type="button"
+                    class="cursor-pointer break-all text-left hover:underline"
+                    :title="copied === v ? '已复制' : '点击复制'"
+                    @click="copyVal(String(v))"
+                  >
+                    {{ copied === v ? '已复制' : v }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <ServiceCreateDialog v-if="showCreate" @created="showCreate = false; refresh()" @close="showCreate = false" />
     </DialogContent>

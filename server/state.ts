@@ -20,7 +20,8 @@ export interface ContainerMeta {
 // docker 服务（数据库等）的 sidecar 元数据。与容器同款两层身份模型：
 // docker label 是不可变身份（mysandbox.kind=service，随容器走），这里只存易变/展示数据
 // 与停机时也必须保留的 IP 记录（network inspect 只列 running 端点，静态 IP 占用判定靠它）。
-// ⚠️ env 含密码：state.json 本就 0600；列表 API 只回 envKeys，绝不回值。
+// ⚠️ env 含密码：state.json 本就 0600；列表 API 回全量 env（token = 宿主完整权限，
+// 鉴权边界在 token 上收住，UI 需展示连接凭据）。
 export interface ServiceMeta {
   preset: string; // 'postgres' | 'redis' | 'mysql' | 'custom'
   image: string;

@@ -1,14 +1,19 @@
 <script setup lang="ts">
 // 容器文件编辑对话框：Monaco 大编辑空间 + Ctrl+S 保存 + mtime 乐观锁冲突处理。
 // 二进制 / 超大文件只读提示。未保存关闭需确认（ConfirmDialog 复用）。
-import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
+// diff prop 存在时切「git 变更对比」模式：getGitDiff 快照（左 HEAD 右工作区）、只读、
+// 无保存/脏确认；各降级路径（单侧二进制/超大/缺失）只影响那一侧，双侧都不可渲染时
+// 给「以普通方式打开」出口（emit open-normal，父级清 diff 重挂普通模式）。
+import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
 import { langForFilename } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
 import {
   readFile,
   writeFile,
+  getGitDiff,
   Unauthorized,
   ApiError,
   type FileView,
+  type GitDiffView,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
@@ -22,15 +27,19 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
 // Monaco 编辑器壳（本组件本身被 defineAsyncComponent 懒加载，monaco chunk 不进首屏）
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
+const CodeDiffEditor = defineAsyncComponent(() => import('@/components/CodeDiffEditor.vue'))
 
 const props = defineProps<{
   containerId: string
   containerName: string
   path: string
+  /** git 对比模式：headPath 为 R 条目旧路径；存在即以 diff 快照打开 */
+  diff?: { headPath?: string }
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'saved', path: string): void
+  (e: 'open-normal'): void
 }>()
 
 const name = computed(() => props.path.slice(props.path.lastIndexOf('/') + 1))
@@ -51,10 +60,35 @@ let savedFlashTimer: ReturnType<typeof setTimeout> | null = null
 
 const dirty = computed(() => content.value !== savedContent.value)
 
+// —— diff 模式状态 ——
+const diffView = ref<GitDiffView | null>(null)
+// 双侧都不可文本渲染：中央降级卡 + 「以普通方式打开」出口
+const diffDead = computed(() => {
+  const v = diffView.value
+  if (!v) return false
+  const bad = (s: typeof v.base) => s.binary === true || s.absent === 'too_large'
+  return bad(v.base) && bad(v.work)
+})
+// 单侧降级说明条文案（null = 双侧正常，不渲染）
+const diffNotice = computed(() => {
+  const v = diffView.value
+  if (!v) return null
+  const say = (s: typeof v.base, which: string): string | null => {
+    if (s.binary) return `${which}侧为二进制/非 UTF-8，无法对比`
+    if (s.absent === 'too_large') return `${which}侧超过 2MB，已省略`
+    return null
+  }
+  return say(v.base, '左（HEAD）') ?? say(v.work, '右（工作区）')
+})
+
 async function load() {
   loading.value = true
   err.value = ''
   try {
+    if (props.diff) {
+      await loadDiff()
+      return
+    }
     const v = await readFile(props.containerId, props.path)
     meta.value = v
     isNew.value = false
@@ -85,7 +119,39 @@ async function load() {
     loading.value = false
   }
 }
+
+async function loadDiff() {
+  diffView.value = null
+  const v = await getGitDiff(props.containerId, props.path, props.diff?.headPath)
+  if (!v.repo) {
+    // 点开期间仓库消失（罕见）：按普通文件打开兜底
+    emit('open-normal')
+    return
+  }
+  diffView.value = v
+}
+// diff prop 变化（父级从降级卡点「以普通方式打开」清掉 diff）时重走加载。
+// path/containerId 变化由父级 :key 重建组件，不需要 watch。
+watch(
+  () => props.diff,
+  () => {
+    if (!props.diff) {
+      diffView.value = null
+      void load()
+    }
+  },
+)
 onMounted(load)
+
+// 侧内容取值：absent/binary 侧给空串（diff 视图里呈全增/全删形态，可读）。
+// 参数可空：模板 diffDead 分支已保证 diffView 非空，但类型上不体现，这里兜住。
+function sideText(s: { content?: string } | null | undefined): string {
+  return s?.content ?? ''
+}
+function fmtBytes(n?: number): string {
+  if (!n) return ''
+  return n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
+}
 
 async function save(overwrite = false) {
   if (busy.value || meta.value?.binary) return
@@ -145,9 +211,9 @@ async function overwrite() {
   await save(true)
 }
 
-// 关闭流程：脏改动先过确认。
+// 关闭流程：脏改动先过确认（diff 只读快照无脏态，直接关）。
 function tryClose() {
-  if (dirty.value && !meta.value?.binary) {
+  if (!props.diff && dirty.value && !meta.value?.binary) {
     confirmDiscard.value = true
     return
   }
@@ -167,19 +233,28 @@ function fmtSize(n: number): string {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || tryClose()">
-    <!-- h-[85vh] 显式高（不是 max-h）：flex-1 的 Monaco 容器需要父级有确定高度基准，
-         max-h 只限不限撑，flex 子项会塌成内容高（实测 5px）。 -->
-    <DialogContent class="flex h-[85vh] max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
+    <!-- h-[92vh] 显式高（不是 max-h）：flex-1 的 Monaco 容器需要父级有确定高度基准，
+         max-h 只限不限撑，flex 子项会塌成内容高（实测 5px）。7xl 宽：编辑/diff 双栏
+         都需要横向空间（diff 并排视图尤甚）。 -->
+    <DialogContent class="flex h-[92vh] max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-7xl">
       <!-- 头：文件名 + dirty 点 + 容器/路径 -->
       <div class="flex items-center gap-2.5 border-b px-5 py-3 pr-10">
         <DialogTitle class="font-mono text-base font-semibold">{{ name }}</DialogTitle>
         <span
-          v-if="isNew"
-          class="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-          >新建</span
+          v-if="diff"
+          class="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-400"
+          title="git 变更对比（左 HEAD · 右 工作区）"
+          >对比</span
         >
         <span
-          v-if="dirty"
+          v-if="diff?.headPath && diff.headPath !== path"
+          class="max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+          :title="diff.headPath"
+          >{{ diff.headPath.slice(diff.headPath.lastIndexOf('/') + 1) }} →</span
+        >
+        <span v-else-if="isNew" class="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">新建</span>
+        <span
+          v-if="!diff && dirty"
           class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
           title="有未保存改动"
         />
@@ -197,6 +272,38 @@ function fmtSize(n: number): string {
         <template v-else-if="err">
           <p class="m-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{{ err }}</p>
         </template>
+        <!-- diff 模式 -->
+        <template v-else-if="diff">
+          <!-- 双侧都不可渲染：降级卡 + 普通打开出口 -->
+          <div
+            v-if="diffDead"
+            class="flex flex-1 flex-col items-center justify-center gap-3 px-5 py-8 text-muted-foreground"
+          >
+            <p class="text-sm">两侧内容都无法对比（二进制 / 超过 2MB）</p>
+            <p v-if="diffView" class="text-xs">
+              左（HEAD）{{ diffView.base.binary ? '二进制' : fmtBytes(diffView.base.size) }} ·
+              右（工作区）{{ diffView.work.binary ? '二进制' : fmtBytes(diffView.work.size) }}
+            </p>
+            <Button variant="outline" size="sm" @click="emit('open-normal')">以普通方式打开</Button>
+          </div>
+          <template v-else>
+            <p
+              v-if="diffNotice"
+              class="shrink-0 border-b border-border bg-muted/30 px-5 py-1.5 text-[11px] text-muted-foreground"
+            >
+              {{ diffNotice }}
+            </p>
+            <CodeDiffEditor
+              class="min-h-0 flex-1"
+              :original="sideText(diffView?.base)"
+              :modified="sideText(diffView?.work)"
+              :language="language"
+              :original-path="diff?.headPath ?? path"
+              :modified-path="path"
+            />
+          </template>
+        </template>
+        <!-- 普通模式 -->
         <template v-else-if="meta?.binary">
           <div class="flex flex-1 flex-col items-center justify-center gap-2 px-5 py-8 text-muted-foreground">
             <p class="text-sm">二进制或非 UTF-8 文件，不支持在线编辑</p>
@@ -223,18 +330,25 @@ function fmtSize(n: number): string {
         </template>
       </div>
 
-      <!-- 底部：状态 + 保存 -->
+      <!-- 底部：状态 + 保存（diff 态是只读快照，无保存） -->
       <div class="flex items-center gap-3 border-t px-5 py-2.5">
         <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-          <span v-if="savedFlash" class="text-emerald-500">已保存</span>
-          <span v-else-if="dirty" class="text-amber-500">未保存</span>
-          <span v-else-if="isNew">新文件，保存时创建</span>
-          <span v-else-if="meta && !meta.binary">{{ fmtSize(meta.size) }}</span>
+          <template v-if="diff">
+            git 对比快照 · 左 HEAD · 右 工作区 · 只读
+            <span v-if="diffView">（{{ fmtBytes(diffView.base.size) || '?' }} → {{ fmtBytes(diffView.work.size) || '?' }}）</span>
+          </template>
+          <template v-else>
+            <span v-if="savedFlash" class="text-emerald-500">已保存</span>
+            <span v-else-if="dirty" class="text-amber-500">未保存</span>
+            <span v-else-if="isNew">新文件，保存时创建</span>
+            <span v-else-if="meta && !meta.binary">{{ fmtSize(meta.size) }}</span>
+          </template>
         </span>
         <Button variant="outline" size="sm" @click="tryClose">关闭</Button>
-        <Button size="sm" :disabled="!dirty || busy || !!meta?.binary" @click="save()">
+        <Button v-if="!diff" size="sm" :disabled="!dirty || busy || !!meta?.binary" @click="save()">
           {{ busy ? '保存中…' : '保存 (Ctrl+S)' }}
         </Button>
+        <Button v-else variant="outline" size="sm" @click="emit('open-normal')">以普通方式打开</Button>
       </div>
     </DialogContent>
   </Dialog>

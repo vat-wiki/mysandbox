@@ -22,6 +22,8 @@ import {
 } from '@/components/ui/context-menu'
 import NameDialog from '@/components/NameDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import FilePanelGit from '@/components/FilePanelGit.vue'
+import type { GitChange } from '@/lib/api'
 import {
   Folder,
   FileText,
@@ -47,6 +49,7 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'open-file', path: string): void
   (e: 'pane-pick', termId: string): void
+  (e: 'open-change', c: { absPath: string; oldAbsPath?: string; entry: GitChange }): void
 }>()
 
 // 跟随模式：path 跟着终端 cwd 走。手动导航置 false（容器 id 冻结到 manualContainerId，
@@ -197,6 +200,7 @@ function refresh() {
   // 表现为「新建了文件列表不变，要退上级再进来才看到」。
   if (path.value) loadDir(path.value)
   else pollCwd()
+  gitRef.value?.refresh()
 }
 
 // 外部定位入口（CLI open / 父组件请求）：直接展示某容器某目录，暂停跟随。
@@ -206,6 +210,9 @@ function locate(containerId: string, p: string) {
   loadDir(p)
 }
 defineExpose({ locate, refresh })
+
+// git 变更区块的 ref（refresh 链透传用）
+const gitRef = ref<InstanceType<typeof FilePanelGit> | null>(null)
 
 // —— 右键操作（新建/重命名/删除）——
 // 右键命中的条目（null = 空白处，新建作用于当前目录）。事件委托：trigger 容器上监听
@@ -352,10 +359,23 @@ function fmtSize(n: number): string {
       </button>
     </div>
 
+    <!-- Git 变更区块：当前目录在仓库内才渲染（组件内部对 repo:false 也整体 v-if）。
+         :key=容器 id：切容器重建（折叠态复位），path 变化组件内部自会重查。 -->
+    <FilePanelGit
+      v-if="hasTerminal && path"
+      ref="gitRef"
+      :key="targetId()"
+      :container-id="targetId()"
+      :path="path"
+      @open-change="(c) => emit('open-change', c)"
+      @open-file="(p) => emit('open-file', p)"
+      @locate-dir="openDir"
+    />
+
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
     <ContextMenu @update:open="(v: boolean) => (menuOpen = v)">
       <ContextMenuTrigger as-child>
-        <div class="min-h-0 flex-1 overflow-y-auto" @contextmenu="onCtxMenu">
+        <div class="scroll-thin min-h-0 flex-1 overflow-y-auto" @contextmenu="onCtxMenu">
           <p v-if="!hasTerminal" class="px-3 py-6 text-center text-xs text-muted-foreground">
             先在左侧打开终端
           </p>
