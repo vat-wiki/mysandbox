@@ -329,20 +329,22 @@ export async function pullImageStream(image: string, onLine: (line: string) => v
     }, timeoutMs);
     armIdle();
 
+    interface PullEvent {
+      status?: string;
+      id?: string;
+      progress?: string; // 带进度条的层事件（[===> ] 12.3MB/43.2MB）——聚合，不透传
+      progressDetail?: { current?: number; total?: number };
+      error?: string;
+      errorDetail?: { message?: string };
+    }
     const feed = (buf: Buffer): void => {
       armIdle(); // 任何输出都算「活着」
       for (const rawLine of buf.toString('utf8').split('\n')) {
         const s = rawLine.trim();
         if (!s) continue;
-        let ev: {
-          status?: string;
-          id?: string;
-          progressDetail?: { current?: number; total?: number };
-          error?: string;
-          errorDetail?: { message?: string };
-        } | null = null;
+        let ev: PullEvent;
         try {
-          ev = JSON.parse(s);
+          ev = JSON.parse(s) as PullEvent;
         } catch {
           onLine(s); // 非 JSON 输出原样透传
           continue;

@@ -252,7 +252,7 @@ export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
     pool: poolView,
   };
   if (!docker.reachable) return status;
-  status.registryMirrors = await cachedRegistryMirrors();
+  status.registryMirrors = (await cachedRegistryMirrors()) ?? undefined;
   const net = await inspectNetwork(cfg.services.network);
   if (!net) {
     status.network.detail = `docker 网络 "${cfg.services.network}" 不存在——在 docker 里创建它（或改 services.network 配置）`;
@@ -322,11 +322,25 @@ export async function allocateServiceIp(cfg: Config, manual?: string): Promise<s
   return free[0];
 }
 
-export async function createService(
-  cfg: Config,
-  input: CreateServiceInput,
-  onProgress: (e: ProgressEvent) => void,
-): Promise<ServiceView> {
+// 创建的「计划」：prepareServiceCreate 的产物、runServiceCreate 的输入。
+// env 含密码——只进执行链（ServiceView 本就回全量 env，见上），但绝不进 job 记录/
+// 视图（jobs.ts 的 ServicePlan 只搬 name/image/ip）。
+export interface CreateServicePlan {
+  name: string;
+  preset: ServicePreset | null;
+  image: string;
+  env: Record<string, string>;
+  command: string[] | undefined;
+  ip: string;
+  volume: { source: string; target: string } | null;
+  description?: string;
+}
+
+// 创建段一（快，路由同步跑）：全部输入校验 + 查重 + IP 分配。失败抛 HttpError →
+// 路由回 4xx，对话框内联显示；通过则拿 plan 进后台任务。
+// 注意 IP 已由路由层预占（tryReserveJobName/reserveJobIp 在前），这里分配时
+// servicePoolView 已把预占并进占用集，不会撞进行中任务。
+export async function prepareServiceCreate(cfg: Config, input: CreateServiceInput): Promise<CreateServicePlan> {
   const name = input.name.trim().toLowerCase();
   if (!NAME_RE.test(name)) {
     throw badRequest('服务名 2–31 位，小写字母/数字/连字符，字母或数字开头');
@@ -357,19 +371,65 @@ export async function createService(
   }
 
   if (await serviceNameExists(name)) throw conflict(`docker 里已有同名容器 "${name}"`);
-
   const ip = await allocateServiceIp(cfg, input.ip?.trim() || undefined);
-  const volume = preset?.volumePath ? { source: serviceVolumeName(name), target: preset.volumePath } : null;
+
+  return {
+    name,
+    preset: preset ?? null,
+    image,
+    env,
+    command,
+    ip,
+    volume: preset?.volumePath ? { source: serviceVolumeName(name), target: preset.volumePath } : null,
+    description: input.description,
+  };
+}
+
+// 创建段二（慢，后台 job 跑）：拉镜像 → 建卷 → 建容器 → 启动 → 落盘 meta → 追平 hosts。
+// 取消只对 pull 阶段生效（ctx.setCancellable 包住——docker create/start 是 execFile
+// 杀不掉）；abort 落在 pull 之后则在各边界检查 signal、带着半成品清理退出。
+export async function runServiceCreate(cfg: Config, plan: CreateServicePlan, ctx: JobCtx): Promise<ServiceView> {
+  const { name, preset, image, env, command, ip, volume } = plan;
+  const bailIfCanceled = (): void => {
+    if (ctx.signal.aborted) {
+      const e = new Error(`已取消创建 ${name}`) as Error & { canceled?: boolean };
+      e.canceled = true;
+      throw e;
+    }
+  };
 
   if (await imageExistsLocal(image)) {
-    onProgress({ status: `镜像 ${image} 已在本地，跳过拉取` });
+    ctx.status(`镜像 ${image} 已在本地，跳过拉取`);
   } else {
-    onProgress({ status: `拉取镜像 ${image}` });
-    await pullImageStream(image, (line) => onProgress({ stream: line }));
+    ctx.status(`拉取镜像 ${image}`);
+    ctx.setCancellable(true);
+    try {
+      await pullImageStream(image, (line) => ctx.log(line), {
+        timeoutMs: cfg.services.pullTimeoutMs,
+        signal: ctx.signal,
+      });
+    } catch (e) {
+      // 网络/registry 类失败且 daemon 没配 mirror 时，给人话提示（本环境实测：直连
+      // Docker Hub 在 fake-ip 网络下 auth.docker.io 直接 EOF）。
+      if (!(e as { canceled?: boolean })?.canceled) {
+        const mirrors = await cachedRegistryMirrors();
+        if (mirrors !== null && mirrors.length === 0) {
+          throw new Error(
+            `${e instanceof Error ? e.message : String(e)}（未配置 registry-mirrors，Docker Hub 直连常失败；` +
+              '可在 /etc/docker/daemon.json 配置 registry-mirrors 后重启 docker）',
+          );
+        }
+      }
+      throw e;
+    } finally {
+      ctx.setCancellable(false);
+    }
   }
+  bailIfCanceled();
 
-  onProgress({ status: volume ? `创建数据卷 ${volume.source}` : '创建容器' });
+  ctx.status(volume ? `创建数据卷 ${volume.source}` : '创建容器');
   if (volume) await ensureVolume(volume.source);
+  bailIfCanceled();
 
   await createServiceContainer({
     name,
@@ -387,7 +447,7 @@ export async function createService(
     command,
   });
 
-  onProgress({ status: `启动 ${name}（${ip}）` });
+  ctx.status(`启动 ${name}（${ip}）`);
   try {
     await startContainer(name);
   } catch (e) {
@@ -409,16 +469,16 @@ export async function createService(
     volume: volume?.source ?? null,
     ip,
     ports: preset?.ports ?? [],
-    description: input.description,
+    description: plan.description,
     createdAt: new Date().toISOString(),
   };
   await setServiceMeta(name, meta);
 
   // 服务起来了 → 追平所有运行中 LXC 容器的 hosts（hash-skip，无变化近零成本）。
-  onProgress({ status: '追平容器 hosts（服务名解析）' });
+  ctx.status('追平容器 hosts（服务名解析）');
   await applyHostsToContainers(cfg, { skipUnchanged: true, reason: 'service' });
 
-  onProgress({ status: `服务 ${name} 就绪（${ip}）` });
+  ctx.status(`服务 ${name} 就绪（${ip}）`);
   return {
     name,
     preset: meta.preset,
@@ -498,11 +558,46 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     return { presets: SERVICE_PRESETS.map((p) => ({ ...p, fixedEnv: {} })) };
   });
 
-  // SSE：pull 进度逐行推；错误走 error 帧（HTTP 200 已发出，契约见 sse.ts）。
-  app.post('/api/services', async (req, reply) => {
+  // 创建：快校验 + 预占通过即返回 jobId，拉镜像/建容器在后台 job 跑（jobs.ts）。
+  // 校验失败（重名/池尽/缺必填）照旧抛 HttpError → 4xx，对话框内联显示。
+  // ⚠️ 同步预占名再进 await：serviceNameExists 查不到「还没建容器」的进行中任务，
+  // 不锁名的话两个同名任务会双双通过查重、后一个死在 docker create（Node 单线程，
+  // 同步段无竞态）。IP 预占同理；两条的释放兜在 jobs.ts run() 的 finally。
+  app.post('/api/services', async (req) => {
     const input = (req.body as CreateServiceInput | null) || ({} as CreateServiceInput);
-    const { sink, finalize } = beginSse(reply);
-    await finalize(() => createService(cfg, input, (e) => sink(e)));
+    const name = String(input.name ?? '').trim().toLowerCase();
+    if (!NAME_RE.test(name)) throw badRequest('服务名 2–31 位，小写字母/数字/连字符，字母或数字开头');
+    if (!tryReserveJobName(name)) throw conflict(`同名任务「${name}」进行中`);
+    let ip: string | null = null;
+    try {
+      const plan = await prepareServiceCreate(cfg, { ...input, name });
+      ip = plan.ip;
+      reserveJobIp(ip);
+      const job = startServiceJob(plan satisfies ServicePlan, (ctx) => runServiceCreate(cfg, plan, ctx));
+      return { jobId: job.id };
+    } catch (e) {
+      releaseJobName(name);
+      if (ip) releaseJobIp(ip);
+      throw e;
+    }
+  });
+
+  // 任务列表：tail=0 不带日志（侧栏轮询的极小 payload），>0 带最近 N 行（面板预览）。
+  app.get('/api/services/jobs', async (req) => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const tail = Math.min(Math.max(Number(q.tail) || 0, 0), 200);
+    return { jobs: listServiceJobs(tail) };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/services/jobs/:id', async (req) => {
+    const r = getServiceJob(req.params.id);
+    if (!r) throw notFound(`job "${req.params.id}" not found`);
+    return r;
+  });
+
+  app.post<{ Params: { id: string } }>('/api/services/jobs/:id/cancel', async (req) => {
+    cancelServiceJob(req.params.id); // 不在 pull 阶段时抛 conflict(409)，人话见 jobs.ts
+    return { ok: true };
   });
 
   app.post<{ Params: { name: string } }>('/api/services/:name/start', async (req) => {
