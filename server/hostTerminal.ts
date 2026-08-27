@@ -1,10 +1,15 @@
 // 宿主终端：WS /ws/host-terminal?token=&shell=&cols=&rows=&termId=（无容器 id）。
 //
-// 与 terminal.ts（容器终端）同协议、同语义（60s 宽限、kill 帧、activeCount 多窗口），
-// 但 PTY 由本进程在宿主侧管理，不走 lxc-attach：
+// 与 terminal.ts（容器终端）同协议（kill 帧、resize/心跳、多窗口），会话生命周期也是同一套
+// **真 tmux 语义**：会话只被显式 kill（前端 ✕）或 shell 自己退出终结；断线、关浏览器、
+// 服务重启一概保留，无任何定时清理——「只要服务还在，用户开的会话就活着」，
+// PTY 由本进程在宿主侧管理，不走 lxc-attach：
 //   - 宿主 tmux 用专用 socket `-L mysandbox-host`（不碰用户自己的 tmux server），会话名 h-<termId>；
+//   - tmux server 必须活在 mysandbox.service 的 cgroup **之外**（--scope 瞬态单元，
+//     见 HOST_TMUX_UNIT 注释）：服务重启时 systemd 按 KillMode=control-group 清空
+//     整个 cgroup，server 留在里面 = 全部会话陪葬——「tmux 与服务解耦」就名存实亡；
 //   - `script(1)` 给 `tmux attach` 提供 PTY（node 无内置 pty，不引 native 依赖）；script 进程
-//     退出 = detach，会话保留——刷新重连同 termId 即复活（对齐容器终端）；
+//     退出 = detach，会话保留——刷新重连同 termId 即复活；
 //   - resize：script 的 pts 上 `stty -F <pts> cols N rows M`（实测 tmux 3.4 的 refresh-client
 //     不支持 -x/-y）。初始尺寸在 attach 前就 stty 落盘，防 shrink-then-grow 重排。
 //
@@ -27,19 +32,33 @@ const execFileAsync = promisify(execFile);
 // 宿主专用 tmux socket 名（-L）。与用户自己的 tmux server 完全隔离。
 export const HOST_SOCKET = 'mysandbox-host';
 
-// 宿主会话名：h-<termId>。与容器侧 ms-<短id>-<termId> 区分。
-export function hostSessionName(termId: string): string {
-  return `h-${termId}`;
-}
+// 宿主 tmux server 的宿主 scope 名：server 若直接从本进程 fork 出来，会落进
+// mysandbox.service 的 cgroup，服务重启时被 systemd 连带清杀（KillMode=
+// control-group）——全部会话陪葬，「tmux 与服务解耦」名存实亡（与 lxc.ts 给
+// lxc-start 套 systemd-run 同因同解）。但注意形态差异：lxc-start 用 -F 前台
+// 常驻、跑在 service 单元里没问题；`new-session -d` 的 client 毫秒级退出，
+// service 单元随之完成、systemd 清空 cgroup，刚 fork 的 server 陪葬（实测：
+// attach 直收 "no sessions"）。所以必须 --scope：不监督进程，client 退出后
+// scope 变 abandoned，只要 server 还活着 scope 就保持。--collect 让 scope 随
+// 最后进程退出自动回收；server 本身随最后一个会话结束自动退出，无泄漏。
+const HOST_TMUX_UNIT = 'mysandbox-host-tmux.scope';
 
-// 遗弃会话宽限期（对齐容器终端 GRACE_MS）。
-const GRACE_MS = 60_000;
+// 宿主会话名：mysandbox-host-<termId>。与容器侧 mysandbox-<短id>-<termId> 同前缀，
+// 一眼可辨归属（tmux ls 里全是 mysandbox-*）。历史前缀 h- 的活会话由 hostNewSession
+// 自动 rename 迁移（见 OLD_HOST_PREFIX），升级无感。
+export function hostSessionName(termId: string): string {
+  return `mysandbox-host-${termId}`;
+}
+// 旧版宿主会话名前缀（统一命名前用 h-）。首连探测到旧名会话就 rename 成新名。
+const OLD_HOST_PREFIX = 'h-';
+
+// 会话名见 hostSessionName。无宽限期、无周期清扫（语义见文件头）；activeCount 只用于
+// 多窗口计数，最后一个连接断开 = 纯 detach。
 // resize 尾沿防抖：拖窗时前端每帧发 resize，不防抖 = 每秒几十个 stty 进程。
 const RESIZE_DEBOUNCE_MS = 120;
 
-// 每个会话的活连接数（多窗口同 termId）与宽限定时器，语义同 terminal.ts。
+// 每个会话的活连接数（多窗口同 termId）。
 const activeCount = new Map<string, number>();
-const graceTimers = new Map<string, NodeJS.Timeout>();
 
 // 本进程派生的全部 script 子进程：node 退出（含 tsx watch 热重启）时同步 SIGKILL，
 // 否则遗留 script 进程拿着 pts 挂在 tmux server 上（=幽灵 attach 客户端，卡 stale 80x24）。
@@ -92,6 +111,38 @@ async function hostTmux(
   }
 }
 
+// 创建 detached 会话——server 的拉起点。⚠️ 只在 server 尚不存在时走 systemd-run
+// --scope（见 HOST_TMUX_UNIT 注释）：scope 已 loaded（server 活着、别的 termId 会话
+// 在用）时 systemd-run 必失败（"unit already active"）。server 已活则普通
+// new-session 即可，不会重复拉起 server。
+// 旧名（h-<termId>）会话若在，先 rename 成新名——统一命名前的活会话迁移，用户无感。
+async function hostNewSession(session: string, cols: number, rows: number, cwd: string): Promise<boolean> {
+  const alive = await hostTmux(['has-session', '-t', `=${session}`]);
+  if (alive.ok) return true; // 会话已在，直接 attach 路径（调用方语义）
+  const old = `${OLD_HOST_PREFIX}${session.slice('mysandbox-host-'.length)}`;
+  const oldAlive = await hostTmux(['has-session', '-t', `=${old}`]);
+  if (oldAlive.ok) {
+    await hostTmux(['rename-session', '-t', `=${old}`, session]);
+    return true;
+  }
+  const hasServer = (await hostTmux(['list-sessions', '-F', '#{session_name}'])).ok;
+  const argv = ['new-session', '-d', '-s', session, '-x', String(cols), '-y', String(rows), '-c', cwd];
+  if (hasServer) {
+    return (await hostTmux(argv)).ok;
+  }
+  try {
+    await execFileAsync(
+      'systemd-run',
+      ['--user', '--collect', `--unit=${HOST_TMUX_UNIT}`, '--scope', 'tmux', '-L', HOST_SOCKET, ...argv],
+      { timeout: 5_000 },
+    );
+    return true;
+  } catch {
+    // scope 已被并发首连拉起（unit already active）：此刻 server 已活，退回普通 new-session。
+    return (await hostTmux(argv)).ok;
+  }
+}
+
 // 当前会话的客户端 pts 列表（`=` 前缀精确匹配，防 tmux 前缀匹配串到别的 termId）。
 async function clientTtys(session: string): Promise<string[]> {
   const r = await hostTmux(['list-clients', '-t', `=${session}`, '-F', '#{client_tty}']);
@@ -100,54 +151,8 @@ async function clientTtys(session: string): Promise<string[]> {
 }
 
 async function killSession(session: string): Promise<void> {
-  cancelGrace(session);
   activeCount.delete(session);
   await hostTmux(['kill-session', '-t', `=${session}`]);
-}
-
-function armGrace(session: string): void {
-  cancelGrace(session);
-  const t = setTimeout(() => {
-    graceTimers.delete(session);
-    // 二次校验用 tmux 而非进程内 activeCount：同用户多实例共用 host socket 时，
-    // 别的实例可能还挂着 client（tmux 是跨实例真相源）。
-    void clientTtys(session).then((ttys) => {
-      if (ttys.length === 0 && (activeCount.get(session) ?? 0) === 0) {
-        return killSession(session);
-      }
-    });
-  }, GRACE_MS);
-  graceTimers.set(session, t);
-}
-function cancelGrace(session: string): void {
-  const t = graceTimers.get(session);
-  if (t) {
-    clearTimeout(t);
-    graceTimers.delete(session);
-  }
-}
-
-// 启动清扫：node 重启导致旧连接的宽限定时器随进程而死，无 client 的遗留会话永不回收。
-// 不直接杀——重启后 60s 内刷新重连应复活（与容器终端语义一致）：重挂宽限即可。
-// tmux server 随最后一个会话结束自动退出，无 daemon 泄漏。
-async function reapHostSessions(): Promise<void> {
-  const r = await hostTmux(['list-sessions', '-F', '#{session_name}']);
-  if (!r.ok) return;
-  for (const name of r.stdout.split('\n').map((l) => l.trim()).filter(Boolean)) {
-    const ttys = await clientTtys(name);
-    if (ttys.length === 0) armGrace(name);
-  }
-}
-
-// 周期清扫（每 60s）：孤儿 script（别的 node 实例留下的、被 SIGKILL 的）死亡后 client 消失，
-// 但没有任何进程给这个会话挂宽限——启动清扫只在启动时跑一次盖不住这种延迟孤儿（实测踩过：
-// 旧进程留下的孤儿 script 在新进程起来后才死，会话永挂）。armGrace 幂等且到期二次校验
-// clientTtys——活跃会话（用户 60s 内又连上）不会被误杀；有 client 的会话这里根本不碰。
-function startReapLoop(): void {
-  const t = setInterval(() => {
-    void reapHostSessions();
-  }, 60_000);
-  t.unref(); // 不阻止进程退出
 }
 
 // script 子进程的控制终端 pts（`ps -o tty=` 输出 pts/N 或 ?）。拿不到给 stty 落初始尺寸用。
@@ -177,8 +182,6 @@ async function applyTtySize(pts: string, cols: number, rows: number): Promise<vo
 
 export async function registerHostTerminal(app: FastifyInstance, cfg: Config): Promise<void> {
   const log = app.log;
-  void reapHostSessions();
-  startReapLoop();
 
   // 宿主终端信息条：会话活跃 pane 的 cwd（前端轮询）。list-panes 而非 display-message，
   // 同 files.ts 容器版的原因：后者对无 attach client 上下文的会话返回空串。
@@ -228,13 +231,12 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
 
       const session = hostSessionName(termId);
       if (useTmux) {
-        cancelGrace(session);
         activeCount.set(session, (activeCount.get(session) ?? 0) + 1);
-        const has = await hostTmux(['has-session', '-t', `=${session}`]);
-        if (!has.ok) {
-          // 新建 detached 会话（-A 语义手写：有则直接 attach 走下面）。尺寸用 URL 值，
-          // attach 后 client 会按自身 pts 尺寸再调——初始 stty 已提前落盘，值一致。
-          await hostTmux(['new-session', '-d', '-s', session, '-x', String(cols), '-y', String(rows), '-c', cwd]);
+        // 新建 detached 会话（-A 语义手写：有则直接 attach 走下面）。尺寸用 URL 值，
+        // attach 后 client 会按自身 pts 尺寸再调——初始 stty 已提前落盘，值一致。
+        // server 可能不存在（首连）→ hostNewSession 走 systemd-run 独立单元拉起。
+        const created = await hostNewSession(session, cols, rows, cwd);
+        if (created) {
           // 与容器终端同组的全局设置，必须在 attach 之前 detached 跑（attach 后客户端接管 tty）。
           await hostTmux(['set', '-g', 'mouse', 'off']);
           await hostTmux(['set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@']);
@@ -252,7 +254,8 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       let closed = false;
 
       // 统一收尾（幂等）。socket 先断 → 杀 script（SIGTERM，500ms 未退 SIGKILL）；
-      // script 先退（用户 C-b d detach / 会话被杀 / shell exit）→ 视为 detach，走宽限分支。
+      // script 先退（用户 C-b d detach / 会话被杀 / shell exit）→ 以 1000 关 socket。
+      // 不做定时清理（见文件头）：非 kill 断开 = 纯 detach，会话无限期保留。
       // 注意 children.delete 只在 child 'exit' 里做（cleanup 不主动删）：script 收 TERM 后要
       // ~2s 才真退，期间若 node 被 kill（重启），500ms 的 SIGKILL 定时器随进程死，只有
       // exit handler 的同步 SIGKILL 能兜住——Set 里必须还留着引用（实测踩过孤儿泄漏）。
@@ -270,10 +273,9 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         const n = (activeCount.get(session) ?? 1) - 1;
         if (n > 0) {
           activeCount.set(session, n);
-        } else if (useTmux) {
+        } else {
           activeCount.set(session, 0);
-          if (wantKill) void killSession(session);
-          else armGrace(session);
+          if (wantKill && useTmux) void killSession(session);
         }
       };
 
@@ -327,7 +329,7 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       child = spawn('script', ['-q', '-f', '-e', '-c', cmd, '/dev/null'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         // SHELL 必须压成 /bin/sh：script 用 $SHELL 跑 -c 命令串，用户登录 zsh 会做 =word
-        // 展开，把 attach 目标 "=h-xxx" 当命令路径查找（zsh:1: h-xxx not found）——实测踩坑。
+        // 展开，把 attach 目标 "=mysandbox-host-xxx" 当命令路径查找（zsh:1: not found）——实测踩坑。
         env: { ...process.env, TERM: 'xterm-256color', MYSANDBOX_WEB: '1', SHELL: '/bin/sh' },
         cwd: useTmux ? undefined : cwd, // 无 tmux 降级时 shell 直接落在镜像目录
       });
@@ -345,7 +347,7 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       });
       child.on('exit', () => {
         children.delete(child!);
-        // script 先退 = detach（C-b d / 会话被杀 / shell exit）：以 1000 关 socket，走宽限收尾。
+        // script 先退 = detach（C-b d / 会话被杀 / shell exit）：以 1000 关 socket。
         try { socket.close(1000); } catch { /* noop */ }
         cleanup();
       });

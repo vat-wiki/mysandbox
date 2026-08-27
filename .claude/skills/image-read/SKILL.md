@@ -4,7 +4,7 @@ description: 读取/理解图片内容（任何需要从图片中获取信息的
 user-invocable: true
 allowed-tools:
   - Bash(bash .claude/skills/image-read/scripts/read-image.sh *)
-  - Bash(curl http://10.12.135.150:7800/v1/chat/completions *)
+  - Bash(curl http://10.12.135.150:7800/openai/v1/chat/completions *)
 ---
 
 # image-read — 读取图片内容
@@ -35,7 +35,7 @@ allowed-tools:
 
 ## 底层 API（OpenAI 兼容）
 
-- **Endpoint**：`http://10.12.135.150:7800/v1/chat/completions`
+- **Endpoint**：`http://10.12.135.150:7800/openai/v1/chat/completions`（v0.12.0 起 `/v1` 拆分为 `/openai/v1` 与 `/anthropic/v1`）
 - **Model**：`image-read`（网关自动路由到合适模型）
 - **Auth**：`Authorization: Bearer sk-myapikey--Je5xkIdBtiyJT9oTuzEqoCFse5OYLIZ`
 - 可用环境变量覆盖：`IMAGE_READ_API_URL` / `IMAGE_READ_API_KEY` / `IMAGE_READ_PROMPT`

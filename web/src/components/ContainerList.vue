@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent, provide } from 'vue'
 import {
   listContainers,
   startContainer,
@@ -7,12 +7,15 @@ import {
   restartContainer,
   adoptContainer,
   deleteContainer,
+  updateMeta,
   listFiles,
   getListenPorts,
   getHostCwd,
+  listServices,
   HOST_ID,
   Unauthorized,
   type ContainerView,
+  type ServiceView,
 } from '@/lib/api'
 import { containerColor } from '@/lib/utils'
 import { baseLabel } from '@/lib/caps'
@@ -25,17 +28,33 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
+import TermLayoutNode from '@/components/TermLayoutNode.vue'
 import FilePanel from '@/components/FilePanel.vue'
+import {
+  TERM_OPS,
+  MAX_GROUP_PANES,
+  equalGrows,
+  leafCount,
+  leafIds,
+  newSplitId,
+  normalizeRoot,
+  ordinalOf,
+  removeLeaf,
+  splitLeaf,
+  type LayoutDir,
+  type LayoutNode,
+  type SplitNode,
+  type TermGroup,
+} from '@/lib/termlayout'
 
-// 异步加载终端组件：xterm 全家桶只在首次打开终端时才下载，首屏（容器列表）更轻。
-const Terminal = defineAsyncComponent(() => import('@/components/Terminal.vue'))
-// 文件编辑器（Monaco 较重）同理：点开文件才下载。
+// 异步加载重组件：Monaco 编辑器点开文件才下载、noVNC 点「桌面」才下载，不拖累首屏。
+// （终端组件的异步加载移到了 TermLayoutNode——首个 pane 出现时才拉 xterm 全家桶。）
 const FileEditorDialog = defineAsyncComponent(() => import('@/components/FileEditorDialog.vue'))
 // 桌面查看器（noVNC，较重）：点「桌面」才下载。
 const DesktopDialog = defineAsyncComponent(() => import('@/components/DesktopDialog.vue'))
@@ -48,11 +67,21 @@ export interface OpenReq {
   seq: number
 }
 
-const props = defineProps<{ baseReady?: boolean | null; openReq?: OpenReq | null }>()
+const props = defineProps<{
+  baseReady?: boolean | null
+  openReq?: OpenReq | null
+  // 独立窗口模式：?popout=<containerId|__host__> 打开的新浏览器窗口。
+  // 无侧栏/header，自动为目标开一个全新终端组，分屏能力与主窗口相同；
+  // 布局持久化到独立 key，不与主窗口互相污染。popoutTarget=容器 id 或 HOST_ID 哨兵。
+  popout?: boolean
+  popoutTarget?: string
+}>()
 const emit = defineEmits<{
   (e: 'unauthorized'): void
   (e: 'open-base'): void
   (e: 'open-hosts'): void
+  // 打开服务管理面板；create=true 表示来自摘要条 ＋（面板打开时直接弹新建对话框）
+  (e: 'open-services', create?: boolean): void
   (e: 'open-handled'): void
 }>()
 
@@ -64,51 +93,77 @@ const connLost = ref(false)
 const lastOkAt = ref(0)
 const busy = ref<Record<string, boolean>>({})
 
-// 终端 tab 持久化：刷新后重新打开之前那几个容器的终端、回到上次激活的 tab。
-// 只存 {id,name} + activeIdx——会话本身的持久（滚动历史 / 正在跑的进程）由容器内 tmux 负责。
-const TABS_KEY = 'mysandbox:term-tabs-v3'
+// 终端 tab 持久化：刷新后重新打开之前那几个容器的终端、回到上次激活的 tab（含分屏树与比例）。
+// 会话本身的持久（滚动历史 / 正在跑的进程）由容器内 tmux 负责。popout 独立窗口用独立 key，
+// 与主窗口互不读写——否则两边 deep watch 互相覆盖，对方的组会「串」进窗口里。
+const TABS_KEY =
+  props.popout && props.popoutTarget
+    ? `mysandbox:term-tabs-popout-${props.popoutTarget}`
+    : 'mysandbox:term-tabs-v4'
 function newTermId(): string {
   return crypto.randomUUID()
 }
 function newGroupId(): string {
   return crypto.randomUUID()
 }
-// 一个 group = 一个容器终端组：1..N 个 pane 水平并排，每 pane 一个独立 termId/会话。
+// 一个 group = 一个容器终端组，root 是布局树（类型与操作见 lib/termlayout.ts）：
+// 叶子 = 一个独立 termId/会话，split = 同方向多块嵌套（row 左右 / col 上下），任意组合。
 // kind='host' 为宿主终端组（PTY 由 server 管理，cwd=镜像目录，containerId 为哨兵 '__host__'）。
-interface Pane {
-  termId: string
-}
-interface TermGroup {
-  id: string
-  containerId: string
-  name: string
-  kind?: 'host'
-  panes: Pane[]
-}
 function loadTabs(): { groups: TermGroup[]; activeIdx: number } {
   try {
     const raw = localStorage.getItem(TABS_KEY)
     if (!raw) return { groups: [], activeIdx: 0 }
-    const p = JSON.parse(raw) as { groups?: unknown; activeIdx?: unknown }
+    const p = JSON.parse(raw) as Record<string, unknown>
     const arr = Array.isArray(p.groups) ? p.groups : []
-    const groups: TermGroup[] = arr
-      .filter(
-        (g): g is Record<string, unknown> =>
-          !!g && typeof g === 'object' && typeof (g as { containerId?: unknown }).containerId === 'string',
-      )
-      .map((g) => ({
-        id: typeof g.id === 'string' ? g.id : newGroupId(),
-        containerId: String(g.containerId),
-        name: typeof g.name === 'string' ? g.name : String(g.containerId),
-        kind: g.kind === 'host' ? ('host' as const) : undefined,
-        // 兼容旧 v2（每 tab 单 termId）：旧数据无 panes -> 包装成单 pane。
-        panes:
-          Array.isArray(g.panes) && g.panes.length
-            ? g.panes
-                .filter((pn) => !!pn && typeof (pn as { termId?: unknown }).termId === 'string')
-                .map((pn) => ({ termId: String((pn as { termId: string }).termId) }))
-            : [{ termId: typeof g.termId === 'string' ? g.termId : newTermId() }],
-      }))
+    const groups: TermGroup[] = []
+    for (const g of arr) {
+      if (!g || typeof g !== 'object') continue
+      const o = g as Record<string, unknown>
+      if (typeof o.containerId !== 'string') continue
+      let root = normalizeRoot(o.root)
+      if (!root) {
+        // 旧版迁移：v3 扁平 panes（横向一排）/ v2 单 termId -> 包成叶子或横向二分以上。
+        const ids = Array.isArray(o.panes)
+          ? o.panes
+              .filter(
+                (pn): pn is { termId: string } =>
+                  !!pn && typeof (pn as { termId?: unknown }).termId === 'string',
+              )
+              .map((pn) => pn.termId)
+          : typeof o.termId === 'string'
+            ? [o.termId]
+            : []
+        if (!ids.length) continue
+        root =
+          ids.length === 1
+            ? { kind: 'leaf', termId: ids[0] }
+            : {
+                kind: 'split',
+                id: newSplitId(),
+                dir: 'row',
+                children: ids.map((t) => ({ kind: 'leaf' as const, termId: t })),
+                grows: equalGrows(ids.length),
+              }
+      }
+      groups.push({
+        id: typeof o.id === 'string' ? o.id : newGroupId(),
+        containerId: o.containerId,
+        name: typeof o.name === 'string' ? o.name : o.containerId,
+        kind: o.kind === 'host' ? ('host' as const) : undefined,
+        seq: typeof o.seq === 'number' && o.seq >= 1 ? o.seq : undefined,
+        root,
+      })
+    }
+    // 旧存档没有 seq（v3 迁移或早期 v4）：按现有顺序补发，同容器依次取已用最大值之后的号
+    const maxSeq = new Map<string, number>()
+    for (const g of groups) maxSeq.set(g.containerId, Math.max(maxSeq.get(g.containerId) ?? 0, g.seq ?? 0))
+    for (const g of groups) {
+      if (g.seq === undefined) {
+        const next = (maxSeq.get(g.containerId) ?? 0) + 1
+        maxSeq.set(g.containerId, next)
+        g.seq = next
+      }
+    }
     const activeIdx = typeof p.activeIdx === 'number' ? p.activeIdx : 0
     return { groups, activeIdx: Math.min(Math.max(activeIdx, 0), Math.max(groups.length - 1, 0)) }
   } catch {
@@ -118,8 +173,9 @@ function loadTabs(): { groups: TermGroup[]; activeIdx: number } {
 const savedTabs = loadTabs()
 const groups = ref<TermGroup[]>(savedTabs.groups)
 const activeIdx = ref(savedTabs.activeIdx)
-// 二维 ref：termRefs[groupIdx][paneIdx]，closePane 时调 kill() 发 kill 帧真杀会话。
-const termRefs = ref<(InstanceType<typeof Terminal> | null)[][]>([])
+// termId -> Terminal 实例（close 时调 kill() 发 kill 帧真杀会话）。函数式 ref 挂/卸自动进出表；
+// key 是稳定的 termId，布局重排/塌缩不会错杀别的会话。
+const termRefs = new Map<string, { kill(): void }>()
 function saveTabs(): void {
   try {
     localStorage.setItem(TABS_KEY, JSON.stringify({ groups: groups.value, activeIdx: activeIdx.value }))
@@ -129,58 +185,65 @@ function saveTabs(): void {
 }
 watch([groups, activeIdx], saveTabs, { deep: true })
 
-// ---- 拖动调整尺寸 ----
-// 终端已占满主区，只剩一轴：pane 宽度（分隔条左右拖，flex-grow 比例，不持久化——
-// 结构变化即重置等分，拖动只调比例）。Terminal 自带 ResizeObserver，容器尺寸一变即
-// 自动 refit -> onResize -> 后端 exec.resize，无需额外联动后端。
-
-// pane 宽比例：paneGrow[groupId] = 各 pane 的 flex-grow（等分时全 1）。分隔条固定 w-1=4px，
-// pane 用 flexBasis:0 + flexGrow 按比例分剩余空间，故分隔条占位自动扣除、不溢出。
-const paneGrow = ref<Record<string, number[]>>({})
-function equalGrow(n: number): number[] {
-  return Array.from({ length: n }, () => 1)
-}
-function initGrow(g: TermGroup): void {
-  paneGrow.value[g.id] = equalGrow(g.panes.length)
-}
-function paneGrowOf(g: TermGroup, pIdx: number): number {
-  return paneGrow.value[g.id]?.[pIdx] ?? 1
-}
-let dragGId = ''
+// ---- 分屏树的动作与拖拽 ----
+// 树操作纯函数在 lib/termlayout.ts；这里经 TERM_OPS 注入给递归的 TermLayoutNode 上抛动作。
+// 分隔条拖动只调相邻两块 grows：dragstart 快照，move 把像素位移换算成 grow 增量
+// （两块总和不变，按该轴最小像素钳制）。Terminal 自带 ResizeObserver，尺寸一变即
+// 自动 refit -> 后端 exec.resize，无需额外联动。
+let dragNode: SplitNode | null = null
 let dragLeft = 0
-let dragStartGrow: number[] = []
-let dragAvailW = 0
-// 拖动某分隔条时的快照（PaneDivider 的 dragstart 设、drag 用）。
-// pIdx = 分隔条之后的 pane 序号；分隔条在 pane[pIdx-1] 与 pane[pIdx] 之间，拖动只调这两个。
-function onPaneDragStart(g: TermGroup, pIdx: number, parentWidth: number) {
-  dragGId = g.id
-  dragLeft = pIdx - 1
-  dragStartGrow = [...(paneGrow.value[g.id] ?? equalGrow(g.panes.length))]
-  dragAvailW = Math.max(1, parentWidth - 4 * (g.panes.length - 1)) // 每条分隔条 4px
+let dragStartGrows: number[] = []
+let dragAvail = 0
+let dragMinPx = 120
+function dividerStart(node: SplitNode, idx: number, parentSize: number, minPx: number) {
+  if (parentSize <= 0) return // 隐藏组（display:none）量不到尺寸，忽略，避免算出退化比例
+  dragNode = node
+  dragLeft = idx - 1
+  dragStartGrows = [...node.grows]
+  dragAvail = Math.max(1, parentSize - 4 * (node.children.length - 1)) // 每条分隔条 4px
+  dragMinPx = minPx
 }
-function onPaneDrag(dx: number) {
-  const cur = paneGrow.value[dragGId]
-  if (!cur) return
-  const sumGrow = dragStartGrow.reduce((a, b) => a + b, 0) || 1
-  const dGrow = (dx / dragAvailW) * sumGrow
+function dividerDrag(delta: number) {
+  if (!dragNode) return
+  const start = dragStartGrows
+  const sumGrow = start.reduce((a, b) => a + b, 0) || 1
+  const dGrow = (delta / dragAvail) * sumGrow
   const l = dragLeft
-  const sum = dragStartGrow[l] + dragStartGrow[l + 1]
-  const minGrow = (120 / dragAvailW) * sumGrow // 最小 120px 对应的 grow
-  let a = dragStartGrow[l] + dGrow
-  let b = sum - a
+  const pairSum = start[l] + start[l + 1]
+  const minGrow = (dragMinPx / dragAvail) * sumGrow
+  let a = start[l] + dGrow
+  let b = pairSum - a
   if (a < minGrow) {
     a = minGrow
-    b = sum - minGrow
+    b = pairSum - minGrow
   }
   if (b < minGrow) {
     b = minGrow
-    a = sum - minGrow
+    a = pairSum - minGrow
   }
-  cur[l] = a
-  cur[l + 1] = b
+  dragNode.grows[l] = a
+  dragNode.grows[l + 1] = b
 }
-// 载入已存 group 时初始化各 group 的 pane 比例为等分。
-for (const g of savedTabs.groups) initGrow(g)
+provide(TERM_OPS, {
+  split(group, termId, dir) {
+    group.root = splitLeaf(group.root, termId, dir, newTermId())
+  },
+  close(group, termId) {
+    termRefs.get(termId)?.kill()
+    const root = removeLeaf(group.root, termId)
+    if (root) group.root = root
+    else closeGroupById(group.id)
+  },
+  setRef(termId, el) {
+    if (el) termRefs.set(termId, el as { kill(): void })
+    else termRefs.delete(termId)
+  },
+  onOscOpen,
+  dividerStart,
+  dividerDrag,
+  ordinalOf,
+  groupLabel,
+})
 
 const showCreate = ref(false)
 // 批量选择：平时不占位，hover 行首浮现勾选框；勾中任意一个进入选择态（受管理容器全部常显），
@@ -196,7 +259,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 
 // ---- 文件面板 ----
 const showFiles = ref(false)
-// 面板宽度（像素制，拖动独立于终端 pane 的比例制 paneGrow）。
+// 面板宽度（像素制，拖动独立于终端 pane 的比例制 grows）。
 const filesW = ref(320)
 // 拖宽快照：dragstart 记下起始宽度与容器总宽，drag 按位移换算。
 let filesDragStartW = 0
@@ -216,7 +279,7 @@ const activeGroup = computed(() => groups.value[activeIdx.value])
 const filePanes = computed(() => {
   const g = activeGroup.value
   if (!g) return []
-  return g.panes.map((p, i) => ({ termId: p.termId, label: `${g.name} #${i + 1}` }))
+  return leafIds(g.root).map((termId, i) => ({ termId, label: `${groupLabel(g)} #${i + 1}` }))
 })
 const fileTermId = computed(() => filePanes.value[filePaneIdx.value]?.termId ?? null)
 watch(
@@ -248,29 +311,40 @@ function onEditorSaved() {
 const activeContainer = computed(
   () => items.value.find((x) => x.id === activeGroup.value?.containerId) ?? null,
 )
+// 监听端口分组展示：web 端口（后端实测返回 HTML）直接平铺高亮可点；
+// 其余（ssh/db/redis 等非网页）折叠进「其他 N」，点开才显示——初衷是快速打开网页。
 const listenPorts = ref<number[]>([])
+const webPorts = ref<number[]>([])
+const showOtherPorts = ref(false)
 let listenSeq = 0 // 竞态：切 group 时丢弃慢响应
 const ipCopied = ref(false)
 let ipCopyTimer: ReturnType<typeof setTimeout> | null = null
+const otherListenPorts = computed(() => listenPorts.value.filter((p) => !webPorts.value.includes(p)))
 async function loadListenPorts() {
   const c = activeContainer.value
   const seq = ++listenSeq
   if (!c || c.state !== 'running') {
     listenPorts.value = []
+    webPorts.value = []
     return
   }
   try {
     const r = await getListenPorts(c.id)
     if (seq !== listenSeq) return
     listenPorts.value = r.ports
+    webPorts.value = r.web ?? []
   } catch {
     if (seq !== listenSeq) return
     listenPorts.value = [] // 容器刚停/权限等：静默置空
+    webPorts.value = []
   }
 }
 watch(
   () => [activeGroup.value?.containerId, activeContainer.value?.state],
-  () => void loadListenPorts(),
+  () => {
+    showOtherPorts.value = false // 换容器收起折叠组
+    void loadListenPorts()
+  },
   { immediate: true },
 )
 
@@ -287,7 +361,8 @@ async function loadHostCwd() {
     hostCwd.value = ''
     return
   }
-  const termId = g.panes[Math.min(filePaneIdx.value, g.panes.length - 1)]?.termId ?? g.panes[0]?.termId
+  const ids = leafIds(g.root)
+  const termId = ids[Math.min(filePaneIdx.value, ids.length - 1)]
   if (!termId) return
   try {
     const r = await getHostCwd(termId)
@@ -295,7 +370,7 @@ async function loadHostCwd() {
     hostCwd.value = r.cwd
   } catch {
     if (seq !== hostCwdSeq) return
-    hostCwd.value = '' // 会话未建/已收（60s 宽限外）等：静默置空
+    hostCwd.value = '' // 会话未建/已收（显式 kill）等：静默置空
   }
 }
 watch(
@@ -388,15 +463,14 @@ async function locateContainerPath(c: ContainerView, path: string, kind: 'file' 
 
 // 容器内 mysandbox 命令（web 终端 OSC 7677）：kind 未知 -> listFiles 探测（200=目录 /
 // 400 not_a_directory 或 404 不存在=文件，编辑器侧对不存在的文件走新建态），
-// 定位后聚焦来源 group、面板跟随来源 pane。
-async function onOscOpen(gIdx: number, pIdx: number, path: string) {
-  const g = groups.value[gIdx]
-  if (!g) return
-  if (g.kind === 'host') return // 宿主侧暂无 OSC 种子（container-cli 只种容器），预留；将来加宿主 CLI 时复用 locate + HOST_ID 即可
-  const c = items.value.find((x) => x.id === g.containerId)
+// 定位后聚焦来源 group、面板跟随来源 pane（termId -> DFS 序号）。
+async function onOscOpen(group: TermGroup, termId: string, path: string) {
+  if (group.kind === 'host') return // 宿主侧暂无 OSC 种子（container-cli 只种容器），预留；将来加宿主 CLI 时复用 locate + HOST_ID 即可
+  const c = items.value.find((x) => x.id === group.containerId)
   if (!c || c.state !== 'running') return // 终端还开着容器必在，理论上到不了这
-  activeIdx.value = gIdx
-  filePaneIdx.value = Math.min(pIdx, Math.max(g.panes.length - 1, 0))
+  const gi = groups.value.findIndex((g) => g.id === group.id)
+  if (gi >= 0) activeIdx.value = gi
+  filePaneIdx.value = Math.min(ordinalOf(group.root, termId), Math.max(leafCount(group.root) - 1, 0))
   let kind: 'file' | 'dir' = 'file' // 400/404/其它异常都按文件：编辑器侧自会给出准确错误或新建态
   try {
     await listFiles(c.id, path)
@@ -414,18 +488,49 @@ watch(
   { immediate: true },
 )
 
-// 点容器「终端」：该容器已有 group 则聚焦，否则建单 pane group（避免重复打开堆积）。
-// 想要同容器多个独立 shell -> 在 group 内点 ⊞ 分屏。
+// 建组公共体：单叶子根（新 termId = 独立会话），激活为新 tab。分屏走 pane 头部按钮。
+function createGroup(containerId: string, name: string, kind?: 'host'): TermGroup {
+  // seq = 同容器现有组的最大序号 + 1（稳定身份，不随关闭/排序变化）
+  let seq = 0
+  for (const x of groups.value) {
+    if (x.containerId === containerId) seq = Math.max(seq, x.seq ?? 1)
+  }
+  const g: TermGroup = { id: newGroupId(), containerId, name, kind, seq: seq + 1, root: { kind: 'leaf', termId: newTermId() } }
+  // 插到同容器（宿主）最后一组的后面：同容器的 tab 天然聚拢，配合拖拽可随意调序。
+  let at = groups.value.length
+  for (let i = groups.value.length - 1; i >= 0; i--) {
+    if (groups.value[i].containerId === containerId) {
+      at = i + 1
+      break
+    }
+  }
+  groups.value.splice(at, 0, g)
+  activeIdx.value = groups.value.indexOf(g)
+  return g
+}
+// 组显示名：同容器多组并存时带稳定序号（dev·1 / dev·2 …），单一组就是原名。
+// 序号是创建时定死的（seq），拖拽换位/关闭别的组都不会让「dev·2」换组。
+function groupLabel(g: TermGroup): string {
+  const peers = groups.value.filter((x) => x.containerId === g.containerId)
+  if (peers.length <= 1) return g.name
+  return `${g.name}·${g.seq ?? peers.indexOf(g) + 1}`
+}
+// 手动新开一组（tab 栏「＋」）：同当前容器/宿主的全新组。侧栏点容器是「聚焦已有组」，
+// 这里是「再开一组」——单组分屏满 MAX_GROUP_PANES 块后想要更多终端，走这个显式动作。
+function openNewGroup() {
+  const g = activeGroup.value
+  if (!g) return
+  createGroup(g.containerId, g.name, g.kind)
+}
+// 点容器「终端」：该容器已有 group 则聚焦，否则建组（避免重复打开堆积）。
+// 想要同容器多个独立 shell -> 在 pane 头部点左右 / 上下分屏。
 function openTerm(c: ContainerView) {
   const i = groups.value.findIndex((g) => g.containerId === c.id)
   if (i >= 0) {
     activeIdx.value = i
     return
   }
-  const g: TermGroup = { id: newGroupId(), containerId: c.id, name: c.displayName || c.name, panes: [{ termId: newTermId() }] }
-  groups.value.push(g)
-  initGrow(g)
-  activeIdx.value = groups.value.length - 1
+  createGroup(c.id, c.displayName || c.name)
 }
 // 点侧栏「宿主」条目：开宿主终端（PTY 由 server 管理，cwd=镜像目录）。全局唯一一个 group。
 function openHostTerm() {
@@ -434,53 +539,83 @@ function openHostTerm() {
     activeIdx.value = i
     return
   }
-  const g: TermGroup = {
-    id: newGroupId(),
-    containerId: HOST_ID,
-    name: '宿主',
-    kind: 'host',
-    panes: [{ termId: newTermId() }],
-  }
-  groups.value.push(g)
-  initGrow(g)
-  activeIdx.value = groups.value.length - 1
+  createGroup(HOST_ID, '宿主', 'host')
 }
-// group 内分屏：末尾加一个 pane（新 termId 独立会话），水平并排。
-// 结构变化即重置该 group 比例为等分（保留拖动比例的复杂度暂不做）。
-function splitPane(gIdx: number) {
-  const g = groups.value[gIdx]
-  g.panes.push({ termId: newTermId() })
-  initGrow(g)
+
+// ---- 独立窗口（popout）----
+// 在新浏览器窗口打开某容器/宿主的纯终端工作区（App 按 ?popout= 渲染无侧栏形态）。
+// 新窗口首屏自动开一个全新终端组，之后随意左右/上下分屏；布局存独立 key，
+// 与主窗口互不影响；tmux 会话按 termId 归属，刷新窗口即可恢复。
+function openPopout(target: string) {
+  const url = `${location.pathname}?popout=${encodeURIComponent(target)}`
+  window.open(url, '_blank', 'noopener,width=1080,height=720')
 }
-// v-for 函数式 ref 收集器：二维 termRefs[groupIdx][paneIdx]。Vue 重排时自动重设，
-// 故 closePane 只动 groups 数据、不手动 splice termRefs（避免与 ref(null) 竞态）。
-function setTermRef(gIdx: number, pIdx: number, el: unknown) {
-  if (!termRefs.value[gIdx]) termRefs.value[gIdx] = []
-  termRefs.value[gIdx][pIdx] = (el as InstanceType<typeof Terminal> | null) ?? null
-}
-// 关单个 pane：先发 kill 帧杀该会话，再移除；panes 空了就移除整个 group，否则重置等分。
-function closePane(gIdx: number, pIdx: number) {
-  termRefs.value[gIdx]?.[pIdx]?.kill()
-  const g = groups.value[gIdx]
-  g.panes.splice(pIdx, 1)
-  if (g.panes.length === 0) {
-    closeGroup(gIdx)
-    return
-  }
-  initGrow(g)
-}
-// 关整个 group：杀所有 pane 会话后移除。
-function closeGroup(gIdx: number) {
-  for (const ref of termRefs.value[gIdx] ?? []) ref?.kill()
-  const g = groups.value[gIdx]
-  delete paneGrow.value[g.id]
-  groups.value.splice(gIdx, 1)
-  termRefs.value.splice(gIdx, 1)
+// popout 首屏种子：等首轮容器列表就绪再建组（名字要用 displayName）。已有存档则跳过
+// （刷新恢复语义）；目标容器不存在/已删则不种子，空态文案兜底、修剪逻辑随后清档。
+watch(
+  () => itemsReady.value,
+  (ready) => {
+    if (!props.popout || !ready || groups.value.length) return
+    if (props.popoutTarget === HOST_ID) {
+      createGroup(HOST_ID, '宿主', 'host')
+      return
+    }
+    const c = items.value.find((x) => x.id === props.popoutTarget)
+    if (c) createGroup(c.id, c.displayName || c.name)
+  },
+  { immediate: true },
+)
+// popout 无 header，窗口标题是唯一身份标识：跟随当前组名。
+watch(
+  () => activeGroup.value?.name,
+  (name) => {
+    if (props.popout && name) document.title = `${name} · mysandbox`
+  },
+  { immediate: true },
+)
+
+// 关整个 group（按 id 定位——递归组件里没有稳定的下标）：杀所有会话后移除。
+function closeGroupById(gId: string) {
+  const gi = groups.value.findIndex((g) => g.id === gId)
+  if (gi < 0) return
+  for (const t of leafIds(groups.value[gi].root)) termRefs.get(t)?.kill()
+  groups.value.splice(gi, 1)
   if (groups.value.length === 0) {
     activeIdx.value = 0
     return
   }
   if (activeIdx.value >= groups.value.length) activeIdx.value = groups.value.length - 1
+}
+
+// ---- tab 拖拽排序 ----
+// 原生 HTML5 DnD + live-reorder：dragover 越过相邻 tab 中点即实时交换 groups 顺序
+// （Vue 按 key 移动节点，终端实例不重建）。焦点跟随被拖 tab，拖完落在哪就激活哪。
+const dragTabIdx = ref(-1)
+let dragFocusGId = ''
+function onTabDragStart(e: DragEvent, idx: number) {
+  dragTabIdx.value = idx
+  dragFocusGId = activeGroup.value?.id ?? ''
+  // Firefox 要求 setData 才会真正进入拖拽；effectAllowed=move 消除「禁止」光标
+  e.dataTransfer?.setData('text/plain', String(idx))
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+function onTabDragOver(e: DragEvent, idx: number) {
+  const from = dragTabIdx.value
+  if (from < 0 || idx === from) return
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const to = e.clientX > r.left + r.width / 2 ? idx + 1 : idx
+  if (to === from || to === from + 1) return // 还没越过中点，不抖动
+  const [g] = groups.value.splice(from, 1)
+  const at = to > from ? to - 1 : to
+  groups.value.splice(at, 0, g)
+  dragTabIdx.value = at
+  const fi = groups.value.findIndex((x) => x.id === dragFocusGId)
+  if (fi >= 0) activeIdx.value = fi
+  e.preventDefault() // 允许 drop
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+}
+function onTabDragEnd() {
+  dragTabIdx.value = -1
 }
 
 const selectedNames = computed(() =>
@@ -649,6 +784,25 @@ async function doAdopt(value: string | undefined) {
 function onDelete(c: ContainerView) {
   delTarget.value = c
 }
+// 重命名 = 改显示名（meta.displayName）：tab/侧栏/文件面板全用它，随时可改、不动容器真名。
+// 成功后同步已开终端组的名字快照（组内 pane 头、文件面板 label 都读它）。
+const renameTarget = ref<ContainerView | null>(null)
+function onRename(c: ContainerView) {
+  renameTarget.value = c
+}
+async function doRename(value: string | undefined) {
+  const c = renameTarget.value
+  if (!c) return
+  renameTarget.value = null
+  const displayName = value?.trim()
+  if (!displayName) return
+  await act(c.id, async () => {
+    await updateMeta(c.id, { displayName })
+    for (const g of groups.value) {
+      if (g.containerId === c.id) g.name = displayName
+    }
+  })
+}
 // DeleteContainerDialog 确认删除
 async function doDelete(payload: { deleteData: boolean; confirmName?: string }) {
   const c = delTarget.value
@@ -677,49 +831,135 @@ function stateLabel(state: string): string {
   return m[state] ?? state
 }
 
+// —— 底部服务摘要条 ——
+// docker 配套服务在侧栏只占一行：聚合状态点 + 名称串，点击开管理面板。
+// 服务是配套设施，刻意不以行的形态进侧栏——避免和容器列表形成第二个并列清单，
+// 冲淡「容器是唯一主体」的层级。轮询 15s（服务启停远比容器低频）。
+const svcItems = ref<ServiceView[]>([])
+// null=未知（首拉前），false=docker 不可达
+const svcReachable = ref<boolean | null>(null)
+let svcTimer: ReturnType<typeof setInterval> | null = null
+async function refreshServices() {
+  try {
+    const v = await listServices()
+    svcItems.value = v.items
+    svcReachable.value = v.status?.reachable ?? null
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('unauthorized')
+      return
+    }
+    svcReachable.value = false // daemon 挂了等：降级显示「docker 不可达」，不打扰主流程
+  }
+}
+const svcDotClass = computed(() => {
+  if (svcReachable.value === false) return 'bg-destructive'
+  if (!svcItems.value.length) return 'bg-zinc-400'
+  return svcItems.value.every((s) => s.running) ? 'bg-emerald-500' : 'bg-amber-500'
+})
+const svcSummary = computed(() => {
+  if (svcReachable.value === false) return 'docker 不可达'
+  const names = svcItems.value.map((s) => s.name)
+  if (!names.length) return '暂无配套服务'
+  const shown = names.slice(0, 3).join(' · ')
+  return names.length > 3 ? `${shown} 等 ${names.length} 个` : shown
+})
+
 onMounted(() => {
   refresh()
   timer = setInterval(() => refresh(true), 5000)
+  if (!props.popout) {
+    void refreshServices()
+    svcTimer = setInterval(() => void refreshServices(), 15000)
+  }
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (hostCwdTimer) clearInterval(hostCwdTimer)
+  if (svcTimer) clearInterval(svcTimer)
 })
 </script>
 
 <template>
   <div class="flex h-full min-h-0 gap-0">
-    <!-- 左侧容器窄栏：点容器=开/切终端（本工具的高频操作），⋯ 菜单收低频操作 -->
-    <aside class="flex w-56 shrink-0 flex-col border-r border-border md:w-64">
-      <!-- 宿主终端独立分区：放最顶、带分区标签，与下方「容器」分区平行——宿主不是容器，
-           混进容器列表会被误读成一台容器；「容器 N」标题即两分区的天然分隔。点击开/切宿主 tab。 -->
-      <div class="border-b border-border pb-1.5 pt-2">
-        <div class="px-3 pb-1 text-[11px] font-medium text-muted-foreground">宿主</div>
-        <button
-          class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/50"
+    <!-- 左侧窄栏的信息架构：一个主体 + 两个辅助。
+         「容器」是全侧栏唯一的标题 + 唯一的列表；宿主终端是钉在顶部的单行快捷入口；
+         docker 服务是底部的摘要条（不以行的形态出现，避免形成第二个并列清单）。
+         模板/全局 hosts 等容器作用域的低频配置收进容器标题的 ⋯ 菜单。popout 独立窗口不渲染。 -->
+    <aside v-if="!props.popout" class="flex w-56 shrink-0 flex-col border-r border-border md:w-64">
+      <!-- 品牌块：纯身份标识，居中。系统健康不做常驻展示——引擎/连接出问题时终端连不上，
+           tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。 -->
+      <div class="flex h-10 shrink-0 items-center justify-center gap-2 border-b border-border px-3">
+        <img src="/logo.svg" alt="" class="size-5" />
+        <span class="text-sm font-semibold tracking-tight">MySandbox</span>
+      </div>
+
+      <!-- 宿主终端快捷行：单行入口、不做分区标题（图标 + 文字自解释）。
+           点击开/切宿主 tab，hover 出独立窗口按钮。 -->
+      <div class="border-b border-border p-1">
+        <div
+          class="group flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/50"
           :class="{ 'bg-accent/70': activeGroup?.kind === 'host' }"
+          role="button"
+          tabindex="0"
           title="宿主终端（镜像目录）"
           @click="openHostTerm()"
+          @keydown.enter.prevent="openHostTerm()"
         >
           <Monitor class="h-3.5 w-3.5 shrink-0 text-amber-500" />
           <span class="min-w-0 flex-1 truncate text-sm">宿主终端</span>
           <span class="shrink-0 text-[10px] text-muted-foreground">镜像目录</span>
-        </button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            title="在独立窗口打开宿主终端"
+            @click.stop="openPopout(HOST_ID)"
+          >
+            <AppWindow />
+          </Button>
+        </div>
       </div>
 
-      <div class="flex items-center gap-2 border-b border-border px-3 py-2.5">
+      <!-- 容器分区标题：唯一的强标题。⟳ 刷新 / ＋ 新建（基座未就绪时禁用）/ ⋯ 低频配置 -->
+      <div class="flex shrink-0 items-center gap-2 border-b border-border py-2 pl-3 pr-1.5">
         <span class="text-sm font-semibold">容器</span>
         <span class="text-xs text-muted-foreground">{{ items.length }}</span>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          class="ml-auto"
-          :disabled="loading"
-          :title="loading ? '刷新中…' : '刷新'"
-          @click="refresh()"
-        >
-          <RefreshCw :class="loading ? 'animate-spin' : ''" />
-        </Button>
+        <div class="ml-auto flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :disabled="loading"
+            :title="loading ? '刷新中…' : '刷新'"
+            @click="refresh()"
+          >
+            <RefreshCw :class="loading ? 'animate-spin' : ''" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :disabled="baseReady === false"
+            :title="baseReady === false ? `${baseLabel}未就绪，无法新建` : '新建容器'"
+            @click="showCreate = true"
+          >
+            <Plus />
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button variant="ghost" size="icon-xs" title="容器环境配置">
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-40">
+              <DropdownMenuItem @click="emit('open-base')">
+                <Settings2 /> {{ baseLabel }}管理
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="emit('open-hosts')">
+                <Network /> 全局 hosts
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       <!-- 错误 / 断连提示：窄栏里做成轻量条 -->
@@ -812,7 +1052,11 @@ onUnmounted(() => {
                 <DropdownMenuItem v-if="c.state === 'running'" @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
                   >桌面</DropdownMenuItem
                 >
+                <DropdownMenuItem v-if="c.state === 'running'" @click="openPopout(c.id)"
+                  >在独立窗口打开</DropdownMenuItem
+                >
                 <DropdownMenuItem @click="onPower(c, 'restart')">重启</DropdownMenuItem>
+                <DropdownMenuItem @click="onRename(c)">重命名</DropdownMenuItem>
                 <DropdownMenuItem
                   v-if="c.managed"
                   class="text-destructive"
@@ -848,23 +1092,33 @@ onUnmounted(() => {
         </Button>
       </div>
 
-      <div class="border-t border-border p-2">
+      <!-- 服务摘要条：一行聚合（状态点 + 名称串），点击开管理面板、＋ 带新建意图。
+           全部运行=绿 / 有停机=黄 / docker 不可达=红 / 无服务=灰。 -->
+      <button
+        type="button"
+        class="group flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left hover:bg-accent/50"
+        title="docker 配套服务（postgres/redis…，容器内按服务名访问）——点击管理"
+        @click="emit('open-services')"
+      >
+        <Database class="size-3.5 shrink-0 text-muted-foreground" />
+        <span :class="['h-2 w-2 shrink-0 rounded-full', svcDotClass]" />
+        <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">{{ svcSummary }}</span>
         <Button
-          size="sm"
-          variant="outline"
-          class="w-full"
-          :disabled="baseReady === false"
-          :title="baseReady === false ? `${baseLabel}未就绪` : ''"
-          @click="showCreate = true"
-          >＋ 新建容器</Button
+          variant="ghost"
+          size="icon-xs"
+          class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+          title="新建服务"
+          @click.stop="emit('open-services', true)"
         >
-      </div>
+          <Plus />
+        </Button>
+      </button>
     </aside>
 
     <!-- 右侧终端主区：tab 栏 + 分屏，占满剩余空间 -->
     <div class="flex min-w-0 flex-1 flex-col">
       <div
-        v-if="baseReady === false"
+        v-if="!props.popout && baseReady === false"
         class="flex items-center gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
       >
         <span>{{ baseLabel }}未就绪 —— 新建容器前先去处理（{{ baseLabel }}管理）。</span>
@@ -876,24 +1130,42 @@ onUnmounted(() => {
         <div
           v-for="(g, idx) in groups"
           :key="g.id"
+          draggable="true"
           @click="activeIdx = idx"
+          @dragstart="onTabDragStart($event, idx)"
+          @dragover="onTabDragOver($event, idx)"
+          @dragend="onTabDragEnd"
           :class="[
             'flex cursor-pointer items-center gap-2 border-r border-border px-3 py-1.5 text-xs',
             idx === activeIdx ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50',
+            dragTabIdx === idx ? 'opacity-40' : '',
           ]"
+          :title="groups.length > 1 ? '拖动排序 · 点击切换' : ''"
         >
           <span
             class="h-1.5 w-1.5 rounded-full"
             :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
           />
-          <span class="font-mono">{{ g.name }}<span v-if="g.panes.length > 1" class="text-muted-foreground/60">·{{ g.panes.length }}</span></span>
+          <span class="font-mono">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
           <button
-            @click.stop="closeGroup(idx)"
+            @click.stop="closeGroupById(g.id)"
             class="ml-1 text-muted-foreground hover:text-destructive"
             title="关闭终端组"
           >✕</button>
         </div>
         <span class="ml-auto self-center px-3 text-xs text-muted-foreground">{{ groups.length }} 个终端组</span>
+        <button
+          class="flex items-center self-stretch border-l border-border px-3 text-xs"
+          :class="
+            activeGroup
+              ? 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+              : 'pointer-events-none opacity-30'
+          "
+          title="新开一组终端（当前容器/宿主的独立 tab）"
+          @click="openNewGroup()"
+        >
+          <Plus class="size-3.5" />
+        </button>
         <button
           class="flex items-center gap-1 self-stretch border-l border-border px-3 text-xs"
           :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
@@ -928,16 +1200,50 @@ onUnmounted(() => {
         >
           {{ ipCopied ? '已复制' : activeContainer.ip }}
         </button>
-        <span v-if="listenPorts.length" class="shrink-0 select-none opacity-50">·</span>
-        <button
-          v-for="p in listenPorts"
-          :key="'l' + p"
-          class="shrink-0 rounded bg-muted/60 px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
-          :title="`容器内监听 ${p}，点击打开 http://${activeContainer.ip}:${p}`"
-          @click="openUrl(`http://${activeContainer.ip}:${p}`)"
-        >
-          :{{ p }}
-        </button>
+        <!-- web 端口：实测返回 HTML，高亮 + Globe 标记，一键打开 -->
+        <template v-if="webPorts.length">
+          <span class="shrink-0 select-none opacity-50">·</span>
+          <button
+            v-for="p in webPorts"
+            :key="'w' + p"
+            class="flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-500 hover:bg-emerald-500/25 hover:text-emerald-400"
+            :title="`已验证返回网页，点击打开 http://${activeContainer.ip}:${p}`"
+            @click="openUrl(`http://${activeContainer.ip}:${p}`)"
+          >
+            <Globe class="size-3" />{{ p }}
+          </button>
+        </template>
+        <!-- 非 web 监听端口：折叠进「其他 N」，点开平铺（弱化样式仍可点） -->
+        <template v-if="otherListenPorts.length">
+          <span v-if="!webPorts.length" class="shrink-0 select-none opacity-50">·</span>
+          <button
+            v-if="!showOtherPorts"
+            class="shrink-0 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
+            :title="`${otherListenPorts.length} 个非网页监听端口（ssh/db 等），点击展开`"
+            @click="showOtherPorts = true"
+          >
+            其他 {{ otherListenPorts.length }} ▸
+          </button>
+          <template v-else>
+            <button
+              v-for="p in otherListenPorts"
+              :key="'o' + p"
+              class="shrink-0 rounded px-1.5 py-0.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+              :title="`容器内监听 ${p}（未返回 HTML），点击打开 http://${activeContainer.ip}:${p}`"
+              @click="openUrl(`http://${activeContainer.ip}:${p}`)"
+            >
+              :{{ p }}
+            </button>
+            <button
+              key="collapse"
+              class="shrink-0 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
+              title="收起非网页端口"
+              @click="showOtherPorts = false"
+            >
+              ▸
+            </button>
+          </template>
+        </template>
         <template v-if="mappedPorts.length">
           <span class="shrink-0 select-none opacity-50">·</span>
           <button
@@ -961,58 +1267,21 @@ onUnmounted(() => {
           v-show="gIdx === activeIdx"
           class="absolute inset-0 flex"
         >
-          <template v-for="(p, pIdx) in g.panes" :key="p.termId">
-            <!-- pane 间分隔条（左右拖调宽）：pIdx>0 才有，在 pane[pIdx-1] 与 pane[pIdx] 之间 -->
-            <PaneDivider
-              v-if="pIdx > 0"
-              @dragstart="(w: number) => onPaneDragStart(g, pIdx, w)"
-              @drag="onPaneDrag"
-            />
-            <div
-              class="flex min-w-[120px] flex-col"
-              :style="{ flexGrow: paneGrowOf(g, pIdx), flexBasis: '0%' }"
-            >
-              <!-- pane 头部：标题用「容器名 #序号」——termId 是内部标识，4 位随机 hex 对人无意义；hover 看全 termId -->
-              <div class="flex items-center gap-2 border-b border-border bg-muted/20 px-2 py-1 text-[10px]">
-                <span
-                  class="h-1.5 w-1.5 rounded-full"
-                  :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
-                />
-                <span class="font-mono text-muted-foreground" :title="p.termId">{{ g.name }}<span v-if="g.panes.length > 1"> #{{ pIdx + 1 }}</span></span>
-                <div class="ml-auto flex items-center gap-2">
-                  <button
-                    @click="splitPane(gIdx)"
-                    class="text-muted-foreground hover:text-foreground"
-                    :title="g.kind === 'host' ? '分屏（宿主新终端）' : '分屏（同容器新终端）'"
-                  >⊞</button>
-                  <button
-                    @click="closePane(gIdx, pIdx)"
-                    class="text-muted-foreground hover:text-destructive"
-                    title="关闭"
-                  >✕</button>
-                </div>
-              </div>
-              <!-- Terminal：常驻，切 group 时 v-show 恢复、ResizeObserver 自动 refit。
-                   host group 连 /ws/host-terminal（无容器 id），其余连容器 exec。 -->
-              <Terminal
-                :ref="(el) => setTermRef(gIdx, pIdx, el)"
-                :id="g.kind === 'host' ? undefined : g.containerId"
-                :name="g.name"
-                :term-id="p.termId"
-                :host="g.kind === 'host'"
-                :active="gIdx === activeIdx"
-                @osc-open="(p: string) => onOscOpen(gIdx, pIdx, p)"
-              />
-            </div>
-          </template>
+          <!-- 布局树根：TermLayoutNode 递归渲染叶子/split；所有组常驻 DOM，v-show 切换 -->
+          <TermLayoutNode
+            :node="g.root"
+            :group="g"
+            :active="gIdx === activeIdx"
+            class="min-h-0 min-w-0 flex-1"
+          />
         </div>
         <div
           v-if="!groups.length"
           class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground"
         >
           <TerminalIcon class="size-8 opacity-40" />
-          <p class="text-sm">点击左侧容器打开终端</p>
-          <p class="text-xs opacity-70">同一容器可分屏；多个容器并排开多个终端组</p>
+          <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开终端' }}</p>
+          <p class="text-xs opacity-70">同一容器可左右/上下分屏（每组最多 {{ MAX_GROUP_PANES }} 块）；tab 栏「＋」随时新开一组</p>
         </div>
         </div>
 
@@ -1073,6 +1342,17 @@ onUnmounted(() => {
     :input="{ default: adoptTarget.name, placeholder: adoptTarget.name }"
     @confirm="doAdopt"
     @close="adoptTarget = null"
+  />
+
+  <!-- 重命名 = 显示名：tab / 侧栏 / 文件面板即时跟随，不影响容器真名，随时可改 -->
+  <ConfirmDialog
+    v-if="renameTarget"
+    title="重命名容器"
+    description="修改显示名（终端 tab、侧栏、文件面板都用它），不影响容器本身的名称。"
+    confirm-text="重命名"
+    :input="{ default: renameTarget.displayName || renameTarget.name, placeholder: renameTarget.name }"
+    @confirm="doRename"
+    @close="renameTarget = null"
   />
 
   <!-- 停止/重启确认（仅 adopted/外部容器）：这是别人的服务，误触半径不该只有 24px -->

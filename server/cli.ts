@@ -5,6 +5,7 @@ import { buildServer } from './index.js';
 import { getEngine } from './engine/index.js';
 import { runBaseCommand } from './base.js';
 import { runOpenCommand } from './open.js';
+import { runStatusCommand } from './status.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
 import { startServicesEventSync } from './services.js';
@@ -42,6 +43,11 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
       Open a container file (editor) or directory (file panel) in the browser
       (one-shot; requires the server to be running).
 
+  mysandbox status
+      Scan and list every mysandbox-managed object on this host (containers,
+      template, docker services/volumes, host-terminal sessions, transient
+      systemd units, sidecar files). Read-only; does not need the server.
+
 Options:
   --port <n>     listen port (default 7321)
   --host <addr>  listen host (default 127.0.0.1; WARNING: binding non-localhost
@@ -58,6 +64,13 @@ async function main(): Promise<void> {
   if (process.argv[2] === 'open') {
     const { config } = await loadConfig();
     await runOpenCommand(process.argv.slice(3), config);
+    return;
+  }
+
+  // 一次性子命令：mysandbox status（不启动 server；只读扫宿主，各段独立降级）。
+  if (process.argv[2] === 'status') {
+    const { config } = await loadConfig();
+    await runStatusCommand(config);
     return;
   }
 

@@ -41,6 +41,8 @@ import {
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
 
+// initialCreate=true：来自侧栏服务摘要条的 ＋ ——面板一打开就弹新建对话框（普通入口只展示管理面板）。
+const props = defineProps<{ initialCreate?: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const items = ref<ServiceView[]>([])
@@ -48,7 +50,7 @@ const status = ref<ServicesStatus | null>(null)
 const busyName = ref('')
 const err = ref('')
 const copied = ref('')
-const showCreate = ref(false)
+const showCreate = ref(!!props.initialCreate)
 // 行内日志：服务名 -> 日志内容（null = 未加载）
 const logs = ref<Record<string, string>>({})
 // 删除确认：null 关闭；{name, deleteData} 打开

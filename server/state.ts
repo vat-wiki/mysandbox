@@ -33,9 +33,29 @@ export interface ServiceMeta {
   createdAt: string;
 }
 
+// AI 网关（myapikey 等）最近一次批量下发的配置存档。形状同 aiconfig.ts 的
+// AiGatewayInput（两路端点 + opencode/pi 的 wire 多选）+ updatedAt。含 apiKey——
+// state.json 本就 0600，与 services.env 同一泄露面；GET 回全量供前端预填改 key 重推。
+export interface AiGatewayState {
+  endpoints: {
+    openai?: { baseUrl: string };
+    anthropic?: { baseUrl: string };
+  };
+  apiKey: string;
+  tools: { claude: boolean; codex: boolean; opencode: boolean; pi: boolean };
+  wire?: {
+    opencode?: ('openai-chat' | 'openai-responses' | 'anthropic-messages')[];
+    pi?: ('openai-chat' | 'openai-responses' | 'anthropic-messages')[];
+  };
+  models?: string[];
+  setDefault?: boolean;
+  updatedAt: string;
+}
+
 interface StateShape {
   containers: Record<string, ContainerMeta>;
   services: Record<string, ServiceMeta>;
+  aiGateway?: AiGatewayState;
 }
 
 let cache: StateShape | null = null;
@@ -105,6 +125,18 @@ export async function setServiceMeta(name: string, meta: ServiceMeta): Promise<S
 export async function deleteServiceMeta(name: string): Promise<void> {
   const s = await load();
   delete s.services[name];
+  await persist(s);
+}
+
+// —— AI 网关配置存档（全局一份，不按容器分）——
+
+export async function getAiGateway(): Promise<AiGatewayState | undefined> {
+  return (await load()).aiGateway;
+}
+
+export async function setAiGateway(state: AiGatewayState): Promise<void> {
+  const s = await load();
+  s.aiGateway = state;
   await persist(s);
 }
 

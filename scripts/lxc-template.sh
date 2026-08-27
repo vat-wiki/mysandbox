@@ -96,8 +96,13 @@ apt-get update
 apt-get install -y --no-install-recommends \
   zsh git openssh-client ca-certificates jq curl less vim-tiny xz-utils tzdata tmux \
   zsh-autosuggestions zsh-syntax-highlighting \
-  python3 make g++ sudo bsdutils \
+  python3 make g++ sudo bsdutils locales \
   xvfb x11vnc xfce4 xfce4-terminal dbus-x11
+# locale：容器内进程必须跑在有效 UTF-8 charmap 下——mysandbox exec 链路 --clear-env 后只带
+# LANG=C.UTF-8 进来（engine/lxc.ts attachArgs），模板侧保证它有效；zh_CN 一并生成给用户手工切换。
+# 不生成的话 C.UTF-8 虽是 glibc 内置、但 zh_CN 缺失会让切 locale 的尝试报 "Cannot set LC_*"。
+locale-gen en_US.UTF-8 zh_CN.UTF-8
+update-locale LANG=C.UTF-8
 ln -sf /usr/share/zoneinfo/Asia/Singapore /etc/localtime
 echo Asia/Singapore > /etc/timezone
 rm -rf /var/lib/apt/lists/*

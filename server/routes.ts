@@ -1,5 +1,6 @@
 // REST 路由。/api/health 免鉴权；其余 /api/* + /ws/* 需 token（见 index.ts onRequest）。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { connect as netConnect, type Socket } from 'node:net';
 import type { Config } from './config.js';
 import { dockerStatus } from './docker.js';
 import {
@@ -18,6 +19,8 @@ import { wrapEngineError, conflict, HttpError } from './errors.js';
 import { createContainer, deleteManaged } from './lifecycle.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
+import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
+import { getAiGateway, setAiGateway } from './state.js';
 import { getVersion } from './version.js';
 import { getCustomHostsContent, setCustomHostsContent, readHostHosts } from './hosts.js';
 import {
@@ -34,6 +37,7 @@ export interface Resolved {
   managed: boolean;
   adopted: boolean;
   running: boolean;
+  ip: string | null; // 运行中 = lxc-info 实测；停机 = config 静态值
 }
 
 export async function resolve(cfg: Config, id: string): Promise<Resolved> {
@@ -44,7 +48,14 @@ export async function resolve(cfg: Config, id: string): Promise<Resolved> {
     throw wrapEngineError(e, id);
   }
   const adopted = (await getMeta(info.name))?.managed === true;
-  return { id, name: info.name, managed: info.managed, adopted, running: info.running };
+  return {
+    id,
+    name: info.name,
+    managed: info.managed,
+    adopted,
+    running: info.running,
+    ip: info.ip ?? null,
+  };
 }
 
 // 生命周期动作（start/stop/restart/terminal/exec）：需 managed 或 adopted
@@ -58,6 +69,48 @@ function requireOwned(r: Resolved): void {
   if (!r.managed) {
     throw conflict('only mysandbox-created containers support this action');
   }
+}
+
+// —— 端口 HTML 探测（区分「真 web 页面」与其他监听端口）——
+// 宿主直连容器 IP 发最小 HTTP 请求：状态行是 HTTP 且（Content-Type text/html 或 body 以 '<' 开头）
+// 才算 web。ssh/redis/postgres 这类要么先发 banner（非 HTTP 状态行）、要么等输入超时、
+// 要么回 JSON/二进制——都判 false。HTTP/1.0 + Connection: close 让服务端回完即断，不留半开连接。
+const PROBE_IDLE_MS = 800; // 连接后/发出请求后等待对端说话的上限（内网足够宽裕）
+const PROBE_TOTAL_MS = 2_000; // 单端口总兜底
+
+function probeHtmlPort(ip: string, port: number): Promise<boolean> {
+  return new Promise((settled) => {
+    const socket: Socket = netConnect({ host: ip, port });
+    let buf = '';
+    let done = false;
+    const finish = (v: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(totalTimer);
+      socket.destroy();
+      settled(v);
+    };
+    const totalTimer = setTimeout(() => finish(false), PROBE_TOTAL_MS);
+    socket.setTimeout(PROBE_IDLE_MS, () => finish(false)); // 对端不说话（等输入的协议）→ 非 HTTP
+    socket.on('connect', () => {
+      socket.write(
+        `GET / HTTP/1.0\r\nHost: ${ip}:${port}\r\nUser-Agent: mysandbox-probe\r\nConnection: close\r\n\r\n`,
+      );
+    });
+    socket.on('data', (d: Buffer) => {
+      buf += d.toString('latin1');
+      const idx = buf.indexOf('\r\n\r\n');
+      if (idx === -1 && buf.length < 16 * 1024) return; // 头部没完，继续收
+      const head = idx === -1 ? buf : buf.slice(0, idx);
+      if (!/^HTTP\/[\d.]+ \d{3}/.test(head)) return finish(false); // ssh banner 等：连了但不是 HTTP
+      const ct = /content-type:[^\r\n]*/i.exec(head)?.[0] ?? '';
+      const bodyStart = idx === -1 ? '' : buf.slice(idx + 4, idx + 64);
+      // text/html 或 body 直接以 <!doctype / <html 开头（个别 dev server 不带正确 content-type）
+      finish(/text\/html/i.test(ct) || /^\s*<(?:!doctype|html)/i.test(bodyStart));
+    });
+    socket.on('error', () => finish(false));
+    socket.on('close', () => finish(false)); // 头部没收全就断：不算（正常情况 data 里已 finish）
+  });
 }
 
 export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
@@ -235,6 +288,99 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return batchExec(cfg, ids, { command, timeoutMs });
   });
 
+  // —— AI 网关批量配置（myapikey 等兼容网关）——
+  // GET 回最近一次下发存档（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。
+  app.get('/api/batch/ai-config', async () => ({ config: await getAiGateway() ?? null }));
+
+  app.post('/api/batch/ai-config', async (req): Promise<BatchResult> => {
+    const body = (req.body as Record<string, unknown> | null) || {};
+    const ids = parseIds(body);
+    const tools = (body.tools ?? {}) as Record<string, unknown>;
+    const bool = (v: unknown) => v === true;
+    // endpoints 两路协议分开收（openai / anthropic）；wire 是工具级协议多选
+    // （数组，opencode/pi 专用；claude 固定 anthropic、codex 固定 responses 不进表）
+    const epIn = (body.endpoints ?? {}) as Record<string, unknown>;
+    const wireIn = (body.wire ?? {}) as Record<string, unknown>;
+    const WIRE_VALUES: GatewayWire[] = ['openai-chat', 'openai-responses', 'anthropic-messages'];
+    const pickUrl = (v: unknown): string | undefined => {
+      const s = typeof v === 'string' ? v.trim() : '';
+      return /^https?:\/\//.test(s) ? s.replace(/\/+$/, '') : undefined;
+    };
+    // 单工具的 wire 数组收参：合法值校验 + 去重保序。未传（undefined）与空数组分明——
+    // 前者走后端缺省 ['openai-chat']，后者是显式「清空所有变体」。
+    const pickWires = (tool: string): GatewayWire[] | undefined => {
+      const rawList = wireIn[tool];
+      if (!Array.isArray(rawList)) return undefined;
+      const seen: GatewayWire[] = [];
+      for (const v of rawList) {
+        if (typeof v !== 'string' || !(WIRE_VALUES as string[]).includes(v)) {
+          throw new HttpError(400, `wire.${tool} 非法：${String(v)}（合法值 ${WIRE_VALUES.join('/')}）`, 'bad_request');
+        }
+        if (!seen.includes(v as GatewayWire)) seen.push(v as GatewayWire);
+      }
+      return seen;
+    };
+    const input: AiGatewayInput = {
+      endpoints: {
+        ...(pickUrl(epIn.openai) ? { openai: { baseUrl: pickUrl(epIn.openai)! } } : {}),
+        ...(pickUrl(epIn.anthropic) ? { anthropic: { baseUrl: pickUrl(epIn.anthropic)! } } : {}),
+      },
+      apiKey: String(body.apiKey ?? '').trim(),
+      tools: {
+        claude: bool(tools.claude),
+        codex: bool(tools.codex),
+        opencode: bool(tools.opencode),
+        pi: bool(tools.pi),
+      },
+      wire: {
+        opencode: pickWires('opencode'),
+        pi: pickWires('pi'),
+      },
+      models: Array.isArray(body.models)
+        ? body.models.map(String).map((s) => s.trim()).filter(Boolean)
+        : typeof body.models === 'string'
+          ? body.models.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+          : [],
+      setDefault: bool(body.setDefault),
+    };
+    // 校验按所勾工具动态收紧：某工具要哪条端点由它自己的 wire 集合决定。
+    // claude/codex 是固定消费者（anthropic / openai），不依赖 wire 表。
+    const t = input.tools;
+    if (!t.claude && !t.codex && !t.opencode && !t.pi) {
+      throw new HttpError(400, '至少勾选一个工具', 'bad_request');
+    }
+    if (!input.apiKey) throw new HttpError(400, 'apiKey required', 'bad_request');
+    const toolNeedsAnthropic = (tool: 'opencode' | 'pi') =>
+      wiresOf(input, tool).includes('anthropic-messages');
+    const toolNeedsOpenai = (tool: 'opencode' | 'pi') =>
+      wiresOf(input, tool).some((w) => w !== 'anthropic-messages');
+    if (
+      t.codex ||
+      t.opencode && toolNeedsOpenai('opencode') ||
+      t.pi && toolNeedsOpenai('pi')
+    ) {
+      if (!input.endpoints.openai) {
+        throw new HttpError(400, 'endpoints.openai.baseUrl required（codex 或有工具选了 openai 系协议）', 'bad_request');
+      }
+    }
+    if (
+      t.claude ||
+      t.opencode && toolNeedsAnthropic('opencode') ||
+      t.pi && toolNeedsAnthropic('pi')
+    ) {
+      if (!input.endpoints.anthropic) {
+        throw new HttpError(400, 'endpoints.anthropic.baseUrl required（claude 或有工具选了 anthropic 协议）', 'bad_request');
+      }
+    }
+    if ((t.opencode || t.pi) && (input.models ?? []).length === 0) {
+      throw new HttpError(400, 'models required for opencode/pi（逗号分隔模型 ID）', 'bad_request');
+    }
+    const result = await applyAiGateway(cfg, ids, input);
+    // 存档无条件记录最近一次意图（含部分失败），换 key 重推直接预填
+    await setAiGateway({ ...input, updatedAt: new Date().toISOString() });
+    return result;
+  });
+
   // —— 全局 hosts 配置 ——
   // GET：panel 打开一次拿全。已保存自定义内容 -> isCustom；否则回退宿主 /etc/hosts 作建议默认 -> isHostDefault。
   app.get('/api/hosts', async () => {
@@ -292,7 +438,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   // —— 容器内监听端口（内部服务直达）——
   // 无 ss/netstat 依赖：读 /proc/net/tcp{,6}，st=0A(LISTEN) 行的 local port 是十六进制，
   // busybox awk 无 strtonum，手写 hex->dec。dev(1000) 可读 /proc/net。
-  app.get('/api/containers/:id/listen', async (req): Promise<{ ports: number[] }> => {
+  app.get('/api/containers/:id/listen', async (req): Promise<{ ports: number[]; web: number[] }> => {
     const id = (req.params as { id: string }).id;
     const r = await resolve(cfg, id);
     requireControlled(r);
@@ -314,6 +460,10 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
         .map((l) => Number(l.trim()))
         .filter((n) => Number.isInteger(n) && n > 0),
     )].sort((a, b) => a - b);
-    return { ports };
+    // 并发探测全部端口（每端口独立超时，最坏 ~2s；实际内网毫秒级）。无 IP/探测失败 → 不标 web。
+    if (!r.ip) return { ports, web: [] };
+    const marks = await Promise.all(ports.map((p) => probeHtmlPort(r.ip as string, p)));
+    const web = ports.filter((_, i) => marks[i]);
+    return { ports, web };
   });
 }

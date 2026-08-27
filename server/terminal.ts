@@ -1,11 +1,10 @@
 // 网页终端：WS /ws/terminal?id=&token=&shell=&cols=&rows=&termId=
 //
-// 每个终端 tab 一个 tmux 会话：ms-<容器短id>-<termId>（termId 浏览器生成 UUID、随 tab 存 localStorage）。
-// 一个容器可开多个终端、各自独立 shell。关闭与刷新的区分靠「是否收到 kill 帧」：
-//   - 点 ✕ 关闭：前端发 {type:'kill'} -> 后端 tmux kill-session，shell 真死。
-//   - 刷新/掉线：不发 kill -> 会话保留，宽限期（60s）内重连同 termId 即复活旧 shell（含历史/进程）；
-//     超时未重连才 kill-session（清掉关浏览器/崩溃/导航离开的遗弃会话）。
-// 多窗口同 termId 时用 activeCount 计活连接：关一个只 detach、等最后一个走才按上述杀/挂宽限，不误伤。
+// 每个终端 tab 一个 tmux 会话：mysandbox-<容器短id>-<termId>（termId 浏览器生成 UUID、随 tab 存 localStorage）。
+// 一个容器可开多个终端、各自独立 shell。会话生命周期是**真 tmux 语义**（与宿主终端
+// hostTerminal.ts 一致）：只有显式 kill（前端 ✕）或 shell 自己退出才终结；断线、关浏览器、
+// 服务重启一概保留，无任何定时清理——「只要服务还在，用户开的会话就活着」。
+// 多窗口同 termId 时用 activeCount 计活连接：关一个只 detach、最后一个走也只 detach，不误伤。
 //
 // 握 PTY master 的是容器内独立 tmux server 守护进程，与浏览器、与 mysandbox 进程解耦。
 //
@@ -29,12 +28,22 @@ interface ControlMsg {
 // files.ts 的 cwd 查询也用它校验 termId，故导出。
 export const TERMID_RE = /^[A-Za-z0-9_-]{4,64}$/;
 
-// tmux 会话名：ms-<容器短id>-<termId>。terminal.ts 与 files.ts 共用，杜绝两处拼接漂移。
+// tmux 会话名：mysandbox-<容器短id>-<termId>。terminal.ts 与 files.ts 共用，杜绝两处拼接漂移。
+// 前缀统一用 mysandbox（与 docker label、systemd 单元、socket 等全部标志一致）；
+// 历史前缀 ms- 的活会话由 attach 脚本自动 rename 迁移（见 OLD_SESSION_PREFIX）。
 export function sessionName(id: string, termId: string): string {
-  return `ms-${id.slice(0, 8)}-${termId}`;
+  return `mysandbox-${id.slice(0, 8)}-${termId}`;
 }
-// 遗弃会话宽限期：WS 断开且非 kill 时挂这个定时器，期内重连取消、超时 kill-session。
-const GRACE_MS = 60_000;
+// 旧版会话名前缀（统一命名前用 ms-）。attach 时探测到旧名会话就 rename 成新名——
+// 否则升级后浏览器按旧 termId 重连会静默新建会话，用户的现场丢失。
+const OLD_SESSION_PREFIX = 'ms-';
+// pidfile 模式（新旧两代都收，reaper 才能清掉升级前的旧孤儿）。
+const PIDFILE_PREFIX = 'mysandbox-term-';
+const OLD_PIDFILE_PREFIX = '.ms-term-';
+// 孤儿 pidfile 的最小年龄：别的 mysandbox 实例（同容器双端口跑两个服务、滚动重启窗口内）
+// 的活连接不在本进程 activePidfiles 里，但 pidfile 是刚写的——按 mtime 放过，避免误杀
+// 人家正在用的 attach 客户端（误杀会让 attach 断成纯 detach，多窗口下观感异常）。
+const ORPHAN_MIN_AGE_MIN = 2;
 
 // 容器 id -> 已确认装好 tmux。命中即跳过探测/安装，重连零额外开销。
 const tmuxReady = new Set<string>();
@@ -46,10 +55,8 @@ const tmuxReady = new Set<string>();
 const activePidfiles = new Set<string>();
 
 // 每个会话当前挂着的 WS 连接数（多窗口同 termId 时 >1）。决定断开时是否动会话：
-// >1 -> 还有别的窗口在用，只 detach 本连接；==0（最后一个走）-> 按 wantKill 决定即杀或挂宽限。
+// >1 -> 还有别的窗口在用，只 detach 本连接；==0（最后一个走）-> 按 wantKill 决定即杀或纯 detach。
 const activeCount = new Map<string, number>();
-// 遗弃会话的宽限定时器：sessionName -> timeout。重连时 cancelGrace，到期 killSession。
-const graceTimers = new Map<string, NodeJS.Timeout>();
 
 // 快速探测容器里有没有 tmux（不安装）。命中缓存或 command -v 成功即返回 true。
 async function hasTmux(cfg: Config, id: string): Promise<boolean> {
@@ -109,9 +116,8 @@ async function killExecClient(cfg: Config, id: string, pidfile: string): Promise
 }
 
 // 杀整条 tmux 会话（server 收到后结束该会话的 shell + 所有 pane + detach 所有 client）。
-// 幂等：会话已不在则 tmux 报错、exitCode!=0，调用方忽略。同步清掉该会话的宽限定时器与计数。
+// 幂等：会话已不在则 tmux 报错、exitCode!=0，调用方忽略。同步清掉该会话的计数。
 async function killSession(cfg: Config, id: string, session: string): Promise<void> {
-  cancelGrace(session);
   activeCount.delete(session);
   try {
     await execRun(cfg, id, {
@@ -125,26 +131,6 @@ async function killSession(cfg: Config, id: string, session: string): Promise<vo
   }
 }
 
-// 挂宽限定时器：WS 断开且非显式 kill 时调用。到期再核 activeCount 仍为 0 才真杀
-// （防「挂定时器后又有新连接」的竞态--新连接来时已 cancelGrace 并 activeCount++）。
-function armGrace(cfg: Config, id: string, session: string): void {
-  cancelGrace(session); // 已有定时器则先清，重置计时
-  const t = setTimeout(() => {
-    graceTimers.delete(session);
-    if ((activeCount.get(session) ?? 0) === 0) {
-      void killSession(cfg, id, session);
-    }
-  }, GRACE_MS);
-  graceTimers.set(session, t);
-}
-function cancelGrace(session: string): void {
-  const t = graceTimers.get(session);
-  if (t) {
-    clearTimeout(t);
-    graceTimers.delete(session);
-  }
-}
-
 // 收割孤儿 tmux 客户端 + 旧式单会话。服务重启 / 异常断连时，旧 WS 的 cleanup 闭包随进程而死、
 // killExecClient 没机会执行 -> 容器侧 tmux 客户端被孤儿化（ppid=0、拿着 stale 80x24 的 pty 永不退出）
 // 持续泄漏。每次新连某容器时先跑一遍：
@@ -154,11 +140,11 @@ function cancelGrace(session: string): void {
 //      升级后浏览器改连 ms-<短id>-<termId>，旧会话必为孤儿；有 client 时不动（防误伤升级中在用的）。
 async function reapOrphanClients(cfg: Config, id: string): Promise<void> {
   const short = id.slice(0, 8);
-  // 1) 列出该容器所有 pidfile + 对应 pid（一条 exec，少往返）。
+  // 1) 列出该容器所有 pidfile（新旧两代模式）+ 对应 pid（一条 exec，少往返）。
   const list = await execRun(cfg, id, {
     Cmd: [
       'sh', '-c',
-      `for f in /tmp/.ms-term-${short}-*.pid; do [ -f "$f" ] || continue; printf '%s %s\\n' "$f" "$(cat "$f" 2>/dev/null)"; done`,
+      `for f in /tmp/${PIDFILE_PREFIX}${short}-*.pid /tmp/${OLD_PIDFILE_PREFIX}${short}-*.pid; do [ -f "$f" ] || continue; printf '%s %s\\n' "$f" "$(cat "$f" 2>/dev/null)"; done`,
     ],
     User: 'root',
     Tty: false,
@@ -174,13 +160,11 @@ async function reapOrphanClients(cfg: Config, id: string): Promise<void> {
   }
   if (orphans.length) {
     // 批量杀+删：成对传 (pidfile pid)，comm 校验后 kill -9、删 pidfile。
-    // ⚠️ 只杀「pidfile 落盘超过 2 个宽限期」的：别的 mysandbox 实例（同容器双端口跑两个服务、
-    // 或滚动重启窗口内）的活连接不在本进程 activePidfiles 里，但它们的 pidfile 是刚写的——
-    // 按 mtime 放过，避免把人家正在用的 attach 客户端误杀（误杀会连带 60s 宽限后丢会话）。
+    // ⚠️ 只杀 pidfile 落盘超过 ORPHAN_MIN_AGE_MIN 分钟的（理由见常量注释）。
     await execRun(cfg, id, {
       Cmd: [
         'sh', '-c',
-        'while [ $# -gt 0 ]; do f="$1"; p="$2"; shift 2; old=$(find "$f" -mmin +2 2>/dev/null); [ -z "$old" ] && continue; c=$(cat /proc/$p/comm 2>/dev/null); case "$c" in "tmux: client"*) kill -9 $p 2>/dev/null;; esac; rm -f "$f"; done',
+        `while [ $# -gt 0 ]; do f="$1"; p="$2"; shift 2; old=$(find "$f" -mmin +${ORPHAN_MIN_AGE_MIN} 2>/dev/null); [ -z "$old" ] && continue; c=$(cat /proc/$p/comm 2>/dev/null); case "$c" in "tmux: client"*) kill -9 $p 2>/dev/null;; esac; rm -f "$f"; done`,
         'sh', ...orphans,
       ],
       User: 'root',
@@ -188,16 +172,16 @@ async function reapOrphanClients(cfg: Config, id: string): Promise<void> {
       timeoutMs: 5_000,
     });
   }
-  // 2) 迁移旧式单会话 ms-<短id>：无 attached client 才杀。
+  // 2) 迁移旧式单会话 ms-<短id>（无 termId 后缀，更早的模型）：无 attached client 才杀。
   //    ⚠️ 必须 `=$s` 精确匹配：tmux 的 -t 默认按「前缀」匹配（实测 `ms-<短id>` 会匹配到
-  //    `ms-<短id>-<termId>`），不写 = 的话本函数会把刷新重连场景下、等宽限的当前会话误杀——
-  //    时序：刷新 → cleanup 杀旧 attach 客户端 → 重连时本函数跑：has-session(前缀)命中、
+  //    会话名 `mysandbox-<短id>-<termId>` 之外的旧式名），不写 = 的话本函数会把断线后的
+  //    当前会话误杀——时序：刷新 → cleanup 杀旧 attach 客户端 → 重连时本函数跑：has-session(前缀)命中、
   //    list-clients=0（客户端刚被杀）→ kill-session → 会话死 → 重连只得 new-session 全新 shell，
   //    表现为「刷新后终端历史/任务全丢」。
   await execRun(cfg, id, {
     Cmd: [
       'sh', '-c',
-      `s="ms-${short}"; tmux has-session -t "=$s" 2>/dev/null || exit 0; n=$(tmux list-clients -t "=$s" 2>/dev/null | wc -l); [ "$n" -eq 0 ] && tmux kill-session -t "=$s" 2>/dev/null || true`,
+      `s="${OLD_SESSION_PREFIX}${short}"; tmux has-session -t "=$s" 2>/dev/null || exit 0; n=$(tmux list-clients -t "=$s" 2>/dev/null | wc -l); [ "$n" -eq 0 ] && tmux kill-session -t "=$s" 2>/dev/null || true`,
     ],
     User: '1000:1000',
     Tty: false,
@@ -228,11 +212,11 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       // 未确定时按 false 收尾：不杀 pidfile、不动会话计数（此刻也确实还没认领成 tmux 路径）。
       const useTmuxRef = { v: false };
       const session = sessionName(id, termId);
-      const pidfile = `/tmp/.ms-term-${id.slice(0, 8)}-${Math.random().toString(36).slice(2, 10)}.pid`;
+      const oldSession = `${OLD_SESSION_PREFIX}${id.slice(0, 8)}-${termId}`;
+      const pidfile = `/tmp/${PIDFILE_PREFIX}${id.slice(0, 8)}-${Math.random().toString(36).slice(2, 10)}.pid`;
       // 认领：把本次连接的 pidfile 登记为「活」，reaper 据此跳过它（绝不误杀本 tab / 其它 tab）。
       activePidfiles.add(pidfile);
-      // 重连复活：取消该会话的宽限定时器（若有），活连接计数 +1。多窗口同 termId 时计数 >1。
-      cancelGrace(session);
+      // 活连接计数 +1。多窗口同 termId 时计数 >1。
       activeCount.set(session, (activeCount.get(session) ?? 0) + 1);
 
       // ---- 提前挂事件监听（必须在下面的 inspect/tmux/reap/exec 一串 await 之前）----
@@ -245,12 +229,13 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       let resizeExec: ((cols: number, rows: number) => void) | null = null;
       let pendingResize: { cols: number; rows: number } | null = null;
       let lastSize = ''; // 最近一次已落盘的 resize 尺寸（幂等跳过用）
-      let wantKill = false; // 收到过 kill 帧（点 ✕）：断开时即杀会话而非挂宽限
+      let wantKill = false; // 收到过 kill 帧（点 ✕）：断开时即杀会话而非纯 detach
       let closed = false;
 
-      // 统一收尾（幂等）。断连时序：杀 attach 客户端进程（保留会话，供刷新重连）→ 释放 pidfile 认领
-      // → 最后一个连接走时按 wantKill 决定即杀/挂宽限。exec 串未跑完就断连时 killExecClient 照发
-      // （容器里 sh 可能还没写 pidfile，脚本 cat 不到就退出，无害），不会因早断而漏收尾。
+      // 统一收尾（幂等）。断连时序：杀 attach 客户端进程（保留会话）→ 释放 pidfile 认领
+      // → 最后一个连接走时按 wantKill 决定即杀或纯 detach（真 tmux 语义：非显式 kill 不清会话，
+      // 见文件头）。exec 串未跑完就断连时 killExecClient 照发（容器里 sh 可能还没写 pidfile，
+      // 脚本 cat 不到就退出，无害），不会因早断而漏收尾。
       const cleanup = () => {
         if (closed) return;
         closed = true;
@@ -265,22 +250,16 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
         if (useTmuxRef.v) killExecClient(cfg, id, pidfile);
         activePidfiles.delete(pidfile); // 释放认领，允许后续 reaper 回收（若 killExecClient 没杀成）
         // 会话级收尾：只在最后一个连接走时才决定会话生死（多窗口下别的连接还活着就只 detach）。
-        // 计数一律扣（与 try 顶部的 +1 对应；exec 串没跑完就断连也得扣，否则计数泄漏）。
+        // 计数一律扣（与上面的 +1 对应；exec 串没跑完就断连也得扣，否则计数泄漏）。
         const n = (activeCount.get(session) ?? 1) - 1;
         if (n > 0) {
           activeCount.set(session, n);
-        } else if (useTmuxRef.v) {
-          // 最后一个连接断了：显式 kill -> 即杀（killSession 内部会 delete 计数）；
-          // 否则挂宽限（刷新/掉线留 60s 供重连，超时才杀）。挂宽限必须把计数清 0，
-          // 否则下次重连 get 到旧值 1、+1 变 2（实际只 1 个连接），多窗口判定会错。
-          if (wantKill) {
-            void killSession(cfg, id, session);
-          } else {
-            activeCount.set(session, 0);
-            armGrace(cfg, id, session);
-          }
+        } else if (useTmuxRef.v && wantKill) {
+          // 最后一个连接断了且是显式 kill：即杀（killSession 内部会 delete 计数）。
+          void killSession(cfg, id, session);
         } else {
-          // 非 tmux 路径（或 useTmux 未确定的早断连）：无会话可收尾，计数清 0 即可。
+          // 纯 detach（刷新/掉线/非最后连接）：会话保留，计数清 0——
+          // 否则下次重连 get 到旧值 1、+1 变 2（实际只 1 个连接），多窗口判定会错。
           activeCount.set(session, 0);
         }
       };
@@ -304,7 +283,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
               else pendingResize = size; // exec 未就绪：只留最新一帧
             } else if (m.type === 'kill') {
               // 点 ✕ 关闭：标记后关 socket，cleanup 见 wantKill=true 会即杀会话
-              // （最后一个连接时）或只 detach（别的窗口还活着时），不会挂宽限。
+              // （最后一个连接时）或只 detach（别的窗口还活着时）。
               wantKill = true;
               try { socket.close(1000); } catch { /* noop */ }
             }
@@ -359,14 +338,20 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       //      命令铺路——前者标记 web 环境（exec 的 Env 到不了 tmux server 起的 shell，故挂 server
       //      全局环境，脚本用 show-environment -g 运行时探测）；后者放行 DCS passthrough，否则
       //      tmux 吞掉脚本打的 OSC 7677（tmux 只转发认识的 OSC）。
+      //      set-environment -g LANG C.UTF-8：tmux server 是守护进程、全局环境在首次启动时冻结
+      //     （update-environment 默认不含 LANG），之后 exec 带的 LANG 传不进已运行的 server——
+      //     修复前起的 server 其新 pane 仍会落在 C locale（提示符 » 显示成 _、编辑残留幽灵字符，
+      //     见 engine/lxc.ts attachArgs 的 locale 注释），每次 attach 钉一次补漏。
       //   3) exec tmux attach：替换进程为 attach 客户端。
-      //   $1=会话名 ms-<短id>-<termId>、$2=shell、$3=pidfile。注意：set 必须在 attach 之前 detached 跑--attach 后
+      //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>。
+      //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
+      //   后续 has-session 命中新名。注意 set 必须在 attach 之前 detached 跑--attach 后
       //   客户端接管 tty，命令行里 ';' 接的后续 tmux 命令不再执行（实测 attach 路径下 set 不生效）。
       const cmd = useTmux
         ? [
             'sh', '-c',
-            'echo $$ > "$3"; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; exec tmux attach -t "$1"',
-            'sh', session, shell, pidfile,
+            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; exec tmux attach -t "$1"',
+            'sh', session, shell, pidfile, oldSession,
           ]
         : [shell];
 

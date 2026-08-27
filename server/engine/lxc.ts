@@ -331,6 +331,10 @@ async function inspect(cfg: Config, id: string): Promise<ContainerInfo> {
   const { state, running } = mapState(info?.State ?? 'STOPPED');
   const link = configValue(content, 'lxc.net.0.link');
   const bridge = await resolveBridge(cfg);
+  // IP 口径同 listManaged：跑起来读 lxc-info（真实态），停机读 config 静态配置。
+  const ip = running
+    ? info?.IP || null
+    : (configValue(content, 'lxc.net.0.ipv4.address') || '').split('/')[0] || null;
   return {
     id: name,
     name,
@@ -338,6 +342,7 @@ async function inspect(cfg: Config, id: string): Promise<ContainerInfo> {
     stateStatus: state,
     managed: isManagedConfig(content),
     networks: link && link === bridge ? [cfg.network] : link ? [link] : [],
+    ip,
     ports: [],
   };
 }
@@ -593,6 +598,14 @@ function attachArgs(name: string, opts: ExecOpts): string[] {
     'PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     ...(opts.Env ?? []),
   ];
+  // locale 兜底：--clear-env 后调用方的 LANG 进不来，容器内进程会跑在 C/ASCII charmap 下。
+  // 后果（实测）：zsh ZLE 与 tmux 按「字节」数多字节字符宽度——af-magic 提示符的 »(C2 BB)
+  // 被 tmux 解码失败替换成字面 `_`，且光标列数与 xterm.js 的 UTF-8 渲染恒差 1 列，
+  // 表现为提示符后输入/退格残留删不掉的幽灵字符。C.UTF-8 是 glibc 内置 locale，无需
+  // locale-gen。调用方显式给过 LANG/LC_ALL 则尊重其选择。
+  if (!env.some((e) => e.startsWith('LANG=') || e.startsWith('LC_ALL='))) {
+    env.push('LANG=C.UTF-8');
+  }
   for (const e of env) args.push('-v', e);
   args.push('--');
   // WorkingDir：lxc-attach 无 --cwd，用 sh -c 'cd X && exec "$@"' 包一层。

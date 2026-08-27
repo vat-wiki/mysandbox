@@ -8,17 +8,12 @@ export PATH="$HOME/.local/bin:$PATH"
 export ZSH=/usr/share/oh-my-zsh
 if [[ -f $ZSH/oh-my-zsh.sh ]]; then
   ZSH_THEME="af-magic"   # 与宿主机 ~/.zshrc 同款（powerline 符号，终端字体需带 powerline 字形）
-  # z: 按 frecency 跳目录（z <片段>）；sudo: 权限不够时 Ctrl+U 自动改写成 sudo（容器已配免密）
-  plugins=(git z sudo)
+  plugins=(git)
   # 模板是冻结快照、/usr/share 归 root——自动更新没意义还会在非交互终端刷提示，关掉。
   zstyle ':omz:update' mode disabled
   # omz 默认 SAVEHIST=10000，维持原来的 50000。
   SAVEHIST=50000
   source "$ZSH/oh-my-zsh.sh"
-  # omz 不含的俩插件走 apt（模板已装，文件在 /usr/share，不能指望 plugins= 按名加载）：
-  # autosuggestions = 历史灰字建议、Tab 采纳；syntax-highlighting = 命令行实时语法高亮，必须放最后 source。
-  source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
-  source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 else
   # 老容器手动拷了新 zshrc 但还没装 omz：退回原手搓提示符，别每次开 shell 报错。
   alias ls='ls --color=auto'
@@ -28,3 +23,16 @@ fi
 # ll/la omz 不带，自己留（alias 展开会递归吃到上面 omz 的 ls 颜色 alias）。
 alias ll='ls -lah'
 alias la='ls -A'
+
+# 幽灵建议（输入时灰色提示历史命令）+ 命令语法高亮：apt 预装的两个小包，omz 不含。
+# 缺失则静默跳过（老容器不报错）。
+# Tab 补全与 ghost 叠渲染修复：Tab 的 widget(expand-or-complete)不在插件任何名单里，
+# 默认按「modify」处理——补全菜单重画行后灰色 ghost 仍画在原位，和补全结果叠出
+# "l+灰l+l" 假象（屏幕与 buffer 脱节，回车报 command not found）。列进 CLEAR_WIDGETS 让 Tab 清场。
+# 必须在 source 插件之后、首个提示符之前改（precmd 时按名单绑 widget）。
+[[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]] && {
+  source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+  ZSH_AUTOSUGGEST_CLEAR_WIDGETS+=(expand-or-complete expand-or-complete-with-prefix menu-complete menu-expand-or-complete complete-word)
+}
+# zsh-syntax-highlighting 要求 source 在 .zshrc 最末（它包装此后所有 widget 定义）
+[[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh

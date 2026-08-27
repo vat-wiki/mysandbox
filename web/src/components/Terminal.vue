@@ -33,12 +33,12 @@ function kill() {
     try {
       ws.send(JSON.stringify({ type: 'kill' }))
     } catch {
-      /* socket 已关就忽略，后端靠宽限期兜底清理 */
+      /* socket 已关就忽略：没送到 kill 就当纯 detach，会话保留（真 tmux 语义） */
     }
   }
 }
 // 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）与首连共用。
-// termId 不变 -> 后端 attach 回同一 tmux 会话（60s 宽限内），历史/任务都在。
+// termId 不变 -> 后端 attach 回同一 tmux 会话（无限期保留，直到显式 ✕ 或 shell 退出）。
 function connectWs() {
   const token = getToken() ?? ''
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -89,7 +89,7 @@ function connectWs() {
   }, 15_000)
 }
 
-// 断线重连：卸掉旧 WS 重建。termId 不变 -> 后端 attach 回同一 tmux 会话（60s 宽限内），
+// 断线重连：卸掉旧 WS 重建。termId 不变 -> 后端 attach 回同一 tmux 会话（无时限保留），
 // 历史/正在跑的任务都在。终端上方的「连接已断开 · 点击重连」条走这里。
 function reconnect() {
   try {
@@ -116,7 +116,7 @@ let resizeObs: ResizeObserver | null = null
 let rafId = 0
 let webglAddon: WebglAddon | null = null
 // 断线状态（终端上方覆盖条用）：'ok' | 'lost'。TCP 半开（后端挂死/NAT 超时）时 onclose 不会触发，
-// 靠心跳探测置 lost。tmux 会话在后端保留（60s 宽限 + 有活动连接时不杀），重连即恢复。
+// 靠心跳探测置 lost。tmux 会话在后端无限期保留（真 tmux 语义），重连即恢复。
 const connState = ref<'ok' | 'lost'>('ok')
 let hbTimer: ReturnType<typeof setInterval> | null = null
 

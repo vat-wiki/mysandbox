@@ -29,6 +29,7 @@ export interface ContainerInfo {
   stateStatus: string; // lxc 状态（RUNNING/STOPPED/...）
   managed: boolean; // 受管理标记 = config 里的 MYSANDBOX_MANAGED 行
   networks: string[]; // 所在网桥
+  ip?: string | null; // 运行中读 lxc-info；停机读 config 静态值（同 listManaged 口径）
   ports: ContainerPort[];
 }
 

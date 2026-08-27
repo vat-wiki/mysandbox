@@ -1,35 +1,28 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, Unauthorized } from '@/lib/api'
-import { setEngineInfo, engineName } from '@/lib/caps'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { setEngineInfo } from '@/lib/caps'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
-import BaseBadge from '@/components/BaseBadge.vue'
 import BasePanel from '@/components/BasePanel.vue'
-import HostsBadge from '@/components/HostsBadge.vue'
-import ServicesBadge from '@/components/ServicesBadge.vue'
 // 异步加载 hosts 面板：Monaco 编辑器较重（~700KB gzip），只在点 hosts 徽标时才下载，不拖累首屏。
 const HostsPanel = defineAsyncComponent(() => import('@/components/HostsPanel.vue'))
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
 
 const token = ref<string | null>(getToken())
-const version = ref<string>('')
-const engineOk = ref<boolean | null>(null)
-// docker 服务层可用性（health.services；null = 未知，false = docker 不可达，徽标变红）
-const servicesOk = ref<boolean | null>(null)
 const checking = ref(false)
 const checkErr = ref('')
 
-// 基座状态（docker=基础镜像 / lxc=模板容器）：header 徽标 + ContainerList 新建守卫用。
+// 基座状态（docker=基础镜像 / lxc=模板容器）：ContainerList 新建守卫用。
 // 存 ready 而非 exists：LXC 模板存在但在运行时不能克隆，新建守卫要拦的是「不可用」。
+// （基座就绪性不再常驻徽标展示——入口收进侧栏容器分区的 ⋯ 菜单与新建守卫，见 ContainerList。）
 const baseReady = ref<boolean | null>(null)
-const baseBusy = ref(false)
 const showBasePanel = ref(false)
 const showHostsPanel = ref(false)
 const showServicesPanel = ref(false)
+// 服务摘要条上的 ＋ 带「新建」意图：面板打开时直接弹新建对话框（普通打开则不弹）。
+const svcCreateIntent = ref(false)
 let baseTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshBaseStatus() {
@@ -46,13 +39,10 @@ async function verify(t: string): Promise<boolean> {
   checkErr.value = ''
   try {
     setToken(t)
-    // health 不鉴权（错误 token 也 200），只用来看后端/引擎状态；
+    // health 不鉴权（错误 token 也 200），这里只为拿 caps/engine 名写全局单例；
     // 真伪校验走必鉴权的 verifyToken，401 会在下面 catch 成明确的「token 无效」。
     const h = await health()
     await verifyToken()
-    version.value = h.version
-    engineOk.value = h.engineStatus.reachable
-    servicesOk.value = h.services?.available ?? null
     // caps 写进全局单例：删除/改名/端口映射的 UI 分支都读它（见 lib/caps.ts）
     setEngineInfo(h.engine, h.caps)
     token.value = t
@@ -72,12 +62,21 @@ async function verify(t: string): Promise<boolean> {
 function logout() {
   clearToken()
   token.value = null
-  engineOk.value = null
-  servicesOk.value = null
   baseReady.value = null
 }
 
 const ready = computed(() => !!token.value)
+
+// —— 面板打开入口（全部来自侧栏，见 ContainerList）——
+// 服务摘要条：普通点击开管理面板；＋ 点击带新建意图（面板内直接弹新建对话框）。
+function openServices(create = false) {
+  svcCreateIntent.value = create
+  showServicesPanel.value = true
+}
+function closeServices() {
+  showServicesPanel.value = false
+  svcCreateIntent.value = false
+}
 
 // —— CLI `mysandbox open` 深链 ——
 // 解析 #open?c=<容器id>&p=<路径>&k=<file|dir> 为 pendingOpen；等 ContainerList 消费完
@@ -97,7 +96,14 @@ function onOpenHandled() {
   history.replaceState(null, '', location.pathname + location.search)
 }
 
+// —— 独立窗口（popout）——
+// ?popout=<containerId|__host__>：主界面「在独立窗口打开」经 window.open 发起的新窗。
+// 同源共享 localStorage 里的 token，鉴权天然通过；只渲染 ContainerList 的纯终端工作区
+// （无 header/侧栏），首屏自动开一个全新终端、可继续左右/上下分屏，布局独立持久化。
+const popoutTarget = ref('')
+
 onMounted(() => {
+  popoutTarget.value = new URLSearchParams(location.search).get('popout') ?? ''
   pendingOpen.value = parseOpenHash()
   refreshBaseStatus()
   baseTimer = setInterval(refreshBaseStatus, 15000)
@@ -108,49 +114,21 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 全高布局：header + 主区撑满视口（终端为主体，不再页面滚动） -->
+  <!-- 全高布局：主区撑满视口（终端为主体，不再页面滚动）。
+       header 已整体移除：品牌 + 版本 + 引擎健康收进侧栏顶部品牌块（见 ContainerList），
+       配置入口在侧栏容器分区，登出已删（token 轮换时 @unauthorized 自动弹回 TokenGate）。
+       popout 独立窗口与主窗口的唯一区别只剩「无侧栏」。 -->
   <div class="flex h-screen flex-col overflow-hidden bg-background text-foreground">
-    <header class="shrink-0 border-b border-border bg-card/60 backdrop-blur">
-      <div class="flex h-12 items-center gap-3 px-4">
-        <img src="/logo.svg" alt="" class="h-7 w-7" />
-        <span class="text-base font-semibold tracking-tight">MySandbox</span>
-        <Badge v-if="version" variant="outline" class="font-normal text-muted-foreground"
-          >v{{ version }}</Badge
-        >
-        <Badge
-          v-if="engineOk === true"
-          variant="outline"
-          class="border-transparent bg-emerald-500/15 text-emerald-500"
-          >{{ engineName }} ok</Badge
-        >
-        <Badge
-          v-else-if="engineOk === false"
-          variant="outline"
-          class="border-transparent bg-destructive/15 text-destructive"
-          >{{ engineName }} unreachable</Badge
-        >
-        <BaseBadge
-          v-if="ready"
-          :ready="baseReady"
-          :busy="baseBusy"
-          @click="showBasePanel = true"
-        />
-        <HostsBadge v-if="ready" @click="showHostsPanel = true" />
-        <ServicesBadge v-if="ready" :available="servicesOk" @click="showServicesPanel = true" />
-        <div class="ml-auto" />
-        <Button
-          v-if="ready"
-          variant="ghost"
-          size="sm"
-          class="text-muted-foreground"
-          @click="logout"
-          >登出</Button
-        >
-      </div>
-    </header>
-
     <main class="min-h-0 flex-1">
       <TokenGate v-if="!ready" :checking="checking" :err="checkErr" @submit="verify" />
+      <!-- popout：纯终端工作区；未授权同样走 TokenGate（token 失效时） -->
+      <ContainerList
+        v-else-if="popoutTarget"
+        class="h-full"
+        popout
+        :popout-target="popoutTarget"
+        @unauthorized="logout"
+      />
       <ContainerList
         v-else
         class="h-full"
@@ -159,16 +137,16 @@ onUnmounted(() => {
         @unauthorized="logout"
         @open-base="showBasePanel = true"
         @open-hosts="showHostsPanel = true"
+        @open-services="openServices"
         @open-handled="onOpenHandled"
       />
-      <BasePanel
-        v-if="showBasePanel"
-        @close="showBasePanel = false"
-        @changed="refreshBaseStatus"
-        @running="baseBusy = $event"
-      />
+      <BasePanel v-if="showBasePanel" @close="showBasePanel = false" @changed="refreshBaseStatus" />
       <HostsPanel v-if="showHostsPanel" @close="showHostsPanel = false" />
-      <ServicesPanel v-if="showServicesPanel" @close="showServicesPanel = false" />
+      <ServicesPanel
+        v-if="showServicesPanel"
+        :initial-create="svcCreateIntent"
+        @close="closeServices"
+      />
     </main>
   </div>
 </template>

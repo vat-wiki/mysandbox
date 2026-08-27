@@ -171,6 +171,33 @@ export const batchClaude = (ids: string[], prompt: string, timeoutMs?: number) =
 export const batchExec = (ids: string[], command: string, timeoutMs?: number) =>
   postJson('/api/batch/exec', { ids, command, timeoutMs }) as Promise<BatchResult>
 
+// —— AI 网关批量配置（rootfs 直写，容器无需在跑）——
+// claude 固定 Anthropic；codex 固定 OpenAI Responses（官方已停 chat completions）；
+// opencode/pi 的 wire 是多选数组——每个选中的协议注册一个独立 provider 变体
+// （myapikey-chat / -responses / -anthropic），工具内按 <变体>/<模型> 切换。
+export type GatewayWire = 'openai-chat' | 'openai-responses' | 'anthropic-messages'
+export interface AiGatewayInput {
+  endpoints: {
+    openai?: { baseUrl: string }
+    anthropic?: { baseUrl: string }
+  }
+  apiKey: string
+  tools: { claude: boolean; codex: boolean; opencode: boolean; pi: boolean }
+  wire?: {
+    opencode?: GatewayWire[]
+    pi?: GatewayWire[]
+  }
+  models?: string[]
+  setDefault?: boolean
+}
+export interface AiGatewayState extends AiGatewayInput {
+  updatedAt: string
+}
+export const getAiGateway = () =>
+  api('/api/batch/ai-config') as Promise<{ config: AiGatewayState | null }>
+export const batchAiConfig = (ids: string[], input: AiGatewayInput) =>
+  postJson('/api/batch/ai-config', { ids, ...input }) as Promise<BatchResult>
+
 // —— 宿主终端 ——
 // 会话活跃 pane 的 cwd（信息条显示「宿主 · <镜像目录>」用；轮询）。
 // 复用 getTermCwd：HOST_ID 哨兵会落到 /api/host-terminal/cwd（文件 API 端点切换同源）。
@@ -395,4 +422,5 @@ export const renameEntry = (id: string, path: string, name: string) =>
 export const deleteEntry = (id: string, path: string) =>
   postJson(`${filesBase(id)}/fs/delete`, { path }) as Promise<{ ok: true }>
 export const getListenPorts = (id: string) =>
-  api(`/api/containers/${id}/listen`) as Promise<{ ports: number[] }>
+  // ports：全部监听端口；web：其中实测返回 HTML 的（真网页，可放心点击打开）
+  api(`/api/containers/${id}/listen`) as Promise<{ ports: number[]; web: number[] }>

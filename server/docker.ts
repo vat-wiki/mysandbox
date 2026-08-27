@@ -278,11 +278,17 @@ export async function pullImageStream(image: string, onLine: (line: string) => v
 
 export async function volumeExists(volume: string): Promise<boolean> {
   try {
-    const rows = await dockerJsonLines<{ Name: string }>(['volume', 'ls']);
-    return rows.some((r) => r.Name === volume);
+    return (await listManagedVolumes()).some((v) => v.name === volume);
   } catch {
     return false;
   }
+}
+
+// 带 mysandbox label 的全部卷（status 总览扫描用；label 见 ensureVolume）。
+export async function listManagedVolumes(): Promise<{ name: string }[]> {
+  return dockerJsonLines<{ Name: string }>([
+    'volume', 'ls', '--filter', `label=${MANAGED_LABEL}=mysandbox`,
+  ]).then((rows) => rows.map((r) => ({ name: r.Name })));
 }
 
 export async function ensureVolume(volume: string): Promise<void> {

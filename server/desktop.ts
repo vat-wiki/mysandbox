@@ -83,14 +83,14 @@ async function startDesktopStack(cfg: Config, id: string, w: number, h: number):
   await sh(
     cfg,
     id,
-    `su - dev -c "setsid nohup Xvfb ${X_DISPLAY} -screen 0 ${w}x${h}x24 -nolisten tcp >/tmp/ms-xvfb.log 2>&1 & sleep 1"`,
+    `su - dev -c "setsid nohup Xvfb ${X_DISPLAY} -screen 0 ${w}x${h}x24 -nolisten tcp >/tmp/mysandbox-xvfb.log 2>&1 & sleep 1"`,
     { user: 'root', timeoutMs: 10_000 },
   );
   // 2) x11vnc：把 X display 映成 RFB。forever=客户端断开后不退出；shared=多客户端并发。
   await sh(
     cfg,
     id,
-    `su - dev -c "setsid nohup x11vnc -display ${X_DISPLAY} -rfbport ${VNC_PORT} -nopw -shared -forever -quiet >/tmp/ms-x11vnc.log 2>&1 & sleep 1"`,
+    `su - dev -c "setsid nohup x11vnc -display ${X_DISPLAY} -rfbport ${VNC_PORT} -nopw -shared -forever -quiet >/tmp/mysandbox-x11vnc.log 2>&1 & sleep 1"`,
     { user: 'root', timeoutMs: 10_000 },
   );
   // 3) XFCE 会话：往 Xvfb 里画桌面（任务栏/图标/窗口管理）。迟到几秒无妨，RFB 已可连
@@ -98,7 +98,7 @@ async function startDesktopStack(cfg: Config, id: string, w: number, h: number):
   await sh(
     cfg,
     id,
-    `su - dev -c "setsid nohup env DISPLAY=${X_DISPLAY} startxfce4 >/tmp/ms-xfce.log 2>&1 &"`,
+    `su - dev -c "setsid nohup env DISPLAY=${X_DISPLAY} startxfce4 >/tmp/mysandbox-xfce.log 2>&1 &"`,
     { user: 'root', timeoutMs: 10_000 },
   );
 }
@@ -138,7 +138,7 @@ async function ensureDesktop(cfg: Config, id: string, w: number, h: number, onPr
     await new Promise((r) => setTimeout(r, 1_000));
   }
   // 诊断信息带上：三份日志的尾巴直接进错误消息，用户不用进容器翻。
-  const diag = await sh(cfg, id, 'tail -n 5 /tmp/ms-xvfb.log /tmp/ms-x11vnc.log /tmp/ms-xfce.log 2>/dev/null || true');
+  const diag = await sh(cfg, id, 'tail -n 5 /tmp/mysandbox-xvfb.log /tmp/mysandbox-x11vnc.log /tmp/mysandbox-xfce.log 2>/dev/null || true');
   throw new Error(`桌面服务未就绪（15s 超时）。日志摘要：\n${diag.stdout.slice(0, 500)}`);
 }
 

@@ -5,15 +5,19 @@ import {
   batchSshReseed,
   batchSshAppendKey,
   batchExec,
+  batchAiConfig,
+  getAiGateway,
   applyHosts,
   getHosts,
   Unauthorized,
   type BatchResult,
+  type GatewayWire,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   Dialog,
   DialogContent,
@@ -22,6 +26,7 @@ import {
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Checkbox } from '@/components/ui/checkbox'
 // Monaco 编辑器壳：exec/hosts tab 的高亮编辑。异步引入——git/ssh tab 打开零成本，
 // 首次进 exec/hosts 才拉 monaco chunk（此后全站共享缓存）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
@@ -69,6 +74,18 @@ const execEditorOptions = {
 const hostsContent = ref('')
 const hostsLoaded = ref(false)
 
+// ai tab：两路端点（openai / anthropic）+ key + 工具勾选（opencode/pi 行内联
+// wire 协议多选，ToggleGroup multiple）。打开时预填最近一次下发存档。
+const aiAnthropicUrl = ref('')
+const aiOpenaiUrl = ref('')
+const aiKey = ref('')
+const aiModels = ref('')
+const aiSetDefault = ref(false)
+const aiTools = ref({ claude: true, codex: true, opencode: true, pi: true })
+// 工具级 wire 多选；claude 固定 anthropic、codex 固定 responses 都没有选择器
+const aiWire = ref<{ opencode?: string[]; pi?: string[] }>({})
+const aiLoaded = ref(false)
+
 function resetResult() {
   result.value = null
   err.value = ''
@@ -115,6 +132,54 @@ function submit() {
         ? batchSshReseed(props.ids)
         : batchSshAppendKey(props.ids, sshKey.value.trim()),
     )
+  } else if (tab.value === 'ai') {
+    const t = aiTools.value
+    const any = t.claude || t.codex || t.opencode || t.pi
+    if (!any) {
+      err.value = '至少勾选一个工具'
+      return
+    }
+    if (!aiKey.value.trim()) {
+      err.value = 'API Key 必填'
+      return
+    }
+    // 端点需求按工具+wire 集合推导（与后端校验同规则）
+    const multiTools = ['opencode', 'pi'] as const
+    const wiresOfTool = (tool: 'opencode' | 'pi'): string[] => aiWire.value[tool] ?? ['openai-chat']
+    const needsOpenai =
+      t.codex ||
+      multiTools.some((tool) => t[tool] && wiresOfTool(tool).some((w) => w !== 'anthropic-messages'))
+    const needsAnthropic =
+      t.claude ||
+      multiTools.some((tool) => t[tool] && wiresOfTool(tool).includes('anthropic-messages'))
+    if (needsOpenai && !/^https?:\/\//.test(aiOpenaiUrl.value.trim())) {
+      err.value = '需要 OpenAI 兼容 Base URL（codex 或有工具选了 openai 系协议）'
+      return
+    }
+    if (needsAnthropic && !/^https?:\/\//.test(aiAnthropicUrl.value.trim())) {
+      err.value = '需要 Anthropic 兼容 Base URL（claude 或有工具选了 anthropic 协议）'
+      return
+    }
+    if ((t.opencode || t.pi) && !aiModels.value.trim()) {
+      err.value = 'opencode/pi 需要至少一个模型 ID（逗号分隔）'
+      return
+    }
+    run(() =>
+      batchAiConfig(props.ids, {
+        endpoints: {
+          ...(needsOpenai ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } } : {}),
+          ...(needsAnthropic ? { anthropic: { baseUrl: aiAnthropicUrl.value.trim() } } : {}),
+        },
+        apiKey: aiKey.value.trim(),
+        tools: { ...t },
+        wire: {
+          opencode: aiWire.value.opencode as GatewayWire[] | undefined,
+          pi: aiWire.value.pi as GatewayWire[] | undefined,
+        },
+        models: aiModels.value.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean),
+        setDefault: aiSetDefault.value,
+      }),
+    )
   } else {
     if (!hostsContent.value.trim()) {
       err.value = 'hosts 内容不能为空'
@@ -139,6 +204,30 @@ function onTab(v: string | number) {
         /* 预读失败不阻塞，textarea 留空可手填 */
       })
   }
+  // ai tab 首次进入时预填最近一次下发存档。只补空字段、不碰勾选——
+  // 否则「用户先勾后填」时迟到的响应会把勾选打回去（实测踩过：勾了 opencode/pi，
+  // 回包落地的瞬间被存档里的 false 覆盖，提交时仍是未勾）。
+  if (tab.value === 'ai' && !aiLoaded.value) {
+    aiLoaded.value = true
+    getAiGateway()
+      .then(({ config }) => {
+        if (!config) return
+        if (!aiAnthropicUrl.value.trim() && config.endpoints.anthropic)
+          aiAnthropicUrl.value = config.endpoints.anthropic.baseUrl
+        if (!aiOpenaiUrl.value.trim() && config.endpoints.openai)
+          aiOpenaiUrl.value = config.endpoints.openai.baseUrl
+        if (config.wire)
+          aiWire.value = {
+            opencode: config.wire.opencode ? [...config.wire.opencode] : undefined,
+            pi: config.wire.pi ? [...config.wire.pi] : undefined,
+          }
+        if (!aiKey.value.trim()) aiKey.value = config.apiKey
+        if (!aiModels.value.trim()) aiModels.value = (config.models ?? []).join(', ')
+      })
+      .catch(() => {
+        /* 无存档/读取失败不阻塞，表单留空手填 */
+      })
+  }
 }
 
 // 跳全局 hosts 面板：先关自己再开面板，避免两个 Dialog 叠层
@@ -148,11 +237,12 @@ function goHosts() {
 }
 
 // 通用命令排首位（无预设意图的高频动作）；git/ssh 是「装完配一次」类相邻；
-// hosts 覆写殿后并与全局面板拉开命名距离。
+// AI 网关是换 key/换网关的批量重推；hosts 覆写殿后并与全局面板拉开命名距离。
 const tabs: { key: string; label: string }[] = [
   { key: 'exec', label: '通用命令' },
   { key: 'git', label: 'Git 身份' },
   { key: 'ssh', label: 'SSH' },
+  { key: 'ai', label: 'AI 网关' },
   { key: 'hosts', label: 'hosts 覆写' },
 ]
 </script>
@@ -254,6 +344,129 @@ const tabs: { key: string; label: string }[] = [
               placeholder="ssh-ed25519 AAAA... user@host"
               class="font-mono text-xs"
             />
+          </TabsContent>
+
+          <!-- ai：网关端点直写各 CLI 配置文件（rootfs 直写，容器无需在跑）。
+               两个 URL 并排（用到哪条校验哪条）；协议选择内联在各工具行的三态组里，
+               claude 固定 anthropic、codex 只有 openai 系两态。 -->
+          <TabsContent value="ai" class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+              <div class="space-y-1.5">
+                <Label for="b-ai-openai">OpenAI 兼容 Base URL</Label>
+                <Input
+                  id="b-ai-openai"
+                  v-model="aiOpenaiUrl"
+                  placeholder="http://10.12.135.150:7800/openai/v1"
+                />
+              </div>
+              <div class="space-y-1.5">
+                <Label for="b-ai-anthropic">Anthropic 兼容 Base URL</Label>
+                <Input
+                  id="b-ai-anthropic"
+                  v-model="aiAnthropicUrl"
+                  placeholder="http://10.12.135.150:7800/anthropic"
+                />
+              </div>
+            </div>
+            <div class="space-y-1.5">
+              <Label for="b-ai-key">API Key</Label>
+              <Input id="b-ai-key" v-model="aiKey" type="password" placeholder="sk-…" />
+            </div>
+            <!-- 工具行：勾选 + 行内协议。claude/codex 协议由工具能力决定没有选择器；
+                 opencode/pi 是多选（ToggleGroup multiple），每个选中协议注册一个
+                 provider 变体，工具内按模型切。 -->
+            <div class="space-y-2 rounded-md border p-3">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <label class="flex w-32 items-center gap-1.5 text-sm">
+                  <Checkbox
+                    id="ai-claude"
+                    :checked="aiTools.claude"
+                    @update:checked="(v: boolean) => (aiTools.claude = !!v)"
+                  />
+                  Claude Code
+                </label>
+                <span class="text-[11px] text-muted-foreground">anthropic 协议（固定）</span>
+              </div>
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <label class="flex w-32 items-center gap-1.5 text-sm">
+                  <Checkbox
+                    id="ai-codex"
+                    :checked="aiTools.codex"
+                    @update:checked="(v: boolean) => (aiTools.codex = !!v)"
+                  />
+                  Codex
+                </label>
+                <span class="text-[11px] text-muted-foreground">responses 协议（官方已停 chat）</span>
+              </div>
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <label class="flex w-32 items-center gap-1.5 text-sm">
+                  <Checkbox
+                    id="ai-opencode"
+                    :checked="aiTools.opencode"
+                    @update:checked="(v: boolean) => (aiTools.opencode = !!v)"
+                  />
+                  OpenCode
+                </label>
+                <ToggleGroup
+                  type="multiple"
+                  size="sm"
+                  variant="outline"
+                  :model-value="aiWire.opencode ?? ['openai-chat']"
+                  class="text-xs"
+                  @update:model-value="(v) => (aiWire.opencode = (v as string[]).length ? (v as string[]) : undefined)"
+                >
+                  <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
+                  <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
+                  <ToggleGroupItem value="anthropic-messages">anthropic</ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <label class="flex w-32 items-center gap-1.5 text-sm">
+                  <Checkbox
+                    id="ai-pi"
+                    :checked="aiTools.pi"
+                    @update:checked="(v: boolean) => (aiTools.pi = !!v)"
+                  />
+                  Pi
+                </label>
+                <ToggleGroup
+                  type="multiple"
+                  size="sm"
+                  variant="outline"
+                  :model-value="aiWire.pi ?? ['openai-chat']"
+                  class="text-xs"
+                  @update:model-value="(v) => (aiWire.pi = (v as string[]).length ? (v as string[]) : undefined)"
+                >
+                  <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
+                  <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
+                  <ToggleGroupItem value="anthropic-messages">anthropic</ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+              <p class="text-[11px] leading-snug text-muted-foreground">
+                多选协议时每个协议注册一个独立接入点（myapikey-chat / -responses / -anthropic），工具内按模型切换。
+              </p>
+              <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Checkbox
+                  id="ai-default"
+                  :checked="aiSetDefault"
+                  @update:checked="(v: boolean) => (aiSetDefault = !!v)"
+                />
+                设为默认 provider（codex 设 model_provider；opencode/pi 用首个协议变体 + 首个模型）
+              </label>
+            </div>
+            <div class="space-y-1.5">
+              <Label for="b-ai-models">模型 ID（逗号分隔，opencode/pi 必填）</Label>
+              <Input id="b-ai-models" v-model="aiModels" placeholder="claude-sonnet-4-5, gpt-5" />
+            </div>
+            <div
+              class="rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
+            >
+              直接写入这 {{ ids.length }} 个容器的 home 配置文件——容器不必在运行，CLI
+              下次启动即生效：claude 走 settings.json env 注入；codex 加 provider（key 经
+              ~/.zshrc 环境变量，固定走 responses）；opencode / pi 在配置里内联 key，按所选
+              协议注册接入点。已有配置只合并本方案的键，不会整体覆盖；重复执行幂等。
+              API Key 会明文落盘在各容器内。
+            </div>
           </TabsContent>
 
           <!-- hosts：对已选容器一次性覆写 /etc/hosts（区别于全局 hosts 面板） -->
