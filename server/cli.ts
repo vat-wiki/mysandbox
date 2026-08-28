@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // CLI 入口：加载 config（首启生成 token）-> 校验 LXC 运行环境 -> 起服务 -> 打印 URL/token。
+import { readFile } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { loadConfig, CONFIG_FILE } from './config.js';
 import { buildServer } from './index.js';
 import { getEngine } from './engine/index.js';
@@ -30,6 +32,37 @@ function parseArgs(argv: string[]): Args {
   return out;
 }
 
+// --host auto：取默认路由所在接口的 IPv4（Linux 读 /proc/net/route）；
+// 拿不到默认路由时退化为第一个非 internal 的 IPv4。
+async function resolveAutoHost(): Promise<string> {
+  const ifaces = networkInterfaces();
+  const pick = (name?: string) => {
+    if (!name) return;
+    for (const a of ifaces[name] ?? []) {
+      if (a.family === 'IPv4' && !a.internal) return a.address;
+    }
+  };
+  let ifname: string | undefined;
+  try {
+    for (const line of (await readFile('/proc/net/route', 'utf8')).split('\n').slice(1)) {
+      const c = line.trim().split(/\s+/);
+      if (c[1] === '00000000') {
+        ifname = c[0];
+        break;
+      }
+    }
+  } catch {
+    // 非 Linux 或读取失败：走退化路径。
+  }
+  const ip = pick(ifname);
+  if (ip) return ip;
+  for (const name of Object.keys(ifaces)) {
+    const f = pick(name);
+    if (f) return f;
+  }
+  throw new Error('--host auto: 找不到可用的非 internal IPv4 地址');
+}
+
 const HELP = `mysandbox ${getVersion()} — dev container control panel
 
 Usage: mysandbox [--port 7321] [--host 127.0.0.1]
@@ -50,8 +83,10 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
 
 Options:
   --port <n>     listen port (default 7321)
-  --host <addr>  listen host (default 127.0.0.1; WARNING: binding non-localhost
-                 exposes host-root-equivalent access to anyone with the token)
+  --host <addr|auto>
+                 listen host (default 127.0.0.1; auto = 默认路由接口的 IPv4；
+                 WARNING: binding non-localhost exposes host-root-equivalent access
+                 to anyone with the token)
   -V, --version  print version and exit
   -h, --help     show this help
 
@@ -100,7 +135,7 @@ async function main(): Promise<void> {
 
   const { config, firstRun, tokenGenerated } = await loadConfig();
   if (args.port) config.listen.port = args.port;
-  if (args.host) config.listen.host = args.host;
+  if (args.host) config.listen.host = args.host === 'auto' ? await resolveAutoHost() : args.host;
 
   // LXC 运行环境校验（CLI 在 + systemd user manager 环境对——后者是最常见的
   // 部署错误，engine.status 会给人话提示）。

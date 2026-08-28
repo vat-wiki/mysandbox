@@ -191,7 +191,7 @@ git clone <repo> && cd mysandbox
 npm install                # 后端依赖
 npm -C web install         # 前端依赖
 
-npm run dev                # 后端 tsx watch（端口 7321）
+npm run dev                # 后端 tsx watch（端口 7321，--host auto 绑本机默认路由 IPv4）
 npm -C web run dev         # 前端 vite dev（代理 /api /ws 到 7321）
 
 npm run build              # tsc -> dist/ + vite -> web/dist/（产物可直接 node 运行）

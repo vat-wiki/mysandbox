@@ -12,7 +12,7 @@ mysandbox：本地 dev 容器的网页控制台。后端 fastify，管理 **unpr
 npm install                # 后端依赖
 npm -C web install         # 前端依赖（独立 package.json，无 workspace）
 
-npm run dev                # 后端 tsx watch，监听 127.0.0.1:7321（⚠️ 裸 shell 下 lxc-start 会失败，见下）
+npm run dev                # 后端 tsx watch，监听 7321（--host auto 绑本机默认路由 IPv4；⚠️ 裸 shell 下 lxc-start 会失败，见下）
 npm -C web run dev         # 前端 vite dev（5173，/api 与 /ws 代理到 7321）
 npm run typecheck          # 后端 tsc --noEmit
 npm -C web run build       # 前端 vue-tsc -b && vite build（类型检查只在这里）
