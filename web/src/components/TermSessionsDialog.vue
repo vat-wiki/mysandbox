@@ -1,12 +1,12 @@
 <script setup lang="ts">
 // 终端会话对话框（tab 栏右上角归档图标）。三块能力：
 //   1) 恢复本窗口隐藏的终端组——tab 右键「隐藏」收进来的，恢复 = 原样插回，会话一直活着；
-//   2) 发现并接入其他窗口 / 浏览器打开的活跃会话——服务端扫全部运行中容器 + 宿主的
-//      mysandbox tmux 会话，本窗口已打开/已隐藏的 termId 经 occupied 排除；接入 = 用该
-//      会话的 termId 建组（termId 不变 → 后端 attach 回原会话，滚动历史/进程现场全保留）；
-//   3) 结束不再需要的孤儿会话（真杀 tmux 会话，别的窗口里它就断了）。
-// 布局恢复的取舍：同容器多会话「全部接入」合并成一个 row 分屏组（≤4 块，超出部分仍可逐个
-// 接入）；跨窗口拿不回原分屏树——布局是各窗口自己的 localStorage 状态，不是服务端状态。
+//   2) 列出服务端扫到的**全部**活跃会话（运行中容器 + 宿主），本窗口已打开的标「已打开」、
+//      其他窗口正连着的标「使用中」，谁都不排除——接入 = 用该会话的 termId 建组（termId
+//      不变 → 后端 attach 回原会话，滚动历史/进程现场全保留）；
+//   3) 结束不再需要的会话（真杀 tmux 会话，别的窗口里它就断了）。
+// 布局恢复的取舍：同容器多会话「全部接入」合并成一个 row 分屏组（≤4 块）；跨窗口拿不回
+// 原分屏树——布局是各窗口自己的 localStorage 状态，不是服务端状态。
 import { ref, computed, onMounted } from 'vue'
 import { Archive, RefreshCw, Trash2 } from 'lucide-vue-next'
 import {
@@ -33,7 +33,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 const props = defineProps<{
   // 本窗口隐藏的终端组（父级已在打开时剪掉容器已删的）
   hidden: TermGroup[]
-  // 本窗口已占用的会话 key（可见 + 隐藏组的全部叶子），远端列表据此排除
+  // 本窗口已占用的会话 key（可见 + 隐藏组的全部叶子）：列表里标「已打开」，不排除任何会话
   occupied: Set<string>
   items: ContainerView[]
 }>()
@@ -86,9 +86,9 @@ interface RemoteRow {
   sessions: TermSessionView[]
 }
 const remoteRows = computed<RemoteRow[]>(() => {
-  const list = sessions.value.filter(
-    (s) => !props.occupied.has(termSessionKey(s.kind, s.containerId, s.termId)),
-  )
+  // 不做排除：服务端扫到的会话全列。本窗口已打开的标「已打开」（接入按钮同时保留——
+  // 重复接入会在同 tmux 会话上多挂一个 attach 客户端，合法且现场一致）。
+  const list = sessions.value
   const rows = new Map<string, RemoteRow>()
   const rowFor = (s: TermSessionView): RemoteRow => {
     const k = s.kind === 'host' ? 'host' : `c:${s.containerId}`
@@ -189,9 +189,9 @@ async function doKill() {
           <Button variant="outline" size="xs" class="shrink-0" @click="emit('restore', g)">恢复</Button>
         </div>
 
-        <!-- 其他窗口 / 浏览器的活跃会话（服务端扫描） -->
+        <!-- 全部活跃会话（服务端扫描，含本窗口已打开的） -->
         <div class="mt-3 flex items-center gap-2 border-t border-border px-2 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
-          <span>其他窗口的会话</span>
+          <span>活跃会话</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -205,7 +205,7 @@ async function doKill() {
         </div>
         <div v-if="loading && !sessions.length" class="px-2 pb-2 text-xs text-muted-foreground/70">扫描中…</div>
         <div v-else-if="!remoteRows.length" class="px-2 pb-2 text-xs text-muted-foreground/70">
-          没有发现其他窗口的活跃会话
+          没有活跃会话
         </div>
         <div v-for="row in remoteRows" :key="row.containerId ?? 'host'" class="pb-1">
           <div class="flex items-center gap-2 px-2 py-1">
@@ -231,7 +231,12 @@ async function doKill() {
               :title="s.cwd"
             >{{ s.cwd || '…' }}</span>
             <Badge
-              v-if="s.attached > 0"
+              v-if="occupied.has(termSessionKey(s.kind, s.containerId, s.termId))"
+              variant="outline"
+              class="shrink-0 border-transparent bg-primary/15 text-[10px] text-primary"
+            >已打开</Badge>
+            <Badge
+              v-else-if="s.attached > 0"
               variant="outline"
               class="shrink-0 border-transparent bg-emerald-500/15 text-[10px] text-emerald-500"
             >使用中</Badge>

@@ -748,8 +748,8 @@ watch(showSessions, (open) => {
   const kept = hiddenGroups.value.filter((g) => g.kind === 'host' || valid.has(g.containerId))
   if (kept.length !== hiddenGroups.value.length) hiddenGroups.value = kept
 })
-// 本窗口已占用的会话 key（可见 + 隐藏的全部叶子）：对话框的远端列表据此排除——
-// 已打开的不重复列，已隐藏的在「本窗口隐藏」区出现，一个会话只在一个区出现。
+// 本窗口已占用的会话 key（可见 + 隐藏的全部叶子）：对话框据此区分「已打开」/
+// 「使用中」——不再从列表排除任何会话，扫到的全列（用户要的就是全集）。
 const occupiedSet = computed(() => {
   const s = new Set<string>()
   for (const g of [...groups.value, ...hiddenGroups.value]) {
