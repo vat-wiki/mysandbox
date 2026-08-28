@@ -24,7 +24,6 @@ import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -157,9 +156,6 @@ async function doKill() {
         <DialogTitle class="flex items-center gap-2">
           <TerminalSquare class="size-4" /> 终端会话
         </DialogTitle>
-        <DialogDescription>
-          恢复本窗口隐藏的终端组，或接入其他窗口 / 浏览器打开、仍在本机活跃的会话（tmux 现场全保留）。
-        </DialogDescription>
       </DialogHeader>
 
       <p
@@ -172,9 +168,7 @@ async function doKill() {
         <div class="px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
           本窗口隐藏<template v-if="hidden.length">（{{ hidden.length }}）</template>
         </div>
-        <div v-if="!hidden.length" class="px-2 pb-2 text-xs text-muted-foreground/70">
-          没有隐藏的终端组（tab 右键 → 隐藏）
-        </div>
+        <div v-if="!hidden.length" class="px-2 pb-2 text-xs text-muted-foreground/70">无</div>
         <div
           v-for="g in hidden"
           :key="g.id"
@@ -204,9 +198,7 @@ async function doKill() {
           </Button>
         </div>
         <div v-if="loading && !sessions.length" class="px-2 pb-2 text-xs text-muted-foreground/70">扫描中…</div>
-        <div v-else-if="!remoteRows.length" class="px-2 pb-2 text-xs text-muted-foreground/70">
-          没有活跃会话
-        </div>
+        <div v-else-if="!remoteRows.length" class="px-2 pb-2 text-xs text-muted-foreground/70">无</div>
         <div v-for="row in remoteRows" :key="row.containerId ?? 'host'" class="pb-1">
           <div class="flex items-center gap-2 px-2 py-1">
             <span class="h-2 w-2 shrink-0 rounded-full" :style="{ backgroundColor: row.color }" />
@@ -217,7 +209,7 @@ async function doKill() {
               variant="ghost"
               size="xs"
               class="h-6 shrink-0 text-xs text-muted-foreground"
-              title="合并为一个分屏组（最多 4 块，超出的仍可逐个接入）"
+              title="合并为一个分屏组"
               @click="emit('adopt', row.sessions.slice(0, MAX_GROUP_PANES))"
             >全部接入</Button>
           </div>
@@ -246,7 +238,7 @@ async function doKill() {
               variant="ghost"
               size="icon-xs"
               class="shrink-0 text-muted-foreground hover:text-destructive"
-              title="结束会话（真杀，其他窗口里连着它的终端会断开）"
+              title="结束会话"
               @click="killTarget = s"
             >
               <Trash2 />
@@ -258,7 +250,7 @@ async function doKill() {
       <ConfirmDialog
         v-if="killTarget"
         title="结束会话"
-        :description="`确定结束 ${sessionWhere(killTarget)} 上 ${killTarget.cwd || '该会话'} 的终端会话吗？其中正在跑的进程会被终止，其他窗口里连着它的终端会断开。`"
+        :description="`结束 ${sessionWhere(killTarget)} 的会话？进程会被终止。`"
         confirm-text="结束会话"
         variant="destructive"
         @confirm="doKill"
