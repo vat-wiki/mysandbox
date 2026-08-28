@@ -135,7 +135,9 @@ async function main(): Promise<void> {
 
   const { config, firstRun, tokenGenerated } = await loadConfig();
   if (args.port) config.listen.port = args.port;
-  if (args.host) config.listen.host = args.host === 'auto' ? await resolveAutoHost() : args.host;
+  if (args.host) config.listen.host = args.host;
+  // --host auto 或 config 里 listen.host: auto → 解析为默认路由接口 IPv4。
+  if (config.listen.host === 'auto') config.listen.host = await resolveAutoHost();
 
   // LXC 运行环境校验（CLI 在 + systemd user manager 环境对——后者是最常见的
   // 部署错误，engine.status 会给人话提示）。
