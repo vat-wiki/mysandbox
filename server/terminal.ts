@@ -421,6 +421,8 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       //     外层终端支持剪贴板；set-clipboard 必须 on（external 只转发 tmux 自己的 buffer 操作、
       //     忽略 pane 内应用发的序列——实测对照过）；前端 Terminal.vue 的 registerOscHandler(52)
       //     接住转发来的序列写 navigator.clipboard，三方接通。
+      //      set -g history-limit 50000：pane 历史默认仅 2000 行，长输出（claude -h 等）很快被
+      //     截断；前端 scrollback 10000，历史上限给足余量（回填见下方 capture）。
       //   3) exec tmux attach：替换进程为 attach 客户端。
       //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>。
       //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
@@ -429,10 +431,40 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       const cmd = useTmux
         ? [
             'sh', '-c',
-            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; exec tmux attach -t "$1"',
+            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; exec tmux attach -t "$1"',
             'sh', session, shell, pidfile, oldSession,
           ]
         : [shell];
+
+      // ---- 历史回填 ----
+      // tmux attach 只重绘当前可见屏、不回放 pane 历史：刷新页面/重连后 xterm scrollback 从空
+      // 开始，连接前产生的长输出「开头看不到、滚轮滚不动」（历史只在 tmux pane 里）。attach
+      // 前先 capture-pane 把历史（不含当前屏）作为 {type:'history'} 文本控制帧发过去，前端
+      // term.write 进 scrollback；帧先于 attach 流发出（同 socket 保序），重绘落在空视口上。
+      // 会话不存在（首连）capture 失败 -> 跳过。旧名会话顺带 rename（attach 脚本同款迁移，
+      // 否则 capture 找不到旧名、旧会话永远回填不到）。
+      // ⚠️ target 必须是 "=$1:"（带冒号）：tmux 3.4 实测 capture-pane 的 target 按 window 解析，
+      // 纯会话名（=name，无冒号）会被当 window 名匹配 -> "can't find pane" 静默失败（has-session
+      // 是 session target 所以没事）。带冒号 = 精确会话 + 默认窗口，稳。
+      if (useTmux) {
+        try {
+          const r = await execRun(cfg, id, {
+            Cmd: [
+              'sh', '-c',
+              'if tmux has-session -t "=$2" 2>/dev/null; then tmux rename-session -t "=$2" "$1"; fi; tmux capture-pane -p -J -t "=$1:" -S -10000 -E -1 2>/dev/null',
+              'sh', session, oldSession,
+            ],
+            User: '1000:1000',
+            timeoutMs: 10_000,
+          });
+          const text = r.stdout.trim();
+          if (text) {
+            socket.send(JSON.stringify({ type: 'history', text }));
+          }
+        } catch {
+          /* 会话不在（首连）：无历史可回填 */
+        }
+      }
 
       const exec = await execStreamRaw(cfg, id, {
         Cmd: cmd,

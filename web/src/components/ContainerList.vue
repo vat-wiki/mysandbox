@@ -383,7 +383,8 @@ function onEditorSaved() {
 
 // ---- 容器网络信息（tab 栏右侧「网络」下拉的数据源）----
 // active group 容器的 IP（点击复制）· 容器内监听端口（点击打开）· docker 映射端口。
-// 监听端口 on-demand 拉（切换 group / 容器恢复运行时），不进 5s 轮询——监听集合变化低频。
+// 监听端口进 5s 轮询（active 容器 running 期间）：容器内新起服务监听新端口无需刷新页面，
+// 下拉自动跟上。每 tick 一次 lxc-attach + 少量并发 TCP 探测，仅针对当前容器，成本可忽略。
 const activeContainer = computed(
   () => items.value.find((x) => x.id === activeGroup.value?.containerId) ?? null,
 )
@@ -392,6 +393,7 @@ const activeContainer = computed(
 const listenPorts = ref<number[]>([])
 const webPorts = ref<number[]>([])
 let listenSeq = 0 // 竞态：切 group 时丢弃慢响应
+let listenTimer: ReturnType<typeof setInterval> | null = null
 const ipCopied = ref(false)
 let ipCopyTimer: ReturnType<typeof setTimeout> | null = null
 const otherListenPorts = computed(() => listenPorts.value.filter((p) => !webPorts.value.includes(p)))
@@ -418,9 +420,23 @@ watch(
   () => [activeGroup.value?.containerId, activeContainer.value?.state],
   () => {
     void loadListenPorts()
+    // 轮询随容器状态启停：running 持续刷，切走/停止即停，不空转。
+    const running = activeContainer.value?.state === 'running'
+    if (running && !listenTimer) {
+      listenTimer = setInterval(() => void loadListenPorts(), 5_000)
+    } else if (!running && listenTimer) {
+      clearInterval(listenTimer)
+      listenTimer = null
+    }
   },
   { immediate: true },
 )
+onUnmounted(() => {
+  if (listenTimer) {
+    clearInterval(listenTimer)
+    listenTimer = null
+  }
+})
 // docker 映射端口（去重：ipv4/ipv6 两条同名映射）。hostPort 在宿主侧可访问。
 const mappedPorts = computed(() => {
   const seen = new Set<string>()
@@ -1365,17 +1381,19 @@ onUnmounted(() => {
            最左「所有终端」：本机全部活跃终端会话（服务端扫描，跨窗口跨浏览器），常驻入口；
            手机：汉堡键开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
            ＋/文件面板按钮固定右侧。 -->
-      <div class="flex border-b border-border bg-muted/30">
+      <!-- max-md:min-h-10：手机 40px 托底——tab 行高由 tab 项的 py 撑出，groups 全关/全隐藏时
+           只剩左侧图标按钮（无纵向 padding），不托底整条顶栏会塌到 ~20px。 -->
+      <div class="flex border-b border-border bg-muted/30 max-md:min-h-10">
         <button
           v-if="!props.popout"
-          class="flex shrink-0 items-center border-r border-border px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:px-4 md:hidden"
+          class="flex shrink-0 items-center border-r border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:px-4 md:hidden"
           title="打开侧栏（容器列表）"
           @click="drawerOpen = true"
         >
           <MoreHorizontal class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="flex shrink-0 items-center self-stretch border-r border-border px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          class="flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           title="所有终端（本机全部活跃会话，含其他窗口 / 浏览器打开的）"
           @click="showSessions = true"
         >
@@ -1395,22 +1413,24 @@ onUnmounted(() => {
               @pointerup="tabPointerCancel"
               @pointercancel="tabPointerCancel"
               :class="[
-                'flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm',
-                idx === activeIdx ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50',
+                'flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm relative',
+                idx === activeIdx
+                  ? 'bg-card text-foreground shadow-[inset_0_-2px_0_0_var(--primary)] font-medium'
+                  : 'text-muted-foreground hover:bg-accent/50',
                 dragTabIdx === idx ? 'opacity-40' : '',
               ]"
               :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：隐藏 / 关闭'"
             >
               <span
-                class="h-1.5 w-1.5 rounded-full"
+                class="h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
                 :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
               />
               <span class="font-mono">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
               <button
                 @click.stop="closeGroupById(g.id)"
-                class="ml-1 text-muted-foreground hover:text-destructive pointer-coarse:px-2 pointer-coarse:py-1"
+                class="ml-1 flex items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
                 title="关闭终端组"
-              >✕</button>
+              ><X class="size-3 max-md:size-3.5" /></button>
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent class="w-52">
@@ -1429,7 +1449,7 @@ onUnmounted(() => {
         <DropdownMenu v-if="activeGroup?.kind !== 'host'">
           <DropdownMenuTrigger as-child>
             <button
-              class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4"
+              class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
               :class="
                 activeContainer
                   ? 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
@@ -1508,13 +1528,13 @@ onUnmounted(() => {
         </DropdownMenu>
         <button
           v-else
-          class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4 pointer-events-none opacity-30"
+          class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5 pointer-events-none opacity-30"
           title="宿主终端无网络信息"
         >
           <Network class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4"
+          class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
           :class="
             activeGroup
               ? 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
@@ -1526,7 +1546,7 @@ onUnmounted(() => {
           <Plus class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="flex items-center gap-1 self-stretch border-l border-border px-3 text-xs max-md:px-4"
+          class="flex items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
           :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
           :title="showFiles ? '关闭文件面板' : '打开文件面板（跟随终端目录）'"
           @click="showFiles = !showFiles"

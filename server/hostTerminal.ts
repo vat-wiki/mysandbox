@@ -311,17 +311,39 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         // 新建 detached 会话（-A 语义手写：有则直接 attach 走下面）。尺寸用 URL 值，
         // attach 后 client 会按自身 pts 尺寸再调——初始 stty 已提前落盘，值一致。
         // server 可能不存在（首连）→ hostNewSession 走 systemd-run 独立单元拉起。
-        const created = await hostNewSession(session, cols, rows, cwd);
-        if (created) {
-          // 与容器终端同组的全局设置，必须在 attach 之前 detached 跑（attach 后客户端接管 tty）。
-          await hostTmux(['set', '-g', 'mouse', 'off']);
-          await hostTmux(['set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@']);
-          await hostTmux(['set-environment', '-g', 'MYSANDBOX_WEB', '1']);
-          await hostTmux(['set', '-s', 'allow-passthrough', 'on']);
-          // OSC 52（剪贴板）转发打通：Ms override + set-clipboard on（external 不转发 pane
-          // 内应用发的序列，实测对照过）。背景见 terminal.ts 的同名注释。
-          await hostTmux(['set', '-as', 'terminal-overrides', ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007']);
-          await hostTmux(['set', '-g', 'set-clipboard', 'on']);
+        await hostNewSession(session, cols, rows, cwd);
+        // 与容器终端同组的全局设置。⚠️ 每次 attach 都要跑（不限新建）：重连/第二窗口
+        // attach 已存在会话时若跳过，terminal-overrides 保持默认 → attach 发 ?1049h 进
+        // alt screen，xterm 滚轮变方向键、无滚动条、历史被覆盖（容器侧 terminal.ts 同款
+        // 注释「每次 attach 都重设，扛得住 tmux server 重启」）。必须在 attach 之前
+        // detached 跑（attach 后客户端接管 tty）。
+        await hostTmux(['set', '-g', 'mouse', 'off']);
+        await hostTmux(['set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@']);
+        await hostTmux(['set-environment', '-g', 'MYSANDBOX_WEB', '1']);
+        await hostTmux(['set', '-s', 'allow-passthrough', 'on']);
+        // OSC 52（剪贴板）转发打通：Ms override + set-clipboard on（external 不转发 pane
+        // 内应用发的序列，实测对照过）。背景见 terminal.ts 的同名注释。
+        await hostTmux(['set', '-as', 'terminal-overrides', ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007']);
+        await hostTmux(['set', '-g', 'set-clipboard', 'on']);
+        // pane 历史默认 2000 行，与容器侧对齐放大（前端 scrollback 10000）。
+        await hostTmux(['set', '-g', 'history-limit', '50000']);
+        // ---- 历史回填 ----
+        // tmux attach 只重绘当前屏不回放历史：重连/刷新后 xterm scrollback 从空开始。
+        // attach 前 capture 历史（-E -1 不含当前屏）作 {type:'history'} 控制帧先发，
+        // 前端 term.write 进 scrollback（容器侧 terminal.ts 同款）。
+        try {
+          const cap = await hostTmux([
+            // target 必须带冒号（"=会话名:"）：tmux 3.4 实测 capture-pane 的 target 按 window
+            // 解析，纯会话名会被当 window 名匹配 -> "can't find pane" 静默失败（has-session
+            // 是 session target 所以没事）。带冒号 = 精确会话 + 默认窗口。
+            'capture-pane', '-p', '-J', '-t', `=${session}:`, '-S', '-10000', '-E', '-1',
+          ]);
+          const text = cap.stdout.trim();
+          if (cap.ok && text) {
+            socket.send(JSON.stringify({ type: 'history', text }));
+          }
+        } catch {
+          /* 会话未建好等：无历史可回填 */
         }
       }
 

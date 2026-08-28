@@ -124,9 +124,9 @@ if (leaf.value) {
       </span>
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
         <!-- 左右分屏在手机隐藏（max-md:）：竖屏宽度放不下并排 pane；上下分屏保留。
-             触屏下按钮命中区放大（pointer-coarse:p-1.5）。 -->
+             触屏下按钮命中区放大（pointer-coarse:p-2）。 -->
         <button
-          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground max-md:hidden pointer-coarse:p-1.5"
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground max-md:hidden pointer-coarse:p-2"
           :title="splitTitle('row')"
           :disabled="full"
           @click="doSplit('row')"
@@ -134,7 +134,7 @@ if (leaf.value) {
           <SquareSplitHorizontal class="size-3.5 pointer-coarse:size-4.5" />
         </button>
         <button
-          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground pointer-coarse:p-1.5"
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground pointer-coarse:p-2"
           :title="splitTitle('col')"
           :disabled="full"
           @click="doSplit('col')"
@@ -142,7 +142,7 @@ if (leaf.value) {
           <SquareSplitVertical class="size-3.5 pointer-coarse:size-4.5" />
         </button>
         <button
-          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-destructive pointer-coarse:p-1.5"
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-destructive pointer-coarse:p-2"
           title="关闭"
           @click="doClose()"
         >

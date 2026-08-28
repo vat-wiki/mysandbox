@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { toast } from 'vue-sonner'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -64,7 +65,22 @@ function connectWs() {
     term?.writeln(`\x1b[2m>> 连接 ${props.name} (${shell})\x1b[0m`)
   }
   ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string') return
+    // 文本帧 = 服务端控制帧（二进制才是终端流）。目前只有 history：tmux pane 历史回填
+    // （后端 attach 前 capture-pane 发来），写入 scrollback 后 tmux 整屏重绘落在空视口上。
+    if (typeof ev.data === 'string') {
+      try {
+        const m = JSON.parse(ev.data) as { type?: string; text?: string }
+        if (m.type === 'history' && m.text && !backfilled) {
+          backfilled = true
+          // N 行历史 + rows 个 CRLF = N+rows-1 个换行：恰好全部推进 scrollback、零空行
+          // 缝隙、光标落底行（数学上精确成立，与 N 无关）；重绘的绝对定位画在空视口上。
+          term?.write(m.text.split('\n').join('\r\n') + '\r\n'.repeat(term?.rows ?? 24))
+        }
+      } catch {
+        /* 非法控制帧忽略 */
+      }
+      return
+    }
     term?.write(new Uint8Array(ev.data as ArrayBuffer))
   }
   // 非正常关闭（非 1000/1001）视为意外断线，置 lost 徽标；点「重连」条或刷新恢复。
@@ -126,6 +142,9 @@ let linkProv: { dispose(): void } | null = null
 // 靠心跳探测置 lost。tmux 会话在后端无限期保留（真 tmux 语义），重连即恢复。
 const connState = ref<'ok' | 'lost'>('ok')
 let hbTimer: ReturnType<typeof setInterval> | null = null
+// tmux 历史回填只做一次（组件首连）：reconnect 时 term 实例还在、scrollback 已有内容，
+// 再回填会重复整段历史。断线期间产生的输出留在 tmux 历史里滚不到（可接受的缺口）。
+let backfilled = false
 
 // 内置 Cascadia Code Variable 优先（woff2 打包，跨端一致）；彩色 emoji 走系统字体兜底。
 const FONT_FAMILY =
@@ -165,7 +184,9 @@ function refit() {
     if (term && term.options.fontSize !== fs) term.options.fontSize = fs
     try {
       fit?.fit()
-      term?.focus()
+      // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
+      // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
+      if (!pasteFallback.value) term?.focus()
     } catch {
       /* noop */
     }
@@ -182,22 +203,56 @@ watch(
 
 // 复制/粘贴：tmux 不再劫持鼠标（后端 set -g mouse off），交互层由 xterm.js 接管。
 // 剪贴板走 navigator.clipboard；OSC 52（TUI 应用请终端代写剪贴板）也汇到 copyText
-// （见下方 registerOscHandler(52)）。非 HTTPS / 无权限时静默失败。
-async function copyText(s: string) {
+// （见下方 registerOscHandler(52)）。
+// 非 https 环境（http://局域网IP 访问）navigator.clipboard 是 undefined——一律走
+// execCommand 兜底 + toast 提示，不再静默吞（否则 Ctrl+C 复制 / Ctrl+V 粘贴双双无声失败）。
+// execCommand 必须在用户手势事件栈里同步调用：keydown（Ctrl+C/V 路径）与 click（工具条/右键）
+// 都是合法手势；不能 await 后再调（手势已过期，Firefox 直接拒绝）。
+function legacyCopy(s: string): boolean {
+  const ta = document.createElement('textarea')
+  ta.value = s
+  // 移出可视区但保持可聚焦；readonly 防软键盘弹出，防止页面滚到底
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+  ta.setAttribute('readonly', '')
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
   try {
-    await navigator.clipboard.writeText(s)
+    ok = document.execCommand('copy')
   } catch {
-    /* 非 HTTPS / 无权限：静默 */
+    ok = false
   }
+  ta.remove()
+  return ok
+}
+async function copyText(s: string): Promise<boolean> {
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(s)
+      return true
+    } catch {
+      /* 权限被拒等：落 execCommand 兜底 */
+    }
+  }
+  // execCommand 要求同步在用户手势里调——本函数若被 await 了别的异步操作后才调到这里，
+  // 手势可能已过期，但 Chrome/Edge 对 copy 的手势检查较松，值得一试。
+  if (legacyCopy(s)) return true
+  toast.error('复制失败：剪贴板不可用（非 https 访问时浏览器禁用剪贴板 API）')
+  return false
 }
 async function pasteClipboard() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
-  try {
-    const t = await navigator.clipboard.readText()
-    if (t) ws.send(new TextEncoder().encode(t)) // 走和 onData 同一条 stdin 通道
-  } catch {
-    /* 静默 */
+  if (navigator.clipboard) {
+    try {
+      const t = await navigator.clipboard.readText()
+      if (t) ws.send(new TextEncoder().encode(t)) // 走和 onData 同一条 stdin 通道
+      return
+    } catch {
+      /* Firefox 常态拒绝 readText：落兜底对话框 */
+    }
   }
+  pasteFallback.value = true // clipboard 不可用/被拒：弹兜底输入框（textarea 原生粘贴永远可用）
+  nextTick(() => fallbackTa.value?.focus())
 }
 // 右键：有选区复制（并清选区）、无选区粘贴。.prevent 阻止浏览器原生右键菜单。
 function onContextMenu() {
@@ -214,15 +269,20 @@ function onContextMenu() {
 // 拒绝时自动弹兜底输入框——用户在 textarea 里系统级长按粘贴，确认后走同一条 stdin 通道发送。
 const pasteFallback = ref(false)
 const pasteText = ref('')
+const fallbackTa = ref<HTMLTextAreaElement | null>(null)
 const ctrlSticky = ref(false)
 async function toolPaste() {
-  try {
-    const t = await navigator.clipboard.readText()
-    if (t) sendRaw(t)
-    return
-  } catch {
-    pasteFallback.value = true // readText 被拒：开兜底输入框
+  if (navigator.clipboard) {
+    try {
+      const t = await navigator.clipboard.readText()
+      if (t) sendRaw(t)
+      return
+    } catch {
+      /* readText 被拒：开兜底输入框 */
+    }
   }
+  pasteFallback.value = true // clipboard 不可用（非 https）/被拒：同 pasteClipboard 的兜底
+  nextTick(() => fallbackTa.value?.focus())
 }
 function toolPasteConfirm() {
   if (pasteText.value) sendRaw(pasteText.value)
@@ -662,13 +722,15 @@ onBeforeUnmount(() => {
       <button type="button" class="tb" title="减小字号" @click="stepFontSize(-1)">A−</button>
       <button type="button" class="tb" title="增大字号" @click="stepFontSize(1)">A+</button>
     </div>
-    <!-- 粘贴兜底输入（iOS Safari 拒绝 clipboard.readText 时）：textarea 里系统级长按粘贴，
-         确认后经同一条 stdin 通道发送。 -->
-    <div v-if="pasteFallback" class="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 rounded-t-lg border-t border-zinc-700 bg-zinc-900 p-3 pb-safe md:hidden">
+    <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox
+         readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
+         clipboard API，永远可用；确认后经同一条 stdin 通道发送。 -->
+    <div v-if="pasteFallback" class="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 rounded-t-lg border-t border-zinc-700 bg-zinc-900 p-3 pb-safe">
       <textarea
+        ref="fallbackTa"
         v-model="pasteText"
         class="h-24 w-full resize-none rounded-md border border-zinc-700 bg-zinc-950 p-2 font-mono text-sm text-zinc-100"
-        placeholder="在此长按粘贴内容…"
+        placeholder="在此粘贴内容（Ctrl+V / 长按）…"
       />
       <div class="flex justify-end gap-2">
         <button type="button" class="tb" @click="pasteFallback = false; pasteText = ''">取消</button>
