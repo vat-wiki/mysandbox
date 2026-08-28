@@ -1,10 +1,9 @@
 <script setup lang="ts">
-// 终端会话对话框（tab 栏右上角归档图标）。三块能力：
-//   1) 恢复本窗口隐藏的终端组——tab 右键「隐藏」收进来的，恢复 = 原样插回，会话一直活着；
-//   2) 列出服务端扫到的**全部**活跃会话（运行中容器 + 宿主），本窗口已打开的标「已打开」、
-//      其他窗口正连着的标「使用中」，谁都不排除——接入 = 用该会话的 termId 建组（termId
-//      不变 → 后端 attach 回原会话，滚动历史/进程现场全保留）；
-//   3) 结束不再需要的会话（真杀 tmux 会话，别的窗口里它就断了）。
+// 终端会话对话框（tab 栏最左「所有终端」）。主体 = 服务端扫到的**全部**活跃会话
+// （运行中容器 + 宿主，跨窗口跨浏览器）：本窗口已打开的标「已打开」、其他窗口正连着的
+// 标「使用中」，谁都不排除——接入 = 用该会话的 termId 建组（termId 不变 → 后端 attach
+// 回原会话，滚动历史/进程现场全保留）。末尾附带本窗口隐藏组的恢复（tab 右键「隐藏」），
+// 以及结束会话（真杀 tmux 会话，别的窗口里它就断了）。
 // 布局恢复的取舍：同容器多会话「全部接入」合并成一个 row 分屏组（≤4 块）；跨窗口拿不回
 // 原分屏树——布局是各窗口自己的 localStorage 状态，不是服务端状态。
 import { ref, computed, onMounted } from 'vue'
@@ -154,7 +153,7 @@ async function doKill() {
     <DialogContent class="max-w-lg">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
-          <TerminalSquare class="size-4" /> 终端会话
+          <TerminalSquare class="size-4" /> 所有终端
         </DialogTitle>
       </DialogHeader>
 
@@ -164,31 +163,8 @@ async function doKill() {
       >{{ err }}</p>
 
       <div class="-mx-1 max-h-[55vh] overflow-y-auto px-1 scroll-thin">
-        <!-- 本窗口隐藏的终端组：空则整块不显示（没隐藏过的人不该看到这个概念） -->
-        <template v-if="hidden.length">
-          <div class="px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
-            隐藏（{{ hidden.length }}）
-          </div>
-          <div
-            v-for="g in hidden"
-            :key="g.id"
-            class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
-          >
-            <span
-              class="h-2 w-2 shrink-0 rounded-full"
-              :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
-            />
-            <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="hiddenLabel(g)">{{ hiddenLabel(g) }}</span>
-            <span class="shrink-0 text-[10px] text-muted-foreground">{{ leafCount(g.root) }} 窗格</span>
-            <Button variant="outline" size="xs" class="shrink-0" @click="emit('restore', g)">恢复</Button>
-          </div>
-        </template>
-
-        <!-- 全部活跃会话（服务端扫描，含本窗口已打开的） -->
-        <div
-          class="flex items-center gap-2 border-t border-border px-2 pb-1 pt-3 text-xs font-semibold text-muted-foreground"
-          :class="hidden.length ? 'mt-3' : ''"
-        >
+        <!-- 全部活跃会话（服务端扫描，含本窗口已打开的）＝主体 -->
+        <div class="flex items-center gap-2 px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
           <span>活跃会话</span>
           <Button
             variant="ghost"
@@ -249,6 +225,26 @@ async function doKill() {
             </Button>
           </div>
         </div>
+
+        <!-- 本窗口隐藏的终端组：藏在末尾，空则整块不显示 -->
+        <template v-if="hidden.length">
+          <div class="mt-2 border-t border-border px-2 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
+            隐藏（{{ hidden.length }}）
+          </div>
+          <div
+            v-for="g in hidden"
+            :key="g.id"
+            class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
+          >
+            <span
+              class="h-2 w-2 shrink-0 rounded-full"
+              :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
+            />
+            <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="hiddenLabel(g)">{{ hiddenLabel(g) }}</span>
+            <span class="shrink-0 text-[10px] text-muted-foreground">{{ leafCount(g.root) }} 窗格</span>
+            <Button variant="outline" size="xs" class="shrink-0" @click="emit('restore', g)">恢复</Button>
+          </div>
+        </template>
       </div>
 
       <ConfirmDialog
