@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, defineAsyncComponent } from 'vue'
+import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import {
   batchGit,
   batchSshReseed,
@@ -76,15 +76,75 @@ const hostsLoaded = ref(false)
 
 // ai tab：两路端点（openai / anthropic）+ key + 工具勾选（opencode/pi 行内联
 // wire 协议多选，ToggleGroup multiple）。打开时预填最近一次下发存档。
+// 基线原则：**需求由勾选推导，UI 反映需求**——哪个工具要哪条 URL 一眼可见，
+// 不逼用户提交才知道欠什么（报错点名需求方）。
 const aiAnthropicUrl = ref('')
 const aiOpenaiUrl = ref('')
 const aiKey = ref('')
 const aiModels = ref('')
 const aiSetDefault = ref(false)
 const aiTools = ref({ claude: true, codex: true, opencode: true, pi: true })
-// 工具级 wire 多选；claude 固定 anthropic、codex 固定 responses 都没有选择器
+// 工具级 wire 多选；claude 固定 anthropic、codex 固定 responses 都没有选择器。
+// 值语义：undefined = 未选过（显示缺省 ['openai-chat']）；[] = 显式清空全部变体
+// （提交后 opencode/pi 不写任何 provider——配 Claude 网关时常见）。
 const aiWire = ref<{ opencode?: string[]; pi?: string[] }>({})
 const aiLoaded = ref(false)
+// 存档预填的脏标记：用户动过工具勾选后，迟到的存档回包不再覆盖勾选
+// （早前实测踩过：勾了 opencode/pi，回包落地瞬间被存档里的 false 打回去，提交时仍是未勾）。
+const aiToolsTouched = ref(false)
+watch(
+  () => ({ ...aiTools.value }),
+  () => {
+    aiToolsTouched.value = true
+  },
+)
+
+// wire 显示值：undefined 时 UI 呈现缺省 chat 选中（与后端 wiresOf 缺省一致）
+const wiresOfTool = (tool: 'opencode' | 'pi'): string[] => aiWire.value[tool] ?? ['openai-chat']
+
+// 需求推导（与后端校验同规则，routes.ts / aiconfig.ts wiresOf）：
+// 某条端点被哪些工具消费 → 用于 URL 框动态提示与错误点名。返回人话标签数组。
+const openaiConsumers = computed(() => {
+  const out: string[] = []
+  if (aiTools.value.codex) out.push('Codex')
+  for (const tool of ['opencode', 'pi'] as const) {
+    if (!aiTools.value[tool]) continue
+    const ws = wiresOfTool(tool)
+    const labels = ws
+      .filter((w) => w !== 'anthropic-messages')
+      .map((w) => (w === 'openai-responses' ? 'responses' : 'chat'))
+    if (labels.length) out.push(`${tool === 'opencode' ? 'OpenCode' : 'Pi'}（${labels.join('、')}）`)
+  }
+  return out
+})
+const anthropicConsumers = computed(() => {
+  const out: string[] = []
+  if (aiTools.value.claude) out.push('Claude Code')
+  for (const tool of ['opencode', 'pi'] as const) {
+    if (!aiTools.value[tool]) continue
+    if (wiresOfTool(tool).includes('anthropic-messages'))
+      out.push(`${tool === 'opencode' ? 'OpenCode' : 'Pi'}（anthropic）`)
+  }
+  return out
+})
+const isUrl = (s: string) => /^https?:\/\//.test(s.trim())
+// 欠填的端点名（未填但有人要）与填错的端点名（填了但不像 URL）——错误信息点名
+const missingEndpoints = computed(() => {
+  const miss: { side: 'openai' | 'anthropic'; who: string[] }[] = []
+  if (openaiConsumers.value.length && !isUrl(aiOpenaiUrl.value))
+    miss.push({ side: 'openai', who: openaiConsumers.value })
+  if (anthropicConsumers.value.length && !isUrl(aiAnthropicUrl.value))
+    miss.push({ side: 'anthropic', who: anthropicConsumers.value })
+  return miss
+})
+// opencode/pi 有勾且有变体时才需要模型 ID（wire 清空 = 不写 provider，无需模型）
+const modelsConsumers = computed(() => {
+  const out: string[] = []
+  for (const tool of ['opencode', 'pi'] as const) {
+    if (aiTools.value[tool] && wiresOfTool(tool).length) out.push(tool)
+  }
+  return out
+})
 
 function resetResult() {
   result.value = null
@@ -134,8 +194,7 @@ function submit() {
     )
   } else if (tab.value === 'ai') {
     const t = aiTools.value
-    const any = t.claude || t.codex || t.opencode || t.pi
-    if (!any) {
+    if (!(t.claude || t.codex || t.opencode || t.pi)) {
       err.value = '至少勾选一个工具'
       return
     }
@@ -143,32 +202,23 @@ function submit() {
       err.value = 'API Key 必填'
       return
     }
-    // 端点需求按工具+wire 集合推导（与后端校验同规则）
-    const multiTools = ['opencode', 'pi'] as const
-    const wiresOfTool = (tool: 'opencode' | 'pi'): string[] => aiWire.value[tool] ?? ['openai-chat']
-    const needsOpenai =
-      t.codex ||
-      multiTools.some((tool) => t[tool] && wiresOfTool(tool).some((w) => w !== 'anthropic-messages'))
-    const needsAnthropic =
-      t.claude ||
-      multiTools.some((tool) => t[tool] && wiresOfTool(tool).includes('anthropic-messages'))
-    if (needsOpenai && !/^https?:\/\//.test(aiOpenaiUrl.value.trim())) {
-      err.value = '需要 OpenAI 兼容 Base URL（codex 或有工具选了 openai 系协议）'
+    // 端点需求按工具+wire 集合推导（与后端校验同规则），错误点名需求方
+    for (const m of missingEndpoints.value) {
+      err.value =
+        m.side === 'openai'
+          ? `需要 OpenAI 兼容 Base URL：${m.who.join('、')} 要走这条端点`
+          : `需要 Anthropic 兼容 Base URL：${m.who.join('、')} 要走这条端点`
       return
     }
-    if (needsAnthropic && !/^https?:\/\//.test(aiAnthropicUrl.value.trim())) {
-      err.value = '需要 Anthropic 兼容 Base URL（claude 或有工具选了 anthropic 协议）'
-      return
-    }
-    if ((t.opencode || t.pi) && !aiModels.value.trim()) {
-      err.value = 'opencode/pi 需要至少一个模型 ID（逗号分隔）'
+    if (modelsConsumers.value.length && !aiModels.value.trim()) {
+      err.value = `${modelsConsumers.value.map((s) => (s === 'opencode' ? 'OpenCode' : 'Pi')).join('、')} 需要至少一个模型 ID（逗号分隔）`
       return
     }
     run(() =>
       batchAiConfig(props.ids, {
         endpoints: {
-          ...(needsOpenai ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } } : {}),
-          ...(needsAnthropic ? { anthropic: { baseUrl: aiAnthropicUrl.value.trim() } } : {}),
+          ...(openaiConsumers.value.length ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } } : {}),
+          ...(anthropicConsumers.value.length ? { anthropic: { baseUrl: aiAnthropicUrl.value.trim() } } : {}),
         },
         apiKey: aiKey.value.trim(),
         tools: { ...t },
@@ -204,9 +254,9 @@ function onTab(v: string | number) {
         /* 预读失败不阻塞，textarea 留空可手填 */
       })
   }
-  // ai tab 首次进入时预填最近一次下发存档。只补空字段、不碰勾选——
-  // 否则「用户先勾后填」时迟到的响应会把勾选打回去（实测踩过：勾了 opencode/pi，
-  // 回包落地的瞬间被存档里的 false 覆盖，提交时仍是未勾）。
+  // ai tab 首次进入时预填最近一次下发存档。只补空字段；工具勾选在用户没动过时
+  // 恢复存档（动过则跳过——否则「用户先勾后填」时迟到的响应会把勾选打回去，
+  // 实测踩过：勾了 opencode/pi，回包落地的瞬间被存档里的 false 覆盖，提交时仍是未勾）。
   if (tab.value === 'ai' && !aiLoaded.value) {
     aiLoaded.value = true
     getAiGateway()
@@ -223,6 +273,7 @@ function onTab(v: string | number) {
           }
         if (!aiKey.value.trim()) aiKey.value = config.apiKey
         if (!aiModels.value.trim()) aiModels.value = (config.models ?? []).join(', ')
+        if (!aiToolsTouched.value && config.tools) aiTools.value = { ...config.tools }
       })
       .catch(() => {
         /* 无存档/读取失败不阻塞，表单留空手填 */
@@ -348,7 +399,8 @@ const tabs: { key: string; label: string }[] = [
 
           <!-- ai：网关端点直写各 CLI 配置文件（rootfs 直写，容器无需在跑）。
                两个 URL 并排（用到哪条校验哪条）；协议选择内联在各工具行的三态组里，
-               claude 固定 anthropic、codex 只有 openai 系两态。 -->
+               claude 固定 anthropic、codex 只有 openai 系两态。URL 框下动态标
+               「谁在消费这条端点」——欠填标红，没人用标可留空，不用提交试错。 -->
           <TabsContent value="ai" class="space-y-3">
             <div class="grid grid-cols-2 gap-3">
               <div class="space-y-1.5">
@@ -356,16 +408,36 @@ const tabs: { key: string; label: string }[] = [
                 <Input
                   id="b-ai-openai"
                   v-model="aiOpenaiUrl"
+                  :class="openaiConsumers.length && !aiOpenaiUrl.trim() ? 'border-destructive' : ''"
                   placeholder="http://10.12.135.150:7800/openai/v1"
                 />
+                <p
+                  class="text-[11px] leading-snug"
+                  :class="openaiConsumers.length && !aiOpenaiUrl.trim() ? 'text-destructive' : 'text-muted-foreground'"
+                >
+                  <template v-if="openaiConsumers.length"
+                    >必填 — {{ openaiConsumers.join('、') }} 走这条端点</template
+                  >
+                  <template v-else>没有工具用到，可留空</template>
+                </p>
               </div>
               <div class="space-y-1.5">
                 <Label for="b-ai-anthropic">Anthropic 兼容 Base URL</Label>
                 <Input
                   id="b-ai-anthropic"
                   v-model="aiAnthropicUrl"
+                  :class="anthropicConsumers.length && !aiAnthropicUrl.trim() ? 'border-destructive' : ''"
                   placeholder="http://10.12.135.150:7800/anthropic"
                 />
+                <p
+                  class="text-[11px] leading-snug"
+                  :class="anthropicConsumers.length && !aiAnthropicUrl.trim() ? 'text-destructive' : 'text-muted-foreground'"
+                >
+                  <template v-if="anthropicConsumers.length"
+                    >必填 — {{ anthropicConsumers.join('、') }} 走这条端点</template
+                  >
+                  <template v-else>没有工具用到，可留空</template>
+                </p>
               </div>
             </div>
             <div class="space-y-1.5">
@@ -411,9 +483,9 @@ const tabs: { key: string; label: string }[] = [
                   type="multiple"
                   size="sm"
                   variant="outline"
-                  :model-value="aiWire.opencode ?? ['openai-chat']"
+                  :model-value="wiresOfTool('opencode')"
                   class="text-xs"
-                  @update:model-value="(v) => (aiWire.opencode = (v as string[]).length ? (v as string[]) : undefined)"
+                  @update:model-value="(v) => (aiWire.opencode = v as string[])"
                 >
                   <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
                   <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
@@ -433,9 +505,9 @@ const tabs: { key: string; label: string }[] = [
                   type="multiple"
                   size="sm"
                   variant="outline"
-                  :model-value="aiWire.pi ?? ['openai-chat']"
+                  :model-value="wiresOfTool('pi')"
                   class="text-xs"
-                  @update:model-value="(v) => (aiWire.pi = (v as string[]).length ? (v as string[]) : undefined)"
+                  @update:model-value="(v) => (aiWire.pi = v as string[])"
                 >
                   <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
                   <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
@@ -443,7 +515,8 @@ const tabs: { key: string; label: string }[] = [
                 </ToggleGroup>
               </div>
               <p class="text-[11px] leading-snug text-muted-foreground">
-                多选协议时每个协议注册一个独立接入点（myapikey-chat / -responses / -anthropic），工具内按模型切换。
+                多选协议时每个协议注册一个独立接入点（myapikey-chat / -responses / -anthropic），工具内按模型切换。全不选 =
+                不给这个工具写接入点（只推别的工具时用）。
               </p>
               <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Checkbox
@@ -455,7 +528,9 @@ const tabs: { key: string; label: string }[] = [
               </label>
             </div>
             <div class="space-y-1.5">
-              <Label for="b-ai-models">模型 ID（逗号分隔，opencode/pi 必填）</Label>
+              <Label for="b-ai-models"
+                >模型 ID（逗号分隔{{ modelsConsumers.length ? `，${modelsConsumers.map((s) => (s === 'opencode' ? 'OpenCode' : 'Pi')).join('、')} 必填` : '，当前无人需要' }}）</Label
+              >
               <Input id="b-ai-models" v-model="aiModels" placeholder="claude-sonnet-4-5, gpt-5" />
             </div>
             <div

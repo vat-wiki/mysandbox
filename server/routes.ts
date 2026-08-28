@@ -302,9 +302,17 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const epIn = (body.endpoints ?? {}) as Record<string, unknown>;
     const wireIn = (body.wire ?? {}) as Record<string, unknown>;
     const WIRE_VALUES: GatewayWire[] = ['openai-chat', 'openai-responses', 'anthropic-messages'];
-    const pickUrl = (v: unknown): string | undefined => {
-      const s = typeof v === 'string' ? v.trim() : '';
-      return /^https?:\/\//.test(s) ? s.replace(/\/+$/, '') : undefined;
+    // URL 收参：收 string 或 {baseUrl} 两种形状（前端按 AiGatewayInput 发对象）。
+    // 填了但不像 URL → 400 点名（而不是静默当没填，让用户以为配上了）；
+    // 没填返回 undefined，由下方按工具需求校验。注意旧版这里只吃 string，导致
+    // 前端发来的 {baseUrl} 被静默丢成 undefined——端点提取从未生效过。
+    const pickUrl = (v: unknown, side: 'openai' | 'anthropic'): string | undefined => {
+      const raw = typeof v === 'string' ? v : (v as { baseUrl?: unknown })?.baseUrl;
+      if (raw == null || String(raw).trim() === '') return undefined;
+      const s = String(raw).trim();
+      if (!/^https?:\/\//.test(s))
+        throw new HttpError(400, `endpoints.${side}.baseUrl 必须以 http:// 或 https:// 开头（收到 ${JSON.stringify(s)}）`, 'bad_request');
+      return s.replace(/\/+$/, '');
     };
     // 单工具的 wire 数组收参：合法值校验 + 去重保序。未传（undefined）与空数组分明——
     // 前者走后端缺省 ['openai-chat']，后者是显式「清空所有变体」。
@@ -322,8 +330,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     };
     const input: AiGatewayInput = {
       endpoints: {
-        ...(pickUrl(epIn.openai) ? { openai: { baseUrl: pickUrl(epIn.openai)! } } : {}),
-        ...(pickUrl(epIn.anthropic) ? { anthropic: { baseUrl: pickUrl(epIn.anthropic)! } } : {}),
+        ...(pickUrl(epIn.openai, 'openai') ? { openai: { baseUrl: pickUrl(epIn.openai, 'openai')! } } : {}),
+        ...(pickUrl(epIn.anthropic, 'anthropic') ? { anthropic: { baseUrl: pickUrl(epIn.anthropic, 'anthropic')! } } : {}),
       },
       apiKey: String(body.apiKey ?? '').trim(),
       tools: {
@@ -350,30 +358,30 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       throw new HttpError(400, '至少勾选一个工具', 'bad_request');
     }
     if (!input.apiKey) throw new HttpError(400, 'apiKey required', 'bad_request');
-    const toolNeedsAnthropic = (tool: 'opencode' | 'pi') =>
-      wiresOf(input, tool).includes('anthropic-messages');
-    const toolNeedsOpenai = (tool: 'opencode' | 'pi') =>
-      wiresOf(input, tool).some((w) => w !== 'anthropic-messages');
-    if (
-      t.codex ||
-      t.opencode && toolNeedsOpenai('opencode') ||
-      t.pi && toolNeedsOpenai('pi')
-    ) {
-      if (!input.endpoints.openai) {
-        throw new HttpError(400, 'endpoints.openai.baseUrl required（codex 或有工具选了 openai 系协议）', 'bad_request');
-      }
+    // 需求方点名（错误信息直接说谁要这条 URL，不让人猜）
+    const needOpenaiWho: string[] = [];
+    const needAnthropicWho: string[] = [];
+    if (t.codex) needOpenaiWho.push('codex');
+    if (t.claude) needAnthropicWho.push('claude');
+    for (const tool of ['opencode', 'pi'] as const) {
+      if (!t[tool]) continue;
+      const wires = wiresOf(input, tool);
+      const openaiWires = wires.filter((w) => w !== 'anthropic-messages');
+      if (openaiWires.length)
+        needOpenaiWho.push(`${tool}（${openaiWires.map((w) => (w === 'openai-responses' ? 'responses' : 'chat')).join('、')}）`);
+      if (wires.includes('anthropic-messages')) needAnthropicWho.push(`${tool}（anthropic）`);
     }
-    if (
-      t.claude ||
-      t.opencode && toolNeedsAnthropic('opencode') ||
-      t.pi && toolNeedsAnthropic('pi')
-    ) {
-      if (!input.endpoints.anthropic) {
-        throw new HttpError(400, 'endpoints.anthropic.baseUrl required（claude 或有工具选了 anthropic 协议）', 'bad_request');
-      }
+    if (needOpenaiWho.length && !input.endpoints.openai) {
+      throw new HttpError(400, `需要 OpenAI 兼容 Base URL：${needOpenaiWho.join('、')} 要走这条端点（或取消勾选/清空对应协议）`, 'bad_request');
     }
-    if ((t.opencode || t.pi) && (input.models ?? []).length === 0) {
-      throw new HttpError(400, 'models required for opencode/pi（逗号分隔模型 ID）', 'bad_request');
+    if (needAnthropicWho.length && !input.endpoints.anthropic) {
+      throw new HttpError(400, `需要 Anthropic 兼容 Base URL：${needAnthropicWho.join('、')} 要走这条端点（或取消勾选/清空对应协议）`, 'bad_request');
+    }
+    const modelsWho = (['opencode', 'pi'] as const).filter(
+      (tool) => t[tool] && wiresOf(input, tool).length > 0,
+    );
+    if (modelsWho.length && (input.models ?? []).length === 0) {
+      throw new HttpError(400, `${modelsWho.join('、')} 需要至少一个模型 ID（逗号分隔）`, 'bad_request');
     }
     const result = await applyAiGateway(cfg, ids, input);
     // 存档无条件记录最近一次意图（含部分失败），换 key 重推直接预填
