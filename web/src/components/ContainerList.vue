@@ -1406,8 +1406,9 @@ onUnmounted(() => {
 
       <!-- tab 栏：每组一个 tab，色条=容器色，·N=pane 数（>1 才显示）。
            右键（触屏长按合成同款事件）弹菜单：隐藏（保留会话，会话对话框可恢复）/ 关闭（真杀）。
+           左端终端图标=被隐藏的组数，点开恢复（无隐藏不显示——没藏过东西就不该有入口）；
            手机：最左汉堡开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
-           ＋/文件面板按钮固定右侧；「N 个终端组」计数文案藏掉（tab 本身可数）。 -->
+           ＋/文件面板按钮固定右侧。 -->
       <div class="flex border-b border-border bg-muted/30">
         <button
           v-if="!props.popout"
@@ -1416,6 +1417,15 @@ onUnmounted(() => {
           @click="drawerOpen = true"
         >
           <MoreHorizontal class="size-3.5 max-md:size-5" />
+        </button>
+        <button
+          v-if="hiddenGroups.length"
+          class="flex shrink-0 items-center gap-1 self-stretch border-r border-border px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="隐藏的终端组（点击恢复）"
+          @click="showSessions = true"
+        >
+          <EyeOff class="size-3.5 max-md:size-5" />
+          <span class="text-[10px] tabular-nums">{{ hiddenGroups.length }}</span>
         </button>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin">
         <ContextMenu v-for="(g, idx) in groups" :key="g.id">
@@ -1460,14 +1470,6 @@ onUnmounted(() => {
           </ContextMenuContent>
         </ContextMenu>
         </div>
-        <button
-          class="ml-auto flex items-center gap-1 self-stretch border-l border-border px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="终端会话：隐藏的 + 其他窗口 / 浏览器打开的"
-          @click="showSessions = true"
-        >
-          <TerminalIcon class="size-3.5 max-md:size-5" />
-          <span v-if="hiddenGroups.length" class="text-[10px] tabular-nums">{{ hiddenGroups.length }}</span>
-        </button>
         <button
           class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4"
           :class="
