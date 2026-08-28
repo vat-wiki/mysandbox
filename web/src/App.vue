@@ -6,6 +6,7 @@ import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
+import { Toaster } from '@/components/ui/sonner'
 // 异步加载 hosts 面板：Monaco 编辑器较重（~700KB gzip），只在点 hosts 徽标时才下载，不拖累首屏。
 const HostsPanel = defineAsyncComponent(() => import('@/components/HostsPanel.vue'))
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
@@ -148,5 +149,7 @@ onUnmounted(() => {
         @close="closeServices"
       />
     </main>
+    <!-- 全局通知（服务创建任务完成/失败等）。右下角——终端主体在左上，避开视觉焦点。 -->
+    <Toaster />
   </div>
 </template>

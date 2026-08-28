@@ -4,7 +4,7 @@
 //   - 纯确认：只传 title/description/confirmText/variant，confirm 时 value=undefined。
 //   - 取输入：传 input.placeholder/input.default/input.confirmCue，confirm 时 value=输入值。
 //     input.confirmCue 非空时，输入等于 cue 才解锁确认按钮（用于危险操作「输入名字以确认」）。
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -39,13 +39,10 @@ const emit = defineEmits<{
 }>()
 
 const value = ref(props.input?.default ?? '')
-// 每次打开（pending 从 null→对象挂载）都重置输入为默认值
-watch(
-  () => props.input,
-  (inp) => {
-    value.value = inp?.default ?? ''
-  },
-)
+// 打开（挂载）时重置输入为默认值。不 watch props.input：父组件传内联对象字面量时
+// 每次重渲染都是新引用（ServicesPanel 的 jobs 3s 轮询即如此），watch 会把用户
+// 正在输入的名字周期性清空——「确认按钮刚解锁又锁死」就是这个坑。
+value.value = props.input?.default ?? ''
 
 const needCue = () => !!props.input?.confirmCue
 const cueOk = () => !needCue() || value.value === props.input?.confirmCue

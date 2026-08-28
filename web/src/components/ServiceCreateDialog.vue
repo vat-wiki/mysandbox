@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // 新建 docker 服务：预设（postgres/redis/mysql）或自定义镜像。
-// 提交走 SSE（拉镜像可能很慢），底部内联日志区照 BasePanel 的做法（自动滚动 + 进度行）。
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+// 提交走后台任务：POST 只做快校验 + 预占，拿到 jobId 即关窗——拉镜像进度、取消、
+// 完成通知都在服务面板的任务区与全局 toast（lib/serviceJobs.ts），对话框不再等待。
+import { ref, computed, watch, onMounted } from 'vue'
 import {
   getServicePresets,
-  streamCreateService,
+  createService,
   listContainers,
   Unauthorized,
   type ServicePresetView,
@@ -22,6 +23,15 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 const emit = defineEmits<{ (e: 'created'): void; (e: 'close'): void }>()
 
@@ -37,8 +47,6 @@ const customCommand = ref('')
 const envValues = ref<Record<string, string>>({})
 const busy = ref(false)
 const err = ref('')
-const log = ref<string[]>([])
-const logEl = ref<HTMLElement | null>(null)
 
 // 撞名提示（软提示不阻断：服务与 LXC 容器是不同命名空间，同名技术上允许，
 // 但 hosts 里会互相覆盖，值得提醒）。
@@ -96,25 +104,10 @@ const formOk = computed(() => {
   return true
 })
 
-watch(
-  () => log.value.length,
-  async () => {
-    await nextTick()
-    if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
-  },
-)
-
-function onEvent(e: { type: string; stream?: string; status?: string; message?: string }) {
-  if (e.stream) log.value.push(e.stream)
-  else if (e.status) log.value.push(`[进行] ${e.status}`)
-  else if (e.type === 'error' && e.message) log.value.push(`[失败] ${e.message}`)
-}
-
 async function submit() {
   if (!formOk.value) return
   busy.value = true
   err.value = ''
-  log.value = []
   try {
     const env: Record<string, string> = {}
     if (isCustom.value) {
@@ -130,21 +123,21 @@ async function submit() {
         if (v?.trim()) env[u.key] = v.trim()
       }
     }
-    await streamCreateService(
-      {
-        name: name.value.trim(),
-        preset: presetKey.value,
-        image: isCustom.value ? customImage.value.trim() : undefined,
-        env,
-        command: isCustom.value ? customCommand.value.trim() || undefined : undefined,
-        description: description.value || undefined,
-        ip: ipMode.value === 'manual' ? manualIp.value.trim() || undefined : undefined,
-      },
-      onEvent,
-    )
-    log.value.push('[完成] 服务就绪')
-    emit('created')
+    await createService({
+      name: name.value.trim(),
+      preset: presetKey.value,
+      image: isCustom.value ? customImage.value.trim() : undefined,
+      env,
+      command: isCustom.value ? customCommand.value.trim() || undefined : undefined,
+      description: description.value || undefined,
+      ip: ipMode.value === 'manual' ? manualIp.value.trim() || undefined : undefined,
+    })
+    emit('created') // 关窗；任务在面板任务区/全局 toast 跟进
   } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
@@ -165,14 +158,23 @@ async function submit() {
       <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="s-preset">类型</Label>
-          <select
-            id="s-preset"
-            v-model="presetKey"
-            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none"
-          >
-            <option v-for="p in presets" :key="p.key" :value="p.key">{{ p.label }}</option>
-            <option value="custom">自定义镜像</option>
-          </select>
+          <!-- shadcn Select（reka-ui portal）：原生 <select> 的弹层由 OS 自绘，强制
+               dark 主题下白底违和（此前「下拉框样式坏」的根因），换 token 化弹层。 -->
+          <Select v-model="presetKey">
+            <SelectTrigger id="s-preset" class="w-full">
+              <SelectValue placeholder="选择类型" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectLabel>预设</SelectLabel>
+                <SelectItem v-for="p in presets" :key="p.key" :value="p.key">{{ p.label }}</SelectItem>
+              </SelectGroup>
+              <SelectGroup>
+                <SelectLabel>其它</SelectLabel>
+                <SelectItem value="custom">自定义镜像</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
           <p v-if="current" class="text-xs leading-relaxed text-muted-foreground">
             {{ current.description }} · 端口 {{ current.ports.join('/') }} · {{ current.hint }}
           </p>
@@ -242,22 +244,14 @@ async function submit() {
           <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.0.210" />
         </div>
 
-        <div v-if="log.length" class="space-y-1">
-          <Label>进度</Label>
-          <div
-            ref="logEl"
-            class="max-h-36 overflow-y-auto rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed"
-          >
-            <div v-for="(l, i) in log" :key="i" class="whitespace-pre-wrap break-all">{{ l }}</div>
-          </div>
+        <div v-if="err" class="space-y-1">
+          <p class="text-sm text-destructive">{{ err }}</p>
         </div>
-
-        <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
       </div>
 
       <DialogFooter>
         <Button variant="outline" :disabled="busy" @click="emit('close')">取消</Button>
-        <Button :disabled="!formOk" @click="submit">{{ busy ? '创建中…' : '创建并启动' }}</Button>
+        <Button :disabled="!formOk" @click="submit">{{ busy ? '提交中…' : '创建并启动' }}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

@@ -26,6 +26,10 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 
 模板制作：`scripts/lxc-template.sh <容器名>`。
 
+## Git 工作流
+
+每次更改完成后（typecheck/build 验证通过），必须本地合入 `main` 分支并推送到远端（`origin/main`）。改动不留未提交状态、不滞留在旁支分支。
+
 ## 安全模型（改动前必读）
 
 **拿到 token 等于拿到宿主 leon 用户的完整权限**：LXC 容器本身是 unprivileged（容器 root → 宿主 uid 100000），拿不到宿主 root；但**容器内 uid 1000 直通宿主 `leon`**（D1），且服务能读写宿主 `~/.ssh`、跑宿主终端（`/ws/host-terminal`）。
@@ -106,12 +110,14 @@ caps 经 `/api/health` 下发，前端存在 `web/src/lib/caps.ts` 单例（默�
 
 docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在宿主 docker 上起单容器服务（postgres/redis/mysql/自定义），挂在与 LXC 同座的网络（`cfg.services.network`，默认 `dev-lan` 桥 `br-f0cc7d98dca0`），固定 IP + 命名卷；LXC 容器按服务名直连（hosts 自动注入）。
 
-- **模块归属**：`server/docker.ts`（docker CLI 客户端：execFile/spawn 数组参数、`--format '{{json .}}'` 解析、label 过滤、卷操作、`docker events` NDJSON 订阅）+ `server/services.ts`（预设/编排/路由，对标 `base.ts`）。**不经过 engine 抽象**——`Engine` 接口是容器生命周期形状，服务是另一种生命周期；上面「业务层只 import engine/index.js」的约定限于容器引擎。
-- **管理边界靠 label**：`mysandbox.managed-by=mysandbox` + `mysandbox.kind=service`，所有列表/操作走 `--filter label=…`——宿主上外部容器（dener-* 等 7 个）**结构性**进不来列表、操作必 404。易变元数据（env 含密码、IP 登记、描述）走 sidecar `state.json` 的 `services` 键（0600）；API 回**全量 env 值**（含密码）并附现成连接命令——token = 宿主完整权限，鉴权边界在 token 上收住，UI 直接展示连接凭据。容器被外部 `docker rm` 后 meta 变孤儿：`requireService` 对它操作时顺手清再 404。
-- **IP 池**：`cfg.services.ipPool`（默认 10.88.0.200–240，docker IPAM 动态分配从 .2 顺排天然隔离）。占用 = 运行中网络端点 ∪ state.services 已登记 IP ∪ reserved——`network inspect` 只列 running 端点，**停机服务的 IP 必须靠 state 兜底**否则二次分配。
+- **模块归属**：`server/docker.ts`（docker CLI 客户端：execFile/spawn 数组参数、`--format '{{json .}}'` 解析、label 过滤、卷操作、`docker events` NDJSON 订阅）+ `server/services.ts`（预设/编排/路由，对标 `base.ts`）+ `server/jobs.ts`（服务创建的后台任务注册表）。**不经过 engine 抽象**——`Engine` 接口是容器生命周期形状，服务是另一种生命周期；上面「业务层只 import engine/index.js」的约定限于容器引擎。
+- **创建是后台任务**（不是 SSE）：`POST /api/services` 快校验（`prepareServiceCreate`：校验/查重/IP 分配，失败回 4xx 内联显示）+ **同步预占名称与 IP**（`serviceNameExists` 查不到「还没建容器」的进行中任务，不锁名会双双通过查重）→ 立即返回 `{jobId}`；拉镜像/建容器在 `jobs.ts` 的进程内任务里跑（`runServiceCreate`）。任务 = 内存 Map + 环形日志（400 行）+ 终态保留 20 个，**刻意不持久化**（进程重启即丢，daemon 层缓存让重试近乎免费）。路由：`GET /api/services/jobs?tail=`（tail=0 极小 payload，侧栏轮询用）、`GET .../jobs/:id`（全量日志）、`POST .../jobs/:id/cancel`。**取消只对 pull 阶段生效**（`cancellable` 标志；docker create/start 是 execFile 杀不掉，其余阶段 409）。jobs.ts 不运行时 import services.ts（编排以 thunk 传入，防循环依赖）。
+- **pull 的可读性**（`docker.ts pullImageStream`）：JSON 进度行解析——状态行透传、层进度聚合成 2s 一条摘要（原始 `[===>]` 进度条行是垃圾）、错误行提取；**两级超时**：`cfg.services.pullTimeoutMs`（默认 30min 硬顶）+ 5min 无输出看门狗（硬编码，TLS 握手卡死的 pull 完全静默）；daemon 没配 `registry-mirrors` 时失败信息追加人话提示（`registryMirrors()` 读 `docker info`，60s TTL 缓存进 `ServicesStatus.registryMirrors`，前端 amber 提示）。
+- **管理边界靠 label**：`mysandbox.managed-by=mysandbox` + `mysandbox.kind=service`，所有列表/操作走 `--filter label=…`——宿主上外部容器（dener-* 等 7 个）**结构性**进不来列表、操作必 404。易变元数据（env 含密码、IP 登记、描述）走 sidecar `state.json` 的 `services` 键（0600）；API 回**全量 env 值**（含密码）并附现成连接命令——token = 宿主完整权限，鉴权边界在 token 上收住，UI 直接展示连接凭据。容器被外部 `docker rm` 后 meta 变孤儿：`requireService` 对它操作时顺手清再 404。**job 视图不携带 env**（只 name/image/ip）。
+- **IP 池**：`cfg.services.ipPool`（默认 10.88.0.200–240，docker IPAM 动态分配从 .2 顺排天然隔离）。占用 = 运行中网络端点 ∪ state.services 已登记 IP ∪ reserved ∪ **进行中任务预占的 IP**（`jobs.ts` 的 reservedIps 并进 `servicePoolView`）——`network inspect` 只列 running 端点，**停机服务的 IP 必须靠 state 兜底**否则二次分配。
 - **服务发现 = hosts 注入**：`hosts.ts` 的 `composeHostsContent(base, serviceBlockLines(...))` 是唯一组合点，`hosts-sync.ts` 的 `applyHostsToContainers` 四条路径（保存/手动/事件/启动）全覆盖；hash 算在组合后内容上，服务集变化自动重刷。`docker events`（start/die/destroy，label 过滤）+ 2s trailing debounce 驱动外部启停追平。容器内验证：`getent hosts <服务名>` → `+PONG`。
-- **坑**：docker 29 对本地已有 tag 的 pull 仍要联网验 manifest（离线直接失败）——`imageExistsLocal()` 先查再跳过 pull；dev-lan 被重建 → 桥名变 → `status.network.bridgeOk=false` + 人话 detail（提示同步 config 与网关 unit），不阻断；docker daemon 挂 → health 仍 200（`dockerStatus` 1.5s 快败）、面板 reachable:false 降级、hosts 应用静默跳过。
-- **前端**：`ServicesBadge`（三态徽标，health.services.available）→ `ServicesPanel`（状态行 + 服务表 + DropdownMenu 操作（含「连接信息」凭据对话框）+ 行内日志）→ `ServiceCreateDialog`（预设表单/自定义镜像，SSE 进度日志区）。SSE 复用 `streamOp`（从 streamBaseAction 泛化出来）。
+- **坑**：docker 29 对本地已有 tag 的 pull 仍要联网验 manifest（离线直接失败）——`imageExistsLocal()` 先查再跳过 pull；本机 daemon.json 无 registry-mirrors 且宿主在 fake-ip 网络下，Docker Hub 直连常 EOF（apt 同理换过 aliyun 源）——所以有上面的 mirror 检测提示；dev-lan 被重建 → 桥名变 → `status.network.bridgeOk=false` + 人话 detail（提示同步 config 与网关 unit），不阻断；docker daemon 挂 → health 仍 200（`dockerStatus` 1.5s 快败）、面板 reachable:false 降级、hosts 应用静默跳过。
+- **前端**：`ServicesPanel`（状态行（含 mirrors 提示）+ 任务区（3s 轮询：进度行/日志/取消）+ 服务表 + DropdownMenu 操作（含「连接信息」凭据对话框）+ 行内日志）→ `ServiceCreateDialog`（预设表单/自定义镜像；shadcn-vue Select（reka-ui portal）——**别用原生 `<select>`**，强制 dark 下 OS 自绘弹层白底违和；提交拿 jobId 即关窗）。完成通知：`lib/serviceJobs.ts` 的 `trackServiceJobs`（模块级 Map 记上次 state，只有「见过 running 落到终态」才 toast——两个轮询器喂它天然去重，首拉不误报）+ 全局 `<Toaster>`（vue-sonner，`ui/sonner/Sonner.vue` 硬编码 dark，无 next-themes）。侧栏服务摘要条自适应轮询（闲时 15s / 有任务 3s），任务进行中显示「N 个服务任务进行中…」。SSE（`streamOp`）现在只有 base 在用。
 
 ### 宿主终端
 

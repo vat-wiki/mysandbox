@@ -2,8 +2,9 @@
 // docker 服务面板：配套服务（数据库等）的列表 / 启停 / 日志 / 删除 / 新建。
 // 服务 = mysandbox 启动的单容器 docker 服务（label 标记），固定 IP 直连、不发布端口，
 // LXC 容器经 hosts 注入按服务名访问。头部状态行展示 docker 可达性与 dev-lan 桥一致性
-// （桥名变了 = dev-lan 被重建过，需要同步 config 与网关 unit）。
-import { ref, onMounted } from 'vue'
+// （桥名变了 = dev-lan 被重建过，需要同步 config 与网关 unit）；创建走后台任务，
+// 表格上方任务区展示进度/日志/取消，完成通知由 lib/serviceJobs.ts 全局去重发 toast。
+import { ref, onMounted, onUnmounted } from 'vue'
 import {
   listServices,
   startService,
@@ -11,10 +12,15 @@ import {
   restartService,
   deleteService,
   getServiceLogs,
+  listServiceJobs,
+  getServiceJob,
+  cancelServiceJob,
   Unauthorized,
   type ServiceView,
   type ServicesStatus,
+  type ServiceJobView,
 } from '@/lib/api'
+import { trackServiceJobs } from '@/lib/serviceJobs'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -40,6 +46,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
+import { LoaderCircle, Check, X, Ban } from 'lucide-vue-next'
 
 // initialCreate=true：来自侧栏服务摘要条的 ＋ ——面板一打开就弹新建对话框（普通入口只展示管理面板）。
 const props = defineProps<{ initialCreate?: boolean }>()
@@ -58,6 +65,67 @@ const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
 // 连接信息对话框：展示 env 凭据与现成连接命令（null 关闭）
 const connectOf = ref<ServiceView | null>(null)
 
+// —— 创建任务 ——
+// 面板打开期间 3s 轮询（侧栏另有独立轮询；两者喂同一 trackServiceJobs 去重通知）。
+// expandedJob：展开日志的任务 id；全量日志按需 getServiceJob（列表轮询只带 60 行预览）。
+// seenDoneIds：上轮已见的终态集合——出现新终态（创建成功/失败）时刷一次服务表。
+const jobs = ref<ServiceJobView[]>([])
+const expandedJob = ref('')
+const fullLog = ref<string[]>([])
+let jobsTimer: ReturnType<typeof setInterval> | null = null
+let seenDoneIds = new Set<string>()
+
+async function refreshJobs() {
+  try {
+    const v = await listServiceJobs(60)
+    jobs.value = v.jobs
+    trackServiceJobs(v.jobs)
+    const doneIds = new Set(v.jobs.filter((j) => j.state !== 'running').map((j) => j.id))
+    if (seenDoneIds.size > 0 && [...doneIds].some((id) => !seenDoneIds.has(id))) void refresh()
+    seenDoneIds = doneIds
+    if (expandedJob.value && v.jobs.some((j) => j.id === expandedJob.value)) {
+      try {
+        fullLog.value = (await getServiceJob(expandedJob.value)).log
+      } catch {
+        /* 日志拉取失败保留旧内容 */
+      }
+    }
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    /* 任务列表拉取失败不打扰主流程（docker 抖动），下轮再试 */
+  }
+}
+
+async function toggleJobLog(j: ServiceJobView) {
+  if (expandedJob.value === j.id) {
+    expandedJob.value = ''
+    return
+  }
+  expandedJob.value = j.id
+  try {
+    fullLog.value = (await getServiceJob(j.id)).log
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function cancelJob(j: ServiceJobView) {
+  err.value = ''
+  try {
+    await cancelServiceJob(j.id)
+    await refreshJobs()
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    err.value = e instanceof Error ? e.message : String(e) // 如「已过拉取阶段，无法取消」
+  }
+}
+
 async function refresh() {
   try {
     const v = await listServices()
@@ -72,7 +140,14 @@ async function refresh() {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  refreshJobs()
+  jobsTimer = setInterval(() => void refreshJobs(), 3000)
+})
+onUnmounted(() => {
+  if (jobsTimer) clearInterval(jobsTimer)
+})
 
 async function op(name: string, fn: () => Promise<unknown>) {
   if (busyName.value) return
@@ -152,6 +227,10 @@ function stateCls(s: ServiceView): string {
         </p>
         <p v-if="status.error" class="text-destructive">{{ status.error }}</p>
         <p v-if="status.network.detail" class="text-amber-600">{{ status.network.detail }}</p>
+        <p v-if="status.registryMirrors?.length === 0" class="text-amber-600">
+          daemon 未配置 registry-mirrors——Docker Hub 直连在受限网络下常缓慢/失败；可在 /etc/docker/daemon.json
+          配置后重启 docker（私有 registry 不受影响）。
+        </p>
       </div>
 
       <div v-if="!status?.reachable" class="space-y-2">
@@ -162,6 +241,44 @@ function stateCls(s: ServiceView): string {
       </div>
 
       <div v-else class="space-y-2">
+        <!-- 创建任务区：running 行可看日志/取消；终态行保留最近结果（error 摘要 title 全文）。
+             数据来自 3s 轮询；完成通知由 trackServiceJobs 全局去重，面板只管展示。 -->
+        <div v-if="jobs.length" class="space-y-1.5">
+          <div
+            v-for="j in jobs"
+            :key="j.id"
+            class="rounded-md border px-2 py-1.5"
+          >
+            <div class="flex items-center gap-2">
+              <LoaderCircle v-if="j.state === 'running'" class="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+              <Check v-else-if="j.state === 'done'" class="size-3.5 shrink-0 text-emerald-600" />
+              <X v-else-if="j.state === 'error'" class="size-3.5 shrink-0 text-destructive" />
+              <Ban v-else class="size-3.5 shrink-0 text-muted-foreground" />
+              <span class="shrink-0 text-sm font-medium">{{ j.name }}</span>
+              <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground" :title="j.error ?? j.statusText">
+                {{ j.state === 'error' ? (j.error || j.statusText) : j.statusText }}
+              </span>
+              <Button
+                v-if="j.state === 'running' && j.cancellable"
+                variant="ghost"
+                size="xs"
+                class="shrink-0"
+                @click="cancelJob(j)"
+              >
+                取消
+              </Button>
+              <Button variant="ghost" size="xs" class="shrink-0" @click="toggleJobLog(j)">
+                {{ expandedJob === j.id ? '收起日志' : '日志' }}
+              </Button>
+            </div>
+            <div v-if="expandedJob === j.id" class="mt-1.5">
+              <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed">{{
+                expandedJob === j.id ? fullLog.join('\n') : (j.logTail ?? []).join('\n')
+              }}</pre>
+            </div>
+          </div>
+        </div>
+
         <div class="flex items-center justify-between">
           <Button variant="outline" size="sm" @click="refresh">刷新</Button>
           <Button size="sm" @click="showCreate = true">新建服务</Button>
@@ -299,7 +416,11 @@ function stateCls(s: ServiceView): string {
         </DialogContent>
       </Dialog>
 
-      <ServiceCreateDialog v-if="showCreate" @created="showCreate = false; refresh()" @close="showCreate = false" />
+      <ServiceCreateDialog
+        v-if="showCreate"
+        @created="showCreate = false; refreshJobs(); refresh()"
+        @close="showCreate = false"
+      />
     </DialogContent>
   </Dialog>
 </template>
