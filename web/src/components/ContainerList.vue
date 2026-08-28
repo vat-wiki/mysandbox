@@ -43,7 +43,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, Archive, EyeOff } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1463,10 +1463,10 @@ onUnmounted(() => {
         <span class="ml-auto self-center px-3 text-xs text-muted-foreground hidden md:block">{{ groups.length }} 个终端组</span>
         <button
           class="flex items-center gap-1 self-stretch border-l border-border px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="隐藏的与其他窗口 / 浏览器的会话"
+          title="终端会话：隐藏的 + 其他窗口 / 浏览器打开的"
           @click="showSessions = true"
         >
-          <Archive class="size-3.5 max-md:size-5" />
+          <TerminalIcon class="size-3.5 max-md:size-5" />
           <span v-if="hiddenGroups.length" class="text-[10px] tabular-nums">{{ hiddenGroups.length }}</span>
         </button>
         <button

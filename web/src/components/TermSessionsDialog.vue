@@ -8,7 +8,7 @@
 // 布局恢复的取舍：同容器多会话「全部接入」合并成一个 row 分屏组（≤4 块）；跨窗口拿不回
 // 原分屏树——布局是各窗口自己的 localStorage 状态，不是服务端状态。
 import { ref, computed, onMounted } from 'vue'
-import { Archive, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { TerminalSquare, RefreshCw, Trash2 } from 'lucide-vue-next'
 import {
   listTermSessions,
   killTermSession,
@@ -155,7 +155,7 @@ async function doKill() {
     <DialogContent class="max-w-lg">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
-          <Archive class="size-4" /> 终端会话
+          <TerminalSquare class="size-4" /> 终端会话
         </DialogTitle>
         <DialogDescription>
           恢复本窗口隐藏的终端组，或接入其他窗口 / 浏览器打开、仍在本机活跃的会话（tmux 现场全保留）。
