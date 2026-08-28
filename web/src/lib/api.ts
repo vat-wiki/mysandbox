@@ -204,6 +204,31 @@ export const batchAiConfig = (ids: string[], input: AiGatewayInput) =>
 // 会话活跃 pane 的 cwd（信息条显示「宿主 · <镜像目录>」用；轮询）。
 // 复用 getTermCwd：HOST_ID 哨兵会落到 /api/host-terminal/cwd（文件 API 端点切换同源）。
 export const getHostCwd = (termId: string) => getTermCwd(HOST_ID, termId)
+
+// —— 终端会话（跨窗口/浏览器找回 tmux 会话）——
+// 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）。
+export interface TermSessionView {
+  kind: 'host' | 'container'
+  containerId?: string
+  termId: string
+  attached: number
+  created: number
+  cwd?: string
+}
+// 会话去重 key：ContainerList 算「本窗口已占用」（可见 + 隐藏组的全部叶子）、
+// TermSessionsDialog 过滤远端列表，两处必须同构，收拢在这里。
+export function termSessionKey(kind: 'host' | 'container', containerId: string | undefined, termId: string): string {
+  return kind === 'host' ? `host:${termId}` : `c:${containerId}:${termId}`
+}
+export const listTermSessions = () =>
+  api('/api/terminal-sessions') as Promise<{ sessions: TermSessionView[] }>
+export const killTermSession = (s: TermSessionView) =>
+  api(
+    s.kind === 'host'
+      ? `/api/terminal-sessions/host/${encodeURIComponent(s.termId)}`
+      : `/api/terminal-sessions/container/${encodeURIComponent(s.containerId ?? '')}/${encodeURIComponent(s.termId)}`,
+    { method: 'DELETE' },
+  ) as Promise<{ ok: true }>
 // —— 基座（模板容器）——
 // 后端 BaseStatus（server/engine/types.ts）。
 export interface BaseStatus {

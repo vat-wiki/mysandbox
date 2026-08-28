@@ -14,11 +14,13 @@ import {
   resolveTermPath,
   listServices,
   listServiceJobs,
+  termSessionKey,
   HOST_ID,
   Unauthorized,
   type ContainerView,
   type ResolveView,
   type ServiceView,
+  type TermSessionView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
 import { newId } from '@/lib/id'
@@ -34,11 +36,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network } from 'lucide-vue-next'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, Archive, EyeOff } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
+import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
 import TermLayoutNode from '@/components/TermLayoutNode.vue'
 import FilePanel from '@/components/FilePanel.vue'
@@ -106,6 +116,15 @@ const TABS_KEY =
   props.popout && props.popoutTarget
     ? `mysandbox:term-tabs-popout-${props.popoutTarget}`
     : 'mysandbox:term-tabs-v4'
+// 隐藏的终端组（tab 右键「隐藏」）：独立存档。隐藏 ≠ 关闭——不杀会话（Terminal 卸载 =
+// 纯 detach），只从 tab 栏摘掉，随时从会话对话框恢复。与 tabs 分开存：两边生命周期不同
+// （关 tab 是真杀，隐藏是暂存），混在一个数组里就得给每条加状态位、修剪逻辑两处判。
+const HIDDEN_KEY =
+  props.popout && props.popoutTarget
+    ? `mysandbox:term-hidden-popout-${props.popoutTarget}`
+    : 'mysandbox:term-hidden'
+// 隐藏存档上限：隐藏是「暂存不干掉」，不是收藏夹——无限堆积只会让会话对话框越来越难翻。
+const MAX_HIDDEN_GROUPS = 50
 function newTermId(): string {
   return newId()
 }
@@ -115,51 +134,52 @@ function newGroupId(): string {
 // 一个 group = 一个容器终端组，root 是布局树（类型与操作见 lib/termlayout.ts）：
 // 叶子 = 一个独立 termId/会话，split = 同方向多块嵌套（row 左右 / col 上下），任意组合。
 // kind='host' 为宿主终端组（PTY 由 server 管理，cwd=镜像目录，containerId 为哨兵 '__host__'）。
+// 单个 group 的持久化解析：非法丢弃、旧版迁移（v3 扁平 panes / v2 单 termId）包成布局树。
+// tabs 与 hidden 两个存档共用。
+function parseGroup(o: unknown): TermGroup | null {
+  if (!o || typeof o !== 'object') return null
+  const r = o as Record<string, unknown>
+  if (typeof r.containerId !== 'string') return null
+  let root = normalizeRoot(r.root)
+  if (!root) {
+    const ids = Array.isArray(r.panes)
+      ? r.panes
+          .filter(
+            (pn): pn is { termId: string } =>
+              !!pn && typeof (pn as { termId?: unknown }).termId === 'string',
+          )
+          .map((pn) => pn.termId)
+      : typeof r.termId === 'string'
+        ? [r.termId]
+        : []
+    if (!ids.length) return null
+    root =
+      ids.length === 1
+        ? { kind: 'leaf', termId: ids[0] }
+        : {
+            kind: 'split',
+            id: newSplitId(),
+            dir: 'row',
+            children: ids.map((t) => ({ kind: 'leaf' as const, termId: t })),
+            grows: equalGrows(ids.length),
+          }
+  }
+  return {
+    id: typeof r.id === 'string' ? r.id : newGroupId(),
+    containerId: r.containerId,
+    name: typeof r.name === 'string' ? r.name : r.containerId,
+    kind: r.kind === 'host' ? ('host' as const) : undefined,
+    seq: typeof r.seq === 'number' && r.seq >= 1 ? r.seq : undefined,
+    root,
+  }
+}
 function loadTabs(): { groups: TermGroup[]; activeIdx: number } {
   try {
     const raw = localStorage.getItem(TABS_KEY)
     if (!raw) return { groups: [], activeIdx: 0 }
     const p = JSON.parse(raw) as Record<string, unknown>
     const arr = Array.isArray(p.groups) ? p.groups : []
-    const groups: TermGroup[] = []
-    for (const g of arr) {
-      if (!g || typeof g !== 'object') continue
-      const o = g as Record<string, unknown>
-      if (typeof o.containerId !== 'string') continue
-      let root = normalizeRoot(o.root)
-      if (!root) {
-        // 旧版迁移：v3 扁平 panes（横向一排）/ v2 单 termId -> 包成叶子或横向二分以上。
-        const ids = Array.isArray(o.panes)
-          ? o.panes
-              .filter(
-                (pn): pn is { termId: string } =>
-                  !!pn && typeof (pn as { termId?: unknown }).termId === 'string',
-              )
-              .map((pn) => pn.termId)
-          : typeof o.termId === 'string'
-            ? [o.termId]
-            : []
-        if (!ids.length) continue
-        root =
-          ids.length === 1
-            ? { kind: 'leaf', termId: ids[0] }
-            : {
-                kind: 'split',
-                id: newSplitId(),
-                dir: 'row',
-                children: ids.map((t) => ({ kind: 'leaf' as const, termId: t })),
-                grows: equalGrows(ids.length),
-              }
-      }
-      groups.push({
-        id: typeof o.id === 'string' ? o.id : newGroupId(),
-        containerId: o.containerId,
-        name: typeof o.name === 'string' ? o.name : o.containerId,
-        kind: o.kind === 'host' ? ('host' as const) : undefined,
-        seq: typeof o.seq === 'number' && o.seq >= 1 ? o.seq : undefined,
-        root,
-      })
-    }
+    const groups = arr.map(parseGroup).filter((g): g is TermGroup => !!g)
     // 旧存档没有 seq（v3 迁移或早期 v4）：按现有顺序补发，同容器依次取已用最大值之后的号
     const maxSeq = new Map<string, number>()
     for (const g of groups) maxSeq.set(g.containerId, Math.max(maxSeq.get(g.containerId) ?? 0, g.seq ?? 0))
@@ -176,9 +196,24 @@ function loadTabs(): { groups: TermGroup[]; activeIdx: number } {
     return { groups: [], activeIdx: 0 }
   }
 }
+function loadHidden(): TermGroup[] {
+  try {
+    const raw = localStorage.getItem(HIDDEN_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw) as unknown
+    if (!Array.isArray(arr)) return []
+    return arr
+      .map(parseGroup)
+      .filter((g): g is TermGroup => !!g)
+      .slice(-MAX_HIDDEN_GROUPS)
+  } catch {
+    return []
+  }
+}
 const savedTabs = loadTabs()
 const groups = ref<TermGroup[]>(savedTabs.groups)
 const activeIdx = ref(savedTabs.activeIdx)
+const hiddenGroups = ref<TermGroup[]>(loadHidden())
 // termId -> Terminal 实例（close 时调 kill() 发 kill 帧真杀会话）。函数式 ref 挂/卸自动进出表；
 // key 是稳定的 termId，布局重排/塌缩不会错杀别的会话。
 const termRefs = new Map<string, { kill(): void }>()
@@ -190,6 +225,14 @@ function saveTabs(): void {
   }
 }
 watch([groups, activeIdx], saveTabs, { deep: true })
+function saveHidden(): void {
+  try {
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify(hiddenGroups.value))
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+}
+watch(hiddenGroups, saveHidden, { deep: true })
 
 // 手机侧栏抽屉：overlay 形态（绝对定位 + 遮罩），终端区宽度不变——不选 push 是刻意的：
 // push 会改终端容器宽度 → 触发 refit / tmux resize，打断正在跑的 TUI/vim。
@@ -552,13 +595,14 @@ watch(
 )
 
 // 建组公共体：单叶子根（新 termId = 独立会话），激活为新 tab。分屏走 pane 头部按钮。
-function createGroup(containerId: string, name: string, kind?: 'host'): TermGroup {
+// root 可选传入（会话对话框按既有 termId 建组/合组分屏用）；缺省 = 全新单叶子。
+function createGroup(containerId: string, name: string, kind?: 'host', root?: LayoutNode): TermGroup {
   // seq = 同容器现有组的最大序号 + 1（稳定身份，不随关闭/排序变化）
   let seq = 0
   for (const x of groups.value) {
     if (x.containerId === containerId) seq = Math.max(seq, x.seq ?? 1)
   }
-  const g: TermGroup = { id: newGroupId(), containerId, name, kind, seq: seq + 1, root: { kind: 'leaf', termId: newTermId() } }
+  const g: TermGroup = { id: newGroupId(), containerId, name, kind, seq: seq + 1, root: root ?? { kind: 'leaf', termId: newTermId() } }
   // 插到同容器（宿主）最后一组的后面：同容器的 tab 天然聚拢，配合拖拽可随意调序。
   let at = groups.value.length
   for (let i = groups.value.length - 1; i >= 0; i--) {
@@ -651,6 +695,133 @@ function closeGroupById(gId: string) {
     return
   }
   if (activeIdx.value >= groups.value.length) activeIdx.value = groups.value.length - 1
+}
+
+// —— tab 隐藏 / 恢复 / 会话对话框 ——
+// 隐藏与 ✕（closeGroupById）刻意区分：隐藏不杀任何会话（组从 groups 摘掉 → Terminal
+// 卸载 → WS 关闭 = 服务端纯 detach），收进隐藏存档随时恢复——「关掉 tab ≠ 关掉会话」
+// 是真 tmux 语义的自然延伸。恢复 = 原样插回（含分屏树），seq 撞号（隐藏期间同容器开过
+// 新组）则顺延到最大 + 1，显示名跟着变成 dev·3。
+function hideGroupById(gId: string) {
+  const gi = groups.value.findIndex((g) => g.id === gId)
+  if (gi < 0) return
+  const [g] = groups.value.splice(gi, 1)
+  hiddenGroups.value.push(g)
+  if (hiddenGroups.value.length > MAX_HIDDEN_GROUPS) hiddenGroups.value.shift()
+  if (groups.value.length === 0) {
+    activeIdx.value = 0
+    return
+  }
+  if (gi < activeIdx.value) activeIdx.value -= 1 // 被隐藏的组在激活组之前：索引左移补位
+  if (activeIdx.value >= groups.value.length) activeIdx.value = groups.value.length - 1
+}
+function restoreHidden(g: TermGroup) {
+  const i = hiddenGroups.value.findIndex((x) => x.id === g.id)
+  if (i < 0) return
+  hiddenGroups.value.splice(i, 1)
+  const clash = groups.value.some((x) => x.containerId === g.containerId && x.seq === g.seq)
+  if (clash) {
+    let mx = g.seq ?? 0
+    for (const x of [...groups.value, ...hiddenGroups.value]) {
+      if (x.containerId === g.containerId) mx = Math.max(mx, x.seq ?? 1)
+    }
+    g.seq = mx + 1
+  }
+  // 插到同容器（宿主）簇末尾：与 createGroup 同款聚拢
+  let at = groups.value.length
+  for (let j = groups.value.length - 1; j >= 0; j--) {
+    if (groups.value[j].containerId === g.containerId) {
+      at = j + 1
+      break
+    }
+  }
+  groups.value.splice(at, 0, g)
+  activeIdx.value = groups.value.indexOf(g)
+}
+
+// 会话对话框：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
+const showSessions = ref(false)
+// 打开时剪掉容器已删的隐藏组：会话随容器消亡，留着只会恢复出连不上的空 tab。
+watch(showSessions, (open) => {
+  if (!open) return
+  const valid = new Set(items.value.map((c) => c.id))
+  const kept = hiddenGroups.value.filter((g) => g.kind === 'host' || valid.has(g.containerId))
+  if (kept.length !== hiddenGroups.value.length) hiddenGroups.value = kept
+})
+// 本窗口已占用的会话 key（可见 + 隐藏的全部叶子）：对话框的远端列表据此排除——
+// 已打开的不重复列，已隐藏的在「本窗口隐藏」区出现，一个会话只在一个区出现。
+const occupiedSet = computed(() => {
+  const s = new Set<string>()
+  for (const g of [...groups.value, ...hiddenGroups.value]) {
+    const kind = g.kind === 'host' ? 'host' : 'container'
+    const cid = g.kind === 'host' ? undefined : g.containerId
+    for (const t of leafIds(g.root)) s.add(termSessionKey(kind, cid, t))
+  }
+  return s
+})
+// 接入：单个 = 单 tab；多个（同容器「全部接入」）= 一个 row 分屏组（≤MAX_GROUP_PANES，
+// 上限由对话框截）。termId 不变 → 后端 new-session -A attach 回原会话，现场全保留。
+function adoptSessions(list: TermSessionView[]) {
+  const first = list[0]
+  if (!first) return
+  const host = first.kind === 'host'
+  const cid = host ? HOST_ID : first.containerId!
+  const c = host ? undefined : items.value.find((x) => x.id === cid)
+  const name = host ? '宿主' : c ? c.displayName || c.name : cid
+  const ids = list.map((s) => s.termId)
+  const root: LayoutNode =
+    ids.length === 1
+      ? { kind: 'leaf', termId: ids[0] }
+      : {
+          kind: 'split',
+          id: newSplitId(),
+          dir: 'row',
+          children: ids.map((t) => ({ kind: 'leaf' as const, termId: t })),
+          grows: equalGrows(ids.length),
+        }
+  createGroup(cid, name, host ? 'host' : undefined, root)
+}
+
+// —— tab 长按（触屏）= 右键 ——
+// 触屏没有 contextmenu 可依赖（iOS 完全没有），500ms 长按后合成一个 contextmenu 事件，
+// reka 的 ContextMenuTrigger 响应它——桌面右键与触屏长按汇成同一条路径。
+// ✕ 按钮上不触发（长按 ✕ 的意图是关不是弹菜单）；移动超阈值（横向滚 tab 栏）取消；
+// 合成后吞掉紧随的 click（长按松手不该切走 tab）。
+let lpTimer: ReturnType<typeof setTimeout> | null = null
+let lpFired = false
+let lpX = 0
+let lpY = 0
+function tabPointerDown(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  if ((e.target as HTMLElement).closest('button')) return
+  tabPointerCancel()
+  lpFired = false
+  lpX = e.clientX
+  lpY = e.clientY
+  const el = e.currentTarget as HTMLElement
+  lpTimer = setTimeout(() => {
+    lpTimer = null
+    lpFired = true
+    el.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: lpX, clientY: lpY }),
+    )
+  }, 500)
+}
+function tabPointerMove(e: PointerEvent) {
+  if (lpTimer && Math.hypot(e.clientX - lpX, e.clientY - lpY) > 10) tabPointerCancel()
+}
+function tabPointerCancel() {
+  if (lpTimer) {
+    clearTimeout(lpTimer)
+    lpTimer = null
+  }
+}
+function onTabClick(idx: number) {
+  if (lpFired) {
+    lpFired = false
+    return
+  }
+  activeIdx.value = idx
 }
 
 // ---- tab 拖拽排序 ----
@@ -1234,6 +1405,7 @@ onUnmounted(() => {
       </div>
 
       <!-- tab 栏：每组一个 tab，色条=容器色，·N=pane 数（>1 才显示）。
+           右键（触屏长按合成同款事件）弹菜单：隐藏（保留会话，会话对话框可恢复）/ 关闭（真杀）。
            手机：最左汉堡开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
            ＋/文件面板按钮固定右侧；「N 个终端组」计数文案藏掉（tab 本身可数）。 -->
       <div class="flex border-b border-border bg-muted/30">
@@ -1246,34 +1418,57 @@ onUnmounted(() => {
           <MoreHorizontal class="size-3.5 max-md:size-5" />
         </button>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin">
-        <div
-          v-for="(g, idx) in groups"
-          :key="g.id"
-          :draggable="!isPhone"
-          @click="activeIdx = idx"
-          @dragstart="onTabDragStart($event, idx)"
-          @dragover="onTabDragOver($event, idx)"
-          @dragend="onTabDragEnd"
-          :class="[
-            'flex shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm',
-            idx === activeIdx ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50',
-            dragTabIdx === idx ? 'opacity-40' : '',
-          ]"
-          :title="groups.length > 1 ? '拖动排序 · 点击切换' : ''"
-        >
-          <span
-            class="h-1.5 w-1.5 rounded-full"
-            :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
-          />
-          <span class="font-mono">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
-          <button
-            @click.stop="closeGroupById(g.id)"
-            class="ml-1 text-muted-foreground hover:text-destructive pointer-coarse:px-2 pointer-coarse:py-1"
-            title="关闭终端组"
-          >✕</button>
-        </div>
+        <ContextMenu v-for="(g, idx) in groups" :key="g.id">
+          <ContextMenuTrigger as-child>
+            <div
+              :draggable="!isPhone"
+              @click="onTabClick(idx)"
+              @dragstart="onTabDragStart($event, idx)"
+              @dragover="onTabDragOver($event, idx)"
+              @dragend="onTabDragEnd"
+              @pointerdown="tabPointerDown"
+              @pointermove="tabPointerMove"
+              @pointerup="tabPointerCancel"
+              @pointercancel="tabPointerCancel"
+              :class="[
+                'flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm',
+                idx === activeIdx ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50',
+                dragTabIdx === idx ? 'opacity-40' : '',
+              ]"
+              :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：隐藏 / 关闭'"
+            >
+              <span
+                class="h-1.5 w-1.5 rounded-full"
+                :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
+              />
+              <span class="font-mono">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
+              <button
+                @click.stop="closeGroupById(g.id)"
+                class="ml-1 text-muted-foreground hover:text-destructive pointer-coarse:px-2 pointer-coarse:py-1"
+                title="关闭终端组"
+              >✕</button>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent class="w-52">
+            <ContextMenuItem @click="hideGroupById(g.id)">
+              <EyeOff /> 隐藏（保留会话）
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" @click="closeGroupById(g.id)">
+              <X /> 关闭（结束会话）
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
         </div>
         <span class="ml-auto self-center px-3 text-xs text-muted-foreground hidden md:block">{{ groups.length }} 个终端组</span>
+        <button
+          class="flex items-center gap-1 self-stretch border-l border-border px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="隐藏的与其他窗口 / 浏览器的会话"
+          @click="showSessions = true"
+        >
+          <Archive class="size-3.5 max-md:size-5" />
+          <span v-if="hiddenGroups.length" class="text-[10px] tabular-nums">{{ hiddenGroups.length }}</span>
+        </button>
         <button
           class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4"
           :class="
@@ -1509,5 +1704,17 @@ onUnmounted(() => {
     @close="batchSel = null"
     @unauthorized="emit('unauthorized')"
     @open-hosts="emit('open-hosts')"
+  />
+
+  <!-- 终端会话对话框：恢复本窗口隐藏的组 / 接入其他窗口浏览器的活跃会话 / 清理孤儿会话 -->
+  <TermSessionsDialog
+    v-if="showSessions"
+    :hidden="hiddenGroups"
+    :occupied="occupiedSet"
+    :items="items"
+    @restore="restoreHidden"
+    @adopt="adoptSessions"
+    @close="showSessions = false"
+    @unauthorized="emit('unauthorized')"
   />
 </template>

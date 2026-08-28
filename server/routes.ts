@@ -15,7 +15,9 @@ import {
   getEngine,
 } from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
-import { wrapEngineError, conflict, HttpError } from './errors.js';
+import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
+import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
+import { listHostSessions, killHostSession } from './hostTerminal.js';
 import { createContainer, deleteManaged } from './lifecycle.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
@@ -134,6 +136,36 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   });
 
   app.get('/api/containers', async () => ({ items: await listManaged(cfg) }));
+
+  // —— 终端会话发现（web 会话对话框：tab 列表只在各自浏览器的 localStorage 里，
+  // 换浏览器 tmux 会话就「找不到」；这里扫出全部活跃会话供找回/接入/清理）——
+  // 扫描 = 全部运行中容器各跑一次只读 tmux list-sessions（并行；单容器失败/超时经
+  // allSettled 降级为「该容器 0 会话」，不拖垮整体）+ 宿主专用 socket。外部容器也扫：
+  // 终端本来就允许对列表里任何容器打开。前端拿 containerId 自己解析显示名。
+  app.get('/api/terminal-sessions', async () => {
+    const items = await listManaged(cfg);
+    const running = items.filter((c) => c.state === 'running');
+    const settled = await Promise.allSettled(running.map((c) => listContainerSessions(cfg, c.id)));
+    const sessions = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
+    sessions.push(...(await listHostSessions()));
+    return { sessions };
+  });
+
+  // 结束一条会话（孤儿清理：别处开的、本窗口没有 tab 的）。token 即宿主权限，不设
+  // 额外归属校验；termId 白名单校验防路径注入。
+  app.delete('/api/terminal-sessions/host/:termId', async (req) => {
+    const { termId } = req.params as { termId: string };
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    await killHostSession(termId);
+    return { ok: true };
+  });
+
+  app.delete('/api/terminal-sessions/container/:id/:termId', async (req) => {
+    const { id, termId } = req.params as { id: string; termId: string };
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    await killContainerSession(cfg, id, termId);
+    return { ok: true };
+  });
 
   app.get('/api/network/ips', async () => ipPoolView(cfg));
 

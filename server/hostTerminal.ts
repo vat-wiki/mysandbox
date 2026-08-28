@@ -26,7 +26,7 @@ import { resolve as resolvePath } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import type { ChildProcess } from 'node:child_process';
-import { TERMID_RE } from './terminal.js';
+import { TERMID_RE, LIST_FMT, type TermSessionView } from './terminal.js';
 import { notFound, badRequest, HttpError } from './errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -180,6 +180,36 @@ async function applyTtySize(pts: string, cols: number, rows: number): Promise<vo
       timeout: 2_000,
     });
   } catch { /* pts 可能刚随 detach 消失 */ }
+}
+
+// —— 会话发现（/api/terminal-sessions，routes.ts 组合容器侧，见 terminal.ts 的说明）——
+// 只扫宿主专用 socket（-L mysandbox-host）：用户自己的 tmux server 完全不碰。
+// 新名 mysandbox-host-<termId> + 旧名 h-<termId>（统一命名迁移前的活会话，连接时才 rename）。
+export async function listHostSessions(): Promise<TermSessionView[]> {
+  const r = await hostTmux(['list-sessions', '-F', LIST_FMT]);
+  if (!r.ok) return []; // server 不在（无任何会话）等：按 0 会话
+  const rows: TermSessionView[] = [];
+  const re = /^(?:mysandbox-host|h)-([A-Za-z0-9_-]{4,64})\|/;
+  for (const line of r.stdout.split('\n')) {
+    const m = re.exec(line);
+    if (!m) continue;
+    const [att, created, ...path] = line.slice(m[0].length).split('|');
+    rows.push({
+      kind: 'host',
+      termId: m[1],
+      attached: Number(att) || 0,
+      created: (Number(created) || 0) * 1000,
+      cwd: path.join('|') || undefined,
+    });
+  }
+  return rows;
+}
+
+// 会话对话框的「结束会话」（宿主侧）。= 精确匹配防 tmux 前缀匹配误伤；activeCount 同步清。
+export async function killHostSession(termId: string): Promise<void> {
+  const session = hostSessionName(termId);
+  activeCount.delete(session);
+  await hostTmux(['kill-session', '-t', `=${session}`]);
 }
 
 export async function registerHostTerminal(app: FastifyInstance, cfg: Config): Promise<void> {

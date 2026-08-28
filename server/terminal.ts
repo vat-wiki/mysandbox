@@ -189,6 +189,78 @@ async function reapOrphanClients(cfg: Config, id: string): Promise<void> {
   });
 }
 
+// —— 会话发现（/api/terminal-sessions，routes.ts 组合宿主侧）——
+// web 的 tab 列表只存浏览器 localStorage，换个浏览器/窗口就「找不到」——但会话本体
+// （容器内 tmux）还活着。这里对单个容器做一次只读扫描（不安装 tmux——没有就 0 会话），
+// 列出 mysandbox 管理的会话：新前缀 mysandbox-<短id>-<termId> + 旧前缀 ms-…（统一命名
+// 迁移前的活会话要等连接时才 rename，这里原样识别，前端接入走正常连接即自动迁移）。
+// cwd 取会话活跃 pane 的当前目录，给会话对话框当「这是哪个终端」的识别信息。
+export interface TermSessionView {
+  kind: 'host' | 'container';
+  containerId?: string; // kind=container 时为容器 id（web 侧用它解析显示名/颜色）
+  termId: string;
+  attached: number; // 正在 attach 的客户端数（>0 = 有窗口正在用）
+  created: number; // epoch ms
+  cwd?: string;
+}
+
+// 行格式 name|attached|created|path。用 | 而非空格分隔：路径可含空格；路径本身也可能
+// 含 |（文件名 a|b 合法），所以拆前 3 段后剩余整体回拼。宿主侧扫描复用同一条格式。
+export const LIST_FMT = '#{session_name}|#{session_attached}|#{session_created}|#{pane_current_path}';
+
+export async function listContainerSessions(cfg: Config, id: string): Promise<TermSessionView[]> {
+  const short = id.slice(0, 8);
+  // 会话名按本容器短 id 前缀匹配（容器名可能来自 adopt，转义防正则元字符）
+  const re = new RegExp(
+    `^(?:mysandbox|ms)-${short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-([A-Za-z0-9_-]{4,64})\\|`,
+  );
+  let out = '';
+  try {
+    const r = await execRun(cfg, id, {
+      Cmd: ['sh', '-c', `tmux list-sessions -F "${LIST_FMT}" 2>/dev/null || true`],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 8_000,
+    });
+    out = r.stdout;
+  } catch {
+    return []; // 容器刚停/exec 失败：按 0 会话
+  }
+  const rows: TermSessionView[] = [];
+  for (const line of out.split('\n')) {
+    const m = re.exec(line);
+    if (!m) continue;
+    const [att, created, ...path] = line.slice(m[0].length).split('|');
+    rows.push({
+      kind: 'container',
+      containerId: id,
+      termId: m[1],
+      attached: Number(att) || 0,
+      created: (Number(created) || 0) * 1000,
+      cwd: path.join('|') || undefined,
+    });
+  }
+  return rows;
+}
+
+// 会话对话框的「结束会话」：真杀（幂等，会话已不在则报错忽略）。= 前缀精确匹配——
+// tmux 的 -t 默认按前缀/通配匹配（见 reapOrphanClients 注释的教训），裸名字有误伤邻会话面。
+// activeCount 同步清，别让本进程的多窗口计数泄漏。
+export async function killContainerSession(cfg: Config, id: string, termId: string): Promise<void> {
+  const session = sessionName(id, termId);
+  activeCount.delete(session);
+  try {
+    await execRun(cfg, id, {
+      Cmd: ['tmux', 'kill-session', '-t', `=${session}`],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 5_000,
+    });
+  } catch {
+    /* 会话/容器已没了就忽略 */
+  }
+}
+
 export async function registerTerminal(app: FastifyInstance, cfg: Config): Promise<void> {
   const log = app.log;
   app.get('/ws/terminal', { websocket: true }, async (socket, req) => {
