@@ -64,12 +64,18 @@ const activeCount = new Map<string, number>();
 
 // 本进程派生的全部 script 子进程：node 退出（含 tsx watch 热重启）时同步 SIGKILL，
 // 否则遗留 script 进程拿着 pts 挂在 tmux server 上（=幽灵 attach 客户端，卡 stale 80x24）。
+// ⚠️ exit 事件只覆盖「正常跑完/显式 process.exit」；SIGINT/SIGTERM 默认直接终死进程、
+// **不触发 exit**（实测踩坑：手动 Ctrl+C 的 dev 实例泄漏了一个 script，之后它在的会话
+// 永远 attached=1，会话对话框满屏假「使用中」）。所以信号也挂：收到即同步杀子进程再退出。
 const children = new Set<ChildProcess>();
-process.on('exit', () => {
+const killChildren = () => {
   for (const c of children) {
     try { c.kill('SIGKILL'); } catch { /* noop */ }
   }
-});
+};
+process.on('exit', killChildren);
+process.on('SIGINT', () => { killChildren(); process.exit(130); });
+process.on('SIGTERM', () => { killChildren(); process.exit(143); });
 
 // 环境探测缓存：'tmux' | 'plain' | 'none'（none=连 script 都没有，无 PTY 可给）。
 let envCache: 'tmux' | 'plain' | 'none' | null = null;
