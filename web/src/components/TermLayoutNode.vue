@@ -93,7 +93,7 @@ function onDividerStart(idx: number, parentSize: number) {
           :disabled="full"
           @click="doSplit('row')"
         >
-          <SquareSplitHorizontal class="size-3.5" />
+          <SquareSplitHorizontal class="size-3.5 pointer-coarse:size-4.5" />
         </button>
         <button
           class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground pointer-coarse:p-1.5"
@@ -101,14 +101,14 @@ function onDividerStart(idx: number, parentSize: number) {
           :disabled="full"
           @click="doSplit('col')"
         >
-          <SquareSplitVertical class="size-3.5" />
+          <SquareSplitVertical class="size-3.5 pointer-coarse:size-4.5" />
         </button>
         <button
           class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-destructive pointer-coarse:p-1.5"
           title="关闭"
           @click="doClose()"
         >
-          <X class="size-3.5" />
+          <X class="size-3.5 pointer-coarse:size-4.5" />
         </button>
       </div>
     </div>

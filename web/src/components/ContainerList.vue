@@ -1239,11 +1239,11 @@ onUnmounted(() => {
       <div class="flex border-b border-border bg-muted/30">
         <button
           v-if="!props.popout"
-          class="flex shrink-0 items-center border-r border-border px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:hidden"
+          class="flex shrink-0 items-center border-r border-border px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:px-4 md:hidden"
           title="打开侧栏（容器列表）"
           @click="drawerOpen = true"
         >
-          <MoreHorizontal class="size-3.5" />
+          <MoreHorizontal class="size-3.5 max-md:size-5" />
         </button>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin">
         <div
@@ -1255,7 +1255,7 @@ onUnmounted(() => {
           @dragover="onTabDragOver($event, idx)"
           @dragend="onTabDragEnd"
           :class="[
-            'flex shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 py-1.5 text-xs',
+            'flex shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm',
             idx === activeIdx ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50',
             dragTabIdx === idx ? 'opacity-40' : '',
           ]"
@@ -1275,7 +1275,7 @@ onUnmounted(() => {
         </div>
         <span class="ml-auto self-center px-3 text-xs text-muted-foreground hidden md:block">{{ groups.length }} 个终端组</span>
         <button
-          class="flex items-center self-stretch border-l border-border px-3 text-xs"
+          class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4"
           :class="
             activeGroup
               ? 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
@@ -1284,15 +1284,15 @@ onUnmounted(() => {
           title="新开一组终端（当前容器/宿主的独立 tab）"
           @click="openNewGroup()"
         >
-          <Plus class="size-3.5" />
+          <Plus class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="flex items-center gap-1 self-stretch border-l border-border px-3 text-xs"
+          class="flex items-center gap-1 self-stretch border-l border-border px-3 text-xs max-md:px-4"
           :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
           :title="showFiles ? '关闭文件面板' : '打开文件面板（跟随终端目录）'"
           @click="showFiles = !showFiles"
         >
-          <FolderOpen class="size-3.5" />
+          <FolderOpen class="size-3.5 max-md:size-5" />
         </button>
       </div>
 
