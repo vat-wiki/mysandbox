@@ -7,3 +7,4 @@ config.yaml
 .playwright-cli
 # 构建缓存（vue-tsc 增量信息，不该进版本库）
 *.tsbuildinfo
+.claude/worktrees/
