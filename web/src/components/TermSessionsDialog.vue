@@ -164,27 +164,31 @@ async function doKill() {
       >{{ err }}</p>
 
       <div class="-mx-1 max-h-[55vh] overflow-y-auto px-1 scroll-thin">
-        <!-- 本窗口隐藏的终端组 -->
-        <div class="px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
-          本窗口隐藏<template v-if="hidden.length">（{{ hidden.length }}）</template>
-        </div>
-        <div v-if="!hidden.length" class="px-2 pb-2 text-xs text-muted-foreground/70">无</div>
-        <div
-          v-for="g in hidden"
-          :key="g.id"
-          class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
-        >
-          <span
-            class="h-2 w-2 shrink-0 rounded-full"
-            :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
-          />
-          <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="hiddenLabel(g)">{{ hiddenLabel(g) }}</span>
-          <span class="shrink-0 text-[10px] text-muted-foreground">{{ leafCount(g.root) }} 窗格</span>
-          <Button variant="outline" size="xs" class="shrink-0" @click="emit('restore', g)">恢复</Button>
-        </div>
+        <!-- 本窗口隐藏的终端组：空则整块不显示（没隐藏过的人不该看到这个概念） -->
+        <template v-if="hidden.length">
+          <div class="px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
+            隐藏（{{ hidden.length }}）
+          </div>
+          <div
+            v-for="g in hidden"
+            :key="g.id"
+            class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
+          >
+            <span
+              class="h-2 w-2 shrink-0 rounded-full"
+              :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
+            />
+            <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="hiddenLabel(g)">{{ hiddenLabel(g) }}</span>
+            <span class="shrink-0 text-[10px] text-muted-foreground">{{ leafCount(g.root) }} 窗格</span>
+            <Button variant="outline" size="xs" class="shrink-0" @click="emit('restore', g)">恢复</Button>
+          </div>
+        </template>
 
         <!-- 全部活跃会话（服务端扫描，含本窗口已打开的） -->
-        <div class="mt-3 flex items-center gap-2 border-t border-border px-2 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
+        <div
+          class="flex items-center gap-2 border-t border-border px-2 pb-1 pt-3 text-xs font-semibold text-muted-foreground"
+          :class="hidden.length ? 'mt-3' : ''"
+        >
           <span>活跃会话</span>
           <Button
             variant="ghost"
