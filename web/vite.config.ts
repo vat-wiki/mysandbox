@@ -30,6 +30,8 @@ export default defineConfig({
     },
   },
   // es2022：@novnc/novnc 1.7 的 rfb.js 用了 top-level await（浏览器动态导入指纹），
-  // 默认 target（es2020/chrome87）不认。我们只跑自托管现代浏览器，直接放宽。
+  // 默认 target（es2020/chrome87）不认。dev 的 optimizeDeps esbuild 同理（probe rfb.js
+  // 时默认 esnext 之外的 target 也会炸），一并放宽。我们只跑自托管现代浏览器。
+  optimizeDeps: { esbuildOptions: { target: 'es2022' } },
   build: { outDir: 'dist', emptyOutDir: true, target: 'es2022' },
 })

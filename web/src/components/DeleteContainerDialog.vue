@@ -72,8 +72,8 @@ function submit() {
         </p>
 
         <label v-else class="flex cursor-pointer items-start gap-2.5 text-sm">
-          <!-- reka-ui Checkbox 的 v-model 是 checked，不是默认 modelValue -->
-          <Checkbox v-model:checked="deleteData" class="mt-0.5" />
+          <!-- reka-ui 2.x Checkbox 的 v-model 是 modelValue（checked 是 1.x/radix-vue 的 API） -->
+          <Checkbox v-model="deleteData" class="mt-0.5" />
           <span>
             同时删除 home 数据
             <span class="block text-xs text-muted-foreground">勾选后，挂载的 home 目录数据将一并清除。</span>

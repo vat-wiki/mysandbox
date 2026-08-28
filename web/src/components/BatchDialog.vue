@@ -12,6 +12,8 @@ import {
   Unauthorized,
   type BatchResult,
   type GatewayWire,
+  type AiGatewayState,
+  type AiGatewayInput,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -74,19 +76,23 @@ const execEditorOptions = {
 const hostsContent = ref('')
 const hostsLoaded = ref(false)
 
-// ai tab：两路端点（openai / anthropic）+ key + 工具勾选（opencode/pi 行内联
-// wire 协议多选，ToggleGroup multiple）。打开时预填最近一次下发存档。
-// 基线原则：**需求由勾选推导，UI 反映需求**——哪个工具要哪条 URL 一眼可见，
-// 不逼用户提交才知道欠什么（报错点名需求方）。
+// ai tab：场景驱动的表单。用户心智模型是「我的网关是什么」而不是「每个 CLI 吃
+// 什么协议」——所以第一层是网关类型单选（anthropic / openai / dual），它决定：
+//   - 哪些端点框出现（非法状态不可达，而不是提交后才校验）
+//   - Codex 可否勾选（它只会说 openai responses，anthropic-only 场景置灰 + 注明原因）
+//   - opencode/pi 的协议多选是否露出（单协议网关没有「选协议」这回事，chips 是噪音）
+// 第二层才是工具勾选与 key/模型。需求推导（谁消费哪条端点）保留上次修复的点名逻辑。
 const aiAnthropicUrl = ref('')
 const aiOpenaiUrl = ref('')
 const aiKey = ref('')
 const aiModels = ref('')
 const aiSetDefault = ref(false)
+// 网关场景：anthropic-only / openai-only / dual。null = 尚未选（首次进入无存档时）。
+const aiGwKind = ref<'anthropic' | 'openai' | 'dual' | null>(null)
 const aiTools = ref({ claude: true, codex: true, opencode: true, pi: true })
-// 工具级 wire 多选；claude 固定 anthropic、codex 固定 responses 都没有选择器。
-// 值语义：undefined = 未选过（显示缺省 ['openai-chat']）；[] = 显式清空全部变体
-// （提交后 opencode/pi 不写任何 provider——配 Claude 网关时常见）。
+// 工具级 wire 多选。单协议场景不露选择器，wire 值由场景直接定（anthropic 场景全
+// ['anthropic-messages']，openai 场景全 ['openai-chat']）；dual 才让用户挑。
+// 值语义：undefined = 未选过（显示缺省）；[] = 显式清空全部变体（不写 provider）。
 const aiWire = ref<{ opencode?: string[]; pi?: string[] }>({})
 const aiLoaded = ref(false)
 // 存档预填的脏标记：用户动过工具勾选后，迟到的存档回包不再覆盖勾选
@@ -98,19 +104,31 @@ watch(
     aiToolsTouched.value = true
   },
 )
+// 场景切换的连带：anthropic-only 下 Codex 不可用（只会 openai responses）——
+// 场景切走时自动取消其勾选，别留一个置灰又打勾的矛盾态。
+watch(aiGwKind, (k) => {
+  if (k === 'anthropic') aiTools.value.codex = false
+})
 
-// wire 显示值：undefined 时 UI 呈现缺省 chat 选中（与后端 wiresOf 缺省一致）
-const wiresOfTool = (tool: 'opencode' | 'pi'): string[] => aiWire.value[tool] ?? ['openai-chat']
+// wire 有效值（提交与推导共用，与后端 wiresOf 缺省一致）：
+// dual 场景取用户多选（undefined 缺省 chat）；单协议场景由场景定死。
+const wiresOfTool = (tool: 'opencode' | 'pi'): string[] => {
+  if (aiGwKind.value === 'anthropic') return ['anthropic-messages']
+  if (aiGwKind.value === 'openai') return ['openai-chat']
+  return aiWire.value[tool] ?? ['openai-chat']
+}
+// Codex 可用性：只会 openai responses，没有 openai 端点的场景置灰并注明
+const codexDisabled = computed(() => aiGwKind.value === 'anthropic')
 
 // 需求推导（与后端校验同规则，routes.ts / aiconfig.ts wiresOf）：
-// 某条端点被哪些工具消费 → 用于 URL 框动态提示与错误点名。返回人话标签数组。
+// 某条端点被哪些工具消费 → URL 框提示与错误点名。
 const openaiConsumers = computed(() => {
+  if (aiGwKind.value === 'anthropic') return []
   const out: string[] = []
   if (aiTools.value.codex) out.push('Codex')
   for (const tool of ['opencode', 'pi'] as const) {
     if (!aiTools.value[tool]) continue
-    const ws = wiresOfTool(tool)
-    const labels = ws
+    const labels = wiresOfTool(tool)
       .filter((w) => w !== 'anthropic-messages')
       .map((w) => (w === 'openai-responses' ? 'responses' : 'chat'))
     if (labels.length) out.push(`${tool === 'opencode' ? 'OpenCode' : 'Pi'}（${labels.join('、')}）`)
@@ -118,6 +136,7 @@ const openaiConsumers = computed(() => {
   return out
 })
 const anthropicConsumers = computed(() => {
+  if (aiGwKind.value === 'openai') return []
   const out: string[] = []
   if (aiTools.value.claude) out.push('Claude Code')
   for (const tool of ['opencode', 'pi'] as const) {
@@ -128,7 +147,7 @@ const anthropicConsumers = computed(() => {
   return out
 })
 const isUrl = (s: string) => /^https?:\/\//.test(s.trim())
-// 欠填的端点名（未填但有人要）与填错的端点名（填了但不像 URL）——错误信息点名
+// 欠填的端点（未填但有人要）。场景驱动后这几乎是「填了一半」的唯一残缺态
 const missingEndpoints = computed(() => {
   const miss: { side: 'openai' | 'anthropic'; who: string[] }[] = []
   if (openaiConsumers.value.length && !isUrl(aiOpenaiUrl.value))
@@ -145,6 +164,39 @@ const modelsConsumers = computed(() => {
   }
   return out
 })
+// 存档 → 场景推导：按存档里两侧端点与 wire 的实际形状反推（存档可能是旧版写的）
+function kindFromConfig(cfg: AiGatewayState): 'anthropic' | 'openai' | 'dual' {
+  const hasOpenai = !!cfg.endpoints.openai?.baseUrl
+  const hasAnthropic = !!cfg.endpoints.anthropic?.baseUrl
+  if (hasOpenai && hasAnthropic) return 'dual'
+  if (hasOpenai) return 'openai'
+  // 存档只记了 anthropic 侧但 wire 里有 openai 系（旧版可勾不可填的非法态）→ 仍归 anthropic，
+  // 提交校验会拦
+  return 'anthropic'
+}
+// 一键重推：恢复存档全量（URL/key/勾选/wire/模型/设默认），场景也从存档推导
+const lastPush = ref<AiGatewayState | null>(null)
+function repushLast() {
+  const cfg = lastPush.value
+  if (!cfg) return
+  aiGwKind.value = kindFromConfig(cfg)
+  aiAnthropicUrl.value = cfg.endpoints.anthropic?.baseUrl ?? ''
+  aiOpenaiUrl.value = cfg.endpoints.openai?.baseUrl ?? ''
+  aiKey.value = cfg.apiKey
+  aiWire.value = {
+    opencode: cfg.wire?.opencode ? [...cfg.wire.opencode] : undefined,
+    pi: cfg.wire?.pi ? [...cfg.wire.pi] : undefined,
+  }
+  aiModels.value = (cfg.models ?? []).join(', ')
+  aiSetDefault.value = !!cfg.setDefault
+  aiTools.value = {
+    claude: cfg.tools.claude,
+    codex: cfg.tools.codex,
+    opencode: cfg.tools.opencode,
+    pi: cfg.tools.pi,
+  }
+  resetResult()
+}
 
 function resetResult() {
   result.value = null
@@ -193,6 +245,10 @@ function submit() {
         : batchSshAppendKey(props.ids, sshKey.value.trim()),
     )
   } else if (tab.value === 'ai') {
+    if (!aiGwKind.value) {
+      err.value = '先选网关类型（Anthropic 中转 / OpenAI 中转 / 双协议）'
+      return
+    }
     const t = aiTools.value
     if (!(t.claude || t.codex || t.opencode || t.pi)) {
       err.value = '至少勾选一个工具'
@@ -202,7 +258,7 @@ function submit() {
       err.value = 'API Key 必填'
       return
     }
-    // 端点需求按工具+wire 集合推导（与后端校验同规则），错误点名需求方
+    // 端点需求按场景+工具+wire 推导（与后端校验同规则），错误点名需求方
     for (const m of missingEndpoints.value) {
       err.value =
         m.side === 'openai'
@@ -214,18 +270,33 @@ function submit() {
       err.value = `${modelsConsumers.value.map((s) => (s === 'opencode' ? 'OpenCode' : 'Pi')).join('、')} 需要至少一个模型 ID（逗号分隔）`
       return
     }
+    // 单协议场景 wire 由场景定死；dual 才透传用户多选（undefined → 后端缺省 chat）
+    const wireOut: AiGatewayInput['wire'] =
+      aiGwKind.value === 'dual'
+        ? {
+            opencode: aiWire.value.opencode as GatewayWire[] | undefined,
+            pi: aiWire.value.pi as GatewayWire[] | undefined,
+          }
+        : {
+            opencode: ['anthropic-messages'] as GatewayWire[],
+            pi: ['anthropic-messages'] as GatewayWire[],
+            ...(aiGwKind.value === 'openai'
+              ? { opencode: ['openai-chat'] as GatewayWire[], pi: ['openai-chat'] as GatewayWire[] }
+              : {}),
+          }
     run(() =>
       batchAiConfig(props.ids, {
         endpoints: {
-          ...(openaiConsumers.value.length ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } } : {}),
-          ...(anthropicConsumers.value.length ? { anthropic: { baseUrl: aiAnthropicUrl.value.trim() } } : {}),
+          ...(aiGwKind.value !== 'anthropic' && openaiConsumers.value.length
+            ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } }
+            : {}),
+          ...(aiGwKind.value !== 'openai' && anthropicConsumers.value.length
+            ? { anthropic: { baseUrl: aiAnthropicUrl.value.trim() } }
+            : {}),
         },
         apiKey: aiKey.value.trim(),
         tools: { ...t },
-        wire: {
-          opencode: aiWire.value.opencode as GatewayWire[] | undefined,
-          pi: aiWire.value.pi as GatewayWire[] | undefined,
-        },
+        wire: wireOut,
         models: aiModels.value.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean),
         setDefault: aiSetDefault.value,
       }),
@@ -254,14 +325,16 @@ function onTab(v: string | number) {
         /* 预读失败不阻塞，textarea 留空可手填 */
       })
   }
-  // ai tab 首次进入时预填最近一次下发存档。只补空字段；工具勾选在用户没动过时
-  // 恢复存档（动过则跳过——否则「用户先勾后填」时迟到的响应会把勾选打回去，
-  // 实测踩过：勾了 opencode/pi，回包落地的瞬间被存档里的 false 覆盖，提交时仍是未勾）。
+  // ai tab 首次进入时预填最近一次下发存档：场景从存档端点形状推导，URL/key/wire/
+  // 模型只补空字段；工具勾选在用户没动过时恢复（动过则跳过——否则「用户先勾后填」
+  // 时迟到的响应会把勾选打回去，实测踩过）。
   if (tab.value === 'ai' && !aiLoaded.value) {
     aiLoaded.value = true
     getAiGateway()
       .then(({ config }) => {
         if (!config) return
+        lastPush.value = config
+        if (!aiGwKind.value) aiGwKind.value = kindFromConfig(config)
         if (!aiAnthropicUrl.value.trim() && config.endpoints.anthropic)
           aiAnthropicUrl.value = config.endpoints.anthropic.baseUrl
         if (!aiOpenaiUrl.value.trim() && config.endpoints.openai)
@@ -397,31 +470,61 @@ const tabs: { key: string; label: string }[] = [
             />
           </TabsContent>
 
-          <!-- ai：网关端点直写各 CLI 配置文件（rootfs 直写，容器无需在跑）。
-               两个 URL 并排（用到哪条校验哪条）；协议选择内联在各工具行的三态组里，
-               claude 固定 anthropic、codex 只有 openai 系两态。URL 框下动态标
-               「谁在消费这条端点」——欠填标红，没人用标可留空，不用提交试错。 -->
-          <TabsContent value="ai" class="space-y-3">
-            <div class="grid grid-cols-2 gap-3">
-              <div class="space-y-1.5">
-                <Label for="b-ai-openai">OpenAI 兼容 Base URL</Label>
-                <Input
-                  id="b-ai-openai"
-                  v-model="aiOpenaiUrl"
-                  :class="openaiConsumers.length && !aiOpenaiUrl.trim() ? 'border-destructive' : ''"
-                  placeholder="http://10.12.135.150:7800/openai/v1"
-                />
-                <p
-                  class="text-[11px] leading-snug"
-                  :class="openaiConsumers.length && !aiOpenaiUrl.trim() ? 'text-destructive' : 'text-muted-foreground'"
+          <!-- ai：场景驱动。第一层网关类型单选决定端点框显隐、Codex 可用性、
+               协议多选是否露出（非法组合不可达，而非提交后校验）；第二层工具勾选
+               + key/模型。网关端点直写各 CLI 配置文件（rootfs 直写，容器无需在跑）。 -->
+          <TabsContent value="ai" class="space-y-4">
+            <!-- 上次下发：换 key 重推是最高频重复流，一键直达 -->
+            <div
+              v-if="lastPush"
+              class="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2"
+            >
+              <span class="text-xs text-muted-foreground">
+                上次下发 {{ new Date(lastPush.updatedAt).toLocaleString() }}
+              </span>
+              <Button variant="outline" size="xs" @click="repushLast">一键重推上次配置</Button>
+            </div>
+
+            <div class="space-y-1.5">
+              <Label>网关类型</Label>
+              <RadioGroup
+                :model-value="aiGwKind ?? ''"
+                class="grid grid-cols-3 gap-2"
+                @update:model-value="(v) => (aiGwKind = v as 'anthropic' | 'openai' | 'dual')"
+              >
+                <label
+                  class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm has-[[data-state=checked]]:border-primary"
                 >
-                  <template v-if="openaiConsumers.length"
-                    >必填 — {{ openaiConsumers.join('、') }} 走这条端点</template
-                  >
-                  <template v-else>没有工具用到，可留空</template>
-                </p>
-              </div>
-              <div class="space-y-1.5">
+                  <RadioGroupItem value="anthropic" />
+                  <span>
+                    Anthropic 中转
+                    <span class="block text-[11px] text-muted-foreground">claude api 中转</span>
+                  </span>
+                </label>
+                <label
+                  class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm has-[[data-state=checked]]:border-primary"
+                >
+                  <RadioGroupItem value="openai" />
+                  <span>
+                    OpenAI 中转
+                    <span class="block text-[11px] text-muted-foreground">gpt 系中转</span>
+                  </span>
+                </label>
+                <label
+                  class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm has-[[data-state=checked]]:border-primary"
+                >
+                  <RadioGroupItem value="dual" />
+                  <span>
+                    双协议
+                    <span class="block text-[11px] text-muted-foreground">myapikey 等</span>
+                  </span>
+                </label>
+              </RadioGroup>
+            </div>
+
+            <!-- 端点：只出现本场景需要的框；框下点名消费者 -->
+            <div v-if="aiGwKind" class="grid gap-3" :class="aiGwKind === 'dual' ? 'grid-cols-2' : ''">
+              <div v-if="aiGwKind !== 'openai'" class="space-y-1.5">
                 <Label for="b-ai-anthropic">Anthropic 兼容 Base URL</Label>
                 <Input
                   id="b-ai-anthropic"
@@ -439,109 +542,125 @@ const tabs: { key: string; label: string }[] = [
                   <template v-else>没有工具用到，可留空</template>
                 </p>
               </div>
+              <div v-if="aiGwKind !== 'anthropic'" class="space-y-1.5">
+                <Label for="b-ai-openai">OpenAI 兼容 Base URL</Label>
+                <Input
+                  id="b-ai-openai"
+                  v-model="aiOpenaiUrl"
+                  :class="openaiConsumers.length && !aiOpenaiUrl.trim() ? 'border-destructive' : ''"
+                  placeholder="http://10.12.135.150:7800/openai/v1"
+                />
+                <p
+                  class="text-[11px] leading-snug"
+                  :class="openaiConsumers.length && !aiOpenaiUrl.trim() ? 'text-destructive' : 'text-muted-foreground'"
+                >
+                  <template v-if="openaiConsumers.length"
+                    >必填 — {{ openaiConsumers.join('、') }} 走这条端点</template
+                  >
+                  <template v-else>没有工具用到，可留空</template>
+                </p>
+              </div>
             </div>
-            <div class="space-y-1.5">
+
+            <div v-if="aiGwKind" class="space-y-1.5">
               <Label for="b-ai-key">API Key</Label>
               <Input id="b-ai-key" v-model="aiKey" type="password" placeholder="sk-…" />
             </div>
-            <!-- 工具行：勾选 + 行内协议。claude/codex 协议由工具能力决定没有选择器；
-                 opencode/pi 是多选（ToggleGroup multiple），每个选中协议注册一个
-                 provider 变体，工具内按模型切。 -->
-            <div class="space-y-2 rounded-md border p-3">
+
+            <!-- 工具勾选：Codex 在 anthropic-only 场景置灰（它只会 openai responses）。
+                 协议多选只在 dual 场景露出——单协议网关没有「选协议」这回事。 -->
+            <div v-if="aiGwKind" class="space-y-2 rounded-md border p-3">
               <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <label class="flex w-32 items-center gap-1.5 text-sm">
+                <label class="flex w-32 items-center gap-1.5 text-sm" :class="aiGwKind === 'openai' ? 'opacity-50' : ''">
                   <Checkbox
                     id="ai-claude"
-                    :checked="aiTools.claude"
-                    @update:checked="(v: boolean) => (aiTools.claude = !!v)"
+                    :model-value="aiTools.claude"
+                    :disabled="aiGwKind === 'openai'"
+                    @update:model-value="(v) => (aiTools.claude = !!v)"
                   />
                   Claude Code
                 </label>
                 <span class="text-[11px] text-muted-foreground">anthropic 协议（固定）</span>
               </div>
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2" :class="codexDisabled ? 'opacity-50' : ''">
                 <label class="flex w-32 items-center gap-1.5 text-sm">
                   <Checkbox
                     id="ai-codex"
-                    :checked="aiTools.codex"
-                    @update:checked="(v: boolean) => (aiTools.codex = !!v)"
+                    :model-value="aiTools.codex"
+                    :disabled="codexDisabled"
+                    @update:model-value="(v) => (aiTools.codex = !!v)"
                   />
                   Codex
                 </label>
-                <span class="text-[11px] text-muted-foreground">responses 协议（官方已停 chat）</span>
+                <span class="text-[11px] text-muted-foreground">
+                  responses 协议（官方已停 chat）{{ codexDisabled ? '· 只会说 openai，本场景不可用' : '' }}
+                </span>
               </div>
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div v-for="tool in ['opencode', 'pi'] as const" :key="tool" class="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <label class="flex w-32 items-center gap-1.5 text-sm">
                   <Checkbox
-                    id="ai-opencode"
-                    :checked="aiTools.opencode"
-                    @update:checked="(v: boolean) => (aiTools.opencode = !!v)"
+                    :id="`ai-${tool}`"
+                    :model-value="aiTools[tool]"
+                    @update:model-value="(v) => (aiTools[tool] = !!v)"
                   />
-                  OpenCode
+                  {{ tool === 'opencode' ? 'OpenCode' : 'Pi' }}
                 </label>
+                <!-- dual 才有协议选择；单协议场景展示定死的协议 -->
                 <ToggleGroup
+                  v-if="aiGwKind === 'dual'"
                   type="multiple"
                   size="sm"
                   variant="outline"
-                  :model-value="wiresOfTool('opencode')"
+                  :model-value="wiresOfTool(tool)"
                   class="text-xs"
-                  @update:model-value="(v) => (aiWire.opencode = v as string[])"
+                  @update:model-value="(v) => (aiWire[tool] = v as string[])"
                 >
                   <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
                   <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
                   <ToggleGroupItem value="anthropic-messages">anthropic</ToggleGroupItem>
                 </ToggleGroup>
+                <span v-else class="text-[11px] text-muted-foreground">
+                  {{ aiGwKind === 'anthropic' ? 'anthropic 协议' : 'openai chat 协议' }}
+                </span>
               </div>
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <label class="flex w-32 items-center gap-1.5 text-sm">
-                  <Checkbox
-                    id="ai-pi"
-                    :checked="aiTools.pi"
-                    @update:checked="(v: boolean) => (aiTools.pi = !!v)"
-                  />
-                  Pi
-                </label>
-                <ToggleGroup
-                  type="multiple"
-                  size="sm"
-                  variant="outline"
-                  :model-value="wiresOfTool('pi')"
-                  class="text-xs"
-                  @update:model-value="(v) => (aiWire.pi = v as string[])"
-                >
-                  <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
-                  <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
-                  <ToggleGroupItem value="anthropic-messages">anthropic</ToggleGroupItem>
-                </ToggleGroup>
-              </div>
-              <p class="text-[11px] leading-snug text-muted-foreground">
+              <p v-if="aiGwKind === 'dual'" class="text-[11px] leading-snug text-muted-foreground">
                 多选协议时每个协议注册一个独立接入点（myapikey-chat / -responses / -anthropic），工具内按模型切换。全不选 =
-                不给这个工具写接入点（只推别的工具时用）。
+                不给这个工具写接入点。
               </p>
               <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Checkbox
                   id="ai-default"
-                  :checked="aiSetDefault"
-                  @update:checked="(v: boolean) => (aiSetDefault = !!v)"
+                  :model-value="aiSetDefault"
+                  @update:model-value="(v) => (aiSetDefault = !!v)"
                 />
                 设为默认 provider（codex 设 model_provider；opencode/pi 用首个协议变体 + 首个模型）
               </label>
             </div>
-            <div class="space-y-1.5">
+
+            <div v-if="aiGwKind && modelsConsumers.length" class="space-y-1.5">
               <Label for="b-ai-models"
-                >模型 ID（逗号分隔{{ modelsConsumers.length ? `，${modelsConsumers.map((s) => (s === 'opencode' ? 'OpenCode' : 'Pi')).join('、')} 必填` : '，当前无人需要' }}）</Label
+                >模型 ID（逗号分隔，{{ modelsConsumers.map((s) => (s === 'opencode' ? 'OpenCode' : 'Pi')).join('、') }}
+                必填）</Label
               >
               <Input id="b-ai-models" v-model="aiModels" placeholder="claude-sonnet-4-5, gpt-5" />
             </div>
-            <div
-              class="rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
-            >
-              直接写入这 {{ ids.length }} 个容器的 home 配置文件——容器不必在运行，CLI
-              下次启动即生效：claude 走 settings.json env 注入；codex 加 provider（key 经
-              ~/.zshrc 环境变量，固定走 responses）；opencode / pi 在配置里内联 key，按所选
-              协议注册接入点。已有配置只合并本方案的键，不会整体覆盖；重复执行幂等。
-              API Key 会明文落盘在各容器内。
-            </div>
+
+            <!-- 说明收纳为展开条：安全提示（key 明文落盘）保留常驻 -->
+            <details class="group rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+              <summary class="cursor-pointer select-none list-none marker:hidden">
+                <span class="inline-flex items-center gap-1">
+                  <span class="transition-transform group-open:rotate-90">▸</span>
+                  说明：写哪些文件 · 幂等 · key 明文落盘
+                </span>
+              </summary>
+              <p class="mt-2">
+                直接写入这 {{ ids.length }} 个容器的 home 配置文件——容器不必在运行，CLI
+                下次启动即生效：claude 走 settings.json env 注入；codex 加 provider（key 经
+                ~/.zshrc 环境变量，固定走 responses）；opencode / pi 在配置里内联 key，按所选
+                协议注册接入点。已有配置只合并本方案的键，不会整体覆盖；重复执行幂等。
+              </p>
+              <p class="mt-1 text-amber-500/90">API Key 会明文落盘在各容器内。</p>
+            </details>
           </TabsContent>
 
           <!-- hosts：对已选容器一次性覆写 /etc/hosts（区别于全局 hosts 面板） -->
