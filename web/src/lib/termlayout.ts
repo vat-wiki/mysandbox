@@ -152,6 +152,9 @@ export interface TermPaneOps {
   close(group: TermGroup, termId: string): void
   setRef(termId: string, el: unknown): void
   onOscOpen(group: TermGroup, termId: string, path: string): void
+  // Ctrl+点击路径链接（Terminal 的 link provider）：path 为原始 token（可相对/带 ~），
+  // line/col 来自栈跟踪式 `:行:列` 后缀。
+  onLinkOpen(group: TermGroup, termId: string, path: string, line?: number, col?: number): void
   // idx = 分隔条之后的 child 序号（调 children[idx-1] 与 [idx]）；minPx 为该轴最小像素。
   dividerStart(node: SplitNode, idx: number, parentSize: number, minPx: number): void
   dividerDrag(delta: number): void

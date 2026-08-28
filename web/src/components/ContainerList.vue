@@ -11,12 +11,16 @@ import {
   listFiles,
   getListenPorts,
   getHostCwd,
+  resolveTermPath,
   listServices,
+  listServiceJobs,
   HOST_ID,
   Unauthorized,
   type ContainerView,
+  type ResolveView,
   type ServiceView,
 } from '@/lib/api'
+import { trackServiceJobs } from '@/lib/serviceJobs'
 import { containerColor } from '@/lib/utils'
 import { baseLabel } from '@/lib/caps'
 import { Button } from '@/components/ui/button'
@@ -239,6 +243,7 @@ provide(TERM_OPS, {
     else termRefs.delete(termId)
   },
   onOscOpen,
+  onLinkOpen,
   dividerStart,
   dividerDrag,
   ordinalOf,
@@ -291,11 +296,14 @@ watch(
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // 文件编辑器目标（v1 单编辑器：已有目标时轻提示换文件需先关）。
 // diff 存在 = git 变更对比模式（FileEditorDialog 走 getGitDiff 只读快照分支）。
+// line/col 来自终端 Ctrl+点击的 `:行:列` 后缀（Monaco 定位用）。
 const editorTarget = ref<{
   containerId: string
   containerName: string
   path: string
   diff?: { headPath?: string }
+  line?: number
+  col?: number
 } | null>(null)
 // 桌面查看目标：null 关；打开时存容器 id/显示名。
 const desktopTarget = ref<{ containerId: string; containerName: string } | null>(null)
@@ -463,18 +471,26 @@ async function consumeOpenReq(req: OpenReq) {
 }
 
 // 深链与容器内 mysandbox 命令共用的核心：定位容器 -> 激活/创建终端组 -> 文件面板定位
-// ->（文件则）开编辑器。
-async function locateContainerPath(c: ContainerView, path: string, kind: 'file' | 'dir') {
+// ->（文件则）开编辑器。首参放宽为最小结构形状：宿主组没有 ContainerView，只有
+// {id: HOST_ID, name: '宿主'}；line/col 透传编辑器定位（同文件换行号靠 dialog 内 watch）。
+async function locateContainerPath(
+  c: { id: string; name: string; displayName?: string },
+  path: string,
+  kind: 'file' | 'dir',
+  line?: number,
+  col?: number,
+) {
   // 有 group 聚焦、无则开一个（编辑器/面板都以终端组为锚）。
   const gi = groups.value.findIndex((g) => g.containerId === c.id)
   if (gi >= 0) activeIdx.value = gi
+  else if (c.id === HOST_ID) openHostTerm()
   else openTerm(c)
   showFiles.value = true
   await nextTick()
   const dir = kind === 'dir' ? path : dirname(path)
   filePanelRef.value?.locate(c.id, dir)
   if (kind === 'file') {
-    editorTarget.value = { containerId: c.id, containerName: c.displayName || c.name, path }
+    editorTarget.value = { containerId: c.id, containerName: c.displayName || c.name, path, line, col }
   }
 }
 
@@ -496,6 +512,29 @@ async function onOscOpen(group: TermGroup, termId: string, path: string) {
     // 400 not_a_directory / 404 不存在 / 其它：按文件处理
   }
   await locateContainerPath(c, path, kind)
+}
+
+// 终端 Ctrl+点击路径链接：后端权威解析（tmux pane cwd + ~ 展开 + readlink 归一 + 类型
+// 探测，一次往返），宿主组与容器组同路径。missing 按 file（编辑器侧 404 → 新建态）。
+async function onLinkOpen(group: TermGroup, termId: string, raw: string, line?: number, col?: number) {
+  const gi = groups.value.findIndex((g) => g.id === group.id)
+  if (gi >= 0) activeIdx.value = gi
+  filePaneIdx.value = Math.min(ordinalOf(group.root, termId), Math.max(leafCount(group.root) - 1, 0))
+  let r: ResolveView
+  try {
+    r = await resolveTermPath(group.containerId, termId, raw) // host 组 containerId 即 HOST_ID，哨兵自动分流
+  } catch {
+    return // 会话已收 / 容器已停等：静默（终端还在屏上，用户看得见状态）
+  }
+  const kind: 'file' | 'dir' = r.kind === 'dir' ? 'dir' : 'file'
+  if (group.kind === 'host') {
+    // 宿主组必在（点击来自组内活着的 Terminal），无 running 概念
+    await locateContainerPath({ id: HOST_ID, name: '宿主' }, r.path, kind, line, col)
+    return
+  }
+  const c = items.value.find((x) => x.id === group.containerId)
+  if (!c || c.state !== 'running') return // 终端还开着容器必在，理论上到不了这
+  await locateContainerPath(c, r.path, kind, line, col)
 }
 watch(
   [() => props.openReq, () => itemsReady.value],
@@ -541,7 +580,8 @@ function openNewGroup() {
 }
 // 点容器「终端」：该容器已有 group 则聚焦，否则建组（避免重复打开堆积）。
 // 想要同容器多个独立 shell -> 在 pane 头部点左右 / 上下分屏。
-function openTerm(c: ContainerView) {
+// 首参为最小结构形状（locateContainerPath 宿主分支复用，见其注释）。
+function openTerm(c: { id: string; name: string; displayName?: string }) {
   const i = groups.value.findIndex((g) => g.containerId === c.id)
   if (i >= 0) {
     activeIdx.value = i
@@ -851,16 +891,33 @@ function stateLabel(state: string): string {
 // —— 底部服务摘要条 ——
 // docker 配套服务在侧栏只占一行：聚合状态点 + 名称串，点击开管理面板。
 // 服务是配套设施，刻意不以行的形态进侧栏——避免和容器列表形成第二个并列清单，
-// 冲淡「容器是唯一主体」的层级。轮询 15s（服务启停远比容器低频）。
+// 冲淡「容器是唯一主体」的层级。轮询自适应：闲时 15s（服务启停低频），有创建任务
+// 进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，payload 极小）。
+// 完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，天然只发一次）。
 const svcItems = ref<ServiceView[]>([])
 // null=未知（首拉前），false=docker 不可达
 const svcReachable = ref<boolean | null>(null)
+const svcJobsRunning = ref(0)
 let svcTimer: ReturnType<typeof setInterval> | null = null
+const SVC_IDLE_MS = 15000
+const SVC_ACTIVE_MS = 3000
+let svcIntervalMs = SVC_IDLE_MS
+function armSvcTimer() {
+  if (svcTimer) clearInterval(svcTimer)
+  svcTimer = setInterval(() => void refreshServices(), svcIntervalMs)
+}
 async function refreshServices() {
   try {
-    const v = await listServices()
+    const [v, jobsR] = await Promise.all([listServices(), listServiceJobs(0)])
     svcItems.value = v.items
     svcReachable.value = v.status?.reachable ?? null
+    svcJobsRunning.value = trackServiceJobs(jobsR.jobs)
+    // 有任务在跑 → 收紧轮询；全落定 → 回到闲时节奏
+    const want = svcJobsRunning.value > 0 ? SVC_ACTIVE_MS : SVC_IDLE_MS
+    if (want !== svcIntervalMs) {
+      svcIntervalMs = want
+      armSvcTimer()
+    }
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -870,12 +927,14 @@ async function refreshServices() {
   }
 }
 const svcDotClass = computed(() => {
+  if (svcJobsRunning.value > 0) return 'animate-pulse bg-blue-500'
   if (svcReachable.value === false) return 'bg-destructive'
   if (!svcItems.value.length) return 'bg-zinc-400'
   return svcItems.value.every((s) => s.running) ? 'bg-emerald-500' : 'bg-amber-500'
 })
 const svcSummary = computed(() => {
   if (svcReachable.value === false) return 'docker 不可达'
+  if (svcJobsRunning.value > 0) return `${svcJobsRunning.value} 个服务任务进行中…`
   const names = svcItems.value.map((s) => s.name)
   if (!names.length) return '暂无配套服务'
   const shown = names.slice(0, 3).join(' · ')
@@ -887,7 +946,7 @@ onMounted(() => {
   timer = setInterval(() => refresh(true), 5000)
   if (!props.popout) {
     void refreshServices()
-    svcTimer = setInterval(() => void refreshServices(), 15000)
+    armSvcTimer()
   }
 })
 onUnmounted(() => {
@@ -1333,6 +1392,8 @@ onUnmounted(() => {
         :container-name="editorTarget.containerName"
         :path="editorTarget.path"
         :diff="editorTarget.diff"
+        :line="editorTarget.line"
+        :col="editorTarget.col"
         @close="editorTarget = null"
         @open-normal="onOpenNormal"
         @saved="onEditorSaved"

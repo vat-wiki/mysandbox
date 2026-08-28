@@ -60,6 +60,10 @@ function onOsc(path: string) {
   if (props.node.kind !== 'leaf') return
   ops.onOscOpen(props.group, props.node.termId, path)
 }
+function onLinkOpen(path: string, line?: number, col?: number) {
+  if (props.node.kind !== 'leaf') return
+  ops.onLinkOpen(props.group, props.node.termId, path, line, col)
+}
 // 分叉动作：分隔条 dragstart 换算该轴最小像素后上抛（idx = 分隔条之后的 child 序号）。
 function onDividerStart(idx: number, parentSize: number) {
   const s = split.value
@@ -116,6 +120,7 @@ function onDividerStart(idx: number, parentSize: number) {
       :host="group.kind === 'host'"
       :active="active"
       @osc-open="onOsc"
+      @link-open="onLinkOpen"
     />
   </div>
 

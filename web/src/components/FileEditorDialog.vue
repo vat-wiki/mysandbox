@@ -35,6 +35,9 @@ const props = defineProps<{
   path: string
   /** git 对比模式：headPath 为 R 条目旧路径；存在即以 diff 快照打开 */
   diff?: { headPath?: string }
+  /** 终端 Ctrl+点击带 `:行:列` 后缀时的定位目标（加载完成后 revealLineInCenter） */
+  line?: number
+  col?: number
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
@@ -142,6 +145,25 @@ watch(
   },
 )
 onMounted(load)
+
+// —— :行:列 定位（终端 Ctrl+点击）——
+// CodeEditor 是异步组件且只在内容加载完（loading=false 且非 binary/diff）才渲染，
+// mount 事件在编辑器以初始 value 创建后触发，此时 reveal 已有效；binary/新建态（空内容）
+// 钳到第 1 行无害。同一文件（key 未变）换行号不重建对话框，watch 重新定位。
+const editorRef = ref<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null)
+function revealTarget() {
+  const ed = editorRef.value
+  if (!ed || props.line === undefined || props.diff) return
+  const ln = Math.min(Math.max(1, props.line), ed.getModel()?.getLineCount() ?? 1)
+  ed.revealLineInCenter(ln)
+  ed.setPosition({ lineNumber: ln, column: Math.max(1, props.col ?? 1) })
+  ed.focus()
+}
+function onEditorMount(ed: unknown) {
+  editorRef.value = ed as import('monaco-editor').editor.IStandaloneCodeEditor
+  revealTarget()
+}
+watch(() => [props.line, props.col], revealTarget)
 
 // 侧内容取值：absent/binary 侧给空串（diff 视图里呈全增/全删形态，可读）。
 // 参数可空：模板 diffDead 分支已保证 diffView 非空，但类型上不体现，这里兜住。
@@ -325,6 +347,7 @@ function fmtSize(n: number): string {
             v-model="content"
             :language="language"
             class="min-h-0 flex-1"
+            @mount="onEditorMount"
             @save="() => save()"
           />
         </template>

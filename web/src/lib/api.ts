@@ -65,7 +65,9 @@ async function api(path: string, init: RequestInit = {}): Promise<any> {
     signal: AbortSignal.timeout(10_000),
     headers: {
       'x-sandbox-token': getToken() ?? '',
-      'content-type': 'application/json',
+      // content-type 只在有 body 时带：无 body 的请求（GET、无参 POST）带 JSON
+      // content-type 会被 Fastify 拒收（FST_ERR_CTP_EMPTY_JSON_BODY）。
+      ...(init.body ? { 'content-type': 'application/json' } : {}),
       ...(init.headers || {}),
     },
   })
@@ -326,6 +328,8 @@ export interface ServicesStatus {
   error?: string
   network: { name: string; bridgeOk: boolean; subnet: string | null; detail?: string }
   pool: { from: string; to: string; reserved: string[]; assigned: string[]; free: string[] }
+  // undefined = 探测失败省略；[] = daemon 未配 registry-mirrors（直连 Docker Hub）
+  registryMirrors?: string[]
 }
 
 export interface ServicePresetView {
@@ -362,8 +366,31 @@ export const deleteService = (name: string, opts: { deleteData?: boolean; confir
   api(`/api/services/${name}`, { method: 'DELETE', body: JSON.stringify(opts) })
 export const getServiceLogs = (name: string, tail = 200) =>
   api(`/api/services/${name}/logs?tail=${tail}`) as Promise<{ logs: string }>
-export const streamCreateService = (input: CreateServiceInput, onEvent: (e: BaseProgressEvent) => void) =>
-  streamOp('/api/services', input, onEvent)
+// 创建走后台任务：POST 只做快校验 + 预占，成功返回 jobId（进度看 jobs 轮询），
+// 失败（重名/池尽/缺必填）4xx 内联显示在对话框。
+export const createService = (input: CreateServiceInput) =>
+  postJson('/api/services', input) as Promise<{ jobId: string }>
+
+// —— 服务创建任务 ——
+export interface ServiceJobView {
+  id: string
+  name: string
+  image: string
+  ip: string
+  state: 'running' | 'done' | 'error' | 'canceled'
+  statusText: string
+  error?: string
+  createdAt: number
+  updatedAt: number
+  cancellable: boolean
+  logTail?: string[]
+  result?: ServiceView
+}
+export const listServiceJobs = (tail = 30) =>
+  api(`/api/services/jobs?tail=${tail}`) as Promise<{ jobs: ServiceJobView[] }>
+export const getServiceJob = (id: string) =>
+  api(`/api/services/jobs/${id}`) as Promise<{ job: ServiceJobView; log: string[] }>
+export const cancelServiceJob = (id: string) => postJson(`/api/services/jobs/${id}/cancel`)
 
 // —— 全局 hosts 配置 ——
 export interface HostsView {
@@ -417,6 +444,16 @@ export const writeFile = (id: string, path: string, content: string, baseMtime?:
   }) as Promise<{ ok: true; mtime?: number }>
 export const getTermCwd = (id: string, termId: string) =>
   api(`${filesBase(id)}/cwd?termId=${encodeURIComponent(termId)}`) as Promise<{ cwd: string }>
+// 终端路径链接解析（Ctrl+点击打开）：raw token（可相对/带 ~）→ 权威绝对路径 + 类型。
+// HOST_ID 哨兵天然切宿主端点。missing 前端按 file 走编辑器新建态。
+export interface ResolveView {
+  path: string
+  kind: 'dir' | 'file' | 'missing'
+}
+export const resolveTermPath = (id: string, termId: string, raw: string) =>
+  api(
+    `${filesBase(id)}/resolve?termId=${encodeURIComponent(termId)}&path=${encodeURIComponent(raw)}`,
+  ) as Promise<ResolveView>
 export const createEntry = (id: string, path: string, type: 'file' | 'dir') =>
   postJson(`${filesBase(id)}/fs/create`, { path, type }) as Promise<{ ok: true }>
 export const renameEntry = (id: string, path: string, name: string) =>

@@ -21,11 +21,13 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
+import { stat } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import type { ChildProcess } from 'node:child_process';
 import { TERMID_RE } from './terminal.js';
-import { notFound, badRequest } from './errors.js';
+import { notFound, badRequest, HttpError } from './errors.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -200,6 +202,44 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       ?.slice(2) ?? '';
     if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
     return { cwd };
+  });
+
+  // 终端路径链接解析（Ctrl+点击打开）的宿主侧：与 files.ts 容器版 /resolve 一比一
+  // （kind 语义、404 条件），前端经 HOST_ID 哨兵自动路由到这里。~ 展开用 homedir()
+  // （宿主会话 shell 的 $HOME 与 server 运行用户一致）；归一用 node:path.resolve
+  // （与容器侧 readlink -m 的差异是不解析 symlink——stat/readFile 探测与读取本就跟随
+  // 链接，无害）。探测错误语义对齐 hostFiles：ENOENT/ENOTDIR=missing，EACCES=403。
+  app.get('/api/host-terminal/resolve', async (req): Promise<{ path: string; kind: 'dir' | 'file' | 'missing' }> => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const termId = q.termId || '';
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    const raw = q.path;
+    if (typeof raw !== 'string' || !raw || raw.includes('\0') || raw.includes('\n') || raw.length > 4096) {
+      throw badRequest('invalid path');
+    }
+    const r = await hostTmux([
+      'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
+    ]);
+    if (!r.ok) throw notFound('terminal session not found');
+    const cwd = r.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.startsWith('1 '))
+      ?.slice(2) ?? '';
+    if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
+    const home = homedir();
+    const base =
+      raw === '~' ? home : raw.startsWith('~/') ? home + raw.slice(1) : raw.startsWith('/') ? raw : `${cwd}/${raw}`;
+    const p = resolvePath(base);
+    let kind: 'dir' | 'file' | 'missing';
+    try {
+      kind = (await stat(p)).isDirectory() ? 'dir' : 'file';
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') kind = 'missing';
+      else throw new HttpError(403, (e as Error).message || 'permission denied', 'forbidden');
+    }
+    return { path: p, kind };
   });
 
   app.get('/ws/host-terminal', { websocket: true }, async (socket, req) => {

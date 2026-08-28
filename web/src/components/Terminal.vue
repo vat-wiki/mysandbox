@@ -22,8 +22,13 @@ const props = withDefaults(
     host: false,
   },
 )
-// 容器内 mysandbox 命令的联动事件：OSC 7677 payload 解析出的容器内路径。
-const emit = defineEmits<{ (e: 'osc-open', path: string): void }>()
+// 容器内 mysandbox 命令的联动事件：OSC 7677 payload 解析出的容器内路径；
+// link-open 是终端 buffer 里 Ctrl+点击路径链接（path 为原始 token，可相对/带 ~，
+// 行列来自栈跟踪式 `:行:列` 后缀）。
+const emit = defineEmits<{
+  (e: 'osc-open', path: string): void
+  (e: 'link-open', path: string, line?: number, col?: number): void
+}>()
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
 // 不在 onBeforeUnmount 里发--刷新页面也会触发 unmount，那时发 kill 会误杀会话、破坏刷新保留。
@@ -115,6 +120,7 @@ let ws: WebSocket | null = null
 let resizeObs: ResizeObserver | null = null
 let rafId = 0
 let webglAddon: WebglAddon | null = null
+let linkProv: { dispose(): void } | null = null
 // 断线状态（终端上方覆盖条用）：'ok' | 'lost'。TCP 半开（后端挂死/NAT 超时）时 onclose 不会触发，
 // 靠心跳探测置 lost。tmux 会话在后端无限期保留（真 tmux 语义），重连即恢复。
 const connState = ref<'ok' | 'lost'>('ok')
@@ -196,6 +202,63 @@ function onContextMenu() {
 // claude 欢迎框半屏 + 字形错位）。
 const FONT_PROBE = 'W█▘▝▐▛▜▌╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝●✢❯⏵⎿→←…'
 
+// —— 路径链接识别（Ctrl+点击打开）——
+// 规则：token 以 / ~/ ./ ../ 开头或恰好是裸 ~；前一字符（若有）必须是空白或 "'=[({<
+// 之一（防 URL/普通词中段误配；`?a=/tmp/x` 的 = 后可配是刻意保留——`--out=/path` 场景）；
+// 主体字符集 [A-Za-z0-9._~+@%$-] 加 /；结尾剥句读；支持 :行(:列) 后缀（栈跟踪）。
+// 明确不匹配：不含 / 的裸文件名（防误报）、// 开头（协议相对 URL）、跨行 wrap、含空格路径。
+interface PathToken {
+  start: number
+  end: number
+  path: string
+  line?: number
+  col?: number
+}
+const PRE_BOUNDARY = /[\s"'=[({<]/
+const TOKEN_CHAR = /[A-Za-z0-9._~+@%$-]/
+const TRAIL_PUNCT = /[.,;:)\]"'`]/
+
+function findPathTokens(text: string): PathToken[] {
+  const out: PathToken[] = []
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch !== '/' && ch !== '~' && ch !== '.') continue
+    if (i > 0 && !PRE_BOUNDARY.test(text[i - 1]!)) continue
+    let start = -1
+    if (ch === '/') {
+      if (text[i + 1] === '/') {
+        i++ // // 开头 = 协议相对 URL，不碰
+        continue
+      }
+      start = i
+    } else if (text.startsWith('~/', i) || text.startsWith('./', i) || text.startsWith('../', i)) {
+      start = i
+    } else if (ch === '~' && !(text[i + 1] && TOKEN_CHAR.test(text[i + 1]!))) {
+      start = i // 裸 ~ = home（~user 形态不支持）
+    } else {
+      continue
+    }
+    let j = start + 1
+    while (j < text.length && (TOKEN_CHAR.test(text[j]!) || text[j] === '/')) j++
+    let raw = text.slice(start, j)
+    while (raw.length > 1 && TRAIL_PUNCT.test(raw[raw.length - 1]!)) raw = raw.slice(0, -1)
+    if (raw.length < 2 && raw !== '~') continue // 单个 / 噪音太大（散文里的斜杠）
+    if (!raw.includes('/') && raw !== '~') continue // 裸文件名不匹配（防误报）
+    // :行(:列) 后缀：不在字符集内，须从原文另行消费
+    let line: number | undefined
+    let col: number | undefined
+    const lm = /^:(\d{1,7})(?::(\d{1,7}))?/.exec(text.slice(start + raw.length))
+    if (lm) {
+      line = Number(lm[1])
+      if (lm[2]) col = Number(lm[2])
+    }
+    const end = start + raw.length + (line !== undefined ? lm![0].length : 0)
+    out.push({ start, end, path: raw, line, col })
+    i = end - 1
+  }
+  return out
+}
+
 onMounted(async () => {
   if (!el.value) return
   // 等内置字体就绪再开终端：否则首次 fit 用 fallback 字体的 cell 宽度度量，cols 偏小，
@@ -227,6 +290,62 @@ onMounted(async () => {
       if (path.startsWith('/')) emit('osc-open', path)
     }
     return true
+  })
+  // 路径链接 provider（Ctrl+点击打开）。必须在上面 WebLinksAddon 之后注册：xterm 按注册
+  // 顺序取第一个命中位置的链接，URL 撞位时归 web-links，别调换顺序。
+  // 宽字符映射是核心：translateToString 的字符串索引 ≠ cell 列（CJK 占 2 cell，其后还有
+  // 1 个 width=0 的续格），必须 cell walk 建「字符串索引 -> cell 列」映射（xterm 内部
+  // web-links 的 _mapStrIdx 同款手法）。
+  linkProv = term.registerLinkProvider({    provideLinks(bufferLineNumber, callback) {
+      const t = term
+      if (!t) return callback(undefined)
+      const line = t.buffer.active.getLine(bufferLineNumber - 1)
+      // 折行续行跳过：URL 折行后的 /xxx 段会误配，且不支持跨行 token（v1 限制）
+      if (!line || line.isWrapped) return callback(undefined)
+      const limit = Math.min(line.length, t.cols) // resize 后 line.length 可能 > cols（陈旧尾格）
+      const cell = t.buffer.active.getNullCell() // 复用 scratch cell，避免逐格建对象
+      const cellOf: number[] = [] // 字符串索引 -> 所在 cell 的 0 基列
+      const widthAt: number[] = [] // cell 列 -> 宽度
+      let text = ''
+      for (let x = 0; x < limit; x++) {
+        if (!line.getCell(x, cell)) break
+        const w = cell.getWidth()
+        widthAt[x] = w
+        if (w === 0) continue // 宽字符续格：不产生字符串内容
+        const chars = cell.getChars()
+        for (let k = 0; k < chars.length; k++) cellOf.push(x)
+        text += chars
+      }
+      // 快速出局：scrollback 大量鼠标移动时不做无谓扫描
+      if (!text.includes('/') && !text.includes('~')) return callback(undefined)
+      const toks = findPathTokens(text)
+      if (!toks.length) return callback(undefined)
+      callback(
+        toks.map((tk) => ({
+          range: {
+            // xterm 的 range 是 1 基；_linkAtPosition 用闭区间 start<=x<=end，end.x 必须是
+            // 末字符所在列而非下一列（多一格会把邻列也点亮）。末字符是宽字符时 +1 覆盖续格。
+            start: { x: cellOf[tk.start]! + 1, y: bufferLineNumber },
+            end: {
+              x: cellOf[tk.end - 1]! + 1 + (widthAt[cellOf[tk.end - 1]!] === 2 ? 1 : 0),
+              y: bufferLineNumber,
+            },
+          },
+          text: tk.path,
+          // 只在按住 Ctrl/Cmd（macOS）时激活；普通点击 no-op，选区/聚焦等原生行为不受影响。
+          activate(event: MouseEvent) {
+            if (!(event.ctrlKey || event.metaKey)) return
+            emit('link-open', tk.path, tk.line, tk.col)
+          },
+          hover(event: MouseEvent) {
+            showLinkTip(event, tk.path)
+          },
+          leave() {
+            hideLinkTip()
+          },
+        })),
+      )
+    },
   })
   // 键盘复制/粘贴拦截。返回 false=吞掉（不发 onData）、true=透传给终端。
   //   - Ctrl+Shift+C：复制选中（无选区也不发 ^C，纯复制键不应中断当前命令）。
@@ -332,6 +451,30 @@ onMounted(async () => {
   if (props.active) term.focus()
 })
 
+// 路径链接 tooltip：挂在 term.element 内的动态 DOM（带 xterm-hover class——xterm 的
+// mousemove 会沿 composedPath 找到它，视为「仍在链接上」不误触发 leave）。
+// pointer-events:none 让它永不抢鼠标事件。leave() 里必须移除：xterm 在行重绘/resize/
+// mouseleave/跨 cell 时都会清当前链接。样式在下方非 scoped <style>（动态 DOM 带不上
+// Vue scoped 的 data 属性）。
+let linkTip: HTMLDivElement | null = null
+function showLinkTip(ev: MouseEvent, path: string) {
+  const root = term?.element
+  if (!root) return
+  if (!linkTip) {
+    linkTip = document.createElement('div')
+    linkTip.className = 'ms-term-link-tip xterm-hover'
+    root.appendChild(linkTip)
+  }
+  const short = path.length > 64 ? path.slice(0, 61) + '…' : path
+  linkTip.textContent = `Ctrl+点击打开 ${short}`
+  linkTip.style.left = `${ev.clientX + 10}px`
+  linkTip.style.top = `${ev.clientY + 14}px`
+}
+function hideLinkTip() {
+  linkTip?.remove()
+  linkTip = null
+}
+
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
   if (hbTimer) clearInterval(hbTimer)
@@ -341,6 +484,14 @@ onBeforeUnmount(() => {
   } catch {
     /* noop */
   }
+  // 链接 provider 与 tooltip 先于 WebGL addon 拆（同款防御性顺序：term.dispose 会连带
+  // 清理，但显式 dispose 保证卸载路径上 tooltip 不残留 DOM）。
+  try {
+    linkProv?.dispose()
+  } catch {
+    /* noop */
+  }
+  hideLinkTip()
   // dispose 顺序：先 addon（WebGL renderer 挂在 term 上，得在 term 还活着时拆），
   // 再 term。反序会触发 term.dispose 内部访问已释放的 renderer -> TypeError。
   try {
@@ -375,3 +526,23 @@ onBeforeUnmount(() => {
     </button>
   </div>
 </template>
+
+<style>
+/* 路径链接 tooltip：动态创建挂在 term.element 内，Vue scoped 样式够不着，用全局类名。 */
+.ms-term-link-tip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none; /* 不抢鼠标事件：hover 不会被自己打断，也无需担心挡住点击 */
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid #3f3f46;
+  border-radius: 4px;
+  background: #18181b;
+  color: #d4d4d8;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+</style>

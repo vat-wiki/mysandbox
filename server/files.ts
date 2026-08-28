@@ -333,6 +333,59 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     return { cwd };
   });
 
+  // —— 终端路径链接解析（Ctrl+点击打开）——
+  // 前端 tokenizer 只认得出「像路径的 token」（可相对、可带字面 ~），权威解析在这：
+  // 单次 exec 拿 pane cwd（同 /cwd 路由，必须 list-panes 不能 display-message）+ 展开 +
+  // readlink -m 归一 + 类型探测。与 cleanPath 的唯一差异：本端点接受相对路径与 ~
+  // （container-cli 的脚本不做 ~ 展开——shell 传参前已展开；这里收到的是前端字面 token，
+  // 必须自己补 ~/ ~ 两个 case；User 1000:1000 时 attachArgs 注入 HOME=/home/dev，与会话
+  // shell 一致）。输出协议「d|f|m <abs>\n」：d=目录 f=文件 m=不存在（前端按 file 走新建态）。
+  app.get('/api/containers/:id/resolve', async (req): Promise<{ path: string; kind: 'dir' | 'file' | 'missing' }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const termId = q.termId || '';
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    const raw = q.path;
+    // 拒 \0 / \n：防输出协议被撕裂；长度上限对齐 cleanPath。raw 只经 argv 位置传入不内插。
+    if (typeof raw !== 'string' || !raw || raw.includes('\0') || raw.includes('\n') || raw.length > 4096) {
+      throw badRequest('invalid path');
+    }
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'p="$1"; s="$2"',
+          'cwd=$(tmux list-panes -t "$s" -F "#{pane_active} #{pane_current_path}" 2>/dev/null | sed -n "s/^1 //p")',
+          '[ -n "$cwd" ] || exit 2',
+          'case "$p" in',
+          '  "") p="$cwd" ;;',
+          '  "~") p="$HOME" ;;',
+          // ${p#~/} 里的模式 ~ 在 dash/bash 均匹配不上（实测），必须引号字面量模式 ${p#"~/"}。
+          '  "~/"*) p="$HOME/${p#"~/"}" ;;',
+          '  /*) ;;',
+          '  *) p="$cwd/$p" ;;',
+          'esac',
+          'q=$(readlink -m -- "$p" 2>/dev/null) && p="$q"',
+          'if [ -d "$p" ]; then printf "d %s\\n" "$p"',
+          'elif [ -e "$p" ]; then printf "f %s\\n" "$p"',
+          'else printf "m %s\\n" "$p"; fi',
+        ].join('\n'),
+        'sh', raw, `=${sessionName(r.id, termId)}`,
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 8_000,
+    });
+    if (res.exitCode === 2) throw notFound('terminal session not found');
+    if (res.exitCode !== 0)
+      throw new HttpError(500, res.stderr.trim() || `resolve failed (exit ${res.exitCode})`, 'resolve_failed');
+    const first = res.stdout.split('\n')[0] ?? '';
+    const kind = first[0] === 'd' ? 'dir' : first[0] === 'f' ? 'file' : 'missing';
+    const abs = first.slice(2);
+    if (!abs.startsWith('/')) throw new HttpError(500, 'bad resolve output', 'resolve_failed');
+    return { path: abs, kind };
+  });
+
   // —— git 仓库状态（面板「Git 变更」区块数据源）——
   // 协议：首行 toplevel（rev-parse --show-toplevel 打印的规范绝对路径，git 自身保证不含
   // 换行，按首个 \n 切分安全），其后整段是 porcelain -z 的 NUL 流。非仓库是正常态不是
