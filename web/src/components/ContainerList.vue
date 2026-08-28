@@ -1460,9 +1460,8 @@ onUnmounted(() => {
           </ContextMenuContent>
         </ContextMenu>
         </div>
-        <span class="ml-auto self-center px-3 text-xs text-muted-foreground hidden md:block">{{ groups.length }} 个终端组</span>
         <button
-          class="flex items-center gap-1 self-stretch border-l border-border px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          class="ml-auto flex items-center gap-1 self-stretch border-l border-border px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           title="终端会话：隐藏的 + 其他窗口 / 浏览器打开的"
           @click="showSessions = true"
         >
