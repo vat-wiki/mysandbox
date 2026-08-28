@@ -257,8 +257,10 @@ function fmtSize(n: number): string {
   <Dialog :open="true" @update:open="(v: boolean) => v || tryClose()">
     <!-- h-[92vh] 显式高（不是 max-h）：flex-1 的 Monaco 容器需要父级有确定高度基准，
          max-h 只限不限撑，flex 子项会塌成内容高（实测 5px）。7xl 宽：编辑/diff 双栏
-         都需要横向空间（diff 并排视图尤甚）。 -->
-    <DialogContent class="flex h-[92vh] max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-7xl">
+         都需要横向空间（diff 并排视图尤甚）。手机全屏（100dvh + 铺满视口）。 -->
+    <DialogContent
+      class="flex h-[100dvh] max-h-none flex-col gap-0 overflow-hidden p-0 max-md:max-w-none max-md:rounded-none sm:h-[92vh] sm:max-h-[92vh] sm:max-w-7xl"
+    >
       <!-- 头：文件名 + dirty 点 + 容器/路径 -->
       <div class="flex items-center gap-2.5 border-b px-5 py-3 pr-10">
         <DialogTitle class="font-mono text-base font-semibold">{{ name }}</DialogTitle>

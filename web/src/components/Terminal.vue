@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { getToken } from '@/lib/api'
+import { isPhone } from '@/composables/useDevice'
 
 const props = withDefaults(
   // host=true 时连 /ws/host-terminal（宿主终端，PTY 由 server 管理，无容器 id）。
@@ -131,12 +132,27 @@ const FONT_FAMILY =
   '"Cascadia Code Variable", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace, ' +
   '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"'
 
-// 字号随容器宽度自适应：窄屏不溢出、大屏不显小。
+// 字号随容器宽度自适应：窄屏不溢出、大屏不显小。用户显式调过（触屏工具条 A±）则
+// 记忆优先（clamp 10–18），跨 pane/刷新保持。
+const FONT_SIZE_KEY = 'mysandbox:term-font-size'
 function computeFontSize(): number {
+  const saved = Number(localStorage.getItem(FONT_SIZE_KEY))
+  if (Number.isFinite(saved) && saved >= 10 && saved <= 18) return saved
   const w = el.value?.clientWidth ?? window.innerWidth
   if (w < 640) return 13 // 手机：偏大便于触屏阅读
   if (w > 1600) return 15
   return 13
+}
+// 触屏工具条 A±：写记忆并立即重算（refit 内会同步 term.options.fontSize）。
+function stepFontSize(delta: number) {
+  const cur = computeFontSize()
+  const next = Math.max(10, Math.min(18, cur + delta))
+  try {
+    localStorage.setItem(FONT_SIZE_KEY, String(next))
+  } catch {
+    /* 不可用就只本次生效 */
+  }
+  refit()
 }
 
 // 防抖 fit：合并一帧内的多次尺寸变化，避免拖窗/字号切换时高频抖动；同时同步字号。
@@ -174,7 +190,7 @@ async function copyText(s: string) {
     /* 非 HTTPS / 无权限：静默 */
   }
 }
-async function pasteText() {
+async function pasteClipboard() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
   try {
     const t = await navigator.clipboard.readText()
@@ -188,7 +204,85 @@ function onContextMenu() {
   if (term?.hasSelection()) {
     void copyText(term.getSelection()).then(() => term?.clearSelection())
   } else {
-    void pasteText()
+    void pasteClipboard()
+  }
+}
+
+// —— 手机触屏工具条（重度终端使用的核心补充）——
+// 触屏没有右键/Ctrl 组合，复制粘贴/Esc/方向键/Ctrl 粘滞全走这条工具条（模板里 md:hidden）。
+// 粘贴优先走 navigator.clipboard.readText；iOS Safari 常态性拒绝读取（需用户手势且默认不授权），
+// 拒绝时自动弹兜底输入框——用户在 textarea 里系统级长按粘贴，确认后走同一条 stdin 通道发送。
+const pasteFallback = ref(false)
+const pasteText = ref('')
+const ctrlSticky = ref(false)
+async function toolPaste() {
+  try {
+    const t = await navigator.clipboard.readText()
+    if (t) sendRaw(t)
+    return
+  } catch {
+    pasteFallback.value = true // readText 被拒：开兜底输入框
+  }
+}
+function toolPasteConfirm() {
+  if (pasteText.value) sendRaw(pasteText.value)
+  pasteText.value = ''
+  pasteFallback.value = false
+}
+function toolCopy() {
+  if (!term?.hasSelection()) return
+  void copyText(term.getSelection()).then(() => term?.clearSelection())
+}
+// 选区状态（复制按钮的禁用态用）：term 实例非响应式，选区变化时同步到 ref。
+// onSelectionChange 覆盖拖选/清选；工具条渲染期间手动同步一次。
+const termHasSel = ref(false)
+function syncSel() {
+  termHasSel.value = !!term?.hasSelection()
+}
+// 粘滞 Ctrl：点亮后下一个字母键以 Ctrl 组合发送（'c' -> \x03），发完自动熄灭。
+// 组合入口有两个：工具条按键走 toolKey（Esc/Tab/方向键——字母组合在此只是兜底），
+// 软键盘字母走 onData（工具条没有字母键，手机上 Ctrl+C 等组合的唯一路径）。
+function sendCtrlCombo(data: string): string | null {
+  if (!ctrlSticky.value) return null
+  // 只有单个字母才组合（实体键盘的 Ctrl 组合到达 onData 时已是控制字符，不受影响）。
+  if (data.length === 1 && data.toLowerCase() >= 'a' && data.toLowerCase() <= 'z') {
+    ctrlSticky.value = false
+    return String.fromCharCode(data.toLowerCase().charCodeAt(0) - 96)
+  }
+  return null
+}
+function toolKey(ch: string, ctrl = false) {
+  const combo = sendCtrlCombo(ch)
+  if (combo !== null) {
+    sendRaw(combo)
+    return
+  }
+  sendRaw(ch)
+  if (ctrlSticky.value) ctrlSticky.value = false
+}
+// 直发 stdin（与 onData 同通道）：工具条按键/粘贴共用。
+function sendRaw(s: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(s))
+}
+
+// —— 软键盘自适应（仅手机）——
+// visualViewport 在键盘弹起时收缩（layout viewport 不动），kbH = 布局高 - 可视高 即键盘
+// 占位。把根容器 paddingBottom 撑出 kbH，内层 el 已有 ResizeObserver → 自动走现有 refit，
+// 与 tmux resize 对账心跳（15s）协同，PTY cols/rows 始终正确。
+const kbH = ref(0)
+let vvCleanup: (() => void) | null = null
+function setupViewportWatch() {
+  const vv = window.visualViewport
+  if (!vv) return
+  const onVv = () => {
+    const h = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
+    kbH.value = h > 120 ? h : 0 // 透值过滤地址栏小幅伸缩
+  }
+  vv.addEventListener('resize', onVv)
+  vv.addEventListener('scroll', onVv)
+  vvCleanup = () => {
+    vv.removeEventListener('resize', onVv)
+    vv.removeEventListener('scroll', onVv)
   }
 }
 
@@ -396,7 +490,7 @@ onMounted(async () => {
     if (e.code === 'KeyV') {
       if (e.type === 'keydown') {
         e.preventDefault()
-        void pasteText()
+        void pasteClipboard()
       }
       return false
     }
@@ -466,7 +560,9 @@ onMounted(async () => {
 
   term.onData((data) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(data))
+      // 粘滞 Ctrl 消费：软键盘字母在此组合成控制字符（手机发 Ctrl+C 的唯一路径）。
+      const combo = sendCtrlCombo(data)
+      ws.send(new TextEncoder().encode(combo ?? data))
     }
   })
   term.onResize(({ cols, rows }) => {
@@ -476,7 +572,12 @@ onMounted(async () => {
   })
   resizeObs = new ResizeObserver(refit)
   resizeObs.observe(el.value)
+  // 选区同步：工具条「复制」按钮的禁用态跟随选区（仅手机工具条用，桌面无成本——一行回调）。
+  term.onSelectionChange(syncSel)
   if (props.active) term.focus()
+
+  // 软键盘自适应仅手机启用（桌面 visualViewport 变化无意义，少挂监听）。
+  if (isPhone.value) setupViewportWatch()
 })
 
 // 路径链接 tooltip：挂在 term.element 内的动态 DOM（带 xterm-hover class——xterm 的
@@ -506,6 +607,7 @@ function hideLinkTip() {
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
   if (hbTimer) clearInterval(hbTimer)
+  vvCleanup?.()
   resizeObs?.disconnect()
   try {
     ws?.close()
@@ -540,9 +642,39 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- bg-black + 内边距放外层：el 自身不带 padding，FitAddon 量到的 clientWidth/clientHeight 才是
-       真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。 -->
-  <div class="relative flex h-full flex-col bg-black px-2 py-1.5">
-    <div ref="el" class="flex-1 overflow-hidden" @contextmenu.prevent="onContextMenu" />
+       真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。
+       overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
+       手机软键盘弹起时 paddingBottom 撑出键盘高度（kbH），内层 ResizeObserver 自动 refit。 -->
+  <div class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbH > 0 ? { paddingBottom: kbH + 'px' } : undefined">
+    <div ref="el" class="min-h-0 flex-1 overflow-hidden" @contextmenu.prevent="onContextMenu" />
+    <!-- 触屏工具条（手机 only）：复制/粘贴/Esc/Tab/方向/Ctrl 粘滞/字号。
+         桌面（≥768px 或鼠标环境）不渲染——右键与键盘快捷键已覆盖。 -->
+    <div v-if="isPhone" class="flex shrink-0 items-center gap-1 overflow-x-auto scroll-thin border-t border-zinc-800 pt-1 md:hidden">
+      <button type="button" class="tb" title="粘贴剪贴板内容" @click="toolPaste">粘贴</button>
+      <button type="button" class="tb" :disabled="!termHasSel" title="复制选中内容" @click="toolCopy">复制</button>
+      <button type="button" class="tb" :class="ctrlSticky ? 'tb-on' : ''" title="粘滞 Ctrl：点亮后下一个字母键以 Ctrl 组合发送" @click="ctrlSticky = !ctrlSticky">Ctrl</button>
+      <button type="button" class="tb" title="发送 Esc" @click="toolKey('\x1b')">Esc</button>
+      <button type="button" class="tb" title="发送 Tab" @click="toolKey('\t')">Tab</button>
+      <button type="button" class="tb" title="上方向键" @click="toolKey('\x1b[A')">↑</button>
+      <button type="button" class="tb" title="下方向键" @click="toolKey('\x1b[B')">↓</button>
+      <button type="button" class="tb" title="左方向键" @click="toolKey('\x1b[D')">←</button>
+      <button type="button" class="tb" title="右方向键" @click="toolKey('\x1b[C')">→</button>
+      <button type="button" class="tb" title="减小字号" @click="stepFontSize(-1)">A−</button>
+      <button type="button" class="tb" title="增大字号" @click="stepFontSize(1)">A+</button>
+    </div>
+    <!-- 粘贴兜底输入（iOS Safari 拒绝 clipboard.readText 时）：textarea 里系统级长按粘贴，
+         确认后经同一条 stdin 通道发送。 -->
+    <div v-if="pasteFallback" class="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 rounded-t-lg border-t border-zinc-700 bg-zinc-900 p-3 pb-safe md:hidden">
+      <textarea
+        v-model="pasteText"
+        class="h-24 w-full resize-none rounded-md border border-zinc-700 bg-zinc-950 p-2 font-mono text-sm text-zinc-100"
+        placeholder="在此长按粘贴内容…"
+      />
+      <div class="flex justify-end gap-2">
+        <button type="button" class="tb" @click="pasteFallback = false; pasteText = ''">取消</button>
+        <button type="button" class="tb tb-on" @click="toolPasteConfirm">发送到终端</button>
+      </div>
+    </div>
     <!-- 断线覆盖条：非正常断开时显示，点击重连（termId 不变 -> 回到同一 tmux 会话） -->
     <button
       v-if="connState === 'lost'"
@@ -556,6 +688,30 @@ onBeforeUnmount(() => {
 </template>
 
 <style>
+/* 触屏工具条按钮：紧凑但命中区 ≥40px（高度 h-9），等宽字排布稳定。
+   tb-on 为激活态（粘滞 Ctrl 点亮 / 发送按钮）。 */
+.tb {
+  height: 2.25rem;
+  min-width: 2.75rem;
+  padding: 0 0.625rem;
+  flex-shrink: 0;
+  border-radius: 0.375rem;
+  border: 1px solid #3f3f46;
+  background: #18181b;
+  color: #d4d4d8;
+  font-size: 12px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+.tb:active {
+  background: #27272a;
+}
+.tb:disabled {
+  opacity: 0.35;
+}
+.tb-on {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
 /* 路径链接 tooltip：动态创建挂在 term.element 内，Vue scoped 样式够不着，用全局类名。 */
 .ms-term-link-tip {
   position: fixed;

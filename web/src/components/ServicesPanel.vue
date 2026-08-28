@@ -288,19 +288,21 @@ function stateCls(s: ServiceView): string {
           还没有服务。点「新建服务」起一个 postgres 试试——容器里就能 <code>psql -h pg</code> 直连。
         </div>
 
-        <Table v-else>
-          <TableHeader>
-            <TableRow>
-              <TableHead>名称</TableHead>
-              <TableHead>类型</TableHead>
-              <TableHead>镜像</TableHead>
-              <TableHead>IP</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>卷</TableHead>
-              <TableHead class="w-10"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+        <!-- 服务表：桌面 7 列表格；手机卡片化（md:hidden/md:block 双渲染，数据源相同）。 -->
+        <div v-if="items.length" class="hidden md:block">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>名称</TableHead>
+                <TableHead>类型</TableHead>
+                <TableHead>镜像</TableHead>
+                <TableHead>IP</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead>卷</TableHead>
+                <TableHead class="w-10"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
             <template v-for="s in items" :key="s.name">
               <TableRow>
                 <TableCell class="font-medium">
@@ -354,8 +356,64 @@ function stateCls(s: ServiceView): string {
                 </TableCell>
               </TableRow>
             </template>
-          </TableBody>
-        </Table>
+            </TableBody>
+          </Table>
+        </div>
+
+        <!-- 手机卡片列表：每服务一张卡（名称/状态 + 镜像/IP/卷信息行 + 操作菜单）。
+             与表格共用 items/logs/busyName/op 等同一批状态与处理器，纯展示层差异。 -->
+        <div v-if="items.length" class="space-y-2 md:hidden">
+          <div
+            v-for="s in items"
+            :key="s.name"
+            class="rounded-md border p-2.5"
+          >
+            <div class="flex items-center gap-2">
+              <span class="min-w-0 flex-1 truncate text-sm font-medium">
+                {{ s.name }}
+                <span v-if="s.metaMissing" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复" class="text-amber-600"> ⚠</span>
+              </span>
+              <Badge variant="outline" class="shrink-0 font-normal">{{ s.preset }}</Badge>
+              <span class="shrink-0 text-xs" :class="stateCls(s)" :title="s.status">{{ s.running ? 'running' : s.state }}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger as-child>
+                  <Button variant="ghost" size="sm" class="shrink-0" :disabled="busyName === s.name">⋯</Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" class="w-36">
+                  <DropdownMenuItem v-if="Object.keys(s.env).length" @click="connectOf = s">连接信息</DropdownMenuItem>
+                  <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>
+                  <DropdownMenuItem v-if="s.running" @click="op(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
+                  <DropdownMenuItem @click="op(s.name, () => restartService(s.name))">重启</DropdownMenuItem>
+                  <DropdownMenuItem @click="toggleLogs(s)">{{ logs[s.name] != null ? '收起日志' : '日志' }}</DropdownMenuItem>
+                  <DropdownMenuItem @click="pendingDelete = { name: s.name, deleteData: false }">删除（留数据）</DropdownMenuItem>
+                  <DropdownMenuItem class="text-destructive" @click="pendingDelete = { name: s.name, deleteData: true }">
+                    删除（连数据）
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div class="mt-1.5 space-y-0.5 font-mono text-xs text-muted-foreground">
+              <p class="break-all" :title="s.image">{{ s.image }}</p>
+              <p>
+                <template v-if="s.ip">
+                  <button
+                    type="button"
+                    class="cursor-pointer hover:underline"
+                    :title="copied === s.ip ? '已复制' : '点击复制'"
+                    @click="copyVal(s.ip)"
+                  >
+                    {{ copied === s.ip ? '已复制' : s.ip }}
+                  </button>
+                </template>
+                <template v-else>-</template>
+                · {{ s.volume ?? '无数据卷' }}
+              </p>
+            </div>
+            <div v-if="logs[s.name] != null" class="mt-1.5">
+              <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-2 font-mono text-xs">{{ logs[s.name] }}</pre>
+            </div>
+          </div>
+        </div>
       </div>
 
       <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
@@ -399,8 +457,8 @@ function stateCls(s: ServiceView): string {
             <div v-if="Object.keys(connectOf.env).length">
               <p class="mb-1 text-xs text-muted-foreground">环境变量（点击值复制）：</p>
               <div class="divide-y rounded-md border">
-                <div v-for="(v, k) in connectOf.env" :key="k" class="flex gap-3 px-3 py-1.5 font-mono text-xs">
-                  <span class="w-44 shrink-0 text-muted-foreground">{{ k }}</span>
+                <div v-for="(v, k) in connectOf.env" :key="k" class="flex flex-col gap-0.5 px-3 py-1.5 font-mono text-xs sm:flex-row sm:gap-3">
+                  <span class="shrink-0 text-muted-foreground sm:w-44">{{ k }}</span>
                   <button
                     type="button"
                     class="cursor-pointer break-all text-left hover:underline"

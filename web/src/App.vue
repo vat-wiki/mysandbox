@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, Unauthorized } from '@/lib/api'
 import { setEngineInfo } from '@/lib/caps'
+import { isPhone } from '@/composables/useDevice'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
@@ -118,8 +119,9 @@ onUnmounted(() => {
   <!-- 全高布局：主区撑满视口（终端为主体，不再页面滚动）。
        header 已整体移除：品牌 + 版本 + 引擎健康收进侧栏顶部品牌块（见 ContainerList），
        配置入口在侧栏容器分区，登出已删（token 轮换时 @unauthorized 自动弹回 TokenGate）。
-       popout 独立窗口与主窗口的唯一区别只剩「无侧栏」。 -->
-  <div class="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+       popout 独立窗口与主窗口的唯一区别只剩「无侧栏」。
+       h-dvh：手机上随地址栏伸缩（桌面端 dvh≡vh 零差异）。 -->
+  <div class="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
     <main class="min-h-0 flex-1">
       <TokenGate v-if="!ready" :checking="checking" :err="checkErr" @submit="verify" />
       <!-- popout：纯终端工作区；未授权同样走 TokenGate（token 失效时） -->
@@ -149,7 +151,8 @@ onUnmounted(() => {
         @close="closeServices"
       />
     </main>
-    <!-- 全局通知（服务创建任务完成/失败等）。右下角——终端主体在左上，避开视觉焦点。 -->
-    <Toaster />
+    <!-- 全局通知（服务创建任务完成/失败等）。桌面右下角——终端主体在左上，避开视觉焦点；
+         手机改顶部居中——右下角会压住终端底部输入区，且要避开软键盘与底部 home indicator。 -->
+    <Toaster :position="isPhone ? 'top-center' : 'bottom-right'" />
   </div>
 </template>

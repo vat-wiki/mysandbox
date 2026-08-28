@@ -2,16 +2,55 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
+import { networkInterfaces } from 'node:os'
+import { readFile } from 'node:fs/promises'
 
-// dev: vite 5173，/api 与 /ws 代理到后端 127.0.0.1:7321。
+// dev: vite 5173，/api 与 /ws 代理到后端 7321。
 // build: 产物到 web/dist（root 后端 @fastify/static 同源服务，无 CORS）。
+
+// 解析代理 target：读 ~/.config/mysandbox/config.yaml 的 listen.host（vite 不会读 mysandbox
+// config，得自己来）。host 为 auto 时镜像 server/cli.ts 的解析逻辑（默认路由接口 IPv4，
+// 读 /proc/net/route）——本机 IP 变了这里自动跟，不用手工同步。任何失败退回 127.0.0.1。
+async function backendHost(): Promise<string> {
+  try {
+    const y = await readFile(
+      `${process.env.HOME ?? ''}/.config/mysandbox/config.yaml`,
+      'utf8',
+    )
+    // listen 块内的 host 键（简单缩进匹配足够；yaml 库不值得为两条代理配置引入）
+    const m = y.match(/^listen:[\s\S]*?^\s+host:\s*(\S+)/m)
+    const host = m?.[1] ?? '127.0.0.1'
+    if (host !== 'auto') return host
+    const ifaces = networkInterfaces()
+    let ifname: string | undefined
+    try {
+      for (const line of (await readFile('/proc/net/route', 'utf8')).split('\n').slice(1)) {
+        const c = line.trim().split(/\s+/)
+        if (c[1] === '00000000') {
+          ifname = c[0]
+          break
+        }
+      }
+    } catch {
+      // 非 Linux：走退化路径（第一个非 internal IPv4）
+    }
+    const pick = (name?: string) =>
+      name ? (ifaces[name] ?? []).find((a) => a.family === 'IPv4' && !a.internal)?.address : undefined
+    return pick(ifname) ?? Object.keys(ifaces).map(pick).find(Boolean) ?? '127.0.0.1'
+  } catch {
+    return '127.0.0.1'
+  }
+}
+
+const backend = `http://${await backendHost()}:7321`
+
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
       // Monaco 核心深路径 editor.api 被 monaco-editor 的 exports map 挡住，直接别名到磁盘路径。
-      // 只引核心 API（worker 用相对路径 ?worker），不引 editor.main（那会把全部语言模式塞进首屏 ~4MB）。
+      // 只引核心 API（worker 用相对路径 ?worker)，不引 editor.main（那会把全部语言模式塞进首屏 ~4MB）。
       'monaco-editor/api': fileURLToPath(
         new URL('node_modules/monaco-editor/esm/vs/editor/editor.api.js', import.meta.url),
       ),
@@ -25,8 +64,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:7321',
-      '/ws': { target: 'ws://127.0.0.1:7321', ws: true },
+      '/api': backend,
+      '/ws': { target: backend.replace('http', 'ws'), ws: true },
     },
   },
   // es2022：@novnc/novnc 1.7 的 rfb.js 用了 top-level await（浏览器动态导入指纹），

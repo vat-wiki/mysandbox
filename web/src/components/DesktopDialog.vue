@@ -11,6 +11,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import RFB from '@novnc/novnc/core/rfb.js'
 import { Maximize2, Minimize2 } from 'lucide-vue-next'
 import { getToken } from '@/lib/api'
+import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -43,7 +44,15 @@ const maximized = ref(false)
 
 const contentStyle = computed<Record<string, string>>(() => {
   const s: Record<string, string> = {}
-  if (maximized.value) {
+  if (isPhone.value) {
+    // 手机：直接按铺满语义渲染（100dvh 全屏），不进 resize/restore 那套——
+    // MIN_W=480 的 clamp 会把 480px 最小宽强加给 375px 视口导致横向溢出。
+    s.left = '0px'
+    s.top = '0px'
+    s.width = '100vw'
+    s.height = '100dvh'
+    s.borderRadius = '0px'
+  } else if (maximized.value) {
     s.left = '0px'
     s.top = '0px'
     s.width = '100vw'
@@ -63,7 +72,7 @@ const contentStyle = computed<Record<string, string>>(() => {
 
 // 有显式位置（拖过或铺满）时压掉基础类的居中 translate。用 !important 的 class 而非
 // inline transform：reka-ui 动画结束会清 inline style，transform:none 会被一起抹掉（实测）。
-const anchored = computed(() => maximized.value || !!pos.value)
+const anchored = computed(() => isPhone.value || maximized.value || !!pos.value)
 
 function toggleMax(): void {
   maximized.value = !maximized.value
@@ -240,17 +249,19 @@ function teardown(): void {
 }
 
 onMounted(() => {
-  // 记住的窗口尺寸（clamp 到当前视口，防止换小屏后打不开）
-  try {
-    const s = JSON.parse(localStorage.getItem(SIZE_KEY) || 'null') as { w?: unknown; h?: unknown } | null
-    if (s && typeof s.w === 'number' && typeof s.h === 'number') {
-      size.value = {
-        w: Math.max(MIN_W, Math.min(s.w, innerWidth - 16)),
-        h: Math.max(MIN_H, Math.min(s.h, innerHeight - 16)),
+  // 记住的窗口尺寸（clamp 到当前视口，防止换小屏后打不开）；手机全屏形态不恢复尺寸
+  if (!isPhone.value) {
+    try {
+      const s = JSON.parse(localStorage.getItem(SIZE_KEY) || 'null') as { w?: unknown; h?: unknown } | null
+      if (s && typeof s.w === 'number' && typeof s.h === 'number') {
+        size.value = {
+          w: Math.max(MIN_W, Math.min(s.w, innerWidth - 16)),
+          h: Math.max(MIN_H, Math.min(s.h, innerHeight - 16)),
+        }
       }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
   connectCtrl()
 })
@@ -284,7 +295,7 @@ onBeforeUnmount(() => {
          实测：点一下画面（拖窗口/选文本）Dialog 直接消失。桌面是独占交互面，禁掉 outside-dismiss，
          关窗只走右上角 X 与 Escape。 -->
     <DialogContent
-      class="flex h-[88vh] w-[94vw] max-w-none flex-col"
+      class="flex h-[88vh] w-[94vw] max-w-none flex-col max-md:h-[100dvh] max-md:max-h-none max-md:w-full max-md:rounded-none max-md:border-0 max-md:p-0"
       :class="anchored ? '!translate-x-0 !translate-y-0' : ''"
       :style="contentStyle"
       @pointer-down-outside.prevent
@@ -341,8 +352,8 @@ onBeforeUnmount(() => {
         <span>拖边缘/四角调整窗口 · 双击标题栏或右上角铺满 · 分辨率固定于连接时</span>
       </div>
 
-      <!-- 拖拽手柄：8 向（四边细条 + 四角小方块）。铺满态不需要。 -->
-      <template v-if="!maximized">
+      <!-- 拖拽手柄：8 向（四边细条 + 四角小方块）。铺满态/手机全屏不需要。 -->
+      <template v-if="!maximized && !isPhone">
         <div
           v-for="d in HANDLES"
           :key="d"

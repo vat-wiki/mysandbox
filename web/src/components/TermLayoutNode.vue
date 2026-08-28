@@ -85,8 +85,10 @@ function onDividerStart(idx: number, parentSize: number) {
         {{ ops.groupLabel(group) }}<span v-if="total > 1"> #{{ ordinal + 1 }}</span>
       </span>
       <div class="ml-auto flex items-center gap-0.5">
+        <!-- 左右分屏在手机隐藏（max-md:）：竖屏宽度放不下并排 pane；上下分屏保留。
+             触屏下按钮命中区放大（pointer-coarse:p-1.5）。 -->
         <button
-          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground max-md:hidden pointer-coarse:p-1.5"
           :title="splitTitle('row')"
           :disabled="full"
           @click="doSplit('row')"
@@ -94,7 +96,7 @@ function onDividerStart(idx: number, parentSize: number) {
           <SquareSplitHorizontal class="size-3.5" />
         </button>
         <button
-          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground pointer-coarse:p-1.5"
           :title="splitTitle('col')"
           :disabled="full"
           @click="doSplit('col')"
@@ -102,7 +104,7 @@ function onDividerStart(idx: number, parentSize: number) {
           <SquareSplitVertical class="size-3.5" />
         </button>
         <button
-          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-destructive"
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-destructive pointer-coarse:p-1.5"
           title="关闭"
           @click="doClose()"
         >

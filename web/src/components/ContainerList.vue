@@ -24,6 +24,7 @@ import { trackServiceJobs } from '@/lib/serviceJobs'
 import { newId } from '@/lib/id'
 import { containerColor } from '@/lib/utils'
 import { baseLabel } from '@/lib/caps'
+import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -189,6 +190,11 @@ function saveTabs(): void {
   }
 }
 watch([groups, activeIdx], saveTabs, { deep: true })
+
+// 手机侧栏抽屉：overlay 形态（绝对定位 + 遮罩），终端区宽度不变——不选 push 是刻意的：
+// push 会改终端容器宽度 → 触发 refit / tmux resize，打断正在跑的 TUI/vim。
+// 默认收起；选完容器/宿主自动收（见 openTerm/openHostTerm）。
+const drawerOpen = ref(false)
 
 // ---- 分屏树的动作与拖拽 ----
 // 树操作纯函数在 lib/termlayout.ts；这里经 TERM_OPS 注入给递归的 TermLayoutNode 上抛动作。
@@ -583,6 +589,7 @@ function openNewGroup() {
 // 想要同容器多个独立 shell -> 在 pane 头部点左右 / 上下分屏。
 // 首参为最小结构形状（locateContainerPath 宿主分支复用，见其注释）。
 function openTerm(c: { id: string; name: string; displayName?: string }) {
+  if (isPhone.value) drawerOpen.value = false
   const i = groups.value.findIndex((g) => g.containerId === c.id)
   if (i >= 0) {
     activeIdx.value = i
@@ -592,6 +599,7 @@ function openTerm(c: { id: string; name: string; displayName?: string }) {
 }
 // 点侧栏「宿主」条目：开宿主终端（PTY 由 server 管理，cwd=镜像目录）。全局唯一一个 group。
 function openHostTerm() {
+  if (isPhone.value) drawerOpen.value = false
   const i = groups.value.findIndex((g) => g.kind === 'host')
   if (i >= 0) {
     activeIdx.value = i
@@ -958,15 +966,35 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 gap-0">
+  <div class="relative flex h-full min-h-0 gap-0">
     <!-- 左侧窄栏的信息架构：一个主体 + 两个辅助。
          「容器」是全侧栏唯一的标题 + 唯一的列表；宿主终端是钉在顶部的单行快捷入口；
          docker 服务是底部的摘要条（不以行的形态出现，避免形成第二个并列清单）。
-         模板/全局 hosts 等容器作用域的低频配置收进容器标题的 ⋯ 菜单。popout 独立窗口不渲染。 -->
-    <aside v-if="!props.popout" class="flex w-56 shrink-0 flex-col border-r border-border md:w-64">
+         模板/全局 hosts 等容器作用域的低频配置收进容器标题的 ⋯ 菜单。popout 独立窗口不渲染。
+         手机（<768px）：侧栏转 overlay 抽屉（max-md:absolute + 遮罩），默认收起，
+         汉堡入口在 tab 栏最左；桌面（≥768）恒为静态侧栏，抽屉相关类全部不命中。 -->
+    <div
+      v-if="!props.popout && drawerOpen"
+      class="fixed inset-0 z-30 bg-black/50 md:hidden"
+      @click="drawerOpen = false"
+    />
+    <aside
+      v-if="!props.popout"
+      class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:w-64"
+      :class="drawerOpen ? '' : 'max-md:-translate-x-full'"
+    >
       <!-- 品牌块：纯身份标识，居中。系统健康不做常驻展示——引擎/连接出问题时终端连不上，
-           tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。 -->
+           tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。手机抽屉态左侧加收起按钮。 -->
       <div class="flex h-10 shrink-0 items-center justify-center gap-2 border-b border-border px-3">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="absolute left-1 md:hidden"
+          title="收起侧栏"
+          @click="drawerOpen = false"
+        >
+          <X />
+        </Button>
         <img src="/logo.svg" alt="" class="size-5" />
         <span class="text-sm font-semibold tracking-tight">MySandbox</span>
       </div>
@@ -989,7 +1017,7 @@ onUnmounted(() => {
           <Button
             variant="ghost"
             size="icon-xs"
-            class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
             title="在独立窗口打开宿主终端"
             @click.stop="openPopout(HOST_ID)"
           >
@@ -1079,14 +1107,17 @@ onUnmounted(() => {
                 selected.has(c.id) || selectionActive ? 'opacity-0' : 'group-hover:opacity-0',
               ]"
             />
-            <Checkbox
-              v-if="c.managed || c.adopted"
-              class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity"
-              :class="selected.has(c.id) || selectionActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
-              :model-value="selected.has(c.id)"
-              @update:model-value="() => toggle(c.id)"
-              @click.stop
-            />
+            <!-- 触屏常显（pointer-coarse：无 hover 可依赖；opacity-0 的元素仍可点中，
+                 「看不见但能戳」是坏状态）。外包 -m-2 扩命中区。 -->
+            <div v-if="c.managed || c.adopted" class="pointer-coarse:p-2 pointer-coarse:-m-2">
+              <Checkbox
+                class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity"
+                :class="selected.has(c.id) || selectionActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100'"
+                :model-value="selected.has(c.id)"
+                @update:model-value="() => toggle(c.id)"
+                @click.stop
+              />
+            </div>
           </div>
           <span
             class="h-3 w-1 shrink-0 rounded-full"
@@ -1098,16 +1129,16 @@ onUnmounted(() => {
           <Badge
             v-if="!c.managed && !c.adopted"
             variant="outline"
-            class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex"
+            class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
             >外部</Badge
           >
-          <!-- ⋯ 菜单：低频操作收进来（外部的容器只有「纳入管理」） -->
+          <!-- ⋯ 菜单：低频操作收进来（外部的容器只有「纳入管理」）。触屏常显。 -->
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
               <Button
                 variant="ghost"
                 size="icon-xs"
-                class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
                 :disabled="busy[c.id]"
                 :title="busy[c.id] ? '处理中…' : '更多操作'"
                 @click.stop
@@ -1183,7 +1214,7 @@ onUnmounted(() => {
         <Button
           variant="ghost"
           size="icon-xs"
-          class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+          class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
           title="新建服务"
           @click.stop="emit('open-services', true)"
         >
@@ -1202,18 +1233,29 @@ onUnmounted(() => {
         <Button variant="destructive" size="xs" class="ml-auto" @click="emit('open-base')">{{ baseLabel }}管理</Button>
       </div>
 
-      <!-- tab 栏：每组一个 tab，色条=容器色，·N=pane 数（>1 才显示） -->
-      <div class="flex items-stretch border-b border-border bg-muted/30">
+      <!-- tab 栏：每组一个 tab，色条=容器色，·N=pane 数（>1 才显示）。
+           手机：最左汉堡开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
+           ＋/文件面板按钮固定右侧；「N 个终端组」计数文案藏掉（tab 本身可数）。 -->
+      <div class="flex border-b border-border bg-muted/30">
+        <button
+          v-if="!props.popout"
+          class="flex shrink-0 items-center border-r border-border px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:hidden"
+          title="打开侧栏（容器列表）"
+          @click="drawerOpen = true"
+        >
+          <MoreHorizontal class="size-3.5" />
+        </button>
+        <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin">
         <div
           v-for="(g, idx) in groups"
           :key="g.id"
-          draggable="true"
+          :draggable="!isPhone"
           @click="activeIdx = idx"
           @dragstart="onTabDragStart($event, idx)"
           @dragover="onTabDragOver($event, idx)"
           @dragend="onTabDragEnd"
           :class="[
-            'flex cursor-pointer items-center gap-2 border-r border-border px-3 py-1.5 text-xs',
+            'flex shrink-0 cursor-pointer items-center gap-2 border-r border-border px-3 py-1.5 text-xs',
             idx === activeIdx ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50',
             dragTabIdx === idx ? 'opacity-40' : '',
           ]"
@@ -1226,11 +1268,12 @@ onUnmounted(() => {
           <span class="font-mono">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
           <button
             @click.stop="closeGroupById(g.id)"
-            class="ml-1 text-muted-foreground hover:text-destructive"
+            class="ml-1 text-muted-foreground hover:text-destructive pointer-coarse:px-2 pointer-coarse:py-1"
             title="关闭终端组"
           >✕</button>
         </div>
-        <span class="ml-auto self-center px-3 text-xs text-muted-foreground">{{ groups.length }} 个终端组</span>
+        </div>
+        <span class="ml-auto self-center px-3 text-xs text-muted-foreground hidden md:block">{{ groups.length }} 个终端组</span>
         <button
           class="flex items-center self-stretch border-l border-border px-3 text-xs"
           :class="
@@ -1256,7 +1299,7 @@ onUnmounted(() => {
       <!-- 宿主信息条：会话 cwd（默认=镜像目录，cd 后跟随）。轮询 5s。 -->
       <div
         v-if="activeGroup?.kind === 'host'"
-        class="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-2 font-mono text-[11px] text-muted-foreground"
+        class="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-2 font-mono text-[11px] text-muted-foreground pointer-coarse:h-8"
       >
         <Monitor class="size-3 shrink-0 text-amber-500" />
         <span class="shrink-0 select-none">宿主终端</span>
@@ -1267,7 +1310,7 @@ onUnmounted(() => {
       <!-- 容器信息条：active group 容器的 IP（点击复制）· 容器内监听端口（点击打开）· docker 映射端口 -->
       <div
         v-else-if="activeContainer && activeContainer.state === 'running'"
-        class="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-2 font-mono text-[11px] text-muted-foreground"
+        class="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-2 font-mono text-[11px] text-muted-foreground pointer-coarse:h-8"
       >
         <button
           v-if="activeContainer.ip"
@@ -1363,17 +1406,19 @@ onUnmounted(() => {
         </div>
 
         <!-- 右侧文件面板：跟随 active group 第一个 pane 的 cwd（可切 pane）。
-             宿主组同样渲染：api.ts 按 HOST_ID 哨兵把文件请求切到 /api/host-terminal/*。 -->
+             宿主组同样渲染：api.ts 按 HOST_ID 哨兵把文件请求切到 /api/host-terminal/*。
+             手机全屏覆盖（absolute inset-0）：固定像素宽 + 分隔条在窄屏放不下，
+             PaneDivider 跳过、filesW 不绑定；桌面原路径（filesW + PaneDivider）全保留。 -->
         <PaneDivider
-          v-if="showFiles"
+          v-if="showFiles && !isPhone"
           @dragstart="(w: number) => onFilesDragStart(activeGroup, 1, w)"
           @drag="onFilesDrag"
         />
         <FilePanel
           v-if="showFiles"
           ref="filePanelRef"
-          class="shrink-0 border-l border-border"
-          :style="{ width: filesW + 'px' }"
+          class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
+          :style="isPhone ? undefined : { width: filesW + 'px' }"
           :container-id="activeGroup ? activeGroup.containerId : ''"
           :container-name="activeGroup ? activeGroup.name : ''"
           :panes="filePanes"

@@ -14,6 +14,12 @@ import {
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
@@ -35,6 +41,7 @@ import {
   FilePlus,
   FolderPlus,
   Trash2,
+  MoreHorizontal,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -224,6 +231,10 @@ function onCtxMenu(ev: MouseEvent) {
   const el = (ev.target as HTMLElement).closest('[data-entry]')
   ctxEntry.value = el ? (entries.value.find((e) => e.name === el.getAttribute('data-entry')) ?? null) : null
 }
+// 触屏行内 ⋯ 菜单（手机右键不可达）：与 ContextMenu 同一批动作/处理器，只是入口不同。
+function onRowMenu(e: FileEntry) {
+  ctxEntry.value = e
+}
 // 命名弹窗：mode 区分三个操作；entry 为重命名/删除目标。err 是异步结果回显。
 const nameDialog = ref<null | { mode: 'newFile' | 'newDir' | 'rename' }>(null)
 const delTarget = ref<FileEntry | null>(null)
@@ -296,6 +307,27 @@ function fmtSize(n: number): string {
       >
         <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
       </select>
+      <!-- 新建文件/文件夹（目录级操作）：手机主入口（触屏无右键），桌面也是顺手按钮 -->
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        class="shrink-0"
+        :disabled="!path"
+        title="新建文件"
+        @click="nameDialog = { mode: 'newFile' }"
+      >
+        <FilePlus />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        class="shrink-0"
+        :disabled="!path"
+        title="新建文件夹"
+        @click="nameDialog = { mode: 'newDir' }"
+      >
+        <FolderPlus />
+      </Button>
       <Button
         variant="ghost"
         size="icon-xs"
@@ -403,6 +435,28 @@ function fmtSize(n: number): string {
               <span v-if="e.type !== 'dir'" class="shrink-0 text-[10px] text-muted-foreground">{{
                 fmtSize(e.size)
               }}</span>
+              <!-- 行内 ⋯（重命名/删除）：触屏无右键，这是手机上的唯一入口；桌面隐藏 -->
+              <DropdownMenu>
+                <DropdownMenuTrigger as-child>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    class="shrink-0 md:hidden"
+                    title="更多操作"
+                    @click.stop
+                  >
+                    <MoreHorizontal />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" class="w-36">
+                  <DropdownMenuItem @click="onRowMenu(e); nameDialog = { mode: 'rename' }">
+                    <PenLine /> 重命名
+                  </DropdownMenuItem>
+                  <DropdownMenuItem variant="destructive" @click="onRowMenu(e); delTarget = e">
+                    <Trash2 /> 删除
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </template>
         </div>

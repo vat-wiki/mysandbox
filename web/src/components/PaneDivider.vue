@@ -32,9 +32,13 @@ useDraggable(handle, {
 </script>
 
 <template>
+  <!-- 视觉宽度恒为 4px（w-1/h-1）：ContainerList 的分屏比例数学按「每条分隔条 4px」
+       扣减（parentSize - 4*(n-1)），加粗视觉宽度会破坏换算。触屏命中区靠
+       ms-divider-touch 伪元素外扩（inset -10px，命中区 ~24px），不参与布局。
+       touch-none：拖动时页面滚动不抢手势。 -->
   <div
     ref="handle"
-    class="shrink-0 bg-border/60 hover:bg-primary/40"
+    class="relative shrink-0 touch-none bg-border/60 hover:bg-primary/40 ms-divider-touch"
     :class="vertical ? 'h-1 cursor-row-resize' : 'w-1 cursor-col-resize'"
     :title="vertical ? '拖动调整高度' : '拖动调整宽度'"
   />

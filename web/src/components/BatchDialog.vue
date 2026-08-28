@@ -386,14 +386,15 @@ const tabs: { key: string; label: string }[] = [
       </div>
 
       <Tabs :model-value="tab" class="flex min-h-0 flex-1" @update:model-value="onTab">
-        <!-- tab 栏：自然宽度胶囊轨道（不 grid 等分，避免窄 label 挤在一起） -->
-        <div class="border-b px-5 py-3">
+        <!-- tab 栏：自然宽度胶囊轨道（不 grid 等分，避免窄 label 挤在一起）；
+             手机上横向滚动（5 个胶囊在窄屏放不下，shrink-0 保单个胶囊不被压扁） -->
+        <div class="overflow-x-auto border-b px-5 py-3 scroll-thin">
           <TabsList class="gap-1">
             <TabsTrigger
               v-for="t in tabs"
               :key="t.key"
               :value="t.key"
-              class="flex-none px-3 text-xs"
+              class="shrink-0 px-3 text-xs"
               >{{ t.label }}</TabsTrigger
             >
           </TabsList>
@@ -424,14 +425,14 @@ const tabs: { key: string; label: string }[] = [
                 type="number"
                 min="1"
                 placeholder="60"
-                class="w-24"
+                class="w-24 max-md:w-20"
               />
             </div>
           </TabsContent>
 
           <!-- git -->
           <TabsContent value="git" class="space-y-3">
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div class="space-y-1.5">
                 <Label for="b-git-name">git 用户名</Label>
                 <Input id="b-git-name" v-model="gitName" placeholder="dev" />
@@ -489,7 +490,7 @@ const tabs: { key: string; label: string }[] = [
               <Label>网关类型</Label>
               <RadioGroup
                 :model-value="aiGwKind ?? ''"
-                class="grid grid-cols-3 gap-2"
+                class="grid grid-cols-1 gap-2 sm:grid-cols-3"
                 @update:model-value="(v) => (aiGwKind = v as 'anthropic' | 'openai' | 'dual')"
               >
                 <label
@@ -523,7 +524,7 @@ const tabs: { key: string; label: string }[] = [
             </div>
 
             <!-- 端点：只出现本场景需要的框；框下点名消费者 -->
-            <div v-if="aiGwKind" class="grid gap-3" :class="aiGwKind === 'dual' ? 'grid-cols-2' : ''">
+            <div v-if="aiGwKind" class="grid gap-3" :class="aiGwKind === 'dual' ? 'grid-cols-1 sm:grid-cols-2' : ''">
               <div v-if="aiGwKind !== 'openai'" class="space-y-1.5">
                 <Label for="b-ai-anthropic">Anthropic 兼容 Base URL</Label>
                 <Input
@@ -571,7 +572,7 @@ const tabs: { key: string; label: string }[] = [
                  协议多选只在 dual 场景露出——单协议网关没有「选协议」这回事。 -->
             <div v-if="aiGwKind" class="space-y-2 rounded-md border p-3">
               <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <label class="flex w-32 items-center gap-1.5 text-sm" :class="aiGwKind === 'openai' ? 'opacity-50' : ''">
+                <label class="flex w-32 items-center gap-1.5 text-sm max-md:w-24" :class="aiGwKind === 'openai' ? 'opacity-50' : ''">
                   <Checkbox
                     id="ai-claude"
                     :model-value="aiTools.claude"
@@ -583,7 +584,7 @@ const tabs: { key: string; label: string }[] = [
                 <span class="text-[11px] text-muted-foreground">anthropic 协议（固定）</span>
               </div>
               <div class="flex flex-wrap items-center gap-x-3 gap-y-2" :class="codexDisabled ? 'opacity-50' : ''">
-                <label class="flex w-32 items-center gap-1.5 text-sm">
+                <label class="flex w-32 items-center gap-1.5 text-sm max-md:w-24">
                   <Checkbox
                     id="ai-codex"
                     :model-value="aiTools.codex"
@@ -597,7 +598,7 @@ const tabs: { key: string; label: string }[] = [
                 </span>
               </div>
               <div v-for="tool in ['opencode', 'pi'] as const" :key="tool" class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <label class="flex w-32 items-center gap-1.5 text-sm">
+                <label class="flex w-32 items-center gap-1.5 text-sm max-md:w-24">
                   <Checkbox
                     :id="`ai-${tool}`"
                     :model-value="aiTools[tool]"

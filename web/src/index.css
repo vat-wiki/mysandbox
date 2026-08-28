@@ -80,6 +80,27 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* 刘海屏 safe-area（viewport-fit=cover 的前提）：手机全屏覆盖层（侧栏抽屉 / 全屏文件面板 /
+   全屏对话框）用 pb-safe 等避开 home indicator 与状态栏，桌面端 env() 恒为 0 无副作用。 */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility px-safe {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* 分隔条触屏扩命中区：PaneDivider 视觉宽度恒为 4px（分屏比例数学 parentSize - 4*(n-1)
+   写死了它），触屏命中区靠伪元素外扩，不参与布局。 */
+.ms-divider-touch::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+}
+
 /* 终端滚动条：暗色细条，与整体深色面板统一（xterm-viewport 原生滚动条）。
    thumb 用 border + background-clip 内缩，比 track 窄一截，hover 时更亮。 */
 .xterm-viewport::-webkit-scrollbar {
