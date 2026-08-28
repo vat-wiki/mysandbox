@@ -342,6 +342,13 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       //     （update-environment 默认不含 LANG），之后 exec 带的 LANG 传不进已运行的 server——
       //     修复前起的 server 其新 pane 仍会落在 C locale（提示符 » 显示成 _、编辑残留幽灵字符，
       //     见 engine/lxc.ts attachArgs 的 locale 注释），每次 attach 钉一次补漏。
+      //      set -as terminal-overrides Ms + set -g set-clipboard on：打通 OSC 52（剪贴板）转发。
+      //     TUI 应用（opencode 等）在容器内没有 X/Wayland，xclip/wl-copy 全失败，唯一的复制通道
+      //     是「请终端代写剪贴板」的 OSC 52——但 tmux 默认不转发它（terminfo 无 Ms 能力时直接
+      //     丢弃），应用还照样提示「已复制」（发序列是火后不管的）。Ms override 让 tmux 相信
+      //     外层终端支持剪贴板；set-clipboard 必须 on（external 只转发 tmux 自己的 buffer 操作、
+      //     忽略 pane 内应用发的序列——实测对照过）；前端 Terminal.vue 的 registerOscHandler(52)
+      //     接住转发来的序列写 navigator.clipboard，三方接通。
       //   3) exec tmux attach：替换进程为 attach 客户端。
       //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>。
       //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
@@ -350,7 +357,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       const cmd = useTmux
         ? [
             'sh', '-c',
-            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; exec tmux attach -t "$1"',
+            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; exec tmux attach -t "$1"',
             'sh', session, shell, pidfile, oldSession,
           ]
         : [shell];

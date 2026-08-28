@@ -282,6 +282,10 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
           await hostTmux(['set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@']);
           await hostTmux(['set-environment', '-g', 'MYSANDBOX_WEB', '1']);
           await hostTmux(['set', '-s', 'allow-passthrough', 'on']);
+          // OSC 52（剪贴板）转发打通：Ms override + set-clipboard on（external 不转发 pane
+          // 内应用发的序列，实测对照过）。背景见 terminal.ts 的同名注释。
+          await hostTmux(['set', '-as', 'terminal-overrides', ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007']);
+          await hostTmux(['set', '-g', 'set-clipboard', 'on']);
         }
       }
 

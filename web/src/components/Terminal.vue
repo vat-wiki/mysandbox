@@ -165,7 +165,8 @@ watch(
 )
 
 // 复制/粘贴：tmux 不再劫持鼠标（后端 set -g mouse off），交互层由 xterm.js 接管。
-// 剪贴板走 navigator.clipboard（web 终端标准做法，无需 OSC 52）。非 HTTPS / 无权限时静默失败。
+// 剪贴板走 navigator.clipboard；OSC 52（TUI 应用请终端代写剪贴板）也汇到 copyText
+// （见下方 registerOscHandler(52)）。非 HTTPS / 无权限时静默失败。
 async function copyText(s: string) {
   try {
     await navigator.clipboard.writeText(s)
@@ -291,6 +292,30 @@ onMounted(async () => {
     }
     return true
   })
+  // OSC 52（剪贴板操作）：TUI 应用（opencode/claude code 等）在容器内没有 X/Wayland
+  // 环境，xclip/wl-copy 全失败，唯一的复制通道就是「请终端代写剪贴板」的 OSC 52。
+  // xterm.js 核心不实现它——不接的话应用提示「已复制」但剪贴板纹丝不动（VSCode 终端
+  // 实现了 OSC 52，所以同样的 opencode 在 VSCode 里能复制）。
+  // payload：`<selection>;<base64|?>`；? = 查询剪贴板（只回空——我们只做写入侧，
+  // 读回会话里粘贴已有 navigator.clipboard 通道，且查询有剪贴板内容外泄面）。
+  // tmux 下它以 DCS passthrough 到达，xterm 解包后仍是 52 号 OSC，无需特判。
+  term.parser.registerOscHandler(52, (data) => {
+    const i = data.indexOf(';')
+    if (i < 0) return true
+    if (data.slice(i + 1) === '?') return true // 查询：不回应
+    // base64 → UTF-8：atob 出的是 latin1 字节，中文等非 ASCII 必须经 Uint8Array 解码
+    try {
+      const b64 = data.slice(i + 1)
+      const bin = atob(b64)
+      const bytes = new Uint8Array(bin.length)
+      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k)
+      const text = new TextDecoder().decode(bytes)
+      if (text) void copyText(text)
+    } catch {
+      /* 非法 base64：静默 */
+    }
+    return true
+  })
   // 路径链接 provider（Ctrl+点击打开）。必须在上面 WebLinksAddon 之后注册：xterm 按注册
   // 顺序取第一个命中位置的链接，URL 撞位时归 web-links，别调换顺序。
   // 宽字符映射是核心：translateToString 的字符串索引 ≠ cell 列（CJK 占 2 cell，其后还有
@@ -323,8 +348,9 @@ onMounted(async () => {
       callback(
         toks.map((tk) => ({
           range: {
-            // xterm 的 range 是 1 基；_linkAtPosition 用闭区间 start<=x<=end，end.x 必须是
-            // 末字符所在列而非下一列（多一格会把邻列也点亮）。末字符是宽字符时 +1 覆盖续格。
+            // xterm 的 range 是 1 基；_linkAtPosition 用闭区间 start<=x<=end，end.x 是
+            // 末字符的下一列（与 web-links 的 _mapStrIdx 返回值同语义；实测 underline
+            // 宽度 = x2-x1 = token 精确 cell 数）。末字符是宽字符时 +1 覆盖续格。
             start: { x: cellOf[tk.start]! + 1, y: bufferLineNumber },
             end: {
               x: cellOf[tk.end - 1]! + 1 + (widthAt[cellOf[tk.end - 1]!] === 2 ? 1 : 0),
@@ -332,6 +358,8 @@ onMounted(async () => {
             },
           },
           text: tk.path,
+          // 显式声明 hover 装饰（缺省值也是全开，显式写防止默认值随版本漂移）。
+          decorations: { underline: true, pointerCursor: true },
           // 只在按住 Ctrl/Cmd（macOS）时激活；普通点击 no-op，选区/聚焦等原生行为不受影响。
           activate(event: MouseEvent) {
             if (!(event.ctrlKey || event.metaKey)) return
