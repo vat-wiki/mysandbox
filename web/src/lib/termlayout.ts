@@ -1,5 +1,6 @@
 // 终端分屏布局：树形结构 + 纯函数操作。
 import type { InjectionKey } from 'vue'
+import { newId } from './id.js'
 // 叶子 = 一个终端 pane（termId 即会话标识）；split = 同方向（row=左右 / col=上下）的
 // 1..N 块并排，grows[i] 是 children[i] 的 flex-grow 比例。任意嵌套即可表达
 // 「左边一整列、右边上下两块」这类布局。
@@ -38,7 +39,7 @@ export interface TermGroup {
 }
 
 export function newSplitId(): string {
-  return crypto.randomUUID()
+  return newId()
 }
 
 export function equalGrows(n: number): number[] {

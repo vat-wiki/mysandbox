@@ -21,6 +21,7 @@ import {
   type ServiceView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
+import { newId } from '@/lib/id'
 import { containerColor } from '@/lib/utils'
 import { baseLabel } from '@/lib/caps'
 import { Button } from '@/components/ui/button'
@@ -105,10 +106,10 @@ const TABS_KEY =
     ? `mysandbox:term-tabs-popout-${props.popoutTarget}`
     : 'mysandbox:term-tabs-v4'
 function newTermId(): string {
-  return crypto.randomUUID()
+  return newId()
 }
 function newGroupId(): string {
-  return crypto.randomUUID()
+  return newId()
 }
 // 一个 group = 一个容器终端组，root 是布局树（类型与操作见 lib/termlayout.ts）：
 // 叶子 = 一个独立 termId/会话，split = 同方向多块嵌套（row 左右 / col 上下），任意组合。
