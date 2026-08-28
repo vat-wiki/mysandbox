@@ -200,11 +200,6 @@ export const getAiGateway = () =>
 export const batchAiConfig = (ids: string[], input: AiGatewayInput) =>
   postJson('/api/batch/ai-config', { ids, ...input }) as Promise<BatchResult>
 
-// —— 宿主终端 ——
-// 会话活跃 pane 的 cwd（信息条显示「宿主 · <镜像目录>」用；轮询）。
-// 复用 getTermCwd：HOST_ID 哨兵会落到 /api/host-terminal/cwd（文件 API 端点切换同源）。
-export const getHostCwd = (termId: string) => getTermCwd(HOST_ID, termId)
-
 // —— 终端会话（跨窗口/浏览器找回 tmux 会话）——
 // 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）。
 export interface TermSessionView {

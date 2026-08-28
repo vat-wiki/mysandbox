@@ -3,10 +3,11 @@
 // split = 同方向多块并排/堆叠 + 可拖分隔条。自身在模板里递归引用，深度不限。
 // 布局状态全部由 ContainerList 持有：动作经 inject 的 TERM_OPS 上抛统一改树，
 // 尺寸比例由父级经 style 下发（flexGrow + flexBasis 0%）。
-import { computed, defineAsyncComponent, inject } from 'vue'
+import { computed, defineAsyncComponent, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { SquareSplitHorizontal, SquareSplitVertical, X } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { containerColor } from '@/lib/utils'
+import { getTermCwd } from '@/lib/api'
 import {
   TERM_OPS,
   MAX_GROUP_PANES,
@@ -70,21 +71,58 @@ function onDividerStart(idx: number, parentSize: number) {
   if (!s) return
   ops.dividerStart(s, idx, parentSize, s.dir === 'col' ? 80 : 120)
 }
+
+// —— pane 自己的 cwd（头部标题旁展示）——
+// 每叶子一份轮询：容器侧 tmux list-panes、宿主侧同款端点（HOST_ID 哨兵分流）。
+// 5s 节奏与旧整行信息条一致；会话未建/已收（404）显示占位而非报错。组切走
+// （active=false）继续轮——切回来立即是新鲜值，代价是后台组也每 5s 一个轻请求。
+const cwd = ref('')
+let cwdSeq = 0
+let cwdTimer: ReturnType<typeof setInterval> | null = null
+async function pollCwd() {
+  const l = leaf.value
+  const seq = ++cwdSeq
+  if (!l) return
+  try {
+    // host 组 containerId 即 HOST_ID 哨兵，getTermCwd 自动落到 /api/host-terminal/cwd
+    const r = await getTermCwd(props.group.containerId, l.termId)
+    if (seq !== cwdSeq) return
+    cwd.value = r.cwd
+  } catch {
+    if (seq !== cwdSeq) return
+    cwd.value = '' // 会话还没建好/已收：占位，下轮自愈
+  }
+}
+if (leaf.value) {
+  onMounted(() => {
+    pollCwd()
+    cwdTimer = setInterval(() => void pollCwd(), 5000)
+  })
+  onBeforeUnmount(() => {
+    if (cwdTimer) clearInterval(cwdTimer)
+  })
+  // 组被隐藏/恢复会重建叶子组件（groups ↔ hiddenGroups 换数组），挂载即重启轮询，
+  // 这里不需要额外 watch。
+}
 </script>
 
 <template>
   <!-- 叶子：一个终端 pane -->
   <div v-if="leaf" class="flex min-h-[80px] min-w-[120px] flex-col">
-    <!-- pane 头部：标题用「容器名 #序号」——termId 是内部标识对人无意义；hover 看全 termId -->
+    <!-- pane 头部：标题「容器名 #序号」+ 会话 cwd（tmux 活跃 pane 当前目录，5s 轮询）。
+         termId 是内部标识对人无意义，hover 才可见。 -->
     <div class="flex items-center gap-2 border-b border-border bg-muted/20 px-2 py-1 text-[10px]">
       <span
-        class="h-1.5 w-1.5 rounded-full"
+        class="h-1.5 w-1.5 shrink-0 rounded-full"
         :style="{ backgroundColor: group.kind === 'host' ? '#f59e0b' : containerColor(group.containerId) }"
       />
-      <span class="font-mono text-muted-foreground" :title="leaf.termId">
+      <span class="shrink-0 font-mono text-muted-foreground" :title="leaf.termId">
         {{ ops.groupLabel(group) }}<span v-if="total > 1"> #{{ ordinal + 1 }}</span>
       </span>
-      <div class="ml-auto flex items-center gap-0.5">
+      <span class="min-w-0 flex-1 truncate font-mono text-muted-foreground/80" :title="cwd">
+        {{ cwd ? '· ' + cwd : '· …' }}
+      </span>
+      <div class="ml-auto flex shrink-0 items-center gap-0.5">
         <!-- 左右分屏在手机隐藏（max-md:）：竖屏宽度放不下并排 pane；上下分屏保留。
              触屏下按钮命中区放大（pointer-coarse:p-1.5）。 -->
         <button

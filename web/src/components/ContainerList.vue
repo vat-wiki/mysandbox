@@ -10,7 +10,6 @@ import {
   updateMeta,
   listFiles,
   getListenPorts,
-  getHostCwd,
   resolveTermPath,
   listServices,
   listServiceJobs,
@@ -34,6 +33,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -43,7 +44,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -380,17 +381,16 @@ function onEditorSaved() {
   filePanelRef.value?.refresh()
 }
 
-// ---- 容器信息条（IP / 监听端口 / 映射端口）----
-// active group 容器的网络信息直达条：IP 点击复制，端口 chip 点击开浏览器。
+// ---- 容器网络信息（tab 栏右侧「网络」下拉的数据源）----
+// active group 容器的 IP（点击复制）· 容器内监听端口（点击打开）· docker 映射端口。
 // 监听端口 on-demand 拉（切换 group / 容器恢复运行时），不进 5s 轮询——监听集合变化低频。
 const activeContainer = computed(
   () => items.value.find((x) => x.id === activeGroup.value?.containerId) ?? null,
 )
-// 监听端口分组展示：web 端口（后端实测返回 HTML）直接平铺高亮可点；
-// 其余（ssh/db/redis 等非网页）折叠进「其他 N」，点开才显示——初衷是快速打开网页。
+// 监听端口分组：web 端口（后端实测返回 HTML）标 Globe 可点开；其余（ssh/db/redis
+// 等非网页）平铺弱化展示——下拉空间有限，不再做「其他 N」折叠。
 const listenPorts = ref<number[]>([])
 const webPorts = ref<number[]>([])
-const showOtherPorts = ref(false)
 let listenSeq = 0 // 竞态：切 group 时丢弃慢响应
 const ipCopied = ref(false)
 let ipCopyTimer: ReturnType<typeof setTimeout> | null = null
@@ -417,50 +417,7 @@ async function loadListenPorts() {
 watch(
   () => [activeGroup.value?.containerId, activeContainer.value?.state],
   () => {
-    showOtherPorts.value = false // 换容器收起折叠组
     void loadListenPorts()
-  },
-  { immediate: true },
-)
-
-// ---- 宿主终端信息条（cwd 路径）----
-// host group 激活时轮询会话活跃 pane 的 cwd（信息条显示「宿主 · <路径>」）。
-// 5s 间隔 + 切 group 立即拉一次；竞态 seq 同 loadListenPorts。
-const hostCwd = ref('')
-let hostCwdSeq = 0
-let hostCwdTimer: ReturnType<typeof setInterval> | null = null
-async function loadHostCwd() {
-  const g = activeGroup.value
-  const seq = ++hostCwdSeq
-  if (g?.kind !== 'host') {
-    hostCwd.value = ''
-    return
-  }
-  const ids = leafIds(g.root)
-  const termId = ids[Math.min(filePaneIdx.value, ids.length - 1)]
-  if (!termId) return
-  try {
-    const r = await getHostCwd(termId)
-    if (seq !== hostCwdSeq) return
-    hostCwd.value = r.cwd
-  } catch {
-    if (seq !== hostCwdSeq) return
-    hostCwd.value = '' // 会话未建/已收（显式 kill）等：静默置空
-  }
-}
-watch(
-  () => activeGroup.value?.kind,
-  (kind, old) => {
-    if (kind === 'host') {
-      void loadHostCwd()
-      if (!hostCwdTimer) hostCwdTimer = setInterval(() => void loadHostCwd(), 5_000)
-    } else if (old === 'host') {
-      if (hostCwdTimer) {
-        clearInterval(hostCwdTimer)
-        hostCwdTimer = null
-      }
-      hostCwd.value = ''
-    }
   },
   { immediate: true },
 )
@@ -1131,7 +1088,6 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
-  if (hostCwdTimer) clearInterval(hostCwdTimer)
   if (svcTimer) clearInterval(svcTimer)
 })
 </script>
@@ -1468,6 +1424,95 @@ onUnmounted(() => {
           </ContextMenuContent>
         </ContextMenu>
         </div>
+        <!-- 网络：active group 容器的 IP / 监听端口 / 映射端口收进下拉（原独立信息条）。
+             宿主组没有网络信息，禁用置灰。popout 独立窗口同样有此入口。 -->
+        <DropdownMenu v-if="activeGroup?.kind !== 'host'">
+          <DropdownMenuTrigger as-child>
+            <button
+              class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4"
+              :class="
+                activeContainer
+                  ? 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                  : 'pointer-events-none opacity-30'
+              "
+              :title="`网络信息（${activeContainer?.displayName || activeContainer?.name || ''}）`"
+            >
+              <Network class="size-3.5 max-md:size-5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" class="min-w-56">
+            <template v-if="activeContainer && activeContainer.state === 'running'">
+              <DropdownMenuLabel class="font-mono text-xs font-normal text-muted-foreground">
+                {{ activeContainer.displayName || activeContainer.name }}
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                v-if="activeContainer.ip"
+                class="font-mono text-xs"
+                :title="ipCopied ? '' : '点击复制 IP'"
+                @click="copyIp"
+              >
+                <Network class="size-3.5" />
+                <span class="flex-1">{{ activeContainer.ip }}</span>
+                <span class="text-[10px] text-muted-foreground">{{ ipCopied ? '已复制' : '复制' }}</span>
+              </DropdownMenuItem>
+              <!-- web 端口：后端实测返回 HTML，Globe 标记，点击开浏览器 -->
+              <DropdownMenuItem
+                v-for="p in webPorts"
+                :key="'w' + p"
+                class="font-mono text-xs"
+                :title="`已验证返回网页，点击打开 http://${activeContainer.ip}:${p}`"
+                @click="openUrl(`http://${activeContainer.ip}:${p}`)"
+              >
+                <Globe class="size-3.5 !text-emerald-500" />
+                <span class="flex-1">{{ p }}</span>
+                <span class="text-[10px] text-emerald-500">网页</span>
+              </DropdownMenuItem>
+              <!-- 非 web 监听端口（ssh/db 等）：同样可点开，标记弱化 -->
+              <DropdownMenuItem
+                v-for="p in otherListenPorts"
+                :key="'o' + p"
+                class="font-mono text-xs"
+                :title="`容器内监听 ${p}（未返回 HTML），点击打开 http://${activeContainer.ip}:${p}`"
+                @click="openUrl(`http://${activeContainer.ip}:${p}`)"
+              >
+                <span class="size-3.5 text-center text-muted-foreground">:</span>
+                <span class="flex-1">{{ p }}</span>
+              </DropdownMenuItem>
+              <!-- docker 映射端口（宿主侧访问） -->
+              <DropdownMenuItem
+                v-for="m in mappedPorts"
+                :key="'m' + m.pub"
+                class="font-mono text-xs"
+                :title="`宿主端口 ${m.pub} → 容器 ${m.priv}，点击打开`"
+                @click="openUrl(`http://127.0.0.1:${m.pub}`)"
+              >
+                <ArrowRightLeft class="size-3.5" />
+                <span class="flex-1">{{ m.pub }} → {{ m.priv }}</span>
+                <span class="text-[10px] text-muted-foreground">宿主</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                v-if="!activeContainer.ip && !webPorts.length && !otherListenPorts.length && !mappedPorts.length"
+                class="text-xs text-muted-foreground"
+                disabled
+              >
+                暂无网络信息
+              </DropdownMenuItem>
+            </template>
+            <template v-else>
+              <DropdownMenuItem class="text-xs text-muted-foreground" disabled>
+                容器未运行
+              </DropdownMenuItem>
+            </template>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <button
+          v-else
+          class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4 pointer-events-none opacity-30"
+          title="宿主终端无网络信息"
+        >
+          <Network class="size-3.5 max-md:size-5" />
+        </button>
         <button
           class="flex items-center self-stretch border-l border-border px-3 text-xs max-md:px-4"
           :class="
@@ -1488,88 +1533,6 @@ onUnmounted(() => {
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
         </button>
-      </div>
-
-      <!-- 宿主信息条：会话 cwd（默认=镜像目录，cd 后跟随）。轮询 5s。 -->
-      <div
-        v-if="activeGroup?.kind === 'host'"
-        class="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-2 font-mono text-[11px] text-muted-foreground pointer-coarse:h-8"
-      >
-        <Monitor class="size-3 shrink-0 text-amber-500" />
-        <span class="shrink-0 select-none">宿主终端</span>
-        <span class="shrink-0 select-none opacity-50">·</span>
-        <span class="shrink-0 truncate" :title="hostCwd">{{ hostCwd || '…' }}</span>
-      </div>
-
-      <!-- 容器信息条：active group 容器的 IP（点击复制）· 容器内监听端口（点击打开）· docker 映射端口 -->
-      <div
-        v-else-if="activeContainer && activeContainer.state === 'running'"
-        class="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border px-2 font-mono text-[11px] text-muted-foreground pointer-coarse:h-8"
-      >
-        <button
-          v-if="activeContainer.ip"
-          class="shrink-0 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
-          :title="ipCopied ? '' : '点击复制 IP'"
-          @click="copyIp"
-        >
-          {{ ipCopied ? '已复制' : activeContainer.ip }}
-        </button>
-        <!-- web 端口：实测返回 HTML，高亮 + Globe 标记，一键打开 -->
-        <template v-if="webPorts.length">
-          <span class="shrink-0 select-none opacity-50">·</span>
-          <button
-            v-for="p in webPorts"
-            :key="'w' + p"
-            class="flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-500 hover:bg-emerald-500/25 hover:text-emerald-400"
-            :title="`已验证返回网页，点击打开 http://${activeContainer.ip}:${p}`"
-            @click="openUrl(`http://${activeContainer.ip}:${p}`)"
-          >
-            <Globe class="size-3" />{{ p }}
-          </button>
-        </template>
-        <!-- 非 web 监听端口：折叠进「其他 N」，点开平铺（弱化样式仍可点） -->
-        <template v-if="otherListenPorts.length">
-          <span v-if="!webPorts.length" class="shrink-0 select-none opacity-50">·</span>
-          <button
-            v-if="!showOtherPorts"
-            class="shrink-0 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
-            :title="`${otherListenPorts.length} 个非网页监听端口（ssh/db 等），点击展开`"
-            @click="showOtherPorts = true"
-          >
-            其他 {{ otherListenPorts.length }} ▸
-          </button>
-          <template v-else>
-            <button
-              v-for="p in otherListenPorts"
-              :key="'o' + p"
-              class="shrink-0 rounded px-1.5 py-0.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-              :title="`容器内监听 ${p}（未返回 HTML），点击打开 http://${activeContainer.ip}:${p}`"
-              @click="openUrl(`http://${activeContainer.ip}:${p}`)"
-            >
-              :{{ p }}
-            </button>
-            <button
-              key="collapse"
-              class="shrink-0 rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
-              title="收起非网页端口"
-              @click="showOtherPorts = false"
-            >
-              ▸
-            </button>
-          </template>
-        </template>
-        <template v-if="mappedPorts.length">
-          <span class="shrink-0 select-none opacity-50">·</span>
-          <button
-            v-for="m in mappedPorts"
-            :key="'m' + m.pub"
-            class="shrink-0 rounded bg-muted/60 px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
-            :title="`宿主端口 ${m.pub} → 容器 ${m.priv}，点击打开`"
-            @click="openUrl(`http://127.0.0.1:${m.pub}`)"
-          >
-            {{ m.pub }}→{{ m.priv }}
-          </button>
-        </template>
       </div>
 
       <!-- 工作区：终端 + 可选右侧文件面板 -->
