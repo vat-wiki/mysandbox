@@ -34,14 +34,28 @@ const emit = defineEmits<{
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
 // 不在 onBeforeUnmount 里发--刷新页面也会触发 unmount，那时发 kill 会误杀会话、破坏刷新保留。
-// fire-and-forget：WS 关闭由随后 Vue 卸载触发的 onBeforeUnmount 完成；kill 帧先于 close 入队，TCP 保序。
+// CONNECTING 时也不能跳过（原实现只查 OPEN）：断线自动重连未完成的窗口里点 ✕，kill 帧
+// 被静默丢弃 → 服务端当纯 detach → 会话永活（「所有终端」里一直挂着、看似 ✕ 没生效）。
+// 挂到 open 再发；close 先行入队，TCP 保序，服务端先收 kill 再见断开，wantKill 落地。
+// fire-and-forget：open 前组件就卸载也无妨——没送到 kill 就当纯 detach（真 tmux 语义）。
 function kill() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (!ws) return
+  const send = () => {
     try {
-      ws.send(JSON.stringify({ type: 'kill' }))
+      ws?.send(JSON.stringify({ type: 'kill' }))
     } catch {
       /* socket 已关就忽略：没送到 kill 就当纯 detach，会话保留（真 tmux 语义） */
     }
+    try {
+      ws?.close(1000)
+    } catch {
+      /* noop */
+    }
+  }
+  if (ws.readyState === WebSocket.OPEN) send()
+  else if (ws.readyState === WebSocket.CONNECTING) {
+    ws.addEventListener('open', send, { once: true })
+    // 连接失败（onerror 后 open 永不来）：随组件卸载一并丢弃，无需额外清理
   }
 }
 // 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）与首连共用。
