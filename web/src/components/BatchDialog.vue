@@ -42,8 +42,8 @@ import {
 } from '@/components/ui/table'
 
 const props = defineProps<{
-  ids: string[]
-  names: string[]
+  // 可选容器全集（受管理/已纳入的），勾选在对话框内完成——入口不再依赖侧栏选择态。
+  containers: { id: string; label: string; ip?: string | null }[]
 }>()
 const emit = defineEmits<{
   (e: 'done'): void
@@ -51,6 +51,25 @@ const emit = defineEmits<{
   (e: 'unauthorized'): void
   (e: 'open-hosts'): void
 }>()
+
+// 容器勾选：默认全选（批量配置的典型场景就是「对全部来一遍」，不想要的单独取消）。
+// ids 是提交用的派生视图；空选时执行按钮置灰。
+const checked = ref<Set<string>>(new Set(props.containers.map((c) => c.id)))
+const ids = computed(() => props.containers.filter((c) => checked.value.has(c.id)).map((c) => c.id))
+const allChecked = computed(
+  () => props.containers.length > 0 && props.containers.every((c) => checked.value.has(c.id)),
+)
+function toggleCheck(id: string) {
+  const s = new Set(checked.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  checked.value = s
+}
+function toggleCheckAll() {
+  checked.value = allChecked.value
+    ? new Set()
+    : new Set(props.containers.map((c) => c.id))
+}
 
 // tab / sshMode 放宽为 string，避免 reka-ui AcceptableValue 与字面量联合冲突
 const tab = ref<string>('exec')
@@ -227,13 +246,13 @@ function submit() {
       return
     }
     const timeoutMs = execTimeout.value != null ? execTimeout.value * 1000 : undefined
-    run(() => batchExec(props.ids, execCommand.value, timeoutMs))
+    run(() => batchExec(ids.value, execCommand.value, timeoutMs))
   } else if (tab.value === 'git') {
     if (!gitName.value.trim() || !gitEmail.value.trim()) {
       err.value = '用户名和邮箱都必填'
       return
     }
-    run(() => batchGit(props.ids, gitName.value.trim(), gitEmail.value.trim()))
+    run(() => batchGit(ids.value, gitName.value.trim(), gitEmail.value.trim()))
   } else if (tab.value === 'ssh') {
     if (sshMode.value === 'append-key' && !sshKey.value.trim()) {
       err.value = '请粘贴公钥'
@@ -241,8 +260,8 @@ function submit() {
     }
     run(() =>
       sshMode.value === 'reseed'
-        ? batchSshReseed(props.ids)
-        : batchSshAppendKey(props.ids, sshKey.value.trim()),
+        ? batchSshReseed(ids.value)
+        : batchSshAppendKey(ids.value, sshKey.value.trim()),
     )
   } else if (tab.value === 'ai') {
     if (!aiGwKind.value) {
@@ -285,7 +304,7 @@ function submit() {
               : {}),
           }
     run(() =>
-      batchAiConfig(props.ids, {
+      batchAiConfig(ids.value, {
         endpoints: {
           ...(aiGwKind.value !== 'anthropic' && openaiConsumers.value.length
             ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } }
@@ -307,7 +326,7 @@ function submit() {
       return
     }
     // 对已选容器覆写 /etc/hosts（不保存全局——想改全局配置去 hosts 面板）
-    run(() => applyHosts(hostsContent.value, props.ids))
+    run(() => applyHosts(hostsContent.value, ids.value))
   }
 }
 
@@ -377,12 +396,35 @@ const tabs: { key: string; label: string }[] = [
       class="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
     >
       <!-- 头 -->
-      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-5 py-3 pr-10">
-        <DialogTitle class="text-lg font-semibold">批量配置</DialogTitle>
-        <span class="truncate text-sm text-muted-foreground"
-          >已选 {{ ids.length }} 个：{{ names.join('、') }}</span
-        >
-        <DialogDescription class="sr-only">对所选容器批量执行配置或命令</DialogDescription>
+      <div class="border-b px-5 py-3 pr-10">
+        <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <DialogTitle class="text-lg font-semibold">批量配置</DialogTitle>
+          <span class="text-sm text-muted-foreground">已选 {{ ids.length }} / {{ containers.length }} 个</span>
+          <DialogDescription class="sr-only">对所选容器批量执行配置或命令</DialogDescription>
+          <!-- 全选/全不选放头部右侧：勾选区折叠时也能一眼看到并切换 -->
+          <Button
+            variant="ghost"
+            size="xs"
+            class="ml-auto"
+            :title="allChecked ? '全不选' : '全选'"
+            @click="toggleCheckAll"
+          >
+            {{ allChecked ? '全不选' : '全选' }}
+          </Button>
+        </div>
+        <!-- 容器勾选行：紧凑一行流式排布（个位数容器场景，表格是过度设计）。
+             label 行内可点（checkbox + 文本同触发），IP 灰字辅助识别。 -->
+        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
+          <label
+            v-for="c in containers"
+            :key="c.id"
+            class="flex cursor-pointer select-none items-center gap-1.5 text-sm"
+          >
+            <Checkbox :model-value="checked.has(c.id)" @update:model-value="() => toggleCheck(c.id)" />
+            <span class="font-mono">{{ c.label }}</span>
+            <span v-if="c.ip" class="font-mono text-xs text-muted-foreground">{{ c.ip }}</span>
+          </label>
+        </div>
       </div>
 
       <Tabs :model-value="tab" class="flex min-h-0 flex-1" @update:model-value="onTab">
@@ -741,7 +783,7 @@ const tabs: { key: string; label: string }[] = [
       <!-- 底部按钮 -->
       <div class="flex justify-end gap-2 border-t px-5 py-3">
         <Button variant="outline" @click="emit('close')">关闭</Button>
-        <Button :disabled="busy" @click="submit">{{ busy ? '执行中…' : '执行' }}</Button>
+        <Button :disabled="busy || !ids.length" @click="submit">{{ busy ? '执行中…' : '执行' }}</Button>
       </div>
     </DialogContent>
   </Dialog>

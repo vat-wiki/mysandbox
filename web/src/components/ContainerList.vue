@@ -28,7 +28,6 @@ import { baseLabel } from '@/lib/caps'
 import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,7 +43,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -302,12 +301,9 @@ provide(TERM_OPS, {
 })
 
 const showCreate = ref(false)
-// 批量选择：平时不占位，hover 行首浮现勾选框；勾中任意一个进入选择态（受管理容器全部常显），
-// 执行完成 / Esc / 取消即退出。选择发生在列表上，批量对话框只吃打开时的快照。
-const selected = ref<Set<string>>(new Set())
-const selectionActive = computed(() => selected.value.size > 0)
-// 快照而非 live 绑定：done 后立即清空选择，不能回头改已开对话框里的「已选 N 个」
-const batchSel = ref<{ ids: string[]; names: string[] } | null>(null)
+// 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
+// 侧栏不再有选择态。
+const showBatch = ref(false)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
 const delTarget = ref<ContainerView | null>(null)
@@ -856,47 +852,8 @@ function onTabDragEnd() {
   dragTabIdx.value = -1
 }
 
-const selectedNames = computed(() =>
-  items.value.filter((c) => selected.value.has(c.id)).map((c) => c.displayName || c.name),
-)
-
-function toggle(id: string) {
-  const s = new Set(selected.value)
-  if (s.has(id)) s.delete(id)
-  else s.add(id)
-  selected.value = s
-}
-
-// 选择态的管理容器（全选/全不选只碰这些——外部容器本就没有勾选框）
+// 批量配置可选的容器（受管理/已纳入的）：传给 BatchDialog 的全集。
 const selectableItems = computed(() => items.value.filter((c) => c.managed || c.adopted))
-const allSelected = computed(
-  () => selectableItems.value.length > 0 && selectableItems.value.every((c) => selected.value.has(c.id)),
-)
-function toggleAll() {
-  selected.value = allSelected.value ? new Set() : new Set(selectableItems.value.map((c) => c.id))
-}
-function clearSelection() {
-  selected.value = new Set()
-}
-// Esc 退出选择态（对话框开着时不抢——reka-ui Dialog 本身会吃 Esc）
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && selectionActive.value) clearSelection()
-}
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
-
-function openBatch() {
-  batchSel.value = { ids: [...selected.value], names: selectedNames.value }
-}
-// 显式进入选择态（分区标题 ⋯ 菜单入口）：勾选框转为常显，用户自己勾。
-// 没有可选对象（无受管理容器）时不动作——勾选框只属于 managed/adopted。
-function enterSelectMode() {
-  if (!selectableItems.value.length) return
-  // 进入选择态即常显勾选框（selectionActive 已经表达这一点），顺手全选：
-  // 批量配置的典型场景就是「对全部容器来一遍」，全选比逐个勾更省事，
-  // 不想要的再单独取消。
-  selected.value = new Set(selectableItems.value.map((c) => c.id))
-}
 
 // 把新数据按字段合并进旧对象，保持对象引用稳定 -> 仅真正变化的字段才触发响应式，
 // 避免轮询时整表无谓 re-render（闪烁的主因）。
@@ -954,10 +911,7 @@ async function refresh(silent = false) {
     itemsReady.value = true
     lastOkAt.value = Date.now()
     connLost.value = false
-    // 修剪已失效的选择（容器被删）
     const valid = new Set(r.items.map((c) => c.id))
-    const pruned = new Set([...selected.value].filter((id) => valid.has(id)))
-    if (pruned.size !== selected.value.size) selected.value = pruned
     // 关闭已消失容器的终端 group（容器已删，会话随容器消失，只从 UI 移除、不调 kill）。
     // 宿主 group 不依赖容器存在，豁免修剪。
     if (groups.value.some((g) => g.kind !== 'host' && !valid.has(g.containerId))) {
@@ -1254,7 +1208,7 @@ onUnmounted(() => {
               <DropdownMenuItem
                 :disabled="!selectableItems.length"
                 :title="selectableItems.length ? '' : '没有受管理的容器'"
-                @click="enterSelectMode"
+                @click="showBatch = true"
               >
                 <ListChecks /> 批量配置
               </DropdownMenuItem>
@@ -1288,7 +1242,6 @@ onUnmounted(() => {
           v-for="c in items"
           :key="c.id"
           class="group relative flex cursor-pointer flex-col gap-1 rounded-md border border-transparent px-2 py-1.5 pl-2.5 hover:border-border hover:bg-accent/50"
-          :class="{ 'border-border bg-accent/70': selected.has(c.id) }"
           @click="openTerm(c)"
         >
           <!-- 左侧色条：容器色（与 tab 呼应），选中/hover 时更明显 -->
@@ -1296,33 +1249,9 @@ onUnmounted(() => {
             class="absolute inset-y-1.5 left-0.5 w-1 rounded-full"
             :style="{ backgroundColor: containerColor(c.id) }"
           />
-          <!-- 第一行：勾选框（覆盖色条位置，hover/选择态浮现）+ 显示名 + 状态徽章 -->
+          <!-- 第一行：状态色点 + 显示名。状态文字与 ⋯ 重叠过，只靠色点 + 悬停 title。 -->
           <div class="flex items-center gap-2">
-            <div class="relative flex shrink-0 items-center">
-              <span
-                :class="[
-                  'h-2 w-2 rounded-full transition-opacity',
-                  stateColor(c.state),
-                  c.managed || c.adopted
-                    ? selected.has(c.id) || selectionActive
-                      ? 'opacity-0'
-                      : 'group-hover:opacity-0'
-                    : '',
-                ]"
-                :title="stateLabel(c.state)"
-              />
-              <!-- 触屏常显（pointer-coarse：无 hover 可依赖；opacity-0 的元素仍可点中，
-                   「看不见但能戳」是坏状态）。外包 -m-2 扩命中区。 -->
-              <div v-if="c.managed || c.adopted" class="pointer-coarse:p-2 pointer-coarse:-m-2">
-                <Checkbox
-                  class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity"
-                  :class="selected.has(c.id) || selectionActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100'"
-                  :model-value="selected.has(c.id)"
-                  @update:model-value="() => toggle(c.id)"
-                  @click.stop
-                />
-              </div>
-            </div>
+            <span :class="['h-2 w-2 shrink-0 rounded-full', stateColor(c.state)]" :title="stateLabel(c.state)" />
             <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="c.displayName || c.name">{{
               c.displayName || c.name
             }}</span>
@@ -1402,30 +1331,6 @@ onUnmounted(() => {
         <p v-if="!items.length && !loading" class="px-3 py-6 text-center text-xs text-muted-foreground">
           没有受管理的容器
         </p>
-      </div>
-
-      <!-- 批量条：进入选择态后浮现（全选 / 批量配置 / 退出）。选择态里勾选框常显，
-           卡片高亮；Esc / ✕ / 执行完成即退出。 -->
-      <div
-        v-if="selectionActive"
-        class="flex items-center gap-1 border-t border-border bg-muted/30 px-2 py-2"
-      >
-        <Button
-          variant="outline"
-          size="icon-xs"
-          class="shrink-0"
-          :title="allSelected ? '全不选' : '全选受管理容器'"
-          @click="toggleAll"
-        >
-          <CheckCheck />
-        </Button>
-        <span class="shrink-0 pl-1 text-xs text-muted-foreground" title="勾选卡片，Esc 退出"
-          >已选 {{ selected.size }} 个</span
-        >
-        <Button size="xs" class="ml-auto min-w-0 shrink-0" @click="openBatch">批量配置</Button>
-        <Button variant="outline" size="icon-xs" class="shrink-0" title="取消选择" @click="clearSelection">
-          <X />
-        </Button>
       </div>
 
       <!-- 服务摘要条：一行聚合（状态点 + 名称串），点击开管理面板、＋ 带新建意图。
@@ -1764,11 +1669,10 @@ onUnmounted(() => {
   />
 
   <BatchDialog
-    v-if="batchSel"
-    :ids="batchSel.ids"
-    :names="batchSel.names"
-    @done="refresh(); clearSelection()"
-    @close="batchSel = null"
+    v-if="showBatch"
+    :containers="selectableItems.map((c) => ({ id: c.id, label: c.displayName || c.name, ip: c.ip }))"
+    @done="refresh()"
+    @close="showBatch = false"
     @unauthorized="emit('unauthorized')"
     @open-hosts="emit('open-hosts')"
   />
