@@ -448,7 +448,7 @@ function fmtSize(n: number): string {
                     <MoreHorizontal />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" class="w-36">
+                <DropdownMenuContent align="end">
                   <DropdownMenuItem @click="onRowMenu(e); nameDialog = { mode: 'rename' }">
                     <PenLine /> 重命名
                   </DropdownMenuItem>

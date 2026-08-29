@@ -336,7 +336,7 @@ function stateCls(s: ServiceView): string {
                     <DropdownMenuTrigger as-child>
                       <Button variant="ghost" size="sm" :disabled="busyName === s.name">⋯</Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" class="w-36">
+                    <DropdownMenuContent align="end">
                       <DropdownMenuItem v-if="Object.keys(s.env).length" @click="connectOf = s">连接信息</DropdownMenuItem>
                       <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                       <DropdownMenuItem v-if="s.running" @click="op(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
@@ -379,7 +379,7 @@ function stateCls(s: ServiceView): string {
                 <DropdownMenuTrigger as-child>
                   <Button variant="ghost" size="sm" class="shrink-0" :disabled="busyName === s.name">⋯</Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" class="w-36">
+                <DropdownMenuContent align="end">
                   <DropdownMenuItem v-if="Object.keys(s.env).length" @click="connectOf = s">连接信息</DropdownMenuItem>
                   <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                   <DropdownMenuItem v-if="s.running" @click="op(s.name, () => stopService(s.name))">停止</DropdownMenuItem>

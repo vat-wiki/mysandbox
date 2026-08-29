@@ -396,6 +396,43 @@ let listenSeq = 0 // 竞态：切 group 时丢弃慢响应
 let listenTimer: ReturnType<typeof setInterval> | null = null
 const ipCopied = ref(false)
 let ipCopyTimer: ReturnType<typeof setTimeout> | null = null
+// execCommand 兜底（同 Terminal.vue copyText 的手法）：非 https 访问时
+// navigator.clipboard 是 undefined，只在用户手势栈里同步调 execCommand 才有效。
+function legacyCopy(s: string): boolean {
+  const ta = document.createElement('textarea')
+  ta.value = s
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+  ta.setAttribute('readonly', '')
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  ta.remove()
+  return ok
+}
+// 卡片与网络下拉共用的复制入口：成功后「已复制」回显 1.2s（绑定 ipCopied）。
+async function copyIpOf(ip: string) {
+  if (!ip) return
+  let ok = false
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(ip)
+      ok = true
+    } catch {
+      /* 落 execCommand 兜底 */
+    }
+  }
+  if (!ok) ok = legacyCopy(ip)
+  if (ok) {
+    ipCopied.value = true
+    if (ipCopyTimer) clearTimeout(ipCopyTimer)
+    ipCopyTimer = setTimeout(() => (ipCopied.value = false), 1200)
+  }
+}
 const otherListenPorts = computed(() => listenPorts.value.filter((p) => !webPorts.value.includes(p)))
 async function loadListenPorts() {
   const c = activeContainer.value
@@ -451,16 +488,7 @@ const mappedPorts = computed(() => {
   return out
 })
 async function copyIp() {
-  const ip = activeContainer.value?.ip
-  if (!ip) return
-  try {
-    await navigator.clipboard.writeText(ip)
-    ipCopied.value = true
-    if (ipCopyTimer) clearTimeout(ipCopyTimer)
-    ipCopyTimer = setTimeout(() => (ipCopied.value = false), 1200)
-  } catch {
-    /* 剪贴板权限被拒就算了 */
-  }
+  await copyIpOf(activeContainer.value?.ip ?? '')
 }
 function openUrl(url: string) {
   window.open(url, '_blank', 'noopener')
@@ -1041,6 +1069,14 @@ function stateLabel(state: string): string {
   return m[state] ?? state
 }
 
+// 卡片「终端·N」指示：本窗口（可见+隐藏）为该容器开着的组数，与 tab 栏呼应。
+function openGroupCount(cId: string): number {
+  let n = 0
+  for (const g of groups.value) if (g.containerId === cId) n++
+  for (const g of hiddenGroups.value) if (g.containerId === cId) n++
+  return n
+}
+
 // —— 底部服务摘要条 ——
 // docker 配套服务在侧栏只占一行：聚合状态点 + 名称串，点击开管理面板。
 // 服务是配套设施，刻意不以行的形态进侧栏——避免和容器列表形成第二个并列清单，
@@ -1198,7 +1234,7 @@ onUnmounted(() => {
                 <MoreHorizontal />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" class="w-40">
+            <DropdownMenuContent align="end">
               <DropdownMenuItem @click="emit('open-base')">
                 <Settings2 /> {{ baseLabel }}管理
               </DropdownMenuItem>
@@ -1227,61 +1263,99 @@ onUnmounted(() => {
         连接失败，列表可能过期 · 点击重试
       </button>
 
-      <div class="min-h-0 flex-1 overflow-y-auto py-1">
+      <!-- 容器卡片区：数量有限（个人 sandbox 常年个位数），行形态浪费纵向空间且
+           信息密度低——改两行卡片平铺「看一眼就该知道」的状态（状态文字、IP、描述），
+           低频操作仍收 ⋯。色条与 tab 栏同色呼应。宿主条目刻意保持单行（见上）。 -->
+      <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
         <div
           v-for="c in items"
           :key="c.id"
-          class="group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
-          :class="{ 'bg-accent/70': selected.has(c.id) }"
+          class="group relative flex cursor-pointer flex-col gap-1 rounded-md border border-transparent px-2 py-1.5 pl-2.5 hover:border-border hover:bg-accent/50"
+          :class="{ 'border-border bg-accent/70': selected.has(c.id) }"
           @click="openTerm(c)"
         >
-          <!-- 行首勾选框：hover 浮现盖住状态点；选择态下受管理容器常显（外部容器无勾选框、状态点保留） -->
-          <div class="relative flex shrink-0 items-center">
-            <span
-              v-if="!(c.managed || c.adopted)"
-              :class="['h-2 w-2 rounded-full', stateColor(c.state)]"
-              :title="stateLabel(c.state)"
-            />
-            <span
-              v-else
-              :class="[
-                'h-2 w-2 rounded-full transition-opacity',
-                stateColor(c.state),
-                selected.has(c.id) || selectionActive ? 'opacity-0' : 'group-hover:opacity-0',
-              ]"
-            />
-            <!-- 触屏常显（pointer-coarse：无 hover 可依赖；opacity-0 的元素仍可点中，
-                 「看不见但能戳」是坏状态）。外包 -m-2 扩命中区。 -->
-            <div v-if="c.managed || c.adopted" class="pointer-coarse:p-2 pointer-coarse:-m-2">
-              <Checkbox
-                class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity"
-                :class="selected.has(c.id) || selectionActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100'"
-                :model-value="selected.has(c.id)"
-                @update:model-value="() => toggle(c.id)"
-                @click.stop
-              />
-            </div>
-          </div>
+          <!-- 左侧色条：容器色（与 tab 呼应），选中/hover 时更明显 -->
           <span
-            class="h-3 w-1 shrink-0 rounded-full"
+            class="absolute inset-y-1.5 left-0.5 w-1 rounded-full"
             :style="{ backgroundColor: containerColor(c.id) }"
           />
-          <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="c.displayName || c.name">{{
-            c.displayName || c.name
-          }}</span>
-          <Badge
-            v-if="!c.managed && !c.adopted"
-            variant="outline"
-            class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
-            >外部</Badge
-          >
+          <!-- 第一行：勾选框（覆盖色条位置，hover/选择态浮现）+ 显示名 + 状态徽章 -->
+          <div class="flex items-center gap-2">
+            <div class="relative flex shrink-0 items-center">
+              <span
+                :class="[
+                  'h-2 w-2 rounded-full transition-opacity',
+                  stateColor(c.state),
+                  c.managed || c.adopted
+                    ? selected.has(c.id) || selectionActive
+                      ? 'opacity-0'
+                      : 'group-hover:opacity-0'
+                    : '',
+                ]"
+                :title="stateLabel(c.state)"
+              />
+              <!-- 触屏常显（pointer-coarse：无 hover 可依赖；opacity-0 的元素仍可点中，
+                   「看不见但能戳」是坏状态）。外包 -m-2 扩命中区。 -->
+              <div v-if="c.managed || c.adopted" class="pointer-coarse:p-2 pointer-coarse:-m-2">
+                <Checkbox
+                  class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity"
+                  :class="selected.has(c.id) || selectionActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100'"
+                  :model-value="selected.has(c.id)"
+                  @update:model-value="() => toggle(c.id)"
+                  @click.stop
+                />
+              </div>
+            </div>
+            <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="c.displayName || c.name">{{
+              c.displayName || c.name
+            }}</span>
+            <!-- 状态徽章：文字比色点直观，弱化配色只保留语义色 -->
+            <span
+              class="shrink-0 text-[10px] tabular-nums"
+              :class="
+                c.state === 'running'
+                  ? 'text-emerald-500'
+                  : c.state === 'paused'
+                    ? 'text-amber-500'
+                    : 'text-muted-foreground'
+              "
+              >{{ stateLabel(c.state) }}</span
+            >
+          </div>
+          <!-- 第二行：IP（点击复制）+ 描述/外部徽章/本窗口终端组指示 -->
+          <div class="flex items-center gap-2 pl-4 text-xs text-muted-foreground">
+            <button
+              v-if="c.ip"
+              type="button"
+              class="shrink-0 font-mono tabular-nums hover:text-foreground"
+              :title="ipCopied ? '已复制' : '点击复制 IP'"
+              @click.stop="copyIpOf(c.ip)"
+              >{{ c.ip }}</button
+            >
+            <span v-else class="shrink-0">无 IP</span>
+            <span class="min-w-0 flex-1 truncate" :title="c.description || c.name">{{
+              c.description || c.name
+            }}</span>
+            <Badge
+              v-if="!c.managed && !c.adopted"
+              variant="outline"
+              class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
+              >外部</Badge
+            >
+            <!-- 本窗口已开终端组：组数提示（主容器交互入口，与 tab 栏呼应） -->
+            <span
+              v-if="openGroupCount(c.id)"
+              class="shrink-0 font-mono text-[10px] text-muted-foreground/80"
+              >终端·{{ openGroupCount(c.id) }}</span
+            >
+          </div>
           <!-- ⋯ 菜单：低频操作收进来（外部的容器只有「纳入管理」）。触屏常显。 -->
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
               <Button
                 variant="ghost"
                 size="icon-xs"
-                class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+                class="absolute right-0.5 top-0.5 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
                 :disabled="busy[c.id]"
                 :title="busy[c.id] ? '处理中…' : '更多操作'"
                 @click.stop
@@ -1289,7 +1363,7 @@ onUnmounted(() => {
                 <MoreHorizontal />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" class="w-44">
+            <DropdownMenuContent align="end">
               <template v-if="!c.managed && !c.adopted">
                 <DropdownMenuItem @click="onAdopt(c)">纳入管理</DropdownMenuItem>
               </template>
@@ -1433,7 +1507,7 @@ onUnmounted(() => {
               ><X class="size-3 max-md:size-3.5" /></button>
             </div>
           </ContextMenuTrigger>
-          <ContextMenuContent class="w-52">
+          <ContextMenuContent>
             <ContextMenuItem @click="hideGroupById(g.id)">
               <EyeOff /> 隐藏（保留会话）
             </ContextMenuItem>
@@ -1460,7 +1534,7 @@ onUnmounted(() => {
               <Network class="size-3.5 max-md:size-5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" class="min-w-56">
+          <DropdownMenuContent align="end">
             <template v-if="activeContainer && activeContainer.state === 'running'">
               <DropdownMenuLabel class="font-mono text-xs font-normal text-muted-foreground">
                 {{ activeContainer.displayName || activeContainer.name }}
