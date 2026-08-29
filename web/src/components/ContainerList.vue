@@ -44,7 +44,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, CheckCheck, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -888,6 +888,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 function openBatch() {
   batchSel.value = { ids: [...selected.value], names: selectedNames.value }
 }
+// 显式进入选择态（分区标题 ⋯ 菜单入口）：勾选框转为常显，用户自己勾。
+// 没有可选对象（无受管理容器）时不动作——勾选框只属于 managed/adopted。
+function enterSelectMode() {
+  if (!selectableItems.value.length) return
+  // 进入选择态即常显勾选框（selectionActive 已经表达这一点），顺手全选：
+  // 批量配置的典型场景就是「对全部容器来一遍」，全选比逐个勾更省事，
+  // 不想要的再单独取消。
+  selected.value = new Set(selectableItems.value.map((c) => c.id))
+}
 
 // 把新数据按字段合并进旧对象，保持对象引用稳定 -> 仅真正变化的字段才触发响应式，
 // 避免轮询时整表无谓 re-render（闪烁的主因）。
@@ -1241,6 +1250,14 @@ onUnmounted(() => {
               <DropdownMenuItem @click="emit('open-hosts')">
                 <Network /> 全局 hosts
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                :disabled="!selectableItems.length"
+                :title="selectableItems.length ? '' : '没有受管理的容器'"
+                @click="enterSelectMode"
+              >
+                <ListChecks /> 批量配置
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -1309,18 +1326,8 @@ onUnmounted(() => {
             <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="c.displayName || c.name">{{
               c.displayName || c.name
             }}</span>
-            <!-- 状态徽章：文字比色点直观，弱化配色只保留语义色 -->
-            <span
-              class="shrink-0 text-[10px] tabular-nums"
-              :class="
-                c.state === 'running'
-                  ? 'text-emerald-500'
-                  : c.state === 'paused'
-                    ? 'text-amber-500'
-                    : 'text-muted-foreground'
-              "
-              >{{ stateLabel(c.state) }}</span
-            >
+            <!-- 状态只靠行首色点表达（title 悬停有文字）；右侧要给 ⋯ 按钮让位，
+                 状态文字与它重叠过，不再放文字 -->
           </div>
           <!-- 第二行：IP（点击复制）+ 描述/外部徽章/本窗口终端组指示 -->
           <div class="flex items-center gap-2 pl-4 text-xs text-muted-foreground">
@@ -1397,10 +1404,11 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <!-- 批量条：进入选择态后浮现（全选 / 批量配置 / 退出） -->
+      <!-- 批量条：进入选择态后浮现（全选 / 批量配置 / 退出）。选择态里勾选框常显，
+           卡片高亮；Esc / ✕ / 执行完成即退出。 -->
       <div
         v-if="selectionActive"
-        class="flex items-center gap-1 border-t border-border px-2 py-2"
+        class="flex items-center gap-1 border-t border-border bg-muted/30 px-2 py-2"
       >
         <Button
           variant="outline"
@@ -1411,7 +1419,10 @@ onUnmounted(() => {
         >
           <CheckCheck />
         </Button>
-        <Button size="xs" class="min-w-0 flex-1" @click="openBatch">批量配置 ({{ selected.size }})</Button>
+        <span class="shrink-0 pl-1 text-xs text-muted-foreground" title="勾选卡片，Esc 退出"
+          >已选 {{ selected.size }} 个</span
+        >
+        <Button size="xs" class="ml-auto min-w-0 shrink-0" @click="openBatch">批量配置</Button>
         <Button variant="outline" size="icon-xs" class="shrink-0" title="取消选择" @click="clearSelection">
           <X />
         </Button>
