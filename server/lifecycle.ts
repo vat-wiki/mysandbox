@@ -8,13 +8,12 @@ import {
   inspectContainer,
   stopContainer,
   removeContainer,
-  execRun,
 } from './engine/index.js';
 import { setMeta, deleteMeta } from './state.js';
 import { allocate, isFree } from './network.js';
 import { conflict, notFound } from './errors.js';
-import { getCustomHostsContent, parseExtraHosts, composeHostsContent, serviceBlockLines } from './hosts.js';
-import { listServiceEndpoints } from './docker.js';
+import { readHostHosts } from './hosts.js';
+import { applyServicesBlock, overwriteHosts } from './hosts-sync.js';
 import { seedContainerCli } from './container-cli.js';
 import { log } from './logger.js';
 
@@ -27,6 +26,9 @@ export interface CreateInput {
   gitEmail?: string;
   role?: string;
   description?: string;
+  // /etc/hosts 来源：template = 继承模板 rootfs 的 hosts（lxc-copy 原样复制，缺省）；
+  // host = 用宿主 /etc/hosts 整体覆写。
+  hosts?: 'template' | 'host';
 }
 
 export interface CreateResult {
@@ -58,32 +60,32 @@ export async function createContainer(cfg: Config, input: CreateInput): Promise<
     ip = allocated;
   }
 
-  // 全局自定义 hosts。LXC 由启动后 exec 写入（真 systemd 容器的 /etc/hosts
-  // 不会被引擎重置，写一次即持久）。内容与 applyHostsToContainers 同源同组合：
-  // 用户内容 + docker 服务块（注释行 parseExtraHosts 本就跳过，extraHosts 也带上服务名）。
-  const savedHosts = await getCustomHostsContent();
-  const svcLines = cfg.services.enabled ? serviceBlockLines(await listServiceEndpoints(cfg)) : [];
-  const hostsContent = composeHostsContent(savedHosts ?? '', svcLines);
-  const hostsParsed = hostsContent ? parseExtraHosts(hostsContent) : { extraHosts: [], skipped: [] };
-  if (hostsParsed.skipped.length) {
-    log.warn({ skipped: hostsParsed.skipped }, 'hosts: some lines skipped');
-  }
-
+  // hosts 来源。template（缺省）零动作——lxc-copy 原样复制模板 rootfs 的 /etc/hosts，
+  // 只需追平一次服务块（同时剥掉克隆可能从模板带来的旧块残留；无服务则全 skip）。
+  // host = 宿主 /etc/hosts 整体覆写（服务块照常组合）。
   const { id } = await engine.create(cfg, {
     name,
     ip,
     gitName: input.gitName ?? cfg.git.name,
     gitEmail: input.gitEmail ?? cfg.git.email,
     role: input.role || 'generic',
-    extraHosts: hostsParsed.extraHosts,
   });
 
   // home 在 rootfs 内，克隆完才存在 —— 种子必须 在 create 之后。
   const home = engine.hostHomePath(cfg, name);
   if (home && existsSync(home)) seedContainerCli(home);
 
-  if (hostsContent) {
-    await applyInitialHosts(cfg, id, name, hostsContent);
+  if (input.hosts === 'host') {
+    const base = await readHostHosts();
+    if (base) {
+      const r = await overwriteHosts(cfg, [id], base, 'create');
+      if (r.failed > 0) log.warn({ name, failed: r.failed }, 'initial hosts overwrite (host source) partially failed');
+    } else {
+      // 宿主读不到（异常环境）：容器已建好，退回模板继承态即可，不回滚。
+      log.warn({ name }, 'host /etc/hosts unreadable; container keeps template-inherited hosts');
+    }
+  } else {
+    await applyServicesBlock(cfg, { ids: [id], reason: 'create' });
   }
 
   await setMeta(name, {
@@ -97,30 +99,6 @@ export async function createContainer(cfg: Config, input: CreateInput): Promise<
 
   log.info({ name, ip, engine: engine.name, network: cfg.network }, 'container created');
   return { id, name, ip };
-}
-
-// 新建容器的 /etc/hosts 初始注入。与 hosts-sync 的 apply 同款做法：
-// base64 经 argv 传入、root 覆写。
-async function applyInitialHosts(
-  cfg: Config,
-  id: string,
-  name: string,
-  content: string,
-): Promise<void> {
-  try {
-    const b64 = Buffer.from(content, 'utf8').toString('base64');
-    const r = await execRun(cfg, id, {
-      Cmd: ['sh', '-c', `printf %s '${b64}' | base64 -d > /etc/hosts`],
-      User: 'root:root',
-      Tty: false,
-      timeoutMs: 15_000,
-    });
-    if (r.exitCode !== 0) {
-      log.warn({ name, exitCode: r.exitCode, stderr: r.stderr.slice(0, 200) }, 'initial hosts write failed');
-    }
-  } catch (e) {
-    log.warn({ name, err: String(e) }, 'initial hosts write failed');
-  }
 }
 
 export async function deleteManaged(

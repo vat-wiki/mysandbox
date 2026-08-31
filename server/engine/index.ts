@@ -67,6 +67,14 @@ export async function execFeed(
 export async function assignedIps(cfg: Config) {
   return getEngine(cfg).assignedIps(cfg);
 }
+// hosts-sync 的读-改-写：直读容器 rootfs 的 /etc/hosts。
+export function rootfsPath(cfg: Config, name: string): string | null {
+  return getEngine(cfg).rootfsPath(cfg, name);
+}
+// 新容器 hosts 的源头（模板 rootfs），预览与宿主源创建对照用。
+export async function readTemplateHosts(cfg: Config): Promise<string | null> {
+  return getEngine(cfg).readTemplateHosts(cfg);
+}
 // terminal.ts 的 PTY 流（lxc-attach + resize）。
 export async function execStream(cfg: Config, id: string, opts: import('./types.js').ExecOpts) {
   return getEngine(cfg).execStream(cfg, id, opts);

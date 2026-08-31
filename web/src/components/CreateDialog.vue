@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { createContainer, getHosts, Unauthorized } from '@/lib/api'
+import { createContainer, getBaseHosts, Unauthorized } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 
-const emit = defineEmits<{ (e: 'created'): void; (e: 'close'): void; (e: 'open-hosts'): void }>()
+const emit = defineEmits<{ (e: 'created'): void; (e: 'close'): void }>()
 
 const name = ref('')
 const description = ref('')
@@ -24,18 +24,23 @@ const ipMode = ref<'auto' | 'manual' | string>('auto')
 const manualIp = ref('')
 const busy = ref(false)
 const err = ref('')
-// 全局 hosts 提示：新建容器创建时会自动应用，这里只告知会带什么、要改去哪改，
-// 不做编辑入口（hosts 是全局共享资产，编辑归 HostsPanel，避免 per-container 误解）。
-const hostsCount = ref<number | null>(null)
+
+// hosts 来源：模板 rootfs（克隆原样继承，缺省）/ 宿主 /etc/hosts（整体覆写）。
+// 预览为只读展示（<details> 默认收起）——想改默认去改模板容器，这里不做编辑入口。
+const hostsSource = ref<'template' | 'host'>('template')
+const hostsPreview = ref<{ template: string | null; host: string | null } | null>(null)
+const hostsShown = computed(() =>
+  hostsSource.value === 'host' ? hostsPreview.value?.host : hostsPreview.value?.template,
+)
 
 onMounted(() => {
-  getHosts()
+  getBaseHosts()
     .then((v) => {
-      hostsCount.value = v.content.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length
+      hostsPreview.value = v
     })
     .catch((e) => {
       if (e instanceof Unauthorized) emit('close')
-      /* 预读失败不阻塞创建流程，提示行不显示条数 */
+      /* 预读失败不阻塞创建流程，预览显示读不到 */
     })
 })
 
@@ -58,6 +63,7 @@ async function submit() {
       name: name.value.trim(),
       description: description.value || undefined,
       ip: ipMode.value === 'manual' ? manualIp.value.trim() || undefined : undefined,
+      hosts: hostsSource.value,
     })
     emit('created')
   } catch (e) {
@@ -105,20 +111,47 @@ async function submit() {
           <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.10.30" />
         </div>
 
+        <div class="space-y-1.5">
+          <Label>hosts 来源</Label>
+          <RadioGroup v-model="hostsSource" class="flex items-center gap-4">
+            <div class="flex items-center gap-1.5">
+              <RadioGroupItem id="hosts-template" value="template" />
+              <Label for="hosts-template" class="font-normal">模板容器</Label>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <RadioGroupItem id="hosts-host" value="host" />
+              <Label for="hosts-host" class="font-normal">宿主机</Label>
+            </div>
+          </RadioGroup>
+          <details class="group rounded-md border bg-muted/30">
+            <summary
+              class="flex cursor-pointer select-none items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <span
+                class="transition-transform group-open:rotate-90"
+                aria-hidden="true"
+                >▸</span
+              >
+              预览所选源的内容
+            </summary>
+            <div class="border-t px-3 py-2">
+              <pre
+                v-if="hostsShown"
+                class="max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-muted-foreground"
+                >{{ hostsShown }}</pre
+              >
+              <p v-else class="text-[11px] text-muted-foreground">
+                读取失败或来源不存在（模板未就绪 / 宿主 /etc/hosts 不可读）。
+              </p>
+            </div>
+          </details>
+          <p class="text-xs leading-relaxed text-muted-foreground">
+            模板源 = 克隆模板容器的 /etc/hosts；想改默认直接改模板容器。
+          </p>
+        </div>
+
         <p class="text-xs leading-relaxed text-muted-foreground">
           容器为固定 IP 直连，宿主与其他容器可直接访问其任意端口，无需端口映射。
-        </p>
-
-        <!-- 全局 hosts 提示：自动生效、可跳转编辑，与批量配置/HostsPanel 的互跳模式一致 -->
-        <p class="text-xs leading-relaxed text-muted-foreground">
-          创建时自动应用全局 hosts{{ hostsCount != null ? `（${hostsCount} 条）` : '' }}。
-          <Button
-            variant="link"
-            size="xs"
-            class="h-auto p-0 align-baseline text-xs"
-            @click="emit('open-hosts')"
-            >去编辑</Button
-          >
         </p>
 
         <p v-if="err" class="text-sm text-destructive">{{ err }}</p>

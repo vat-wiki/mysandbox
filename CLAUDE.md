@@ -38,7 +38,7 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 
 - 只监听 `127.0.0.1`（默认）；非 localhost 监听时 CLI 必须打印警告。
 - 所有 `/api/*` 与 `/ws/*`（除 `/api/health`）经 `server/auth.ts` 的 token 鉴权 hook；新路由注册在 `routes.ts` / `base.ts` / `terminal.ts` / `hostTerminal.ts` 即自动被覆盖，不要绕过。
-- sidecar 文件（state.json、hosts.txt、config.yaml）权限 `0600`。
+- sidecar 文件（state.json、config.yaml）权限 `0600`。
 - `/api/health` 免鉴权，所以它只暴露版本/引擎连通性/`caps`——**不要往里加容器名、路径、配置值**。
 
 ## 架构
@@ -50,10 +50,10 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 关键设计：
 
 - **引擎抽象**在 `server/engine/`：`types.ts` 定接口 + `EngineCaps`，`lxc.ts` 实现，`index.ts` 是消费方唯一 import 点（`getEngine(cfg)` + 一堆便捷转发）。单引擎后 `getEngine` 恒返回 `lxcEngine`，但保留「业务层不直接 import 实现」的约定。
-- 创建/删除在 `lifecycle.ts`（IP 分配 + home 种子 + 初始 hosts），建容器动作（克隆模板 + 改写 config）在 `engine/lxc.ts` 的 `create()` 里。IP 池计算在 `network.ts`——LXC 的 IP 配在容器 config 里，`assignedIps` 扫全部 config 即权威源；`gatewayOf(cfg)` 网关 = `<ipPool 前缀>.1`（宿主在桥上的副 IP）。
+- 创建/删除在 `lifecycle.ts`（IP 分配 + home 种子 + hosts 来源编排），建容器动作（克隆模板 + 改写 config）在 `engine/lxc.ts` 的 `create()` 里。IP 池计算在 `network.ts`——LXC 的 IP 配在容器 config 里，`assignedIps` 扫全部 config 即权威源；`gatewayOf(cfg)` 网关 = `<ipPool 前缀>.1`（宿主在桥上的副 IP）。
 - **受管理容器的判定**：在配置的网桥上，或 config 里有 mysandbox 标记（`lxc.environment = MYSANDBOX_MANAGED=true` 纯文本行，可 diff 可手改）。标记不可变，所以易变元数据（displayName、adopted、tags 等）走 **sidecar JSON**（`state.ts`，存 XDG data 目录，容器名作 key）。adopt 外部容器只写 sidecar，不动容器对象。
 - **批量操作**（git 身份 / ssh reseed / claude -p / 任意命令）在 `batch.ts`，用 p-limit 并发，底层走 engine 的 `execRun`。
-- **hosts**：`hosts.ts` 是全局 hosts 的单一事实源（routes 和 lifecycle 都 import）。自定义内容存 `hosts.txt` sidecar 纯文本；宿主 `/etc/hosts` 实时读取不缓存。服务发现注入（`服务名 IP` 追加块）也在 `hosts.ts` 组合、`hosts-sync.ts` 应用——见「docker 服务层」。
+- **hosts（全局面板已删）**：模板容器的 /etc/hosts 是新容器 hosts 的**源头**——lxc-copy 克隆原样复制，想改默认就改模板（宿主 leon 写不进属主 100000 的 rootfs，要进 `lxc-usernsexec`）。新建容器可选宿主 `/etc/hosts` 作源（`CreateInput.hosts`）。mysandbox 对已落地容器只拥有**尾部服务块**：`hosts-sync.ts` 的 `applyServicesBlock` 读-改-写（直读 rootfs → `stripServicesBlock` 剥旧块 → 追新块），base 永不动；`overwriteHosts` 是显式整体覆写（批量配置 tab / 宿主源创建）。模板在两处被排除出目标（`dropTemplate` + `handleEvent` 前置）——它 running 时事件路径不得追平（旧版在这里污染过模板）。
 - **错误处理**：抛 `errors.ts` 的 `HttpError`（带 code/status），`wrapEngineError` 把 404 形状错误映射为 `not_found`。
 - **配置**：`config.ts` 从 `config.default.yaml` 读默认 + `~/.config/mysandbox/config.yaml` 覆盖，首启生成随机 token。
 - **容器内 mysandbox 命令**（`container-cli.ts`）：脚本由宿主种子写入 `<lxcpath>/<name>/rootfs/home/dev/.local/bin/mysandbox`（建容器时 + 启动扫描，幂等缺失才写）。web 终端（`terminal.ts`）注入 `MYSANDBOX_WEB` 标记——exec 的 Env 到不了 tmux server 起的 shell，所以挂 tmux 全局环境（`set-environment -g`），同时开 `allow-passthrough`（否则 tmux 吞掉未知 OSC）。命令运行时探测标记，web 下打印 OSC 7677（tmux 下 DCS passthrough 包裹），`Terminal.vue` 注册 OSC handler 捕获后冒泡 `ContainerList.vue` 定位文件面板/开编辑器（与 CLI `mysandbox open` 深链共用 `locateContainerPath`）。非 web 环境只打提示。
@@ -115,7 +115,7 @@ docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在
 - **pull 的可读性**（`docker.ts pullImageStream`）：JSON 进度行解析——状态行透传、层进度聚合成 2s 一条摘要（原始 `[===>]` 进度条行是垃圾）、错误行提取；**两级超时**：`cfg.services.pullTimeoutMs`（默认 30min 硬顶）+ 5min 无输出看门狗（硬编码，TLS 握手卡死的 pull 完全静默）；daemon 没配 `registry-mirrors` 时失败信息追加人话提示（`registryMirrors()` 读 `docker info`，60s TTL 缓存进 `ServicesStatus.registryMirrors`，前端 amber 提示）。
 - **管理边界靠 label**：`mysandbox.managed-by=mysandbox` + `mysandbox.kind=service`，所有列表/操作走 `--filter label=…`——宿主上外部容器（dener-* 等 7 个）**结构性**进不来列表、操作必 404。易变元数据（env 含密码、IP 登记、描述）走 sidecar `state.json` 的 `services` 键（0600）；API 回**全量 env 值**（含密码）并附现成连接命令——token = 宿主完整权限，鉴权边界在 token 上收住，UI 直接展示连接凭据。容器被外部 `docker rm` 后 meta 变孤儿：`requireService` 对它操作时顺手清再 404。**job 视图不携带 env**（只 name/image/ip）。
 - **IP 池**：`cfg.services.ipPool`（默认 10.88.0.200–240，docker IPAM 动态分配从 .2 顺排天然隔离）。占用 = 运行中网络端点 ∪ state.services 已登记 IP ∪ reserved ∪ **进行中任务预占的 IP**（`jobs.ts` 的 reservedIps 并进 `servicePoolView`）——`network inspect` 只列 running 端点，**停机服务的 IP 必须靠 state 兜底**否则二次分配。
-- **服务发现 = hosts 注入**：`hosts.ts` 的 `composeHostsContent(base, serviceBlockLines(...))` 是唯一组合点，`hosts-sync.ts` 的 `applyHostsToContainers` 四条路径（保存/手动/事件/启动）全覆盖；hash 算在组合后内容上，服务集变化自动重刷。`docker events`（start/die/destroy，label 过滤）+ 2s trailing debounce 驱动外部启停追平。容器内验证：`getent hosts <服务名>` → `+PONG`。
+- **服务发现 = hosts 尾部服务块**：`hosts.ts` 的 `composeHostsContent(base, serviceBlockLines(...))` 是唯一组合点，`hosts-sync.ts` 的 `applyServicesBlock`（读-改-写，幂等无需 hash 记账）覆盖事件/启动/services 全部触发点；`docker events`（start/die/destroy，label 过滤）+ 2s trailing debounce 驱动外部启停追平。容器内验证：`getent hosts <服务名>` → `+PONG`。
 - **坑**：docker 29 对本地已有 tag 的 pull 仍要联网验 manifest（离线直接失败）——`imageExistsLocal()` 先查再跳过 pull；本机 daemon.json 无 registry-mirrors 且宿主在 fake-ip 网络下，Docker Hub 直连常 EOF（apt 同理换过 aliyun 源）——所以有上面的 mirror 检测提示；dev-lan 被重建 → 桥名变 → `status.network.bridgeOk=false` + 人话 detail（提示同步 config 与网关 unit），不阻断；docker daemon 挂 → health 仍 200（`dockerStatus` 1.5s 快败）、面板 reachable:false 降级、hosts 应用静默跳过。
 - **前端**：`ServicesPanel`（状态行（含 mirrors 提示）+ 任务区（3s 轮询：进度行/日志/取消）+ 服务表 + DropdownMenu 操作（含「连接信息」凭据对话框）+ 行内日志）→ `ServiceCreateDialog`（预设表单/自定义镜像；shadcn-vue Select（reka-ui portal）——**别用原生 `<select>`**，强制 dark 下 OS 自绘弹层白底违和；提交拿 jobId 即关窗）。完成通知：`lib/serviceJobs.ts` 的 `trackServiceJobs`（模块级 Map 记上次 state，只有「见过 running 落到终态」才 toast——两个轮询器喂它天然去重，首拉不误报）+ 全局 `<Toaster>`（vue-sonner，`ui/sonner/Sonner.vue` 硬编码 dark，无 next-themes）。侧栏服务摘要条自适应轮询（闲时 15s / 有任务 3s），任务进行中显示「N 个服务任务进行中…」。SSE（`streamOp`）现在只有 base 在用。
 

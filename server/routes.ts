@@ -24,14 +24,16 @@ import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from 
 import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
 import { getAiGateway, setAiGateway } from './state.js';
 import { getVersion } from './version.js';
-import { getCustomHostsContent, setCustomHostsContent, readHostHosts } from './hosts.js';
-import {
-  resolveHostsContent,
-  applyHostsToContainers,
-  type ApplyHostsResult,
-} from './hosts-sync.js';
+import { readHostHosts } from './hosts.js';
+import { overwriteHosts, type ApplyHostsResult } from './hosts-sync.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
+
+// 全部运行中受管理容器 id（hosts 覆写缺省目标）。
+async function runningIds(cfg: Config): Promise<string[]> {
+  const views = await listManaged(cfg);
+  return views.filter((v) => v.state === 'running').map((v) => v.id);
+}
 
 export interface Resolved {
   id: string;
@@ -179,6 +181,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       gitEmail: body.gitEmail ? String(body.gitEmail) : undefined,
       role: body.role ? String(body.role) : undefined,
       description: body.description ? String(body.description) : undefined,
+      hosts: body.hosts === 'host' ? 'host' : 'template',
     });
     return result;
   });
@@ -421,58 +424,18 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return result;
   });
 
-  // —— 全局 hosts 配置 ——
-  // GET：panel 打开一次拿全。已保存自定义内容 -> isCustom；否则回退宿主 /etc/hosts 作建议默认 -> isHostDefault。
-  app.get('/api/hosts', async () => {
-    const custom = await getCustomHostsContent();
-    if (custom != null) {
-      return { content: custom, isCustom: true, isHostDefault: false };
-    }
-    const host = await readHostHosts();
-    if (host) return { content: host, isCustom: false, isHostDefault: true };
-    return {
-      content: '',
-      isCustom: false,
-      isHostDefault: true,
-      hostError: '无法读取宿主 /etc/hosts',
-    };
-  });
-
-  // 实时读宿主 /etc/hosts，供「用宿主机内容」按钮。
-  app.get('/api/hosts/host', async () => {
-    const content = await readHostHosts();
-    return content ? { content } : { content: '', error: '无法读取宿主 /etc/hosts' };
-  });
-
-  // 保存自定义 hosts（纯文本 sidecar，0600）+ 保存即生效：立即应用到所有运行中容器。
-  // 空内容只保存不动容器（清空 /etc/hosts 从不是合法意图）。failed>0 仍 200——保存成功
-  // 是主语义，失败在 applied 结果表可见。不带 skipUnchanged：重复保存同内容也强制刷，
-  // 覆盖「用户手改了容器内 /etc/hosts 想重置」场景。
-  app.put('/api/hosts', async (req): Promise<{ ok: true; applied: ApplyHostsResult | null }> => {
-    const body = (req.body as { content?: unknown } | null) || {};
-    const content = typeof body.content === 'string' ? body.content : '';
-    await setCustomHostsContent(content);
-    if (!content) return { ok: true, applied: null };
-    const applied = await applyHostsToContainers(cfg, { content, reason: 'save' });
-    return { ok: true, applied };
-  });
-
-  // 应用到运行中容器：以 root exec 覆写各容器 /etc/hosts。
-  // 事件自动重刷后此路由是兜底（自动应用失败 / 手改过容器内 hosts 想强制重置 / 定向 ids）。
-  // content 优先 body override > 已保存 > 宿主默认；ids 缺省=全部运行中受管理容器。
+  // —— hosts 覆写（批量配置 tab） ——
+  // 显式动作：content 是要写入的完整 base，服务块照常组合。ids 缺省 = 全部运行中
+  // 受管理容器（模板由 overwriteHosts 内部排除——它是新容器的源头资产）。
+  // 全局 hosts 面板已删：新容器的默认来自模板容器（可选中宿主 /etc/hosts 作源）。
   app.post('/api/hosts/apply', async (req): Promise<ApplyHostsResult> => {
     const body = (req.body as Record<string, unknown> | null) || {};
-    const explicit = typeof body.content === 'string' ? body.content : undefined;
-    const { content } = await resolveHostsContent(explicit);
-    if (!content) {
-      throw new HttpError(400, 'no hosts content to apply (save first or pass content)', 'bad_request');
+    const content = typeof body.content === 'string' ? body.content : '';
+    if (!content.trim()) {
+      throw new HttpError(400, 'no hosts content to apply', 'bad_request');
     }
     const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
-    return applyHostsToContainers(cfg, {
-      content,
-      ids: ids.length ? ids : undefined,
-      reason: 'manual',
-    });
+    return overwriteHosts(cfg, ids.length ? ids : await runningIds(cfg), content, 'manual');
   });
 
   // —— 容器内监听端口（内部服务直达）——

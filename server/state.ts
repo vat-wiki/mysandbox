@@ -13,8 +13,6 @@ export interface ContainerMeta {
   source?: string; // 'mysandbox' | 'dener' | 自定义
   ipHint?: string;
   createdAt?: string;
-  // 最后成功应用的 hosts 内容 sha256 前 16 位；事件路径据此跳过无变化重刷。
-  hostsHash?: string;
 }
 
 // docker 服务（数据库等）的 sidecar 元数据。与容器同款两层身份模型：

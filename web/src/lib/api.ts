@@ -129,6 +129,8 @@ export interface CreateInput {
   gitEmail?: string
   role?: string
   description?: string
+  // /etc/hosts 来源：template = 继承模板 rootfs 的 hosts（缺省）；host = 宿主 /etc/hosts
+  hosts?: 'template' | 'host'
 }
 export const createContainer = (input: CreateInput) =>
   postJson('/api/containers', input) as Promise<{ id: string; name: string; ip: string }>
@@ -412,24 +414,16 @@ export const getServiceJob = (id: string) =>
   api(`/api/services/jobs/${id}`) as Promise<{ job: ServiceJobView; log: string[] }>
 export const cancelServiceJob = (id: string) => postJson(`/api/services/jobs/${id}/cancel`)
 
-// —— 全局 hosts 配置 ——
-export interface HostsView {
-  content: string
-  isCustom: boolean
-  isHostDefault: boolean
-  hostError?: string
+// —— hosts（新模型：全局面板已删） ——
+// 新建容器的 hosts 双源预览（模板 rootfs / 宿主 /etc/hosts），null = 读不到。
+export interface BaseHostsView {
+  template: string | null
+  host: string | null
 }
-export const getHosts = () => api('/api/hosts') as Promise<HostsView>
-export const getHostHosts = () =>
-  api('/api/hosts/host') as Promise<{ content: string; error?: string }>
-// hosts 应用结果：比通用 BatchResult 多 skipped（hash 命中跳过的容器数）
+export const getBaseHosts = () => api('/api/base/hosts') as Promise<BaseHostsView>
+// hosts 覆写结果：比通用 BatchResult 多 skipped（读-比-写跳过的容器数）
 export type HostsApplyResult = BatchResult & { skipped: number }
-// 保存即生效：PUT 写入侧车并立即应用到所有运行中容器（空内容 applied=null，不动容器）
-export const putHosts = (content: string) =>
-  api('/api/hosts', { method: 'PUT', body: JSON.stringify({ content }) }) as Promise<{
-    ok: true
-    applied: HostsApplyResult | null
-  }>
+// 显式整体覆写所选容器的 /etc/hosts（批量配置 tab；服务块自动组合进内容）
 export const applyHosts = (content: string, ids?: string[]) =>
   postJson('/api/hosts/apply', { content, ids }) as Promise<HostsApplyResult>
 

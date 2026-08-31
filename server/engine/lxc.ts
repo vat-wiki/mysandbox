@@ -904,4 +904,12 @@ export const lxcEngine: Engine = {
   runBaseAction,
   nameExists,
   hostHomePath: (_cfg, name) => containerHomePath(name),
+  rootfsPath: (_cfg, name) => join(containerDir(name), 'rootfs'),
+  readTemplateHosts: async (cfg) => {
+    try {
+      return await readFile(join(containerDir(cfg.lxc.template), 'rootfs', 'etc', 'hosts'), 'utf8');
+    } catch {
+      return null;
+    }
+  },
 };

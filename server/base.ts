@@ -8,6 +8,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import { getEngine } from './engine/index.js';
+import { readHostHosts } from './hosts.js';
 import type { BaseAction, BaseActionOpts, BaseProgress } from './engine/index.js';
 import { badRequest } from './errors.js';
 import { beginSse } from './sse.js';
@@ -36,6 +37,14 @@ export async function registerBaseRoutes(app: FastifyInstance, cfg: Config): Pro
   app.get('/api/base/size', async () => {
     const { lxcTemplateSize } = await import('./engine/lxc.js');
     return { size: await lxcTemplateSize(cfg) };
+  });
+
+  // 新建容器的 hosts 双源预览（CreateDialog）：模板 rootfs 的 /etc/hosts（源头，
+  // 克隆原样继承）与宿主 /etc/hosts（可选覆写源）。读不到返回 null，前端显示降级说明。
+  app.get('/api/base/hosts', async () => {
+    const template = await getEngine(cfg).readTemplateHosts(cfg);
+    const host = await readHostHosts();
+    return { template: template ?? null, host: host || null };
   });
 
   // 动作。SSE 流式进度：耗时从秒（clone 小模板）到十几分钟（build / export 2.8G）不等，

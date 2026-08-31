@@ -95,7 +95,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'unauthorized'): void
   (e: 'open-base'): void
-  (e: 'open-hosts'): void
   // 打开服务管理面板；create=true 表示来自摘要条 ＋（面板打开时直接弹新建对话框）
   (e: 'open-services', create?: boolean): void
   (e: 'open-handled'): void
@@ -1181,9 +1180,6 @@ onUnmounted(() => {
               <DropdownMenuItem @click="emit('open-base')">
                 <Settings2 /> {{ baseLabel }}管理
               </DropdownMenuItem>
-              <DropdownMenuItem @click="emit('open-hosts')">
-                <Network /> 全局 hosts
-              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 :disabled="!selectableItems.length"
@@ -1605,7 +1601,6 @@ onUnmounted(() => {
     v-if="showCreate"
     @created="showCreate = false; refresh()"
     @close="showCreate = false"
-    @open-hosts="emit('open-hosts')"
   />
 
   <ConfirmDialog
@@ -1656,7 +1651,6 @@ onUnmounted(() => {
     @done="refresh()"
     @close="showBatch = false"
     @unauthorized="emit('unauthorized')"
-    @open-hosts="emit('open-hosts')"
   />
 
   <!-- 终端会话对话框：恢复本窗口隐藏的组 / 接入其他窗口浏览器的活跃会话 / 清理孤儿会话 -->

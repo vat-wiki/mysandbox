@@ -51,7 +51,7 @@ import '../../node_modules/monaco-editor/esm/vs/features/diffEditor/register.js'
 loader.config({ monaco })
 
 // hosts 词法（Monarch）：注释、IPv4/IPv6、主机名/别名、关键字 localhost。
-// 注册成语言 id 'hosts'，HostsPanel 的 <VueMonacoEditor language="hosts"> 用它。
+// 注册成语言 id 'hosts'，BatchDialog hosts tab 的 <VueMonacoEditor language="hosts"> 用它。
 monaco.languages.register({ id: 'hosts' })
 monaco.languages.setMonarchTokensProvider('hosts', {
   ignoreCase: false,

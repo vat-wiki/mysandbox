@@ -10,7 +10,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import { badRequest, conflict, notFound } from './errors.js';
-import { applyHostsToContainers } from './hosts-sync.js';
+import { applyServicesBlock } from './hosts-sync.js';
 import { log } from './logger.js';
 import {
   MANAGED_LABEL,
@@ -476,7 +476,7 @@ export async function runServiceCreate(cfg: Config, plan: CreateServicePlan, ctx
 
   // 服务起来了 → 追平所有运行中 LXC 容器的 hosts（hash-skip，无变化近零成本）。
   ctx.status('追平容器 hosts（服务名解析）');
-  await applyHostsToContainers(cfg, { skipUnchanged: true, reason: 'service' });
+  await applyServicesBlock(cfg);
 
   ctx.status(`服务 ${name} 就绪（${ip}）`);
   return {
@@ -525,7 +525,7 @@ export async function deleteService(
   await deleteServiceMeta(name);
   // hosts 里的服务行要消失：追平一次（hash-skip）。
   try {
-    await applyHostsToContainers(cfg, { skipUnchanged: true, reason: 'service' });
+    await applyServicesBlock(cfg);
   } catch (e) {
     log.warn({ err: String(e) }, 'hosts re-apply after service delete failed');
   }
@@ -603,7 +603,7 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
   app.post<{ Params: { name: string } }>('/api/services/:name/start', async (req) => {
     await requireService(req.params.name);
     await startContainer(req.params.name);
-    await applyHostsToContainers(cfg, { skipUnchanged: true, reason: 'service' });
+    await applyServicesBlock(cfg);
     return { ok: true };
   });
 
@@ -616,7 +616,7 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
   app.post<{ Params: { name: string } }>('/api/services/:name/restart', async (req) => {
     await requireService(req.params.name);
     await restartContainer(req.params.name);
-    await applyHostsToContainers(cfg, { skipUnchanged: true, reason: 'service' });
+    await applyServicesBlock(cfg);
     return { ok: true };
   });
 
@@ -667,7 +667,7 @@ function scheduleSweep(cfg: Config): void {
   if (sweepTimer) clearTimeout(sweepTimer);
   sweepTimer = setTimeout(() => {
     sweepTimer = null;
-    void applyHostsToContainers(cfg, { skipUnchanged: true, reason: 'service-event' }).catch((e) => {
+    void applyServicesBlock(cfg).catch((e) => {
       log.warn({ err: String(e) }, 'services event hosts re-apply failed');
     });
   }, 2_000);

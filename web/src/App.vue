@@ -8,8 +8,6 @@ import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
 import { Toaster } from '@/components/ui/sonner'
-// 异步加载 hosts 面板：Monaco 编辑器较重（~700KB gzip），只在点 hosts 徽标时才下载，不拖累首屏。
-const HostsPanel = defineAsyncComponent(() => import('@/components/HostsPanel.vue'))
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
 
 const token = ref<string | null>(getToken())
@@ -21,7 +19,6 @@ const checkErr = ref('')
 // （基座就绪性不再常驻徽标展示——入口收进侧栏容器分区的 ⋯ 菜单与新建守卫，见 ContainerList。）
 const baseReady = ref<boolean | null>(null)
 const showBasePanel = ref(false)
-const showHostsPanel = ref(false)
 const showServicesPanel = ref(false)
 // 服务摘要条上的 ＋ 带「新建」意图：面板打开时直接弹新建对话框（普通打开则不弹）。
 const svcCreateIntent = ref(false)
@@ -139,12 +136,10 @@ onUnmounted(() => {
         :open-req="pendingOpen"
         @unauthorized="logout"
         @open-base="showBasePanel = true"
-        @open-hosts="showHostsPanel = true"
         @open-services="openServices"
         @open-handled="onOpenHandled"
       />
       <BasePanel v-if="showBasePanel" @close="showBasePanel = false" @changed="refreshBaseStatus" />
-      <HostsPanel v-if="showHostsPanel" @close="showHostsPanel = false" />
       <ServicesPanel
         v-if="showServicesPanel"
         :initial-create="svcCreateIntent"

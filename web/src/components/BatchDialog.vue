@@ -8,7 +8,6 @@ import {
   batchAiConfig,
   getAiGateway,
   applyHosts,
-  getHosts,
   Unauthorized,
   type BatchResult,
   type GatewayWire,
@@ -53,7 +52,6 @@ const emit = defineEmits<{
   (e: 'done'): void
   (e: 'close'): void
   (e: 'unauthorized'): void
-  (e: 'open-hosts'): void
 }>()
 
 // 容器勾选：默认全选（批量配置的典型场景就是「对全部来一遍」，不想要的单独取消）。
@@ -107,11 +105,9 @@ const execEditorOptions = {
   placeholder: 'echo "hello" > ~/note.txt',
   lineNumbers: 'off',
 }
-// hosts tab：预读全局已保存内容（侧车 hosts.txt），可改后对已选容器应用。
-// 编辑用 Monaco（hosts 词法高亮），与全局 hosts 面板同观感；「已选容器」而非
-// 「所有容器」是这里与 HostsPanel 的关键差异——HostsPanel 是全局持久视角，这是定向一次性视角。
+// hosts tab：对所选容器的一次性覆写内容（空起步，手填或粘贴）。编辑用 Monaco
+// （hosts 词法高亮）；覆写是显式动作——新容器的默认来自模板容器，与这里无关。
 const hostsContent = ref('')
-const hostsLoaded = ref(false)
 
 // ai tab：场景驱动的表单。用户心智模型是「我的网关是什么」而不是「每个 CLI 吃
 // 什么协议」——所以第一层是网关类型单选（anthropic / openai / dual），它决定：
@@ -344,7 +340,7 @@ function submit() {
       err.value = 'hosts 内容不能为空'
       return
     }
-    // 对已选容器覆写 /etc/hosts（不保存全局——想改全局配置去 hosts 面板）
+    // 对已选容器显式覆写 /etc/hosts（服务块由后端自动组合进内容）
     run(() => applyHosts(hostsContent.value, ids.value))
   }
 }
@@ -352,17 +348,6 @@ function submit() {
 function onTab(v: string | number) {
   tab.value = String(v)
   resetResult()
-  // hosts tab 首次进入时预读全局 hosts 内容
-  if (tab.value === 'hosts' && !hostsLoaded.value) {
-    hostsLoaded.value = true
-    getHosts()
-      .then((v) => {
-        hostsContent.value = v.content
-      })
-      .catch(() => {
-        /* 预读失败不阻塞，textarea 留空可手填 */
-      })
-  }
   // ai tab 首次进入时预填最近一次下发存档：场景从存档端点形状推导，URL/key/wire/
   // 模型只补空字段；工具勾选在用户没动过时恢复（动过则跳过——否则「用户先勾后填」
   // 时迟到的响应会把勾选打回去，实测踩过）。
@@ -392,14 +377,8 @@ function onTab(v: string | number) {
   }
 }
 
-// 跳全局 hosts 面板：先关自己再开面板，避免两个 Dialog 叠层
-function goHosts() {
-  emit('close')
-  emit('open-hosts')
-}
-
 // 通用命令排首位（无预设意图的高频动作）；git/ssh 是「装完配一次」类相邻；
-// AI 网关是换 key/换网关的批量重推；hosts 覆写殿后并与全局面板拉开命名距离。
+// AI 网关是换 key/换网关的批量重推；hosts 覆写殿后（一次性显式动作）。
 const tabs: { key: string; label: string }[] = [
   { key: 'exec', label: '通用命令' },
   { key: 'git', label: 'Git 身份' },
@@ -823,7 +802,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
               </details>
             </TabsContent>
 
-            <!-- hosts：对已选容器一次性覆写 /etc/hosts（区别于全局 hosts 面板） -->
+            <!-- hosts：对已选容器一次性覆写 /etc/hosts -->
             <TabsContent value="hosts" class="space-y-3">
               <div class="flex flex-col gap-1.5">
                 <Label>hosts 内容（一次性覆写所选容器）</Label>
@@ -839,15 +818,9 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
               <div
                 class="rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
               >
-                已预填全局 hosts 配置（可修改，仅本次应用、不保存全局）。以 root 覆写这
-                {{ ids.length }} 个容器的 /etc/hosts，一次性生效（容器重启后恢复全局配置——全局配置会自动追上）。
-                <Button
-                  variant="link"
-                  size="xs"
-                  class="h-auto p-0 align-baseline text-[11px]"
-                  @click="goHosts"
-                  >想统一保存、让新建容器也生效？打开全局 hosts 配置</Button
-                >
+                以 root 覆写这 {{ ids.length }} 个容器的 /etc/hosts，写入即持久。mysandbox
+                只维护文件尾部的服务发现块（docker 服务变化会自动重建该块），其余内容不再被动。
+                想改新容器的默认 hosts？去改模板容器。
               </div>
             </TabsContent>
 

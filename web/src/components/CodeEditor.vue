@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Monaco 编辑器壳组件：FileEditorDialog / HostsPanel / BatchDialog 共用。
+// Monaco 编辑器壳组件：FileEditorDialog / BatchDialog 共用。
 // 固化深色主题与选项基线（外层用 class 控高度/边框），内部拦截 Ctrl/Cmd+S
 // 转成 save 事件，消费方不必再拿 editor 实例注册命令。
 // 懒加载由消费方决定：defineAsyncComponent(() => import('@/components/CodeEditor.vue'))，

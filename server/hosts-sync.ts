@@ -1,115 +1,151 @@
-// 全局 hosts 的「应用」共享逻辑 + lxc-monitor 事件自动重刷。
-// routes 的 apply 路由、保存即生效、事件监听三方共用 applyHostsToContainers；
-// 事件路径让全局 hosts 变「真全局」——容器重启后 mysandbox 自动追平
-// 需要重写的 /etc/hosts（只写声明的内容）。
-import { createHash } from 'node:crypto';
+// 服务块维护 + 显式覆写：mysandbox 对容器 /etc/hosts 的全部写路径。
+// 模型（全局 hosts 已删）：base 是用户资产（模板继承/宿主源/批量覆写的结果），只有
+// 尾部的服务发现块（docker 服务行）归 mysandbox 管——
+//   - applyServicesBlock：读-改-写（读容器 hosts → 剥旧块 → 追新块），base 永不动。
+//     服务集变化（docker events）、容器重启（块内容可能过期）、启动补刷都走它。
+//   - overwriteHosts：显式整体覆写（批量配置 tab / 新建容器选宿主源），覆写内容
+//     同样组合服务块——显式动作不丢服务发现。
 import type { Config } from './config.js';
-import { listManaged, inspectContainer, subscribeEvents, type ExecOpts } from './engine/index.js';
-import { runBatch, type BatchResult } from './batch.js';
-import { getCustomHostsContent, readHostHosts, composeHostsContent, serviceBlockLines } from './hosts.js';
+import { listManaged, rootfsPath, execRun, inspectContainer, subscribeEvents, type ExecOpts } from './engine/index.js';
+import type { BatchResult } from './batch.js';
+import { readFile } from 'node:fs/promises';
+import pLimit from 'p-limit';
+import { composeHostsContent, stripServicesBlock, serviceBlockLines } from './hosts.js';
 import { listServiceEndpoints } from './docker.js';
-import { getAllMeta, setMeta } from './state.js';
 import { log } from './logger.js';
 
-export interface ResolveHostsResult {
-  content: string;
-  // hosts.txt 存在即用户表达过意图（保存但空串也是意图，不落回宿主内容）
-  isCustom: boolean;
-}
-
-// 解析要应用的内容：显式 > 已保存自定义（hosts.txt）> 宿主 /etc/hosts。
-export async function resolveHostsContent(explicit?: string): Promise<ResolveHostsResult> {
-  if (typeof explicit === 'string') {
-    return { content: explicit, isCustom: (await getCustomHostsContent()) != null };
-  }
-  const custom = await getCustomHostsContent();
-  if (custom != null) return { content: custom, isCustom: true };
-  return { content: await readHostHosts(), isCustom: false };
-}
-
-export interface ApplyHostsOpts {
-  content?: string; // 缺省走 resolveHostsContent()
-  ids?: string[]; // 缺省 = 全部运行中受管理容器
-  // 容器级 hostsHash 命中即跳过（事件/启动补刷路径用；手动路径强制刷）
-  skipUnchanged?: boolean;
-  reason?: string; // 日志 op 后缀：'manual' | 'save' | 'event' | 'startup'
-}
 export type ApplyHostsResult = BatchResult & { skipped: number };
 
 const EMPTY_RESULT: ApplyHostsResult = { total: 0, ok: 0, failed: 0, skipped: 0, items: [] };
 
-// 批量把内容覆写进容器 /etc/hosts（root exec）。空内容防御式返回——绝不把容器 hosts 清空。
-// 内容 = 用户内容（resolveHostsContent）+ docker 服务块（listServiceEndpoints 现算）：
-// 四条路径（save/manual/event/startup）统一在这里组合，hash 对组合后内容计算——
-// 服务集变化 → hash 变 → 自动重刷，无需各路径单独感知。
-export async function applyHostsToContainers(
-  cfg: Config,
-  opts: ApplyHostsOpts = {},
-): Promise<ApplyHostsResult> {
-  const resolved = await resolveHostsContent(opts.content);
-  const svcLines = cfg.services.enabled ? serviceBlockLines(await listServiceEndpoints(cfg)) : [];
-  const content = composeHostsContent(resolved.content, svcLines);
-  if (!content) return { ...EMPTY_RESULT };
-
-  // 目标容器：显式 ids 原样用；缺省枚举全部运行中受管理容器。
-  // 跳过判定需要 name（hash 按容器名存 meta）：枚举路径 listManaged 自带 name；
-  // 显式 ids 路径逐个解析（单容器事件场景只有 1 个 id，listManaged 一次拿全量对照）。
-  let ids = opts.ids;
-  const hash = opts.skipUnchanged ? hostsHash(content) : null;
-  let targets: { id: string; name: string }[] = [];
-  let skipped = 0;
-  if (hash) {
-    const views = await listManaged(cfg);
-    const byId = new Map(views.map((v) => [v.id, v]));
-    const meta = await getAllMeta();
-    const pool = ids && ids.length ? ids.map((id) => byId.get(id)).filter(Boolean) as typeof views : views.filter((v) => v.state === 'running');
-    targets = pool.filter((v) => meta[v.name]?.hostsHash !== hash).map((v) => ({ id: v.id, name: v.name }));
-    skipped = pool.length - targets.length;
-    if (targets.length === 0) {
-      log.debug({ skipped, reason: opts.reason }, 'hosts apply: all targets up to date');
-      return { ...EMPTY_RESULT, total: pool.length, skipped };
-    }
-  } else {
-    if (!ids || ids.length === 0) {
-      const views = await listManaged(cfg);
-      ids = views.filter((v) => v.state === 'running').map((v) => v.id);
-      if (ids.length === 0) return { ...EMPTY_RESULT };
-    }
-    targets = ids.map((id) => ({ id, name: '' })); // name 由 runOne 在结果里解析
-  }
-  return { ...(await execAndRecordHash(cfg, targets, content, opts.reason ?? 'manual')), skipped };
+// 当前服务行（services 关闭时为空数组 = 剥掉所有服务块的语义）。
+async function currentSvcLines(cfg: Config): Promise<string[]> {
+  return cfg.services.enabled ? serviceBlockLines(await listServiceEndpoints(cfg)) : [];
 }
 
 // base64 token 仅 [A-Za-z0-9+/=]，单引号包裹绝对安全；printf %s 不解释反斜杠。
 // root:root —— 容器以 dev(1000) 跑、/etc/hosts 归 root。
-// hash 在 exec 成功后才回写：写早了 exec 失败但 hash 已记会导致永不重试；
-// 写晚了崩溃窗口内丢 hash，下次触发重刷一次，覆写幂等，自愈。
-async function execAndRecordHash(
-  cfg: Config,
-  targets: { id: string; name: string }[],
-  content: string,
-  reason: string,
-): Promise<ApplyHostsResult> {
-  const hash = hostsHash(content);
+function writeCmd(content: string): ExecOpts {
   const b64 = Buffer.from(content, 'utf8').toString('base64');
-  const build = (): ExecOpts => ({
+  return {
     Cmd: ['sh', '-c', `printf %s '${b64}' | base64 -d > /etc/hosts`],
     User: 'root:root',
     Tty: false,
     timeoutMs: 15_000,
-  });
-  const result = await runBatch(cfg, targets.map((t) => t.id), build, `hosts-apply:${reason}`);
-  for (const it of result.items) {
-    if (it.ok && it.name) await setMeta(it.name, { hostsHash: hash });
+  };
+}
+
+// 模板永远不是目标：它的 /etc/hosts 是新容器的源头资产，被追平等于污染模板。
+// 事件路径曾在这里漏过（模板 running 时被覆写，state.json 里的旧 hostsHash 是铁证）。
+function dropTemplate(cfg: Config, ids: string[]): string[] {
+  return ids.filter((id) => id !== cfg.lxc.template);
+}
+
+// 容器 rootfs 里当前 hosts 内容；读不到（容器不存在/刚删）返回 null，调用方记失败。
+async function readContainerHosts(cfg: Config, id: string): Promise<string | null> {
+  const rootfs = rootfsPath(cfg, id);
+  if (!rootfs) return null;
+  try {
+    return await readFile(`${rootfs}/etc/hosts`, 'utf8');
+  } catch {
+    return null;
   }
-  return { ...result, skipped: 0 };
 }
 
-function hostsHash(content: string): string {
-  return createHash('sha256').update(content).digest('hex').slice(0, 16);
+// —— 服务块读-改-写 ——
+// 目标：显式 ids（过滤模板）或全部运行中受管理容器。每台「读现文件 → 剥旧块 →
+// 追新块」，与现内容相同记 skipped（读-比较-写天然幂等，无需 hash 记账）。
+export async function applyServicesBlock(
+  cfg: Config,
+  opts: { ids?: string[]; reason?: string } = {},
+): Promise<ApplyHostsResult> {
+  const svcLines = await currentSvcLines(cfg);
+  let targets: string[];
+  if (opts.ids && opts.ids.length) {
+    targets = dropTemplate(cfg, opts.ids);
+  } else {
+    const views = await listManaged(cfg);
+    targets = dropTemplate(cfg, views.filter((v) => v.state === 'running').map((v) => v.id));
+  }
+  if (targets.length === 0) return { ...EMPTY_RESULT };
+
+  // 读-比-写：内容一致的目标不 exec（服务集没变时近零成本；容器数少，并发读文件很快）。
+  const jobs: { id: string; next: string }[] = [];
+  let skipped = 0;
+  const reads = await Promise.all(
+    targets.map(async (id) => ({ id, current: await readContainerHosts(cfg, id) })),
+  );
+  for (const { id, current } of reads) {
+    if (current == null) continue; // 读不到（已删/异常）：多半容器已不在，不刷不报错
+    const next = composeHostsContent(stripServicesBlock(current), svcLines);
+    if (next === current) skipped++;
+    else jobs.push({ id, next });
+  }
+  if (jobs.length === 0) {
+    log.debug({ skipped, reason: opts.reason }, 'hosts services block: all up to date');
+    return { ...EMPTY_RESULT, total: targets.length, skipped };
+  }
+
+  // 内容每容器不同，且 runBatch 的无参 build() 调用到达序与提交序不保证一致
+  // （runOne 的 inspect await 之后才调 build，实测会乱序），所以自己扇出：
+  // p-limit 同款并发限制 + 逐容器错误收敛（结果形状与 runBatch 一致）。
+  const limit = pLimit(4);
+  const items = await Promise.all(
+    jobs.map((j) =>
+      limit(async () => {
+        try {
+          const r = await execRun(cfg, j.id, writeCmd(j.next));
+          return { id: j.id, name: j.id, ok: r.exitCode === 0, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+        } catch (e) {
+          return { id: j.id, name: j.id, ok: false, exitCode: -1, stdout: '', stderr: '', error: e instanceof Error ? e.message : String(e) };
+        }
+      }),
+    ),
+  );
+  const r: BatchResult = {
+    total: items.length,
+    ok: items.filter((i) => i.ok).length,
+    failed: items.filter((i) => !i.ok).length,
+    items,
+  };
+  for (const it of items) {
+    if (!it.ok) log.warn({ op: 'hosts-services', id: it.id, exitCode: it.exitCode, error: it.error }, 'hosts services write failed');
+  }
+  return { ...r, skipped };
 }
 
-// —— 容器事件自动重刷 ——
+// —— 显式整体覆写 ——
+// 批量配置 hosts tab / 新建容器选宿主源。base 是调用方给的完整内容（非空——
+// 清空 /etc/hosts 从不是合法意图，空内容在此 400 前就挡掉），服务块照常组合。
+export async function overwriteHosts(cfg: Config, ids: string[], base: string, reason: string): Promise<ApplyHostsResult> {
+  const targets = dropTemplate(cfg, ids);
+  if (targets.length === 0) return { ...EMPTY_RESULT };
+  const svcLines = await currentSvcLines(cfg);
+  const content = composeHostsContent(base, svcLines);
+  if (!content) return { ...EMPTY_RESULT };
+  const limit = pLimit(4);
+  const items = await Promise.all(
+    targets.map((id) =>
+      limit(async () => {
+        try {
+          const r = await execRun(cfg, id, writeCmd(content));
+          return { id, name: id, ok: r.exitCode === 0, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+        } catch (e) {
+          return { id, name: id, ok: false, exitCode: -1, stdout: '', stderr: '', error: e instanceof Error ? e.message : String(e) };
+        }
+      }),
+    ),
+  );
+  return {
+    total: items.length,
+    ok: items.filter((i) => i.ok).length,
+    failed: items.filter((i) => !i.ok).length,
+    items,
+    skipped: 0,
+  };
+}
+
+// —— 容器事件 → 服务块追平 ——
 
 // 模块级串行队列：事件稀疏但 restart 风暴时防并发 exec；失败吞掉不连锁。
 let chain: Promise<void> = Promise.resolve();
@@ -121,9 +157,8 @@ function enqueue(fn: () => Promise<void>): void {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// 订阅引擎事件（容器 start/restart），断线指数退避重连。
-// 永不抛、永不崩进程：引擎侧已吞掉流 error（lxc-monitor 进程退出），
-// 断流即返回，这里退避重连即自愈。
+// 订阅引擎事件（容器 RUNNING），断线指数退避重连。永不抛、永不崩进程：引擎侧
+// 已吞掉流 error（lxc-monitor 进程退出），断流即返回，这里退避重连即自愈。
 export function startHostsEventSync(cfg: Config): void {
   void (async () => {
     let delay = 1_000;
@@ -134,8 +169,8 @@ export function startHostsEventSync(cfg: Config): void {
         });
         delay = 1_000; // 连上即复位
         log.info({ engine: 'lxc' }, 'hosts event sync: subscribed');
-        // 重连后全量补刷一次，补断线窗口内错过的事件（hash 跳过，近零成本）
-        enqueue(() => sweepHosts(cfg));
+        // 重连后追平一次，补断线窗口内错过的事件（读-比-写，近零成本）
+        enqueue(async () => void (await applyServicesBlock(cfg, { reason: 'reconnect' })));
         await sub.closed; // resolve = 底层断流（引擎侧判定）-> 退避重连
       } catch (e) {
         log.warn({ err: String(e), retryMs: delay }, 'hosts event sync: subscribe failed, retrying');
@@ -147,32 +182,29 @@ export function startHostsEventSync(cfg: Config): void {
 }
 
 async function handleEvent(cfg: Config, id: string): Promise<void> {
-  // 受管理判定：inspect 一次查标记与网络。异常一律当不受管理——
+  // 模板 start 不追平：模板的 /etc/hosts 是新容器的源头资产（dropTemplate 是写侧
+  // 的同款防线，这里前置省一次 inspect）。受管理判定异常一律当不受管理——
   // 容器删除瞬间的 start 竞态等不该炸事件循环。
+  if (id === cfg.lxc.template) return;
   try {
     const info = await inspectContainer(cfg, id);
     if (!info.managed && !info.networks.includes(cfg.network)) return;
   } catch {
     return;
   }
-  // 容器 start/restart 后重刷一次——即使内容与
-  // meta hash 相同也必须重写。LXC 侧容器内 /etc/hosts 是 rootfs 里的真文件、重启不还原，
-  // 重刷是幂等的空操作。事件路径统一不跳过（skipUnchanged 只用于启动补刷的断线窗口去重）。
-  await applyHostsToContainers(cfg, { ids: [id], reason: 'event' });
+  // 容器 start 后追平一次服务块：hosts 是 rootfs 真文件、重启不还原，但块内容
+  // 可能在停机期间过期（服务集变了）。读-改-写，base 不动。
+  await applyServicesBlock(cfg, { ids: [id], reason: 'event' });
 }
 
-// 启动补刷（类比 sweepContainerCli）：服务重启期间容器可能被外部 restart（错过事件窗口）。
-// 门控：仅 hosts.txt 存在（isCustom）**或存在运行中服务**才自动刷。前者是用户表达过的意图；
-// 后者是 mysandbox 自己的产物——服务存在时容器 /etc/hosts 里就该有服务行，否则 LXC 容器
-// 重启后 `pg` 这类名字解析丢失。用户从未保存过且无服务时，回退内容是宿主 /etc/hosts，
-// 自动应用等于「容器一启动就被静默改写」，超出用户表达过的意图。
-// 手动「应用」按钮不受此门控（显式动作）。
+// 启动补刷：服务重启期间容器可能被外部 restart（错过事件窗口）。门控：存在
+// 运行中服务才刷——服务存在时容器 /etc/hosts 尾部就该有服务行。读-比-写，
+// 无变化近零成本。用户资产（base）永远不是这条路径的写入对象。
 export async function sweepHosts(cfg: Config): Promise<void> {
   try {
-    const { content, isCustom } = await resolveHostsContent();
-    const svcLines = cfg.services.enabled ? serviceBlockLines(await listServiceEndpoints(cfg)) : [];
-    if ((!isCustom && svcLines.length === 0) || (!content && svcLines.length === 0)) return;
-    const r = await applyHostsToContainers(cfg, { content, skipUnchanged: true, reason: 'startup' });
+    const svcLines = await currentSvcLines(cfg);
+    if (svcLines.length === 0) return;
+    const r = await applyServicesBlock(cfg, { reason: 'startup' });
     log.info({ ok: r.ok, skipped: r.skipped, failed: r.failed }, 'hosts startup sweep done');
   } catch (e) {
     log.warn({ err: String(e) }, 'hosts startup sweep failed');

@@ -87,9 +87,6 @@ export interface CreateSpec {
   gitName: string;
   gitEmail: string;
   role: string;
-  // 全局自定义 hosts 解析出的 host:ip 对。lxc 无 ExtraHosts 概念，
-  // 由 lifecycle 在启动后 exec 写 /etc/hosts（hosts-sync 同一条路径）。
-  extraHosts: string[];
 }
 
 // —— 「基座」：新建容器的来源物 = 模板容器（cfg.lxc.template）——
@@ -215,6 +212,12 @@ export interface Engine {
   // 容器内 /home/dev 对应的宿主路径 = <lxcpath>/<name>/rootfs/home/dev
   // （D1 uid 直通，属主即宿主用户，可直读直写）。
   hostHomePath(cfg: import('../config.js').Config, name: string): string | null;
+  // 容器 rootfs 的宿主路径（<lxcpath>/<name>/rootfs）。hosts-sync 的读-改-写
+  // 用它直读 /etc/hosts（属主 100000、644，宿主用户可读）；容器不存在返回 null。
+  rootfsPath(cfg: import('../config.js').Config, name: string): string | null;
+  // 模板 rootfs 的 /etc/hosts 内容——新容器 hosts 的源头（克隆原样复制）。
+  // 预览（/api/base/hosts）与宿主源创建的对照用。读不到返回 null。
+  readTemplateHosts(cfg: import('../config.js').Config): Promise<string | null>;
 }
 
 // 类型再导出，消费方从 engine/index 拿全（保持 import 单入口）。
