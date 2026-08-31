@@ -31,6 +31,7 @@ import { randomBytes } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import type { Config } from '../config.js';
+import { expandTilde } from '../config.js';
 import { getAllMeta, type ContainerMeta } from '../state.js';
 import { log } from '../logger.js';
 import { notFound, conflict, badRequest } from '../errors.js';
@@ -41,6 +42,7 @@ import {
   cloneTemplate,
   exportTemplate,
   importTemplate,
+  importArchiveTo,
   resetMachineId,
   type TemplateDeps,
 } from './template.js';
@@ -52,6 +54,7 @@ import type {
   ContainerInfo,
   ContainerView,
   CreateSpec,
+  CreateSource,
   ExecOpts,
   ExecResult,
   ExecStream,
@@ -356,42 +359,88 @@ async function inspect(cfg: Config, id: string): Promise<ContainerInfo> {
 //   - lxc-copy **已经**帮我们改好 `lxc.rootfs.path` 与 `lxc.uts.name`（实测 diff 确认），
 //     所以只需改 IP。（设计文档原先说 uts.name 也要手改，是错的，已回写修正。）
 //   - 克隆继承源的静态 IP → 必撞，改写是强制的，不是优化。
-async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
-  const name = assertName(spec.name);
-  const template = cfg.lxc.template;
-  assertName(template);
-
-  // 模板存在性：给「先建模板」的明确指引，不让 lxc-copy 抛看不懂的东西
-  // （缺模板时返回清晰提示，不让 lxc-copy 抛晦涩错误）。
-  if ((await readConfig(template)) == null) {
-    throw notFound(
-      `LXC template container "${template}" not found. Create it first (see docs/lxc-migration.md), or set lxc.template in config.`,
-    );
+// 落地 rootfs：三来源（模板克隆 / 现有容器克隆 / tar.zst 解包）。
+// 落地后新容器目录结构与 config 形状对 finalizeCreated 是统一的。
+async function materialize(
+  cfg: Config,
+  name: string,
+  source: CreateSource | undefined,
+  onProgress?: (e: BaseProgress) => void,
+): Promise<void> {
+  // 缺省 = 模板（既有行为）
+  if (source == null) {
+    const template = cfg.lxc.template;
+    assertName(template);
+    // 模板存在性：给「先建模板」的明确指引，不让 lxc-copy 抛看不懂的东西。
+    if ((await readConfig(template)) == null) {
+      throw notFound(
+        `LXC template container "${template}" not found. Create it first (see docs/lxc-migration.md), or set lxc.template in config.`,
+      );
+    }
+    const tInfo = await infoLines(template);
+    const tState = (tInfo?.State ?? 'STOPPED').toUpperCase();
+    if (tState !== 'STOPPED') {
+      throw new Error(
+        `LXC template "${template}" must be stopped before cloning (currently ${tState}). ` +
+          'lxc-copy fails silently on a running source.',
+      );
+    }
+    onProgress?.({ status: `克隆模板 ${template} -> ${name}` });
+    await cloneCopy(template, name);
+    return;
   }
-  const tInfo = await infoLines(template);
-  const tState = (tInfo?.State ?? 'STOPPED').toUpperCase();
-  if (tState !== 'STOPPED') {
-    throw new Error(
-      `LXC template "${template}" must be stopped before cloning (currently ${tState}). ` +
-        'lxc-copy fails silently on a running source.',
-    );
+
+  if (source.kind === 'container') {
+    const src = assertName(source.name);
+    if ((await readConfig(src)) == null) throw notFound(`source container "${src}" not found`);
+    // 在跑则先停（与 base clone 同语义）：lxc-copy 对运行中的源 exit 1 且 stderr 全空。
+    // 停完不自动启回来——源是什么状态交还用户。
+    const sInfo = await infoLines(src);
+    const sState = (sInfo?.State ?? 'STOPPED').toUpperCase();
+    if (sState !== 'STOPPED') {
+      onProgress?.({ status: `停止 ${src}（克隆要求源已停，完成后不自动重启）` });
+      await stopContainer(cfg, src);
+    }
+    onProgress?.({ status: `克隆容器 ${src} -> ${name}` });
+    await cloneCopy(src, name);
+    return;
   }
 
-  const r = await run(['lxc-copy', '-n', template, '-N', name], 300_000);
+  // archive：解包落地（idmap 按本机 default.conf 重写，见 importArchiveTo 注释）
+  onProgress?.({ status: `从包 ${source.path} 建容器 ${name}` });
+  await importArchiveTo(cfg, templateDeps, name, expandTilde(source.path.trim()), onProgress);
+}
+
+// lxc-copy 的统一包装：失败给人话错误（含「源在跑」的提示——stderr 常常是空的）。
+async function cloneCopy(from: string, to: string): Promise<void> {
+  const r = await run(['lxc-copy', '-n', from, '-N', to], 300_000);
   if (!r.ok) {
     throw new Error(
-      `lxc-copy from "${template}" failed: ${r.stderr.trim() || 'no error output (is the template running?)'}`,
+      `lxc-copy from "${from}" failed: ${r.stderr.trim() || 'no error output (is the source running?)'}`,
     );
   }
+}
+
+async function create(
+  cfg: Config,
+  spec: CreateSpec,
+  onProgress?: (e: BaseProgress) => void,
+): Promise<{ id: string }> {
+  const name = assertName(spec.name);
 
   try {
-    // 克隆后改写 config：IP（继承源的必撞）+ 网关（网段可能已与模板不同）+ 受管理标记
-    // + 网桥对齐当前配置 + ssh 只读挂载。
+    await materialize(cfg, name, spec.source, onProgress);
+
+    // 落地后改写 config：IP（克隆继承源的必撞）+ 网关（网段可能已与源不同）+ 受管理标记
+    // + 网桥对齐当前配置 + ssh 只读挂载。三种来源统一走这段——解包路径的 config 已被
+    // rewriteImportedConfig 修过 rootfs.path/uts.name/idmap，其余键照改不误。
+    onProgress?.({ status: '改写网络配置' });
     const content = await readConfig(name);
     if (content == null) throw new Error(`clone succeeded but config missing for ${name}`);
-    let next = setConfigValue(content, 'lxc.net.0.ipv4.address', `${spec.ip}/24`);
+    let next = setConfigValue(content, 'lxc.net.0.type', 'veth');
+    next = setConfigValue(next, 'lxc.net.0.ipv4.address', `${spec.ip}/24`);
     next = setConfigValue(next, 'lxc.net.0.ipv4.gateway', gatewayOf(cfg));
-    // MAC：克隆继承模板的 machine-id，容器内 udev 的 MACAddressPolicy=persistent 按
+    // MAC：克隆继承源的 machine-id，容器内 udev 的 MACAddressPolicy=persistent 按
     // machine-id 哈希出**同一个** MAC——两个同 MAC 接口挂同一座桥，fdb 端口来回摆，
     // 容器间 ARP 永远达不成（实测：宿主→容器通、容器→容器 No route to host）。
     // config 写死 hwaddr 后 LXC 直接用它，不落在 udev 的哈希路径上。
@@ -416,17 +465,20 @@ async function create(cfg: Config, spec: CreateSpec): Promise<{ id: string }> {
     await writeFile(configPath(name), next);
 
     // 首启前清空 machine-id（systemd 会重新生成）：克隆连身份一起拷，所有容器
-    // 共享模板的 machine-id（见 template.ts resetMachineId 注释的踩坑记录）。
+    // 共享源的 machine-id（见 template.ts resetMachineId 注释的踩坑记录）。
     await resetMachineId(containerDir(name), next);
 
+    onProgress?.({ status: '启动容器' });
     await startContainer(cfg, name);
     // 首启 seed：
     // LXC 侧 PID 1 是真 systemd、不存在 entrypoint 钩子，所以由引擎在建完后 attach 进去跑一次。
     // 语义保持「缺失才写」——用户后续改了 ~/.zshrc / ~/.gitconfig 不会被覆盖。
+    onProgress?.({ status: '首启 seed' });
     await seedHome(name, spec);
   } catch (e) {
     // 半成品清理。LXC 下 rootfs 就是数据，
     // 一起删——此时容器刚克隆出来还没有用户数据，删掉是安全的。
+    // 解包路径下 ns 内写的文件属主是 100000，宿主 rm 删不净，必须走 lxc-destroy。
     try {
       await removeContainer(cfg, name, { force: true });
     } catch {
@@ -911,5 +963,14 @@ export const lxcEngine: Engine = {
     } catch {
       return null;
     }
+  },
+  // 包内 /etc/hosts（「从包建容器」预览）。归档由宿主进程落盘（exportTemplate 的属主坑），
+  // 宿主侧直接 tar 即可，不需要 usernsexec。--wildcards 吃掉归档里那层容器名目录。
+  readArchiveHosts: async (_cfg, archivePath) => {
+    const p = expandTilde((archivePath || '').trim());
+    if (!p || !existsSync(p)) return null;
+    const r = await run(['tar', '--zstd', '-xOf', p, '--wildcards', '*/rootfs/etc/hosts'], 30_000);
+    if (!r.ok || !r.stdout.trim()) return null;
+    return r.stdout;
   },
 };

@@ -2,12 +2,16 @@
 // 引擎特定的建容器动作（克隆模板 + 改写 config）在 engine/lxc.ts 的 create() 里，
 // 这里只做编排。
 import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Config } from './config.js';
+import { expandTilde } from './config.js';
 import {
   getEngine,
   inspectContainer,
   stopContainer,
   removeContainer,
+  type CreateSource,
+  type BaseProgress,
 } from './engine/index.js';
 import { setMeta, deleteMeta } from './state.js';
 import { allocate, isFree } from './network.js';
@@ -26,9 +30,12 @@ export interface CreateInput {
   gitEmail?: string;
   role?: string;
   description?: string;
-  // /etc/hosts 来源：template = 继承模板 rootfs 的 hosts（lxc-copy 原样复制，缺省）；
-  // host = 用宿主 /etc/hosts 整体覆写。
+  // /etc/hosts 来源：template = 继承所选来源 rootfs 的 hosts（lxc-copy 原样复制 / 解包原样落地，
+  // 缺省）；host = 用宿主 /etc/hosts 整体覆写。
   hosts?: 'template' | 'host';
+  // 建容器的来源：缺省 = 模板（cfg.lxc.template）；container = 克隆现有容器（在跑会先停）；
+  // archive = 从 tar.zst 包解包落地。
+  source?: CreateSource;
 }
 
 export interface CreateResult {
@@ -37,7 +44,11 @@ export interface CreateResult {
   ip: string;
 }
 
-export async function createContainer(cfg: Config, input: CreateInput): Promise<CreateResult> {
+export async function createContainer(
+  cfg: Config,
+  input: CreateInput,
+  onProgress?: (e: BaseProgress) => void,
+): Promise<CreateResult> {
   const name = input.name.trim();
   if (!NAME_RE.test(name)) {
     throw conflict('invalid name (^[a-z0-9][a-z0-9-]{1,30}$)');
@@ -63,13 +74,18 @@ export async function createContainer(cfg: Config, input: CreateInput): Promise<
   // hosts 来源。template（缺省）零动作——lxc-copy 原样复制模板 rootfs 的 /etc/hosts，
   // 只需追平一次服务块（同时剥掉克隆可能从模板带来的旧块残留；无服务则全 skip）。
   // host = 宿主 /etc/hosts 整体覆写（服务块照常组合）。
-  const { id } = await engine.create(cfg, {
-    name,
-    ip,
-    gitName: input.gitName ?? cfg.git.name,
-    gitEmail: input.gitEmail ?? cfg.git.email,
-    role: input.role || 'generic',
-  });
+  const { id } = await engine.create(
+    cfg,
+    {
+      name,
+      ip,
+      gitName: input.gitName ?? cfg.git.name,
+      gitEmail: input.gitEmail ?? cfg.git.email,
+      role: input.role || 'generic',
+      source: input.source,
+    },
+    onProgress,
+  );
 
   // home 在 rootfs 内，克隆完才存在 —— 种子必须 在 create 之后。
   const home = engine.hostHomePath(cfg, name);
@@ -88,10 +104,18 @@ export async function createContainer(cfg: Config, input: CreateInput): Promise<
     await applyServicesBlock(cfg, { ids: [id], reason: 'create' });
   }
 
+  // 来源按实际出处记（详情面板展示「从哪儿来」）：模板/容器克隆 = lxc:<名字>，
+  // 包导入 = archive:<绝对路径>（expandTilde 归一，与 config 的路径口径一致）。
+  const source = !input.source
+    ? `lxc:${cfg.lxc.template}`
+    : input.source.kind === 'container'
+      ? `lxc:${input.source.name}`
+      : `archive:${resolve(expandTilde(input.source.path))}`;
+
   await setMeta(name, {
     managed: true,
     adopted: false,
-    source: `lxc:${cfg.lxc.template}`,
+    source,
     description: input.description,
     ipHint: ip,
     createdAt: new Date().toISOString(),

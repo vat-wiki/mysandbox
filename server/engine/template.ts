@@ -283,22 +283,30 @@ async function writeSource(dir: string, text: string): Promise<void> {
   }
 }
 
-// —— export：模板 -> 单个 tar.zst（config + rootfs）——
+// —— export：模板/任意容器 -> 单个 tar.zst（config + rootfs）——
 // 「仓库」就是一个文件：LXC 没有 registry，而模板本来就是整机 rootfs，压成一个文件
 // 拷到别的机器 import 是最直接的分发方式。zstd 比 gzip 快数倍且比率更好（2.8G rootfs 差别明显）。
+// opts.from 缺省 = 模板（BasePanel 语义）；给了 = 任意容器（容器行菜单「导出为包」）。
 export async function exportTemplate(
   cfg: Config,
   deps: TemplateDeps,
   opts: BaseActionOpts,
   onProgress?: (e: BaseProgress) => void,
 ): Promise<Record<string, unknown>> {
-  const name = cfg.lxc.template;
+  const isTemplate = !(opts.from || '').trim();
+  const name = isTemplate ? cfg.lxc.template : deps.assertName((opts.from || '').trim());
   const config = await deps.readConfig(name);
-  if (config == null) throw notFound(`template ${name} not found`);
+  if (config == null) throw notFound(`${isTemplate ? 'template' : 'container'} "${name}" not found`);
   const info = await deps.infoLines(name);
   const state = (info?.State ?? 'STOPPED').toUpperCase();
   if (state !== 'STOPPED') {
-    throw conflict(`template "${name}" must be stopped before export (currently ${state})`);
+    // 不自动停：普通容器在跑说明有活跃终端/服务，静默停它的代价远高于收益——
+    // 要求用户自己停（跑着导出的 rootfs 也在变，包内容不可信）。
+    throw conflict(
+      isTemplate
+        ? `template "${name}" must be stopped before export (currently ${state})`
+        : `container "${name}" is running — stop it first (菜单 ⋯ → 停止), export needs a quiescent rootfs (currently ${state})`,
+    );
   }
   const out = resolveArchivePath(opts.path, `${name}.tar.zst`);
   if (existsSync(out) && !opts.force) {
@@ -330,7 +338,7 @@ export async function exportTemplate(
     throw new Error(`tar failed: ${tail(r.stderr) || 'unknown error'}`);
   }
   const size = await stat(out).then((s) => s.size).catch(() => 0);
-  log.info({ template: name, path: out, size }, 'lxc template exported');
+  log.info({ container: name, path: out, size }, 'lxc container exported');
   return { path: out, size };
 }
 
@@ -353,6 +361,23 @@ export async function importTemplate(
     await deps.remove(cfg, name);
   }
 
+  await importArchiveTo(cfg, deps, name, src, onProgress);
+  await writeSource(deps.containerDir(name), `import of ${src}`);
+  log.info({ template: name, path: src }, 'lxc template imported');
+  onProgress?.({ status: `模板 ${name} 就绪` });
+  return { template: name, from: src };
+}
+
+// 把 tar.zst 包解到名为 name 的容器目录（宿主建目录 0755 + ns 内解包 + 改写 config）。
+// importTemplate（目标 = 模板名，带 force/销毁旧模板/writeSource）与 engine.create 的
+// 包来源（目标 = 新容器名，调用方保证名字未占用）共用。失败时清掉半成品目录。
+export async function importArchiveTo(
+  cfg: Config,
+  deps: TemplateDeps,
+  name: string,
+  archivePath: string,
+  onProgress?: (e: BaseProgress) => void,
+): Promise<void> {
   // idmap 取自**当前宿主**的 default.conf，而不是包里的 config：包可能来自 subuid 段不同的
   // 机器，用包里的 map 解包会写出本机 subuid 范围外的 uid（容器起不来且删不掉）。
   const defaults = await readDefaultConf();
@@ -364,10 +389,10 @@ export async function importTemplate(
   const dir = deps.containerDir(name);
   // 目标父目录由宿主用户建（0755），ns-root 才有地方写（见文件头）。
   await mkdir(dir, { recursive: true, mode: 0o755 });
-  onProgress?.({ status: `解包 ${src} -> ${dir}` });
+  onProgress?.({ status: `解包 ${archivePath} -> ${dir}` });
   const r = await nsRun(
     defaults,
-    ['tar', '--numeric-owner', '--zstd', '-xf', src, '-C', dir, '--strip-components=1'],
+    ['tar', '--numeric-owner', '--zstd', '-xf', archivePath, '-C', dir, '--strip-components=1'],
     onProgress,
   );
   if (!r.ok) {
@@ -376,10 +401,6 @@ export async function importTemplate(
   }
   // 包里的 config 带的是源机器的 rootfs 路径与 idmap，就地改成本机的。
   await rewriteImportedConfig(cfg, deps, name, defaults);
-  await writeSource(dir, `import of ${src}`);
-  log.info({ template: name, path: src }, 'lxc template imported');
-  onProgress?.({ status: `模板 ${name} 就绪` });
-  return { template: name, from: src };
 }
 
 // 解包后的 config 修正：rootfs 路径 + idmap 换成本机的，uts.name 换成模板名。

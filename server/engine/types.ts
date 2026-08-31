@@ -81,12 +81,19 @@ export interface EventSubscription {
 }
 
 // —— 建容器：lifecycle.ts 编排完 IP/hosts/git 后交给引擎（lxc-copy 克隆模板 + 改写 config）——
+
+// 建容器的来源。缺省/undefined = 模板容器（cfg.lxc.template，既有行为）。
+export type CreateSource =
+  | { kind: 'container'; name: string } // 现有容器（lxc-copy，在跑会先停）
+  | { kind: 'archive'; path: string }; // tar.zst 包（解包落地，idmap 按本机 default.conf 重写）
+
 export interface CreateSpec {
   name: string;
   ip: string;
   gitName: string;
   gitEmail: string;
   role: string;
+  source?: CreateSource;
 }
 
 // —— 「基座」：新建容器的来源物 = 模板容器（cfg.lxc.template）——
@@ -167,9 +174,14 @@ export interface Engine {
   // 列表与生命周期
   listManaged(cfg: import('../config.js').Config): Promise<ContainerView[]>;
   inspect(cfg: import('../config.js').Config, id: string): Promise<ContainerInfo>;
-  // 建容器：IP/hosts/身份由 lifecycle 编排好，这里只负责克隆落地 + 启动。
-  // 返回 id（= 容器名）。失败须自行清理半成品。
-  create(cfg: import('../config.js').Config, spec: CreateSpec): Promise<{ id: string }>;
+  // 建容器：IP/hosts/身份由 lifecycle 编排好，这里只负责落地（克隆模板/克隆现有容器/
+  // 解包 tar.zst）+ 改写 config + 启动。返回 id（= 容器名）。失败须自行清理半成品。
+  // onProgress 逐条推给 SSE（create 路由流式，克隆/解包分钟级）。
+  create(
+    cfg: import('../config.js').Config,
+    spec: CreateSpec,
+    onProgress?: (e: BaseProgress) => void,
+  ): Promise<{ id: string }>;
   start(cfg: import('../config.js').Config, id: string): Promise<void>;
   stop(cfg: import('../config.js').Config, id: string, t?: number): Promise<void>;
   restart(cfg: import('../config.js').Config, id: string, t?: number): Promise<void>;
@@ -218,6 +230,9 @@ export interface Engine {
   // 模板 rootfs 的 /etc/hosts 内容——新容器 hosts 的源头（克隆原样复制）。
   // 预览（/api/base/hosts）与宿主源创建的对照用。读不到返回 null。
   readTemplateHosts(cfg: import('../config.js').Config): Promise<string | null>;
+  // tar.zst 包内的 /etc/hosts 内容——「从包建容器」的预览用。宿主侧直接 tar -xOf
+  // （归档由宿主进程落盘，属主是本用户，无需 usernsexec）。包不存在/读不到返回 null。
+  readArchiveHosts(cfg: import('../config.js').Config, archivePath: string): Promise<string | null>;
 }
 
 // 类型再导出，消费方从 engine/index 拿全（保持 import 单入口）。

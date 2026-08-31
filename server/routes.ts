@@ -18,7 +18,9 @@ import { setMeta, getMeta, deleteMeta } from './state.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession } from './hostTerminal.js';
-import { createContainer, deleteManaged } from './lifecycle.js';
+import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
+import type { CreateSource, BaseProgress } from './engine/index.js';
+import { beginSse } from './sse.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
 import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
@@ -172,9 +174,17 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   app.get('/api/network/ips', async () => ipPoolView(cfg));
 
   // —— 新建容器 ——
-  app.post('/api/containers', async (req) => {
+  // SSE 流式：克隆/解包 + 启动分钟级（前端 api() 的 10s 超时撑不住），进度逐条推。
+  // 快错误（重名/IP 占用）变 error 帧，streamOp 在前端照样抛给对话框内联显示。
+  app.post('/api/containers', async (req, reply) => {
     const body = (req.body as Record<string, unknown> | null) || {};
-    const result = await createContainer(cfg, {
+    // 来源归一：{kind:'container',name} / {kind:'archive',path}，其余（含畸形）按模板走
+    const raw = body.source as Record<string, unknown> | undefined;
+    let source: CreateSource | undefined;
+    if (raw?.kind === 'container' && raw.name) source = { kind: 'container', name: String(raw.name) };
+    else if (raw?.kind === 'archive' && raw.path) source = { kind: 'archive', path: String(raw.path) };
+
+    const input: CreateInput = {
       name: String(body.name ?? ''),
       ip: body.ip ? String(body.ip) : undefined,
       gitName: body.gitName ? String(body.gitName) : undefined,
@@ -182,8 +192,10 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       role: body.role ? String(body.role) : undefined,
       description: body.description ? String(body.description) : undefined,
       hosts: body.hosts === 'host' ? 'host' : 'template',
-    });
-    return result;
+      source,
+    };
+    const { sink, finalize } = beginSse(reply);
+    await finalize(() => createContainer(cfg, input, (e: BaseProgress) => sink(e)));
   });
 
   // —— 删除容器（仅 managed；删 data 需 confirmName）——

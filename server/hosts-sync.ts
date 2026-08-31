@@ -42,7 +42,8 @@ function dropTemplate(cfg: Config, ids: string[]): string[] {
 }
 
 // 容器 rootfs 里当前 hosts 内容；读不到（容器不存在/刚删）返回 null，调用方记失败。
-async function readContainerHosts(cfg: Config, id: string): Promise<string | null> {
+// base.ts 的来源预览也用它（/api/base/hosts?container=）。
+export async function readContainerHosts(cfg: Config, id: string): Promise<string | null> {
   const rootfs = rootfsPath(cfg, id);
   if (!rootfs) return null;
   try {

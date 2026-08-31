@@ -129,11 +129,25 @@ export interface CreateInput {
   gitEmail?: string
   role?: string
   description?: string
-  // /etc/hosts 来源：template = 继承模板 rootfs 的 hosts（缺省）；host = 宿主 /etc/hosts
+  // /etc/hosts 来源：template = 继承所选来源 rootfs 的 hosts（缺省）；host = 宿主 /etc/hosts
   hosts?: 'template' | 'host'
+  // 建容器的来源：缺省 = 模板；container = 克隆现有容器（在跑会先停）；
+  // archive = 从 tar.zst 包解包
+  source?: { kind: 'container'; name: string } | { kind: 'archive'; path: string }
 }
-export const createContainer = (input: CreateInput) =>
-  postJson('/api/containers', input) as Promise<{ id: string; name: string; ip: string }>
+export interface CreateResult {
+  id: string
+  name: string
+  ip: string
+}
+// 建容器走 SSE（克隆/解包 + 启动分钟级，10s 超时的 api() 路径撑不住）。
+// done 帧的 result = {id,name,ip}；错误走 error 帧，由 streamOp 抛出。
+export async function streamCreateContainer(
+  input: CreateInput,
+  onEvent: (e: BaseProgressEvent) => void,
+): Promise<void> {
+  await streamOp('/api/containers', input, onEvent)
+}
 
 export const deleteContainer = (id: string, opts: { deleteData?: boolean; confirmName?: string } = {}) =>
   api(`/api/containers/${id}`, { method: 'DELETE', body: JSON.stringify(opts) }) as Promise<{ ok: true; dataRemoved: boolean; name: string }>
@@ -415,12 +429,21 @@ export const getServiceJob = (id: string) =>
 export const cancelServiceJob = (id: string) => postJson(`/api/services/jobs/${id}/cancel`)
 
 // —— hosts（新模型：全局面板已删） ——
-// 新建容器的 hosts 双源预览（模板 rootfs / 宿主 /etc/hosts），null = 读不到。
+// 新建容器的 hosts 多源预览（模板 rootfs / 宿主 /etc/hosts / 所选来源容器 / 包内），
+// null = 读不到。container/archive 仅在请求时带键返回（包预览要跑 tar）。
 export interface BaseHostsView {
   template: string | null
   host: string | null
+  container?: string | null
+  archive?: string | null
 }
-export const getBaseHosts = () => api('/api/base/hosts') as Promise<BaseHostsView>
+export function getBaseHosts(opts: { container?: string; archive?: string } = {}): Promise<BaseHostsView> {
+  const q = new URLSearchParams()
+  if (opts.container) q.set('container', opts.container)
+  if (opts.archive) q.set('archive', opts.archive)
+  const s = q.toString()
+  return api(`/api/base/hosts${s ? `?${s}` : ''}`)
+}
 // hosts 覆写结果：比通用 BatchResult 多 skipped（读-比-写跳过的容器数）
 export type HostsApplyResult = BatchResult & { skipped: number }
 // 显式整体覆写所选容器的 /etc/hosts（批量配置 tab；服务块自动组合进内容）

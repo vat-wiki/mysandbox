@@ -24,7 +24,7 @@ import {
 import { trackServiceJobs } from '@/lib/serviceJobs'
 import { newId } from '@/lib/id'
 import { containerColor, stateColor, stateLabel } from '@/lib/utils'
-import { baseLabel } from '@/lib/caps'
+import { baseLabel, hasBaseAction } from '@/lib/caps'
 import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -74,6 +74,8 @@ import {
 const FileEditorDialog = defineAsyncComponent(() => import('@/components/FileEditorDialog.vue'))
 // 桌面查看器（noVNC，较重）：点「桌面」才下载。
 const DesktopDialog = defineAsyncComponent(() => import('@/components/DesktopDialog.vue'))
+// 容器导出为包（SSE 日志对话框）：点「导出为包」才下载。
+const ExportContainerDialog = defineAsyncComponent(() => import('@/components/ExportContainerDialog.vue'))
 
 // CLI `mysandbox open` 深链请求（App 解析 #open hash 后传入；seq 自增触发消费）。
 export interface OpenReq {
@@ -990,6 +992,8 @@ const renameTarget = ref<ContainerView | null>(null)
 function onRename(c: ContainerView) {
   renameTarget.value = c
 }
+// 导出为包：任意容器 → tar.zst（不只模板）。要求容器已停止（对话框里有提示）。
+const exportTarget = ref<ContainerView | null>(null)
 async function doRename(value: string | undefined) {
   const c = renameTarget.value
   if (!c) return
@@ -1294,6 +1298,11 @@ onUnmounted(() => {
                 >
                 <DropdownMenuItem @click="onPower(c, 'restart')">重启</DropdownMenuItem>
                 <DropdownMenuItem @click="onRename(c)">重命名</DropdownMenuItem>
+                <DropdownMenuItem
+                  v-if="hasBaseAction('export')"
+                  @click="exportTarget = c"
+                  >导出为包</DropdownMenuItem
+                >
                 <DropdownMenuItem
                   v-if="c.managed"
                   class="text-destructive"
@@ -1601,6 +1610,13 @@ onUnmounted(() => {
     v-if="showCreate"
     @created="showCreate = false; refresh()"
     @close="showCreate = false"
+  />
+
+  <ExportContainerDialog
+    v-if="exportTarget"
+    :container="exportTarget"
+    @done="refresh(); exportTarget = null"
+    @close="exportTarget = null"
   />
 
   <ConfirmDialog

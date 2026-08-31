@@ -9,6 +9,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import { getEngine } from './engine/index.js';
 import { readHostHosts } from './hosts.js';
+import { readContainerHosts } from './hosts-sync.js';
 import type { BaseAction, BaseActionOpts, BaseProgress } from './engine/index.js';
 import { badRequest } from './errors.js';
 import { beginSse } from './sse.js';
@@ -39,12 +40,20 @@ export async function registerBaseRoutes(app: FastifyInstance, cfg: Config): Pro
     return { size: await lxcTemplateSize(cfg) };
   });
 
-  // 新建容器的 hosts 双源预览（CreateDialog）：模板 rootfs 的 /etc/hosts（源头，
+  // 新建容器的 hosts 多源预览（CreateDialog）：模板 rootfs 的 /etc/hosts（源头，
   // 克隆原样继承）与宿主 /etc/hosts（可选覆写源）。读不到返回 null，前端显示降级说明。
-  app.get('/api/base/hosts', async () => {
+  // query 带 container=/archive= 时追加对应来源的内容（「从现有容器/从包建容器」预览）——
+  // 仅请求时带键才查，包预览要跑 tar，不该无脑算。
+  app.get<{ Querystring: { container?: string; archive?: string } }>('/api/base/hosts', async (req) => {
+    const q = req.query;
     const template = await getEngine(cfg).readTemplateHosts(cfg);
     const host = await readHostHosts();
-    return { template: template ?? null, host: host || null };
+    return {
+      template: template ?? null,
+      host: host || null,
+      ...(q.container != null ? { container: await readContainerHosts(cfg, q.container) } : {}),
+      ...(q.archive != null ? { archive: await getEngine(cfg).readArchiveHosts(cfg, q.archive) } : {}),
+    };
   });
 
   // 动作。SSE 流式进度：耗时从秒（clone 小模板）到十几分钟（build / export 2.8G）不等，
@@ -77,8 +86,8 @@ Usage:
       Show whether the template is present and ready to create containers from.
   mysandbox base clone --from <container> [--force]
       Freeze an existing container into the template (stops it first).
-  mysandbox base export [<path>] [--force]
-      Pack the template into <path> (default ~/<template>.tar.zst).
+  mysandbox base export [<path>] [--from <container>] [--force]
+      Pack the template (default) or any container into <path> (default ~/<name>.tar.zst).
   mysandbox base import <path> [--force]
       Restore the template from an archive.
 `;

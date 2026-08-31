@@ -16,6 +16,7 @@ export type {
   EngineEvent,
   EventSubscription,
   CreateSpec,
+  CreateSource,
   BaseAction,
   BaseActionOpts,
   BaseProgress,
