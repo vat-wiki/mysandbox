@@ -44,7 +44,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks, Container } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, SquareTerminal, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks, Container } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1419,7 +1419,7 @@ onUnmounted(() => {
           </ContextMenuTrigger>
           <ContextMenuContent>
             <ContextMenuItem @click="openNewGroup(g)">
-              <Plus /> 新开一组终端
+              <SquareTerminal /> 新开一组终端
             </ContextMenuItem>
             <ContextMenuSeparator />
             <!-- popout 是组级动作（给该容器/宿主开独立工作区），收在这里而不是 pane 头部。
