@@ -3,13 +3,14 @@
 // 两段式连接：先连 /ws/desktop（控制流，文本帧 JSON）等 ensure 完成——期间展示安装/启动
 // 进度（首次可能要装几分钟包）；收到 {type:'ready'} 再 new RFB() 连 RFB 流（纯二进制）。
 //
-// 窗口形态：Dialog 内容可拖边缘/四角改大小（8 向手柄），右上角按钮/双击标题栏切换铺满。
-// 尺寸（w/h）持久化在 localStorage，重开记住；位置不持久——默认居中，第一次拖动后按
-// 「固定左上角」跟随（见 startResize）。分辨率固定于连接时（Xvfb 不动态改屏），窗口尺寸
-// 变化时画布经 scaleViewport 等比缩放适配，不裁切不滚动。
+// 窗口形态：按「远程桌面客户端窗口」设计——零内边距，三段式窗口 chrome：
+// 细工具栏（图标徽标 + 名称 + 状态点 + 铺满/关闭）→ 纯黑贴合画布 → 细状态条。
+// 可拖边缘/四角改大小（8 向手柄），铺满/双击工具栏切换。尺寸（w/h）持久化在 localStorage，
+// 位置不持久——默认居中，第一次拖动后按「固定左上角」跟随（见 startResize）。
+// 分辨率固定于连接时（Xvfb 不动态改屏），窗口尺寸变化时画布经 scaleViewport 等比缩放适配。
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import RFB from '@novnc/novnc/core/rfb.js'
-import { Maximize2, Minimize2 } from 'lucide-vue-next'
+import { Maximize2, Minimize2, Monitor, MonitorX, X } from 'lucide-vue-next'
 import { getToken } from '@/lib/api'
 import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
@@ -17,7 +18,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
 
@@ -74,9 +74,33 @@ const contentStyle = computed<Record<string, string>>(() => {
 // inline transform：reka-ui 动画结束会清 inline style，transform:none 会被一起抹掉（实测）。
 const anchored = computed(() => isPhone.value || maximized.value || !!pos.value)
 
+// 工具栏/状态条的文案与状态点。状态点放标题旁（视频会议式「在线点」），细节沉到状态条。
+const statusMeta = computed(() => {
+  switch (phase.value) {
+    case 'ready':
+      return { dot: 'bg-emerald-500', short: '已连接', long: '已连接 · 关闭窗口不结束桌面，重开秒连' }
+    case 'connecting':
+      return { dot: 'animate-pulse bg-amber-400', short: '连接中', long: progressMsg.value }
+    case 'preparing':
+      return { dot: 'animate-pulse bg-amber-400', short: '准备中', long: progressMsg.value }
+    case 'disconnected':
+      return { dot: 'bg-red-500/80', short: '未连接', long: '未连接' }
+  }
+})
+
+// 工具栏图标按钮统一样式（铺满 / 关闭共用）
+const toolBtn
+  = 'grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+
 function toggleMax(): void {
   maximized.value = !maximized.value
   if (!maximized.value) pos.value = null // 还原后回居中（记住的尺寸保留）
+}
+
+// 双击工具栏空白处铺满/还原；落点在按钮上时不触发（双击铺满按钮 = click×2 + dblclick，会多切一次）
+function onToolbarDblclick(e: MouseEvent): void {
+  if ((e.target as HTMLElement).closest('button')) return
+  toggleMax()
 }
 
 // 8 向手柄的位置/光标。手柄贴在 DialogContent 边缘（absolute，z 高于画布）。
@@ -293,63 +317,80 @@ onBeforeUnmount(() => {
     <!-- noVNC 在 canvas mousedown 时会往 body 挂全屏鼠标捕获层（setCapture polyfill，z-index 10000），
          拖拽/后续点击的事件 target 是这个层而非 DialogContent —— reka-ui 判定 outside 就把 Dialog 关了。
          实测：点一下画面（拖窗口/选文本）Dialog 直接消失。桌面是独占交互面，禁掉 outside-dismiss，
-         关窗只走右上角 X 与 Escape。 -->
+         关窗只走工具栏 X 与 Escape。 -->
+    <!-- max-h-none：基础类的 max-h-[85dvh] 会把铺满态（100vh）压回 85dvh，铺满必须放行到全视口；
+         画布区自身 min-h-0 + overflow-hidden 兜住内容，不依赖基础类的 overflow-y-auto。 -->
     <DialogContent
-      class="flex h-[88vh] w-[94vw] max-w-none flex-col max-md:h-[100dvh] max-md:max-h-none max-md:w-full max-md:rounded-none max-md:border-0 max-md:p-0"
+      class="flex h-[88vh] max-h-none w-[94vw] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-2xl shadow-black/80 max-md:h-[100dvh] max-md:max-h-none max-md:w-full max-md:rounded-none max-md:border-0 max-md:shadow-none"
       :class="anchored ? '!translate-x-0 !translate-y-0' : ''"
       :style="contentStyle"
+      :show-close-button="false"
       @pointer-down-outside.prevent
     >
-      <DialogHeader class="shrink-0" @dblclick="toggleMax">
-        <div class="flex items-center gap-2 pr-20">
-          <DialogTitle>桌面 · {{ containerName }}</DialogTitle>
+      <!-- 窗口工具栏：图标徽标 + 名称 + 状态点在左，铺满/关闭在右（不用基础 Dialog 的悬浮 X） -->
+      <div
+        class="flex h-11 shrink-0 cursor-default select-none items-center gap-2.5 border-b bg-background pr-2 pl-3"
+        @dblclick="onToolbarDblclick"
+      >
+        <div class="grid size-6 shrink-0 place-items-center rounded-md bg-primary/10 text-foreground/70">
+          <Monitor class="size-3.5" />
+        </div>
+        <DialogTitle class="truncate text-sm font-medium">桌面 · {{ containerName }}</DialogTitle>
+        <span class="ml-0.5 size-1.5 shrink-0 rounded-full" :class="statusMeta?.dot" :title="statusMeta?.short" />
+        <DialogDescription class="sr-only">容器内 XFCE 桌面的远程查看窗口。</DialogDescription>
+        <div class="ml-auto flex items-center gap-0.5">
           <button
+            v-if="!isPhone"
             type="button"
-            class="ring-offset-background text-muted-foreground hover:text-foreground inline-flex size-7 items-center justify-center rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden"
             :title="maximized ? '还原窗口' : '铺满整个窗口'"
+            :class="toolBtn"
             @click="toggleMax"
           >
             <Minimize2 v-if="maximized" class="size-4" />
             <Maximize2 v-else class="size-4" />
           </button>
+          <button type="button" title="关闭" :class="toolBtn" @click="emit('close')">
+            <X class="size-4" />
+          </button>
         </div>
-        <DialogDescription>
-          容器内 XFCE 桌面（Xvfb + x11vnc，经 mysandbox 代理）。键盘鼠标直接操作，焦点需先点一下画面。
-        </DialogDescription>
-      </DialogHeader>
-
-      <div
-        ref="canvasWrap"
-        class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md border bg-black"
-        :class="phase === 'ready' ? '' : 'opacity-0'"
-      ></div>
-
-      <!-- 状态层：canvas 之上叠进度/错误（ready 时隐藏，露出画面） -->
-      <div
-        v-if="phase !== 'ready'"
-        class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 pt-16"
-      >
-        <div
-          v-if="phase === 'connecting' || phase === 'preparing'"
-          class="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent"
-        ></div>
-        <p class="text-sm text-muted-foreground">
-          <template v-if="phase === 'connecting'">{{ progressMsg }}</template>
-          <template v-else-if="phase === 'preparing'">{{ progressMsg }}</template>
-        </p>
-        <p v-if="errMsg" class="max-w-xl whitespace-pre-wrap break-all text-center text-sm text-destructive">
-          {{ errMsg }}
-        </p>
-        <Button v-if="phase === 'disconnected'" variant="outline" size="sm" class="pointer-events-auto" @click="reconnect">
-          重连
-        </Button>
       </div>
 
-      <div class="flex shrink-0 items-center justify-between pt-1 text-xs text-muted-foreground">
-        <span>{{
-          phase === 'ready' ? '已连接（断开 Dialog 不关桌面，重开秒连）' : phase === 'disconnected' ? '未连接' : '准备中'
-        }}</span>
-        <span>拖边缘/四角调整窗口 · 双击标题栏或右上角铺满 · 分辨率固定于连接时</span>
+      <!-- 画布：贴合窗口纯黑（无内衬边框）；RFB 装进绝对定位层，未 ready 时隐掉 -->
+      <div class="relative min-h-0 flex-1 bg-black">
+        <div
+          ref="canvasWrap"
+          class="absolute inset-0"
+          :class="phase === 'ready' ? '' : 'opacity-0'"
+        ></div>
+
+        <!-- 状态层：盖在黑画布上（ready 时移除露出画面） -->
+        <div v-if="phase !== 'ready'" class="pointer-events-none absolute inset-0 grid place-items-center">
+          <div class="flex max-w-full flex-col items-center gap-3 px-6">
+            <template v-if="phase === 'connecting' || phase === 'preparing'">
+              <div class="size-9 animate-spin rounded-full border-2 border-white/15 border-t-white/80"></div>
+              <p class="text-sm text-zinc-300">{{ progressMsg }}</p>
+              <p v-if="phase === 'preparing'" class="text-xs text-zinc-600">首次连接需安装桌面组件，可能要几分钟</p>
+            </template>
+            <template v-else>
+              <div class="grid size-12 place-items-center rounded-full bg-red-500/10">
+                <MonitorX class="size-5 text-red-400" />
+              </div>
+              <p class="text-sm font-medium text-zinc-200">桌面连接已断开</p>
+              <p v-if="errMsg" class="max-w-xl text-center text-xs break-all whitespace-pre-wrap text-zinc-500">
+                {{ errMsg }}
+              </p>
+              <Button size="sm" class="pointer-events-auto mt-1" @click="reconnect">重新连接</Button>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- 状态条：左侧连接状态（preparing 时透出进度消息），右侧短提示（窄屏隐藏） -->
+      <div
+        class="flex h-8 shrink-0 items-center justify-between gap-3 border-t bg-background px-3 text-xs text-muted-foreground"
+      >
+        <span class="truncate">{{ statusMeta?.long }}</span>
+        <span class="hidden shrink-0 md:block">拖边缘/四角调整大小 · 双击标题栏铺满</span>
       </div>
 
       <!-- 拖拽手柄：8 向（四边细条 + 四角小方块）。铺满态/手机全屏不需要。 -->
