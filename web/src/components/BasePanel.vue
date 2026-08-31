@@ -21,6 +21,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -29,7 +37,7 @@ import {
 } from '@/components/ui/dialog'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
-const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void; (e: 'running', v: boolean): void }>()
+const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
 const status = ref<BaseStatus>({ kind: 'template', name: '', exists: false, ready: false })
 const loading = ref(false)
@@ -159,7 +167,6 @@ function start(action: BaseAction) {
 
 async function exec(action: BaseAction) {
   op.value = action
-  emit('running', true)
   log.value = []
   err.value = ''
   try {
@@ -174,7 +181,6 @@ async function exec(action: BaseAction) {
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
     op.value = ''
-    emit('running', false)
   }
 }
 
@@ -185,16 +191,33 @@ function onConfirm() {
   void exec(action)
 }
 
-// 动作按钮的中文名（顺序即渲染顺序，caps.baseActions 之外的不渲染）
-const ACTION_TEXT: Record<BaseAction, { idle: string; busy: string }> = {
-  clone: { idle: '从容器固化', busy: '克隆中…' },
-  export: { idle: '导出包', busy: '打包中…' },
-  import: { idle: '从包导入', busy: '导入中…' },
+// 动作的展示文案（顺序即渲染顺序，caps.baseActions 之外的不渲染）。
+// 卡片名/说明与执行按钮文案分开——按钮语境里「从容器固化」会读成一句话。
+const ACTION_CARD: Record<BaseAction, { name: string; desc: string; button: string; busy: string }> = {
+  clone: {
+    name: '从容器固化',
+    desc: '把一个现有容器做成新模板（会先停它，完成后不自动重启）',
+    button: '固化为模板',
+    busy: '克隆中…',
+  },
+  import: { name: '从包导入', desc: '从 tar.zst 包恢复模板', button: '导入', busy: '导入中…' },
+  export: { name: '导出包', desc: '把当前模板打包成 tar.zst', button: '导出', busy: '打包中…' },
 }
 const ORDER: BaseAction[] = ['clone', 'import', 'export']
 const actions = computed(() => ORDER.filter((a) => hasBaseAction(a)))
-// 第一个动作是「主动作」（制作基座），用实心按钮；其余 outline。
-const primary = computed(() => actions.value[0])
+
+// 当前选中的动作卡片。参数区与执行按钮只对它生效——动作与输入一一绑定，
+// 不可能再把「从包导入」的路径喂给「固化」。
+const selectedAction = ref<BaseAction | ''>('')
+watch(
+  actions,
+  (list) => {
+    if (list.length && !list.includes(selectedAction.value as BaseAction)) {
+      selectedAction.value = list[0]
+    }
+  },
+  { immediate: true },
+)
 
 const title = computed(() => `${baseLabel.value}管理`)
 const description = computed(() =>
@@ -289,43 +312,73 @@ async function copyVal(v: string) {
           {{ status.notReady || `${baseLabel} ${status.name} 不存在` }}——否则无法新建容器。
         </div>
 
-        <!-- 动作 -->
-        <div class="space-y-2">
-          <div class="flex flex-wrap gap-2">
-            <Button
+        <!-- 动作：先选动作卡片，参数区只渲染所选动作的输入 -->
+        <div class="space-y-3">
+          <div class="space-y-2">
+            <button
               v-for="a in actions"
               :key="a"
+              type="button"
+              class="w-full rounded-md border p-2.5 text-left transition-colors"
+              :class="
+                selectedAction === a
+                  ? 'border-primary bg-primary/10'
+                  : 'border-border hover:border-muted-foreground/40'
+              "
               :disabled="!!op"
-              :variant="a === primary ? 'default' : 'outline'"
-              @click="start(a)"
+              :aria-pressed="selectedAction === a"
+              @click="selectedAction = a"
             >
-              {{ op === a ? ACTION_TEXT[a].busy : ACTION_TEXT[a].idle }}
-            </Button>
+              <span class="flex items-center gap-2 text-sm font-medium">
+                <span
+                  class="h-2 w-2 shrink-0 rounded-full"
+                  :class="selectedAction === a ? 'bg-primary' : 'border border-muted-foreground/50'"
+                />
+                {{ ACTION_CARD[a].name }}
+              </span>
+              <span class="mt-0.5 block pl-4 text-xs leading-relaxed text-muted-foreground">
+                {{ ACTION_CARD[a].desc }}
+              </span>
+            </button>
           </div>
 
-          <!-- 动作参数 -->
-          <div class="grid grid-cols-2 gap-2">
-            <div v-if="hasBaseAction('clone')">
-              <Label for="base-clone-from" class="text-xs text-muted-foreground">固化来源容器</Label>
-              <select
-                id="base-clone-from"
-                v-model="cloneFrom"
-                class="h-8 w-full rounded-md border border-input bg-transparent px-2 text-xs"
-              >
-                <option value="">选择容器…</option>
-                <option v-for="c in containers" :key="c.name" :value="c.name">
-                  {{ c.displayName || c.name }}
-                </option>
-              </select>
+          <!-- 所选动作的参数 + 执行 -->
+          <template v-if="selectedAction">
+            <div v-if="selectedAction === 'clone'" class="space-y-1.5">
+              <Label for="base-clone-from" class="text-xs text-muted-foreground">来源容器</Label>
+              <!-- shadcn Select（reka-ui portal）：原生 <select> 的弹层由 OS 自绘，强制 dark 下白底违和 -->
+              <Select v-model="cloneFrom">
+                <SelectTrigger id="base-clone-from" class="h-8 w-full">
+                  <SelectValue placeholder="选择容器…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem v-for="c in containers" :key="c.name" :value="c.name">
+                      {{ c.displayName || c.name }}
+                    </SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </div>
-            <div v-if="hasBaseAction('export') || hasBaseAction('import')">
-              <Label for="base-archive" class="text-xs text-muted-foreground">包路径（空=~/{{ status.name }}.tar.zst）</Label>
-              <Input id="base-archive" v-model="archivePath" placeholder="~/ms-template.tar.zst" class="h-8 text-xs" />
+            <div v-else class="space-y-1.5">
+              <Label for="base-archive" class="text-xs text-muted-foreground">
+                包路径（空=~/{{ status.name }}.tar.zst）
+              </Label>
+              <Input
+                id="base-archive"
+                v-model="archivePath"
+                placeholder="~/ms-template.tar.zst"
+                class="h-8 text-xs"
+              />
             </div>
-          </div>
-          <p v-if="hasBaseAction('clone')" class="text-xs text-muted-foreground">
-            固化会先停掉来源容器（克隆要求它已停），完成后不自动重启。
-          </p>
+            <Button
+              class="w-full"
+              :disabled="!!op"
+              @click="start(selectedAction)"
+            >
+              {{ op === selectedAction ? ACTION_CARD[selectedAction].busy : ACTION_CARD[selectedAction].button }}
+            </Button>
+          </template>
         </div>
 
         <!-- 流式日志 -->
@@ -349,7 +402,7 @@ async function copyVal(v: string) {
 
   <ConfirmDialog
     v-if="pending"
-    :title="`${ACTION_TEXT[pending.action].idle}`"
+    :title="`${ACTION_CARD[pending.action].name}`"
     :description="pending.desc"
     confirm-text="继续"
     @confirm="onConfirm"
