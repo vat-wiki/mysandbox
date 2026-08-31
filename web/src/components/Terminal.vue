@@ -303,6 +303,24 @@ function toolPasteConfirm() {
   pasteText.value = ''
   pasteFallback.value = false
 }
+// 系统级粘贴（Ctrl+V / 长按）落进 textarea 时 paste 事件自带 clipboardData —— 直接自动发送，
+// 不再要求点「发送到终端」；个别环境 paste 事件不带数据时不拦默认行为，让文本进 textarea，
+// 由 input(insertFromPaste) 补一枪。两个都扑空才需要手动点按钮（按钮保留作兜底）。
+function fallbackSend(text: string) {
+  if (!text) return
+  sendRaw(text)
+  pasteText.value = ''
+  pasteFallback.value = false
+}
+function onFallbackPaste(e: ClipboardEvent) {
+  const t = e.clipboardData?.getData('text')
+  if (!t) return
+  e.preventDefault()
+  fallbackSend(t)
+}
+function onFallbackInput(e: InputEvent) {
+  if (e.inputType === 'insertFromPaste' && pasteText.value) fallbackSend(pasteText.value)
+}
 function toolCopy() {
   if (!term?.hasSelection()) return
   void copyText(term.getSelection()).then(() => term?.clearSelection())
@@ -738,13 +756,15 @@ onBeforeUnmount(() => {
     </div>
     <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox
          readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
-         clipboard API，永远可用；确认后经同一条 stdin 通道发送。 -->
+         clipboard API，永远可用；@paste/@input 捕获到粘贴动作即自动发送，按钮仅作兜底。 -->
     <div v-if="pasteFallback" class="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 rounded-t-lg border-t border-zinc-700 bg-zinc-900 p-3 pb-safe">
       <textarea
         ref="fallbackTa"
         v-model="pasteText"
         class="h-24 w-full resize-none rounded-md border border-zinc-700 bg-zinc-950 p-2 font-mono text-sm text-zinc-100"
         placeholder="在此粘贴内容（Ctrl+V / 长按）…"
+        @paste="onFallbackPaste"
+        @input="onFallbackInput"
       />
       <div class="flex justify-end gap-2">
         <button type="button" class="tb" @click="pasteFallback = false; pasteText = ''">取消</button>
