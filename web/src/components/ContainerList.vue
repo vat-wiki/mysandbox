@@ -23,11 +23,12 @@ import {
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
 import { newId } from '@/lib/id'
-import { containerColor, stateColor, stateLabel } from '@/lib/utils'
+import { containerColor, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
 import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,7 +44,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks, Container } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -391,7 +392,8 @@ const listenPorts = ref<number[]>([])
 const webPorts = ref<number[]>([])
 let listenSeq = 0 // 竞态：切 group 时丢弃慢响应
 let listenTimer: ReturnType<typeof setInterval> | null = null
-const ipCopied = ref(false)
+// 复制成功的 IP（null=无）：精确存值而非全局 bool——多容器下只回显点过的那张卡。
+const copiedIp = ref<string | null>(null)
 let ipCopyTimer: ReturnType<typeof setTimeout> | null = null
 // execCommand 兜底（同 Terminal.vue copyText 的手法）：非 https 访问时
 // navigator.clipboard 是 undefined，只在用户手势栈里同步调 execCommand 才有效。
@@ -425,9 +427,9 @@ async function copyIpOf(ip: string) {
   }
   if (!ok) ok = legacyCopy(ip)
   if (ok) {
-    ipCopied.value = true
+    copiedIp.value = ip
     if (ipCopyTimer) clearTimeout(ipCopyTimer)
-    ipCopyTimer = setTimeout(() => (ipCopied.value = false), 1200)
+    ipCopyTimer = setTimeout(() => (copiedIp.value = null), 1200)
   }
 }
 const otherListenPorts = computed(() => listenPorts.value.filter((p) => !webPorts.value.includes(p)))
@@ -1194,38 +1196,66 @@ onUnmounted(() => {
       <!-- 容器卡片区：数量有限（个人 sandbox 常年个位数），行形态浪费纵向空间且
            信息密度低——改两行卡片平铺「看一眼就该知道」的状态（状态文字、IP、描述），
            低频操作仍收 ⋯。色条与 tab 栏同色呼应。宿主条目刻意保持单行（见上）。 -->
-      <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+      <div class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+        <!-- 首屏加载骨架：只在列表还没数据时占位（轮询静默刷新不打这里） -->
+        <template v-if="loading && !items.length">
+          <Skeleton v-for="i in 3" :key="i" class="h-12 w-full rounded-lg" />
+        </template>
         <div
           v-for="c in items"
           :key="c.id"
-          class="group relative flex cursor-pointer flex-col gap-1 rounded-md border border-transparent px-2 py-1.5 pl-2.5 hover:border-border hover:bg-accent/50"
+          class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
+          :class="
+            activeGroup?.containerId === c.id
+              ? 'border-border/60 bg-accent'
+              : 'border-transparent hover:bg-accent/40'
+          "
           @click="openTerm(c)"
         >
-          <!-- 左侧色条：容器色（与 tab 呼应），选中/hover 时更明显 -->
+          <!-- 左缘色条：卡片唯一的色彩元素——容器身份色（与 tab 呼应），兼作状态指示：
+               running = 容器色；非 running = 灰条，右侧两行整体降亮度（整卡置灰 =
+               已停/失效，不再另设状态点）。选中加粗全高；平时短一截，hover 恢复饱和。
+               悬停色条看精确状态文案（title）。 -->
           <span
-            class="absolute inset-y-1.5 left-0.5 w-1 rounded-full"
-            :style="{ backgroundColor: containerColor(c.id) }"
+            class="absolute left-0 w-[3px] rounded-full transition-all"
+            :class="[
+              activeGroup?.containerId === c.id ? 'inset-y-1' : 'inset-y-2.5',
+              c.state === 'running'
+                ? activeGroup?.containerId === c.id
+                  ? 'opacity-100'
+                  : 'opacity-40 group-hover:opacity-90'
+                : 'bg-muted-foreground/30',
+            ]"
+            :style="c.state === 'running' ? { backgroundColor: containerColor(c.id) } : undefined"
+            :title="stateLabel(c.state)"
           />
-          <!-- 第一行：显示名（身份行）——状态不在这表达，收进第二行行首的色点
-               （title 悬停有文字），与左缘容器色条拉开距离、不挤在一起。 -->
-          <div class="flex items-center gap-2">
-            <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="c.displayName || c.name">{{
-              c.displayName || c.name
-            }}</span>
+          <!-- 第一行：身份行。非 running 整行降亮度——明度即活性。 -->
+          <div
+            class="flex min-w-0 items-center gap-1.5 pr-6"
+            :class="c.state !== 'running' ? 'opacity-60' : ''"
+          >
+            <span
+              class="min-w-0 truncate text-[13px] font-medium leading-none text-foreground"
+              :title="c.displayName || c.name"
+              >{{ c.displayName || c.name }}</span
+            >
           </div>
-          <!-- 第二行：状态色点 + IP（点击复制）+ 描述/外部徽章/本窗口终端组指示。
-               色点放行首：各行同 x 位置连成可扫读的状态列。 -->
-          <div class="flex items-center gap-2 pl-4 text-xs text-muted-foreground">
-            <span :class="['h-2 w-2 shrink-0 rounded-full', stateColor(c.state)]" :title="stateLabel(c.state)" />
+          <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/外部徽章。
+               非 running 整行再降一档，灰色条是「还活着」的唯一信号。 -->
+          <div
+            class="flex items-center gap-2 text-[11px] leading-none text-muted-foreground"
+            :class="c.state !== 'running' ? 'opacity-50' : ''"
+          >
             <button
               v-if="c.ip"
               type="button"
-              class="shrink-0 font-mono tabular-nums hover:text-foreground"
-              :title="ipCopied ? '已复制' : '点击复制 IP'"
+              class="shrink-0 font-mono tabular-nums transition-colors hover:text-foreground"
+              :class="copiedIp === c.ip ? 'text-emerald-500' : ''"
+              :title="copiedIp === c.ip ? '已复制' : '点击复制 IP'"
               @click.stop="copyIpOf(c.ip)"
               >{{ c.ip }}</button
             >
-            <span v-else class="shrink-0">无 IP</span>
+            <span v-else class="shrink-0 opacity-50">无 IP</span>
             <span class="min-w-0 flex-1 truncate" :title="c.description || c.name">{{
               c.description || c.name
             }}</span>
@@ -1235,12 +1265,14 @@ onUnmounted(() => {
               class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
               >外部</Badge
             >
-            <!-- 本窗口已开终端组：组数提示（主容器交互入口，与 tab 栏呼应） -->
+            <!-- 本窗口已开终端组数：右下角小徽章（与 tab 栏呼应），打开过才有 -->
             <span
               v-if="openGroupCount(c.id)"
-              class="shrink-0 font-mono text-[10px] text-muted-foreground/80"
-              >终端·{{ openGroupCount(c.id) }}</span
+              class="flex shrink-0 items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium leading-none text-primary"
+              :title="`本窗口已开 ${openGroupCount(c.id)} 个终端组`"
             >
+              <TerminalIcon class="size-2.5" />{{ openGroupCount(c.id) }}
+            </span>
           </div>
           <!-- ⋯ 菜单：低频操作收进来（外部的容器只有「纳入管理」）。触屏常显。 -->
           <DropdownMenu>
@@ -1248,7 +1280,7 @@ onUnmounted(() => {
               <Button
                 variant="ghost"
                 size="icon-xs"
-                class="absolute right-0.5 top-0.5 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+                class="absolute right-1 top-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
                 :disabled="busy[c.id]"
                 :title="busy[c.id] ? '处理中…' : '更多操作'"
                 @click.stop
@@ -1287,9 +1319,15 @@ onUnmounted(() => {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        <p v-if="!items.length && !loading" class="px-3 py-6 text-center text-xs text-muted-foreground">
-          没有受管理的容器
-        </p>
+        <!-- 空态：轻引导，与标题行的 ＋/⋯ 呼应 -->
+        <div
+          v-if="!items.length && !loading"
+          class="flex flex-col items-center gap-1.5 px-3 py-8 text-center"
+        >
+          <Container class="size-5 text-muted-foreground/40" />
+          <p class="text-xs text-muted-foreground">暂无容器</p>
+          <p class="text-[11px] text-muted-foreground/60">点上方 ＋ 新建，⋯ 里可纳入已有容器</p>
+        </div>
       </div>
 
       <!-- 宿主终端快捷行：钉在底部，与 docker 服务摘要同属「容器之外的环境」区，
@@ -1388,7 +1426,7 @@ onUnmounted(() => {
                 class="h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
                 :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
               />
-              <span class="font-mono">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
+              <span>{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
               <button
                 @click.stop="closeGroupById(g.id)"
                 class="ml-1 flex items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
@@ -1434,19 +1472,19 @@ onUnmounted(() => {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <template v-if="activeContainer && activeContainer.state === 'running'">
-              <DropdownMenuLabel class="font-mono text-xs font-normal text-muted-foreground">
+              <DropdownMenuLabel class="text-xs font-normal text-muted-foreground">
                 {{ activeContainer.displayName || activeContainer.name }}
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 v-if="activeContainer.ip"
                 class="font-mono text-xs"
-                :title="ipCopied ? '' : '点击复制 IP'"
+                :title="copiedIp === activeContainer.ip ? '已复制' : '点击复制 IP'"
                 @click="copyIp"
               >
                 <Network class="size-3.5" />
                 <span class="flex-1">{{ activeContainer.ip }}</span>
-                <span class="text-[10px] text-muted-foreground">{{ ipCopied ? '已复制' : '复制' }}</span>
+                <span class="text-[10px] text-muted-foreground">{{ copiedIp === activeContainer.ip ? '已复制' : '复制' }}</span>
               </DropdownMenuItem>
               <!-- web 端口：后端实测返回 HTML，Globe 标记，点击开浏览器 -->
               <DropdownMenuItem

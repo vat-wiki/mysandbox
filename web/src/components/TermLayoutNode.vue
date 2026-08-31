@@ -116,7 +116,7 @@ if (leaf.value) {
         class="h-1.5 w-1.5 shrink-0 rounded-full"
         :style="{ backgroundColor: group.kind === 'host' ? '#f59e0b' : containerColor(group.containerId) }"
       />
-      <span class="shrink-0 font-mono text-muted-foreground" :title="leaf.termId">
+      <span class="shrink-0 text-muted-foreground" :title="leaf.termId">
         {{ ops.groupLabel(group) }}<span v-if="total > 1"> #{{ ordinal + 1 }}</span>
       </span>
       <span class="min-w-0 flex-1 truncate font-mono text-muted-foreground/80" :title="cwd">
