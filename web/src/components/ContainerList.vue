@@ -1020,14 +1020,6 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
   await act(c.id, () => deleteContainer(c.id, { deleteData: payload.deleteData, confirmName: payload.deleteData ? payload.confirmName : undefined }))
 }
 
-// 卡片「终端·N」指示：本窗口（可见+隐藏）为该容器开着的组数，与 tab 栏呼应。
-function openGroupCount(cId: string): number {
-  let n = 0
-  for (const g of groups.value) if (g.containerId === cId) n++
-  for (const g of hiddenGroups.value) if (g.containerId === cId) n++
-  return n
-}
-
 // —— 底部服务摘要条 ——
 // docker 配套服务在侧栏只占一行：聚合状态点 + 名称串，点击开管理面板。
 // 服务是配套设施，刻意不以行的形态进侧栏——避免和容器列表形成第二个并列清单，
@@ -1265,14 +1257,6 @@ onUnmounted(() => {
               class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
               >外部</Badge
             >
-            <!-- 本窗口已开终端组数：右下角小徽章（与 tab 栏呼应），打开过才有 -->
-            <span
-              v-if="openGroupCount(c.id)"
-              class="flex shrink-0 items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium leading-none text-primary"
-              :title="`本窗口已开 ${openGroupCount(c.id)} 个终端组`"
-            >
-              <TerminalIcon class="size-2.5" />{{ openGroupCount(c.id) }}
-            </span>
           </div>
           <!-- ⋯ 菜单：低频操作收进来（外部的容器只有「纳入管理」）。触屏常显。 -->
           <DropdownMenu>
