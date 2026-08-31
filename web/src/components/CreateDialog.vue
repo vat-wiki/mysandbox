@@ -45,6 +45,11 @@ const err = ref('')
 const sourceKind = ref<'template' | 'container' | 'archive'>('template')
 const sourceContainer = ref('')
 const archivePath = ref('')
+// 「高级」折叠块：受控 open——submit 撞来源类校验错误时要能自动展开，别让报错字段藏在折叠块里。
+const advancedOpen = ref(false)
+function onAdvToggle(e: Event) {
+  advancedOpen.value = (e.target as HTMLDetailsElement).open
+}
 // 建容器现在走 SSE：busy 期间逐条进度滚在日志区（克隆/解包分钟级，不能干等）。
 const log = ref<string[]>([])
 
@@ -121,10 +126,12 @@ function submit() {
     return
   }
   if (sourceKind.value === 'container' && !sourceContainer.value) {
-    err.value = '先选一个来源容器'
+    advancedOpen.value = true
+    err.value = '先选一个要克隆的容器'
     return
   }
   if (sourceKind.value === 'archive' && !archivePath.value.trim()) {
+    advancedOpen.value = true
     err.value = '先填包路径'
     return
   }
@@ -162,10 +169,11 @@ function submit() {
     <DialogContent class="max-w-lg">
       <DialogHeader>
         <DialogTitle>新建容器</DialogTitle>
-        <DialogDescription>配置名称、IP 与来源。</DialogDescription>
+        <DialogDescription>名称、描述与 IP；其余在「高级」里。</DialogDescription>
       </DialogHeader>
 
-      <!-- 三段分组（基础/来源/网络）：段距(space-y-5)大于段内行距，分组感靠间距差；
+      <!-- 主路径只有 基础+网络（名称/描述/IP）；来源与 hosts 来源收进「高级」折叠块。
+           段距(space-y-5)大于段内行距，分组感靠间距差；
            小节标题与 BatchDialog 侧栏同款（text-xs font-medium text-muted-foreground）。 -->
       <div class="space-y-5">
         <!-- 基础：名称必填占窄列，描述几乎总是空、合一行不各占整行 -->
@@ -186,52 +194,7 @@ function submit() {
           </p>
         </div>
 
-        <!-- 来源：三选 + 条件参数/提示 -->
-        <div class="space-y-3">
-          <p class="text-xs font-medium text-muted-foreground">来源</p>
-          <RadioGroup v-model="sourceKind" class="flex items-center gap-4">
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="src-template" value="template" :disabled="busy" />
-              <Label for="src-template" class="font-normal">模板</Label>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="src-container" value="container" :disabled="busy" />
-              <Label for="src-container" class="font-normal">现有容器</Label>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="src-archive" value="archive" :disabled="busy" />
-              <Label for="src-archive" class="font-normal">从包导入</Label>
-            </div>
-          </RadioGroup>
-          <!-- shadcn Select（reka-ui portal）：原生 <select> 的弹层由 OS 自绘，强制 dark 下白底违和 -->
-          <div v-if="sourceKind === 'container'" class="space-y-1">
-            <Select v-model="sourceContainer">
-              <SelectTrigger id="c-source-container" class="h-8 w-full" :disabled="busy">
-                <SelectValue placeholder="选择容器…" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem v-for="c in containers" :key="c.name" :value="c.name">
-                    {{ c.displayName || c.name }}
-                  </SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <p class="text-xs leading-relaxed text-amber-600 dark:text-amber-500">
-              克隆要求源容器已停止：会先停止它，完成后不自动重启。
-            </p>
-          </div>
-          <div v-else-if="sourceKind === 'archive'" class="space-y-1">
-            <Input
-              id="c-archive-path"
-              v-model="archivePath"
-              placeholder="~/ms-template.tar.zst"
-              :disabled="busy"
-            />
-          </div>
-        </div>
-
-        <!-- 网络：IP 与 hosts 同段。行首小 key 标注各行，radio 与条件 Input 同一行；
+        <!-- 网络：只有 IP 了（hosts 来源挪进「高级」）。行首小 key 标注，radio 与条件 Input 同行；
              RadioGroupItem 必须留在 RadioGroup 内（reka-ui 靠注入 context 拿选中态）。 -->
         <div class="space-y-3">
           <p class="text-xs font-medium text-muted-foreground">网络</p>
@@ -255,43 +218,105 @@ function submit() {
               :disabled="busy"
             />
           </div>
-
-          <div class="flex items-center gap-4">
-            <span class="w-11 shrink-0 text-xs text-muted-foreground">hosts</span>
-            <RadioGroup v-model="hostsSource" class="flex items-center gap-3">
-              <div class="flex items-center gap-1.5">
-                <RadioGroupItem id="hosts-template" value="template" :disabled="busy" />
-                <Label for="hosts-template" class="font-normal">继承来源</Label>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <RadioGroupItem id="hosts-host" value="host" :disabled="busy" />
-                <Label for="hosts-host" class="font-normal">宿主机</Label>
-              </div>
-            </RadioGroup>
-          </div>
-          <details class="group rounded-md border bg-muted/30">
-            <summary
-              class="flex cursor-pointer select-none items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
-            >
-              <span
-                class="transition-transform group-open:rotate-90"
-                aria-hidden="true"
-                >▸</span
-              >
-              预览所选 hosts 源（想改默认去改模板容器）
-            </summary>
-            <div class="border-t px-3 py-2">
-              <pre
-                v-if="hostsShown"
-                class="max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-muted-foreground"
-                >{{ hostsShown }}</pre
-              >
-              <p v-else class="text-[11px] text-muted-foreground">
-                读取失败或来源不存在（模板未就绪 / 来源未选 / 宿主 /etc/hosts 不可读）。
-              </p>
-            </div>
-          </details>
         </div>
+
+        <!-- 高级（默认收起）：来源与 hosts 来源都是「大多数时候用默认」的配置，
+             平铺出来只会稀释主路径（名称/描述/IP → 创建）。与 hosts 预览同用 details 折叠。 -->
+        <details
+          class="group rounded-md border bg-muted/30"
+          :open="advancedOpen"
+          @toggle="onAdvToggle"
+        >
+          <summary
+            class="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <span class="transition-transform group-open:rotate-90" aria-hidden="true">▸</span>
+            高级（从哪儿建 / hosts 来源）
+          </summary>
+          <div class="space-y-3 border-t px-3 py-3">
+            <div class="space-y-2">
+              <p class="text-xs text-muted-foreground">从哪儿建</p>
+              <RadioGroup v-model="sourceKind" class="flex items-center gap-4">
+                <div class="flex items-center gap-1.5">
+                  <RadioGroupItem id="src-template" value="template" :disabled="busy" />
+                  <Label for="src-template" class="font-normal">模板</Label>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <RadioGroupItem id="src-container" value="container" :disabled="busy" />
+                  <Label for="src-container" class="font-normal">现有容器</Label>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <RadioGroupItem id="src-archive" value="archive" :disabled="busy" />
+                  <Label for="src-archive" class="font-normal">从包导入</Label>
+                </div>
+              </RadioGroup>
+              <!-- shadcn Select（reka-ui portal）：原生 <select> 的弹层由 OS 自绘，强制 dark 下白底违和 -->
+              <div v-if="sourceKind === 'container'" class="space-y-1">
+                <Select v-model="sourceContainer">
+                  <SelectTrigger id="c-source-container" class="h-8 w-full" :disabled="busy">
+                    <SelectValue placeholder="选择容器…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem v-for="c in containers" :key="c.name" :value="c.name">
+                        {{ c.displayName || c.name }}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <p class="text-xs leading-relaxed text-amber-600 dark:text-amber-500">
+                  克隆要求源容器已停止：会先停止它，完成后不自动重启。
+                </p>
+              </div>
+              <div v-else-if="sourceKind === 'archive'" class="space-y-1">
+                <Input
+                  id="c-archive-path"
+                  v-model="archivePath"
+                  placeholder="~/ms-template.tar.zst"
+                  :disabled="busy"
+                />
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <p class="text-xs text-muted-foreground">hosts 来源</p>
+              <div class="flex items-center gap-4">
+                <RadioGroup v-model="hostsSource" class="flex items-center gap-3">
+                  <div class="flex items-center gap-1.5">
+                    <RadioGroupItem id="hosts-template" value="template" :disabled="busy" />
+                    <Label for="hosts-template" class="font-normal">继承所选来源</Label>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <RadioGroupItem id="hosts-host" value="host" :disabled="busy" />
+                    <Label for="hosts-host" class="font-normal">宿主机</Label>
+                  </div>
+                </RadioGroup>
+              </div>
+              <!-- 内层 details 也要带 group：group-open: 只认最近的 .group 祖先，
+                   去掉的话箭头会跟着外层「高级」的开合转。 -->
+              <details class="group rounded-md border bg-muted/30">
+                <summary
+                  class="flex cursor-pointer select-none items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <span class="transition-transform group-open:rotate-90" aria-hidden="true"
+                    >▸</span
+                  >
+                  预览（想改默认去改模板容器）
+                </summary>
+                <div class="border-t px-3 py-2">
+                  <pre
+                    v-if="hostsShown"
+                    class="max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-muted-foreground"
+                    >{{ hostsShown }}</pre
+                  >
+                  <p v-else class="text-[11px] text-muted-foreground">
+                    读取失败或来源不存在（模板未就绪 / 来源未选 / 宿主 /etc/hosts 不可读）。
+                  </p>
+                </div>
+              </details>
+            </div>
+          </div>
+        </details>
 
         <!-- SSE 进度：克隆/解包分钟级，逐条滚动 -->
         <div
