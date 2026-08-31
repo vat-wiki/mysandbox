@@ -650,10 +650,13 @@ function openHostTerm() {
   createGroup(HOST_ID, '宿主', 'host')
 }
 
-// ---- 独立窗口（popout）----
-// 在新浏览器窗口打开某容器/宿主的纯终端工作区（App 按 ?popout= 渲染无侧栏形态）。
+// 在独立窗口（popout）打开某容器/宿主的纯终端工作区（App 按 ?popout= 渲染无侧栏形态）。
 // 新窗口首屏自动开一个全新终端组，之后随意左右/上下分屏；布局存独立 key，
 // 与主窗口互不影响；tmux 会话按 termId 归属，刷新窗口即可恢复。
+// tab 右键菜单的守卫：容器组要 running（停着的容器 popout 出来是死终端），宿主恒可。
+function containerRunning(id: string): boolean {
+  return items.value.some((c) => c.id === id && c.state === 'running')
+}
 function openPopout(target: string) {
   const url = `${location.pathname}?popout=${encodeURIComponent(target)}`
   window.open(url, '_blank', 'noopener,width=1080,height=720')
@@ -1092,9 +1095,9 @@ onUnmounted(() => {
 
 <template>
   <div class="relative flex h-full min-h-0 gap-0">
-    <!-- 左侧窄栏的信息架构：一个主体 + 两个辅助。
-         「容器」是全侧栏唯一的标题 + 唯一的列表；宿主终端是钉在顶部的单行快捷入口；
-         docker 服务是底部的摘要条（不以行的形态出现，避免形成第二个并列清单）。
+    <!-- 左侧窄栏的信息架构：一个主体 + 底部环境区。
+         「容器」是全侧栏唯一的列表（弱化小标签作分组头）；宿主终端与 docker 服务摘要
+         是钉在底部的两行环境入口（容器之外的东西，不以行的形态混进容器清单）。
          模板/全局 hosts 等容器作用域的低频配置收进容器标题的 ⋯ 菜单。popout 独立窗口不渲染。
          手机（<768px）：侧栏转 overlay 抽屉（max-md:absolute + 遮罩），默认收起，
          汉堡入口在 tab 栏最左；桌面（≥768）恒为静态侧栏，抽屉相关类全部不命中。 -->
@@ -1124,37 +1127,11 @@ onUnmounted(() => {
         <span class="text-sm font-semibold tracking-tight">MySandbox</span>
       </div>
 
-      <!-- 宿主终端快捷行：单行入口、不做分区标题（图标 + 文字自解释）。
-           点击开/切宿主 tab，hover 出独立窗口按钮。 -->
-      <div class="border-b border-border p-1">
-        <div
-          class="group flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/50"
-          :class="{ 'bg-accent/70': activeGroup?.kind === 'host' }"
-          role="button"
-          tabindex="0"
-          title="宿主终端（镜像目录）"
-          @click="openHostTerm()"
-          @keydown.enter.prevent="openHostTerm()"
-        >
-          <Monitor class="h-3.5 w-3.5 shrink-0 text-amber-500" />
-          <span class="min-w-0 flex-1 truncate text-sm">宿主终端</span>
-          <span class="shrink-0 text-[10px] text-muted-foreground">镜像目录</span>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-            title="在独立窗口打开宿主终端"
-            @click.stop="openPopout(HOST_ID)"
-          >
-            <AppWindow />
-          </Button>
-        </div>
-      </div>
-
-      <!-- 容器分区标题：唯一的强标题。⟳ 刷新 / ＋ 新建（基座未就绪时禁用）/ ⋯ 低频配置 -->
-      <div class="flex shrink-0 items-center gap-2 border-b border-border py-2 pl-3 pr-1.5">
-        <span class="text-sm font-semibold">容器</span>
-        <span class="text-xs text-muted-foreground">{{ items.length }}</span>
+      <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题
+           上下叠着会互相竞争。⟳ 刷新 / ＋ 新建（基座未就绪时禁用）/ ⋯ 低频配置 -->
+      <div class="flex shrink-0 items-center gap-2 border-b border-border py-1.5 pl-3 pr-1.5">
+        <span class="text-xs font-medium text-muted-foreground">容器</span>
+        <span class="text-[10px] text-muted-foreground/70">{{ items.length }}</span>
         <div class="ml-auto flex items-center gap-0.5">
           <Button
             variant="ghost"
@@ -1229,17 +1206,17 @@ onUnmounted(() => {
             class="absolute inset-y-1.5 left-0.5 w-1 rounded-full"
             :style="{ backgroundColor: containerColor(c.id) }"
           />
-          <!-- 第一行：状态色点 + 显示名。状态文字与 ⋯ 重叠过，只靠色点 + 悬停 title。 -->
+          <!-- 第一行：显示名（身份行）——状态不在这表达，收进第二行行首的色点
+               （title 悬停有文字），与左缘容器色条拉开距离、不挤在一起。 -->
           <div class="flex items-center gap-2">
-            <span :class="['h-2 w-2 shrink-0 rounded-full', stateColor(c.state)]" :title="stateLabel(c.state)" />
             <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="c.displayName || c.name">{{
               c.displayName || c.name
             }}</span>
-            <!-- 状态只靠行首色点表达（title 悬停有文字）；右侧要给 ⋯ 按钮让位，
-                 状态文字与它重叠过，不再放文字 -->
           </div>
-          <!-- 第二行：IP（点击复制）+ 描述/外部徽章/本窗口终端组指示 -->
+          <!-- 第二行：状态色点 + IP（点击复制）+ 描述/外部徽章/本窗口终端组指示。
+               色点放行首：各行同 x 位置连成可扫读的状态列。 -->
           <div class="flex items-center gap-2 pl-4 text-xs text-muted-foreground">
+            <span :class="['h-2 w-2 shrink-0 rounded-full', stateColor(c.state)]" :title="stateLabel(c.state)" />
             <button
               v-if="c.ip"
               type="button"
@@ -1293,9 +1270,6 @@ onUnmounted(() => {
                 <DropdownMenuItem v-if="c.state === 'running'" @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
                   >桌面</DropdownMenuItem
                 >
-                <DropdownMenuItem v-if="c.state === 'running'" @click="openPopout(c.id)"
-                  >在独立窗口打开</DropdownMenuItem
-                >
                 <DropdownMenuItem @click="onPower(c, 'restart')">重启</DropdownMenuItem>
                 <DropdownMenuItem @click="onRename(c)">重命名</DropdownMenuItem>
                 <DropdownMenuItem
@@ -1317,6 +1291,19 @@ onUnmounted(() => {
           没有受管理的容器
         </p>
       </div>
+
+      <!-- 宿主终端快捷行：钉在底部，与 docker 服务摘要同属「容器之外的环境」区，
+           样式对齐（平底 footer 行）。点击开/切宿主 tab；独立窗口入口收进 tab 右键菜单。 -->
+      <button
+        type="button"
+        class="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left hover:bg-accent/50"
+        :class="activeGroup?.kind === 'host' ? 'bg-accent/50' : ''"
+        title="宿主终端"
+        @click="openHostTerm()"
+      >
+        <Monitor class="size-3.5 shrink-0 text-amber-500" />
+        <span class="min-w-0 flex-1 truncate text-sm">宿主终端</span>
+      </button>
 
       <!-- 服务摘要条：一行聚合（状态点 + 名称串），点击开管理面板、＋ 带新建意图。
            全部运行=绿 / 有停机=黄 / docker 不可达=红 / 无服务=灰。 -->
@@ -1352,7 +1339,8 @@ onUnmounted(() => {
       </div>
 
       <!-- tab 栏：每组一个 tab，色条=容器色，·N=pane 数（>1 才显示）。
-           右键（触屏长按合成同款事件）弹菜单：隐藏（保留会话，会话对话框可恢复）/ 关闭（真杀）。
+           右键（触屏长按合成同款事件）弹菜单：独立窗口（popout 该容器/宿主的工作区，容器
+           要 running）/ 隐藏（保留会话，会话对话框可恢复）/ 关闭（真杀）。
            最左「所有终端」：本机全部活跃终端会话（服务端扫描，跨窗口跨浏览器），常驻入口；
            手机：汉堡键开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
            ＋/文件面板按钮固定右侧。 -->
@@ -1394,7 +1382,7 @@ onUnmounted(() => {
                   : 'text-muted-foreground hover:bg-accent/50',
                 dragTabIdx === idx ? 'opacity-40' : '',
               ]"
-              :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：隐藏 / 关闭'"
+              :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：独立窗口 / 隐藏 / 关闭'"
             >
               <span
                 class="h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
@@ -1409,6 +1397,15 @@ onUnmounted(() => {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
+            <!-- popout 是组级动作（给该容器/宿主开独立工作区），收在这里而不是 pane 头部。
+                 容器要 running 才有意义（停着的容器 popout 出来是死终端）。 -->
+            <ContextMenuItem
+              v-if="g.kind === 'host' || containerRunning(g.containerId)"
+              @click="openPopout(g.kind === 'host' ? HOST_ID : g.containerId)"
+            >
+              <AppWindow /> 在独立窗口打开
+            </ContextMenuItem>
+            <ContextMenuSeparator />
             <ContextMenuItem @click="hideGroupById(g.id)">
               <EyeOff /> 隐藏（保留会话）
             </ContextMenuItem>
