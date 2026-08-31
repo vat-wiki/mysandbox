@@ -575,16 +575,21 @@ onMounted(async () => {
     }
     // 粘贴：Ctrl+V 和 Ctrl+Shift+V 都匹配（e.code 不区分 shift）。
     // attachCustomKeyEventHandler 对 keydown 和 keyup 各回调一次：不区分 e.type 的话 pasteText
-    // 会被调两次（按下 + 抬起）。又因 return false 并不 preventDefault（xterm 的 DOM 监听器忽略
-    // 返回值），浏览器照常派发原生 paste 事件，xterm 内置粘贴再经 onData 发一次 —— 三路叠加
-    // = 粘贴内容 ×3。故仅 keydown 时手动粘贴并 preventDefault 掉原生 paste；keydown/keyup 一律
-    // return false（阻止 xterm 发 ^V=quoted-insert，并避免 keyup 二次粘贴）。
+    // 会被调两次（按下 + 抬起）。
+    // secure context（https/localhost）：keydown 时手动粘贴并 preventDefault 掉原生 paste，
+    // 否则手动 readText + 原生 paste（xterm 内置粘贴）+ keyup 三路叠加 = 粘贴内容 ×3。
+    // 非 secure context（http://IP 访问）：navigator.clipboard 不存在，手动路径必落兜底弹框；
+    // 而 paste 事件自带 clipboardData、无需任何权限，是浏览器唯一放行的免权限粘贴通道 ——
+    // 此时不 preventDefault，让原生 paste 走 xterm 内置粘贴，全程无弹框。
     if (e.code === 'KeyV') {
       if (e.type === 'keydown') {
-        e.preventDefault()
-        void pasteClipboard()
+        if (navigator.clipboard) {
+          e.preventDefault()
+          void pasteClipboard()
+        }
+        // 无 clipboard API：不 preventDefault —— 原生 paste 派发给 xterm 内置粘贴完成发送。
       }
-      return false
+      return false // 两种环境都不发 ^V（quoted-insert）；return false 不 preventDefault，见上
     }
     if (e.code === 'KeyC') {
       if (term!.hasSelection()) {
@@ -758,6 +763,7 @@ onBeforeUnmount(() => {
          readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
          clipboard API，永远可用；@paste/@input 捕获到粘贴动作即自动发送，按钮仅作兜底。 -->
     <div v-if="pasteFallback" class="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 rounded-t-lg border-t border-zinc-700 bg-zinc-900 p-3 pb-safe">
+      <p class="text-xs text-zinc-500">桌面浏览器可直接在终端里 Ctrl+V 粘贴，无需此框。</p>
       <textarea
         ref="fallbackTa"
         v-model="pasteText"
