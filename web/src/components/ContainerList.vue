@@ -1432,11 +1432,11 @@ onUnmounted(() => {
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem @click="hideGroupById(g.id)">
-              <EyeOff /> 隐藏（保留会话）
+              <EyeOff /> 隐藏
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem variant="destructive" @click="closeGroupById(g.id)">
-              <X /> 关闭（结束会话）
+              <X /> 关闭
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
