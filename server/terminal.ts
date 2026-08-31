@@ -117,11 +117,12 @@ async function killExecClient(cfg: Config, id: string, pidfile: string): Promise
 
 // 杀整条 tmux 会话（server 收到后结束该会话的 shell + 所有 pane + detach 所有 client）。
 // 幂等：会话已不在则 tmux 报错、exitCode!=0，调用方忽略。同步清掉该会话的计数。
+// `=` 精确名匹配（reapOrphanClients 的教训）：tmux 的 -t 默认前缀/通配匹配。
 async function killSession(cfg: Config, id: string, session: string): Promise<void> {
   activeCount.delete(session);
   try {
     await execRun(cfg, id, {
-      Cmd: ['tmux', 'kill-session', '-t', session],
+      Cmd: ['tmux', 'kill-session', '-t', `=${session}`],
       User: '1000:1000',
       Tty: false,
       timeoutMs: 5_000,
