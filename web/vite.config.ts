@@ -42,7 +42,8 @@ async function backendHost(): Promise<string> {
   }
 }
 
-const backend = `http://${await backendHost()}:7321`
+// 代理后端端口可用 MYSANDBOX_DEV_PORT 覆盖（并行 dev 实例验证用），默认 7321。
+const backend = `http://${await backendHost()}:${process.env.MYSANDBOX_DEV_PORT ?? 7321}`
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],

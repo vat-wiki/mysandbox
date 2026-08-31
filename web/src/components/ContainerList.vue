@@ -23,7 +23,7 @@ import {
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
 import { newId } from '@/lib/id'
-import { containerColor } from '@/lib/utils'
+import { containerColor, stateColor, stateLabel } from '@/lib/utils'
 import { baseLabel } from '@/lib/caps'
 import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
@@ -1012,26 +1012,6 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
   await act(c.id, () => deleteContainer(c.id, { deleteData: payload.deleteData, confirmName: payload.deleteData ? payload.confirmName : undefined }))
 }
 
-function stateColor(state: string): string {
-  if (state === 'running') return 'bg-emerald-500'
-  if (state === 'exited' || state === 'dead') return 'bg-zinc-500'
-  if (state === 'paused') return 'bg-amber-500'
-  return 'bg-blue-500'
-}
-
-// 状态徽章中文映射：界面全中文，唯独 state 是英文小写原样透出，观感割裂。
-function stateLabel(state: string): string {
-  const m: Record<string, string> = {
-    running: '运行中',
-    exited: '已停止',
-    dead: '已失效',
-    paused: '已暂停',
-    created: '已创建',
-    restarting: '重启中',
-  }
-  return m[state] ?? state
-}
-
 // 卡片「终端·N」指示：本窗口（可见+隐藏）为该容器开着的组数，与 tab 栏呼应。
 function openGroupCount(cId: string): number {
   let n = 0
@@ -1670,7 +1650,9 @@ onUnmounted(() => {
 
   <BatchDialog
     v-if="showBatch"
-    :containers="selectableItems.map((c) => ({ id: c.id, label: c.displayName || c.name, ip: c.ip }))"
+    :containers="
+      selectableItems.map((c) => ({ id: c.id, label: c.displayName || c.name, ip: c.ip, state: c.state }))
+    "
     @done="refresh()"
     @close="showBatch = false"
     @unauthorized="emit('unauthorized')"
