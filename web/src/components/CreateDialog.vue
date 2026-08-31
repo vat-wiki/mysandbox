@@ -165,22 +165,30 @@ function submit() {
         <DialogDescription>配置名称、IP 与来源。</DialogDescription>
       </DialogHeader>
 
-      <div class="space-y-3">
-        <div class="space-y-1.5">
-          <Label for="c-name">名称 *</Label>
-          <Input id="c-name" v-model="name" placeholder="web-2" :disabled="busy" />
+      <!-- 三段分组（基础/来源/网络）：段距(space-y-5)大于段内行距，分组感靠间距差；
+           小节标题与 BatchDialog 侧栏同款（text-xs font-medium text-muted-foreground）。 -->
+      <div class="space-y-5">
+        <!-- 基础：名称必填占窄列，描述几乎总是空、合一行不各占整行 -->
+        <div class="space-y-3">
+          <p class="text-xs font-medium text-muted-foreground">基础</p>
+          <div class="grid grid-cols-5 gap-2">
+            <div class="col-span-2 space-y-1.5">
+              <Label for="c-name">名称 *</Label>
+              <Input id="c-name" v-model="name" placeholder="web-2" :disabled="busy" />
+            </div>
+            <div class="col-span-3 space-y-1.5">
+              <Label for="c-desc">描述</Label>
+              <Input id="c-desc" v-model="description" placeholder="（可选）" :disabled="busy" />
+            </div>
+          </div>
           <p v-if="name && !nameOk" class="text-xs text-destructive">
             仅小写字母/数字/连字符，2-31 位
           </p>
         </div>
 
-        <div class="space-y-1.5">
-          <Label for="c-desc">描述</Label>
-          <Input id="c-desc" v-model="description" placeholder="（可选）" :disabled="busy" />
-        </div>
-
-        <div class="space-y-1.5">
-          <Label>来源</Label>
+        <!-- 来源：三选 + 条件参数/提示 -->
+        <div class="space-y-3">
+          <p class="text-xs font-medium text-muted-foreground">来源</p>
           <RadioGroup v-model="sourceKind" class="flex items-center gap-4">
             <div class="flex items-center gap-1.5">
               <RadioGroupItem id="src-template" value="template" :disabled="busy" />
@@ -220,39 +228,47 @@ function submit() {
               placeholder="~/ms-template.tar.zst"
               :disabled="busy"
             />
-            <p class="text-xs leading-relaxed text-muted-foreground">
-              包内 idmap 按本机 subuid 重写，解包后照常改 IP 并启动。
-            </p>
           </div>
         </div>
 
-        <div class="space-y-1.5">
-          <Label>IP</Label>
-          <RadioGroup v-model="ipMode" class="flex items-center gap-4">
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="ip-auto" value="auto" :disabled="busy" />
-              <Label for="ip-auto" class="font-normal">自动分配</Label>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="ip-manual" value="manual" :disabled="busy" />
-              <Label for="ip-manual" class="font-normal">手动</Label>
-            </div>
-          </RadioGroup>
-          <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.10.30" :disabled="busy" />
-        </div>
+        <!-- 网络：IP 与 hosts 同段。行首小 key 标注各行，radio 与条件 Input 同一行；
+             RadioGroupItem 必须留在 RadioGroup 内（reka-ui 靠注入 context 拿选中态）。 -->
+        <div class="space-y-3">
+          <p class="text-xs font-medium text-muted-foreground">网络</p>
+          <div class="flex items-center gap-4">
+            <span class="w-11 shrink-0 text-xs text-muted-foreground">IP</span>
+            <RadioGroup v-model="ipMode" class="flex items-center gap-3">
+              <div class="flex items-center gap-1.5">
+                <RadioGroupItem id="ip-auto" value="auto" :disabled="busy" />
+                <Label for="ip-auto" class="font-normal">自动分配</Label>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <RadioGroupItem id="ip-manual" value="manual" :disabled="busy" />
+                <Label for="ip-manual" class="font-normal">手动</Label>
+              </div>
+            </RadioGroup>
+            <Input
+              v-if="ipMode === 'manual'"
+              v-model="manualIp"
+              placeholder="10.88.10.30"
+              class="w-36"
+              :disabled="busy"
+            />
+          </div>
 
-        <div class="space-y-1.5">
-          <Label>hosts 来源</Label>
-          <RadioGroup v-model="hostsSource" class="flex items-center gap-4">
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="hosts-template" value="template" :disabled="busy" />
-              <Label for="hosts-template" class="font-normal">继承来源</Label>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="hosts-host" value="host" :disabled="busy" />
-              <Label for="hosts-host" class="font-normal">宿主机</Label>
-            </div>
-          </RadioGroup>
+          <div class="flex items-center gap-4">
+            <span class="w-11 shrink-0 text-xs text-muted-foreground">hosts</span>
+            <RadioGroup v-model="hostsSource" class="flex items-center gap-3">
+              <div class="flex items-center gap-1.5">
+                <RadioGroupItem id="hosts-template" value="template" :disabled="busy" />
+                <Label for="hosts-template" class="font-normal">继承来源</Label>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <RadioGroupItem id="hosts-host" value="host" :disabled="busy" />
+                <Label for="hosts-host" class="font-normal">宿主机</Label>
+              </div>
+            </RadioGroup>
+          </div>
           <details class="group rounded-md border bg-muted/30">
             <summary
               class="flex cursor-pointer select-none items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
@@ -262,7 +278,7 @@ function submit() {
                 aria-hidden="true"
                 >▸</span
               >
-              预览所选源的内容
+              预览所选 hosts 源（想改默认去改模板容器）
             </summary>
             <div class="border-t px-3 py-2">
               <pre
@@ -275,9 +291,6 @@ function submit() {
               </p>
             </div>
           </details>
-          <p class="text-xs leading-relaxed text-muted-foreground">
-            想改默认 hosts 直接改模板容器；新建后也可在批量配置里整体覆写。
-          </p>
         </div>
 
         <!-- SSE 进度：克隆/解包分钟级，逐条滚动 -->
