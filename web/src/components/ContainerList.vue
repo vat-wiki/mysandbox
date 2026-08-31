@@ -622,11 +622,10 @@ function groupLabel(g: TermGroup): string {
   if (peers.length <= 1) return g.name
   return `${g.name}·${g.seq ?? peers.indexOf(g) + 1}`
 }
-// 手动新开一组（tab 栏「＋」）：同当前容器/宿主的全新组。侧栏点容器是「聚焦已有组」，
-// 这里是「再开一组」——单组分屏满 MAX_GROUP_PANES 块后想要更多终端，走这个显式动作。
-function openNewGroup() {
-  const g = activeGroup.value
-  if (!g) return
+// 手动新开一组（tab 右键菜单「新开一组终端」）：为该 tab 的容器/宿主再开一组全新终端。
+// 侧栏点容器是「聚焦已有组」，这里是「再开一组」——单组分屏满 MAX_GROUP_PANES
+// 块后想要更多终端，走这个显式动作。触屏长按 tab 同样能弹菜单。
+function openNewGroup(g: TermGroup) {
   createGroup(g.containerId, g.name, g.kind)
 }
 // 点容器「终端」：该容器已有 group 则聚焦，否则建组（避免重复打开堆积）。
@@ -1404,7 +1403,7 @@ onUnmounted(() => {
                   : 'text-muted-foreground hover:bg-accent/50',
                 dragTabIdx === idx ? 'opacity-40' : '',
               ]"
-              :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：独立窗口 / 隐藏 / 关闭'"
+              :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：新开一组 / 独立窗口 / 隐藏 / 关闭'"
             >
               <span
                 class="h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
@@ -1419,6 +1418,10 @@ onUnmounted(() => {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
+            <ContextMenuItem @click="openNewGroup(g)">
+              <Plus /> 新开一组终端
+            </ContextMenuItem>
+            <ContextMenuSeparator />
             <!-- popout 是组级动作（给该容器/宿主开独立工作区），收在这里而不是 pane 头部。
                  容器要 running 才有意义（停着的容器 popout 出来是死终端）。 -->
             <ContextMenuItem
@@ -1528,18 +1531,6 @@ onUnmounted(() => {
           <Network class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
-          :class="
-            activeGroup
-              ? 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-              : 'pointer-events-none opacity-30'
-          "
-          title="新开一组终端（当前容器/宿主的独立 tab）"
-          @click="openNewGroup()"
-        >
-          <Plus class="size-3.5 max-md:size-5" />
-        </button>
-        <button
           class="flex items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
           :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
           :title="showFiles ? '关闭文件面板' : '打开文件面板（跟随终端目录）'"
@@ -1572,7 +1563,7 @@ onUnmounted(() => {
         >
           <TerminalIcon class="size-8 opacity-40" />
           <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开终端' }}</p>
-          <p class="text-xs opacity-70">同一容器可左右/上下分屏（每组最多 {{ MAX_GROUP_PANES }} 块）；tab 栏「＋」随时新开一组</p>
+          <p class="text-xs opacity-70">同一容器可左右/上下分屏（每组最多 {{ MAX_GROUP_PANES }} 块）；tab 右键随时新开一组</p>
         </div>
         </div>
 

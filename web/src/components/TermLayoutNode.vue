@@ -32,11 +32,11 @@ const ops = inject(TERM_OPS)!
 const leaf = computed(() => (props.node.kind === 'leaf' ? props.node : null))
 const split = computed(() => (props.node.kind === 'split' ? props.node : null))
 const total = computed(() => leafCount(props.group.root))
-// 单组分屏上限：满员后分屏按钮禁用（新开一组是用户在 tab 栏点「＋」的显式动作）。
+// 单组分屏上限：满员后分屏按钮禁用（新开一组是 tab 右键「新开一组终端」的显式动作）。
 const full = computed(() => total.value >= MAX_GROUP_PANES)
 const splitTitle = (dir: 'row' | 'col') =>
   full.value
-    ? `每组最多 ${MAX_GROUP_PANES} 个终端；点 tab 栏「＋」新开一组`
+    ? `每组最多 ${MAX_GROUP_PANES} 个终端；tab 右键「新开一组终端」`
     : `${dir === 'row' ? '左右' : '上下'}分屏（${props.group.kind === 'host' ? '宿主' : '同容器'}新终端）`
 const ordinal = computed(() =>
   props.node.kind === 'leaf' ? ordinalOf(props.group.root, props.node.termId) : 0,
