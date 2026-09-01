@@ -13,7 +13,7 @@
 //   - resize：script 的 pts 上 `stty -F <pts> cols N rows M`（实测 tmux 3.4 的 refresh-client
 //     不支持 -x/-y）。初始尺寸在 attach 前就 stty 落盘，防 shrink-then-grow 重排。
 //
-// 会话 cwd = 宿主 home。
+// 会话 cwd：普通连接 = 宿主 home；分屏（WS query from=源 termId）继承源 pane 当前目录。
 //
 // 降级：宿主无 tmux → script 直接跑 shell（一次性，断开即死、无宽限）；无 script → 报错关闭。
 // token 本就等价宿主 leon 用户（uid 1000 直通，见 CLAUDE.md 安全模型），宿主终端不扩大
@@ -284,6 +284,9 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     const cols = Math.min(500, Math.max(1, Number(q.cols) || 80));
     const rows = Math.min(500, Math.max(1, Number(q.rows) || 24));
     const termId = q.termId;
+    // from = 分屏来源 pane 的 termId（前端仅分屏时传）：新会话 cwd 继承源 pane 当前目录。
+    // TERMID_RE 校验（进 tmux target 拼接）；普通连接不带 → 落宿主 home。
+    const from = q.from && TERMID_RE.test(q.from) ? q.from : '';
     if (!termId || !TERMID_RE.test(termId)) {
       socket.close(1008, 'missing or invalid termId');
       return;
@@ -302,8 +305,22 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       }
       const useTmux = env === 'tmux';
 
-      // 会话 cwd = 宿主 home。
-      const cwd = homedir();
+      // 会话 cwd：分屏（from）继承源 pane 当前目录（#{pane_current_path}，tmux 跟踪前台
+      // 进程 cwd 的权威值），普通连接 = 宿主 home。源会话已死/查询失败一律静默落 home。
+      // list-panes 而非 display-message（后者对无 attach client 的会话返回空串，files.ts
+      // 同款结论）；target 带「=会话名:」（capture-pane 的教训，精确会话 + 默认窗口）。
+      let cwd = homedir();
+      if (useTmux && from) {
+        const r = await hostTmux([
+          'list-panes', '-t', `=${hostSessionName(from)}:`, '-F', '#{pane_active} #{pane_current_path}',
+        ]);
+        const src = r.stdout
+          .split('\n')
+          .map((l) => l.trim())
+          .find((l) => l.startsWith('1 '))
+          ?.slice(2) ?? '';
+        if (r.ok && src.startsWith('/')) cwd = src;
+      }
 
       const session = hostSessionName(termId);
       if (useTmux) {
@@ -318,6 +335,9 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         // 注释「每次 attach 都重设，扛得住 tmux server 重启」）。必须在 attach 之前
         // detached 跑（attach 后客户端接管 tty）。
         await hostTmux(['set', '-g', 'mouse', 'off']);
+        // escape-time 10（默认 500）：裸 ESC 被 tmux 扣 500ms 判断是否序列开头，opencode/vim
+        // 里按 ESC 打断迟 0.5s、连按互相吞并（容器侧 terminal.ts 的 escape-time 注释同源）。
+        await hostTmux(['set', '-sg', 'escape-time', '10']);
         await hostTmux(['set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@']);
         await hostTmux(['set-environment', '-g', 'MYSANDBOX_WEB', '1']);
         await hostTmux(['set', '-s', 'allow-passthrough', 'on']);

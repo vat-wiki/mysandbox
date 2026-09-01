@@ -11,6 +11,9 @@ import { isPhone } from '@/composables/useDevice'
 
 const props = withDefaults(
   // host=true 时连 /ws/host-terminal（宿主终端，PTY 由 server 管理，无容器 id）。
+  // fromTermId = 分屏来源 pane 的 termId（仅分屏时由 TermLayoutNode 传入）：后端首次
+  // 创建新会话时继承源 pane 的当前目录。放进 URL 而非 localStorage 布局树——cwd 只在
+  // 新会话创建那一刻有意义，刷新后（会话必已存在、纯 attach）随内存映射消失即不再传。
   defineProps<{
     id?: string
     name: string
@@ -18,6 +21,7 @@ const props = withDefaults(
     shell?: string
     active?: boolean
     host?: boolean
+    fromTermId?: string
   }>(),
   {
     active: true,
@@ -70,7 +74,8 @@ function connectWs() {
   const url =
     base +
     `&shell=${encodeURIComponent(shell)}&cols=${term ? term.cols : 80}&rows=${term ? term.rows : 24}` +
-    `&termId=${encodeURIComponent(props.termId)}`
+    `&termId=${encodeURIComponent(props.termId)}` +
+    (props.fromTermId ? `&from=${encodeURIComponent(props.fromTermId)}` : '')
   ws = new WebSocket(url)
   ws.binaryType = 'arraybuffer'
 

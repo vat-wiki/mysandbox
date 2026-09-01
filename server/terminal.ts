@@ -271,6 +271,10 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
     const cols = Number(q.cols) || 80;
     const rows = Number(q.rows) || 24;
     const termId = q.termId;
+    // from = 分屏来源 pane 的 termId（前端仅分屏时传）：新会话首次创建时继承源 pane 的
+    // 当前目录（tmux 跟踪前台进程 cwd，#{pane_current_path} 即权威值）。普通连接不带，
+    // 落默认 /home/dev。TERMID_RE 校验防注入（进 tmux target 与会话名拼接）。
+    const from = q.from && TERMID_RE.test(q.from) ? q.from : '';
     if (!id) {
       socket.close(1008, 'missing container id');
       return;
@@ -396,6 +400,31 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       // 先收割孤儿 tmux 客户端 + 旧式单会话：清掉上次服务重启/异常断连残留的僵尸。
       // 必须在生成新 pidfile 之前跑--此时容器里还没有本次连接的 pidfile，reap 只会碰到旧孤儿。
       if (useTmux) await reapOrphanClients(cfg, id);
+      // 分屏（from 参数）：新会话若需要新建，cwd 继承源 pane 的当前目录。tmux 跟踪 pane
+      // 前台进程的 cwd（opencode 运行中 = 其启动目录；shell 待机 = zsh 当前目录），
+      // #{pane_current_path} 即权威值。只在 from 存在时多这一次 exec（普通连接零开销）；
+      // 源会话已死/查询失败一律静默落默认 /home/dev。list-panes 而非 display-message：
+      // 后者对无 attach client 上下文的会话返回空串（files.ts 同款结论）；target 带
+      // 「=会话名:」（capture-pane 的教训：3.4 按会话+窗口精确解析，纯名字有歧义面）。
+      let splitCwd = '';
+      if (useTmux && from) {
+        try {
+          const r = await execRun(cfg, id, {
+            Cmd: [
+              'sh', '-c',
+              'tmux list-panes -t "=$1:" -F "#{pane_active} #{pane_current_path}" 2>/dev/null | sed -n "s/^1 //p"',
+              'sh', sessionName(id, from),
+            ],
+            User: '1000:1000',
+            Tty: false,
+            timeoutMs: 8_000,
+          });
+          const cwd = r.stdout.trim();
+          if (cwd.startsWith('/')) splitCwd = cwd;
+        } catch {
+          /* 源会话不在/容器抖动：落默认 home */
+        }
+      }
       // tmux 持久会话。一次 attach、用 sh -c 串四步（无额外往返）：
       //   0) echo $$ > pidfile：sh 把自己的 PID（容器内 PID，exec tmux 后同 PID）写进唯一 pidfile，
       //      关闭时 killExecClient 据此找到并杀掉对应 tmux 客户端（exec.inspect().Pid 恒为 0，用不了）；
@@ -424,16 +453,22 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       //     接住转发来的序列写 navigator.clipboard，三方接通。
       //      set -g history-limit 50000：pane 历史默认仅 2000 行，长输出（claude -h 等）很快被
       //     截断；前端 scrollback 10000，历史上限给足余量（回填见下方 capture）。
+      //      set -sg escape-time 10：默认 500ms——tmux 收到裸 ESC 后等这么久判断「是 ESC 键
+      //     还是序列开头」，按 ESC 打断 opencode/vim 要迟 0.5s 才生效、快速连按还会在等待
+      //     窗口内互相吞并，表现为「ESC 没反应」（实测容器 server 恒为默认 500，代码从未设过）。
+      //     web 链路上 xterm.js 每次按键独立成帧、序列字节原子到达，10ms 合并窗口绰绰有余
+      //     且人不可感。
       //   3) exec tmux attach：替换进程为 attach 客户端。
-      //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>。
+      //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>、
+      //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）。
       //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
       //   后续 has-session 命中新名。注意 set 必须在 attach 之前 detached 跑--attach 后
       //   客户端接管 tty，命令行里 ';' 接的后续 tmux 命令不再执行（实测 attach 路径下 set 不生效）。
       const cmd = useTmux
         ? [
             'sh', '-c',
-            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; exec tmux attach -t "$1"',
-            'sh', session, shell, pidfile, oldSession,
+            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; exec tmux attach -t "$1"',
+            'sh', session, shell, pidfile, oldSession, splitCwd,
           ]
         : [shell];
 

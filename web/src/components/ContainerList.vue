@@ -280,9 +280,15 @@ function dividerDrag(delta: number) {
   dragNode.grows[l] = a
   dragNode.grows[l + 1] = b
 }
+// 分屏 cwd 继承：freshTermId -> 源 pane 的 termId。仅内存、不进 localStorage——
+// cwd 只在「新会话首次创建」那一刻有意义（后端 new-session -c 源 pane 当前目录），
+// 刷新后会话必已存在（attach 回去），映射随页面消亡正好不再传 from。
+const splitCwdFrom = new Map<string, string>()
 provide(TERM_OPS, {
   split(group, termId, dir) {
-    group.root = splitLeaf(group.root, termId, dir, newTermId())
+    const fresh = newTermId()
+    splitCwdFrom.set(fresh, termId)
+    group.root = splitLeaf(group.root, termId, dir, fresh)
   },
   close(group, termId) {
     termRefs.get(termId)?.kill()
@@ -293,6 +299,9 @@ provide(TERM_OPS, {
   setRef(termId, el) {
     if (el) termRefs.set(termId, el as { kill(): void })
     else termRefs.delete(termId)
+  },
+  cwdSourceOf(termId) {
+    return splitCwdFrom.get(termId)
   },
   onOscOpen,
   onLinkOpen,

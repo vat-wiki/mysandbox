@@ -152,6 +152,10 @@ export interface TermPaneOps {
   split(group: TermGroup, termId: string, dir: LayoutDir): void
   close(group: TermGroup, termId: string): void
   setRef(termId: string, el: unknown): void
+  // 分屏新 pane 的 cwd 来源（termId → 源 pane termId；非分屏 pane 返回 undefined）。
+  // 实现侧只存内存映射（不进 localStorage）：cwd 仅在「新会话首次创建」那一刻有意义，
+  // 刷新后会话必已存在（attach 回去），映射随页面消亡即不再传。
+  cwdSourceOf(termId: string): string | undefined
   onOscOpen(group: TermGroup, termId: string, path: string): void
   // Ctrl+点击路径链接（Terminal 的 link provider）：path 为原始 token（可相对/带 ~），
   // line/col 来自栈跟踪式 `:行:列` 后缀。

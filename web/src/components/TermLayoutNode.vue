@@ -151,7 +151,8 @@ if (leaf.value) {
       </div>
     </div>
     <!-- Terminal：常驻，切 group 时 v-show 恢复、ResizeObserver 自动 refit。
-         host group 连 /ws/host-terminal（无容器 id），其余连容器 exec。 -->
+         host group 连 /ws/host-terminal（无容器 id），其余连容器 exec。
+         from-term-id：分屏新 pane 的 cwd 来源（ContainerList 内存映射，非分屏为 undefined）。 -->
     <Terminal
       :ref="bindTerm"
       :id="group.kind === 'host' ? undefined : group.containerId"
@@ -159,6 +160,7 @@ if (leaf.value) {
       :term-id="leaf.termId"
       :host="group.kind === 'host'"
       :active="active"
+      :from-term-id="ops.cwdSourceOf(leaf.termId)"
       @osc-open="onOsc"
       @link-open="onLinkOpen"
     />
