@@ -205,6 +205,11 @@ function toggleInfo(s: ServiceView) {
   expandedInfo.value = expandedInfo.value === s.name ? '' : s.name
 }
 
+// 首选连接命令（每预设至多一条）；空串 = 无现成命令（自定义镜像）。
+function primaryConnect(s: ServiceView): string {
+  return s.connect[0] ?? ''
+}
+
 function fmtDate(v: string): string {
   const d = new Date(v)
   return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false })
@@ -238,7 +243,7 @@ function stateCls(s: ServiceView): string {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-5xl">
+    <DialogContent class="max-w-6xl">
       <DialogHeader>
         <DialogTitle>docker 服务</DialogTitle>
         <DialogDescription>
@@ -318,12 +323,15 @@ function stateCls(s: ServiceView): string {
           还没有服务。点「新建服务」起一个 postgres 试试——容器里就能 <code>psql -h pg</code> 直连。
         </div>
 
-        <!-- 服务表：桌面 8 列表格；手机卡片化（md:hidden/md:block 双渲染，数据源相同）。 -->
+        <!-- 服务表：桌面 9 列表格；手机卡片化（md:hidden/md:block 双渲染，数据源相同）。
+             连接命令是一级信息（用面板 primarily 就是「拿连接串」），直接进列、点击复制，
+             不再藏进 ⋯ → 详情；env 全量凭据仍在详情行。 -->
         <div v-if="items.length" class="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>名称</TableHead>
+                <TableHead>连接</TableHead>
                 <TableHead>类型</TableHead>
                 <TableHead>镜像</TableHead>
                 <TableHead>IP</TableHead>
@@ -339,6 +347,26 @@ function stateCls(s: ServiceView): string {
                 <TableCell class="font-medium">
                   {{ s.name }}
                   <span v-if="s.metaMissing" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复" class="text-amber-600"> ⚠</span>
+                </TableCell>
+                <TableCell class="max-w-80">
+                  <button
+                    v-if="primaryConnect(s)"
+                    type="button"
+                    class="block w-full cursor-pointer truncate text-left font-mono text-xs hover:underline"
+                    :title="`${primaryConnect(s)}（点击复制）`"
+                    @click="copyVal(primaryConnect(s))"
+                  >
+                    {{ copied === primaryConnect(s) ? '已复制 ✓' : primaryConnect(s) }}
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="cursor-pointer text-xs text-muted-foreground hover:underline"
+                    title="无现成连接命令——点看 env 详情"
+                    @click="toggleInfo(s)"
+                  >
+                    —（点看 env）
+                  </button>
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline" class="font-normal">{{ s.preset }}</Badge>
@@ -385,11 +413,11 @@ function stateCls(s: ServiceView): string {
                   </DropdownMenu>
                 </TableCell>
               </TableRow>
-              <!-- 详情行：连接命令 + env 凭据 + 创建时间/命令就地展开，取代原嵌套「连接信息」弹窗。 -->
+              <!-- 详情行：连接命令 + env 凭据优先（最高频关注内容），命令/元数据垫后；
+                   就地展开，取代原嵌套「连接信息」弹窗。 -->
               <TableRow v-if="expandedInfo === s.name">
-                <TableCell colspan="8" class="bg-muted/30 p-2">
+                <TableCell colspan="9" class="bg-muted/30 p-2">
                   <div class="space-y-2 text-xs">
-                    <p v-if="s.command?.length" class="font-mono text-muted-foreground">命令：{{ s.command.join(' ') }}</p>
                     <div v-if="s.connect.length">
                       <p class="mb-1 text-muted-foreground">连接命令（点击复制）：</p>
                       <div class="space-y-1">
@@ -421,11 +449,12 @@ function stateCls(s: ServiceView): string {
                         </div>
                       </div>
                     </div>
+                    <p v-if="s.command?.length" class="font-mono text-muted-foreground">命令：{{ s.command.join(' ') }}</p>
                   </div>
                 </TableCell>
               </TableRow>
               <TableRow v-if="logs[s.name] != null">
-                <TableCell colspan="8" class="bg-muted/30 p-2">
+                <TableCell colspan="9" class="bg-muted/30 p-2">
                   <pre class="max-h-80 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{{ logs[s.name] }}</pre>
                 </TableCell>
               </TableRow>
@@ -468,6 +497,16 @@ function stateCls(s: ServiceView): string {
             </div>
             <div class="mt-1.5 space-y-0.5 font-mono text-xs text-muted-foreground">
               <p v-if="s.description" class="break-all text-foreground/80">{{ s.description }}</p>
+              <p v-if="primaryConnect(s)">
+                <button
+                  type="button"
+                  class="cursor-pointer break-all text-left hover:underline"
+                  :title="`${primaryConnect(s)}（点击复制）`"
+                  @click="copyVal(primaryConnect(s))"
+                >
+                  {{ copied === primaryConnect(s) ? '已复制 ✓' : primaryConnect(s) }}
+                </button>
+              </p>
               <p class="break-all" :title="s.image">{{ s.image }}</p>
               <p>
                 <template v-if="s.ip">
