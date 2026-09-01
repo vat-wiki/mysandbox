@@ -147,7 +147,7 @@ async function submit() {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-md">
+    <DialogContent class="max-w-2xl">
       <DialogHeader>
         <DialogTitle>新建服务</DialogTitle>
         <DialogDescription>
@@ -175,9 +175,16 @@ async function submit() {
               </SelectGroup>
             </SelectContent>
           </Select>
-          <p v-if="current" class="text-xs leading-relaxed text-muted-foreground">
-            {{ current.description }} · 端口 {{ current.ports.join('/') }} · {{ current.hint }}
-          </p>
+          <!-- 预设档案一屏给全：描述/镜像/端口/数据卷/直连提示，省得靠试。 -->
+          <div v-if="current" class="space-y-0.5 rounded-md border bg-muted/30 p-2.5 text-xs leading-relaxed text-muted-foreground">
+            <p>{{ current.description }}</p>
+            <p class="font-mono">
+              镜像 {{ current.image }}
+              <template v-if="current.ports.length"> · 端口 {{ current.ports.join('/') }}</template>
+              <template v-if="current.volumePath"> · 数据卷 {{ current.volumePath }}</template>
+            </p>
+            <p>{{ current.hint }}</p>
+          </div>
         </div>
 
         <div v-if="isCustom" class="space-y-1.5">
@@ -191,7 +198,7 @@ async function submit() {
               id="s-env"
               v-model="customEnv"
               placeholder="每行一条 KEY=VALUE"
-              class="min-h-20 font-mono text-xs"
+              class="min-h-28 font-mono text-xs"
             />
             <p v-if="customEnv && !customEnvOk" class="text-xs text-destructive">
               存在格式不对的行（应为 KEY=VALUE）
@@ -215,33 +222,38 @@ async function submit() {
           </template>
         </div>
 
-        <div class="space-y-1.5">
-          <Label for="s-name">名称 *</Label>
-          <Input id="s-name" v-model="name" placeholder="pg" />
-          <p v-if="name && !nameOk" class="text-xs text-destructive">仅小写字母/数字/连字符，2-31 位</p>
-          <p v-else-if="nameClash" class="text-xs text-amber-600">
-            与现有 LXC 容器同名——hosts 里会互相覆盖，建议换个名字
-          </p>
-        </div>
+        <!-- 宽版双列：名称/描述并排，减少纵向滚动；手机自动退回单列。 -->
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="space-y-1.5">
+            <Label for="s-name">名称 *</Label>
+            <Input id="s-name" v-model="name" placeholder="pg" />
+            <p v-if="name && !nameOk" class="text-xs text-destructive">仅小写字母/数字/连字符，2-31 位</p>
+            <p v-else-if="nameClash" class="text-xs text-amber-600">
+              与现有 LXC 容器同名——hosts 里会互相覆盖，建议换个名字
+            </p>
+          </div>
 
-        <div class="space-y-1.5">
-          <Label for="s-desc">描述</Label>
-          <Input id="s-desc" v-model="description" placeholder="（可选）" />
+          <div class="space-y-1.5">
+            <Label for="s-desc">描述</Label>
+            <Input id="s-desc" v-model="description" placeholder="（可选）" />
+          </div>
         </div>
 
         <div class="space-y-1.5">
           <Label>IP</Label>
-          <RadioGroup v-model="ipMode" class="flex items-center gap-4">
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="sip-auto" value="auto" />
-              <Label for="sip-auto" class="font-normal">自动分配</Label>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <RadioGroupItem id="sip-manual" value="manual" />
-              <Label for="sip-manual" class="font-normal">手动</Label>
-            </div>
-          </RadioGroup>
-          <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.0.210" />
+          <div class="flex flex-wrap items-center gap-3">
+            <RadioGroup v-model="ipMode" class="flex items-center gap-4">
+              <div class="flex items-center gap-1.5">
+                <RadioGroupItem id="sip-auto" value="auto" />
+                <Label for="sip-auto" class="font-normal">自动分配</Label>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <RadioGroupItem id="sip-manual" value="manual" />
+                <Label for="sip-manual" class="font-normal">手动</Label>
+              </div>
+            </RadioGroup>
+            <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.0.210" class="max-w-48" />
+          </div>
         </div>
 
         <div v-if="err" class="space-y-1">

@@ -58,12 +58,14 @@ const busyName = ref('')
 const err = ref('')
 const copied = ref('')
 const showCreate = ref(!!props.initialCreate)
-// 行内日志：服务名 -> 日志内容（null = 未加载）
+// 行内日志：服务名 -> 日志内容（null = 未加载）。展开期间随 3s 轮询自动刷新，
+// 不用反复手动点「日志」拿新输出。
 const logs = ref<Record<string, string>>({})
 // 删除确认：null 关闭；{name, deleteData} 打开
 const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
-// 连接信息对话框：展示 env 凭据与现成连接命令（null 关闭）
-const connectOf = ref<ServiceView | null>(null)
+// 行内详情展开（连接命令 + env 凭据 + 描述/命令）：服务名 -> 展开。刻意不做嵌套
+// 弹窗——「⋯菜单 → 弹窗 → 关弹窗」的交互层数没必要，与日志一样就地展开。
+const expandedInfo = ref('')
 
 // —— 创建任务 ——
 // 面板打开期间 3s 轮询（侧栏另有独立轮询；两者喂同一 trackServiceJobs 去重通知）。
@@ -143,7 +145,10 @@ async function refresh() {
 onMounted(() => {
   refresh()
   refreshJobs()
-  jobsTimer = setInterval(() => void refreshJobs(), 3000)
+  jobsTimer = setInterval(() => {
+    void refreshJobs()
+    void refreshOpenLogs()
+  }, 3000)
 })
 onUnmounted(() => {
   if (jobsTimer) clearInterval(jobsTimer)
@@ -180,6 +185,31 @@ async function toggleLogs(s: ServiceView) {
   }
 }
 
+// 已展开的日志每轮轮询跟着刷一次（单个失败静默，下轮再试）。
+async function refreshOpenLogs() {
+  const names = Object.keys(logs.value)
+  if (!names.length) return
+  await Promise.all(
+    names.map(async (n) => {
+      try {
+        const v = await getServiceLogs(n)
+        logs.value[n] = v.logs || '（无输出）'
+      } catch {
+        /* 下轮再试 */
+      }
+    }),
+  )
+}
+
+function toggleInfo(s: ServiceView) {
+  expandedInfo.value = expandedInfo.value === s.name ? '' : s.name
+}
+
+function fmtDate(v: string): string {
+  const d = new Date(v)
+  return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false })
+}
+
 async function copyVal(v: string) {
   try {
     await navigator.clipboard.writeText(v)
@@ -208,7 +238,7 @@ function stateCls(s: ServiceView): string {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-3xl">
+    <DialogContent class="max-w-5xl">
       <DialogHeader>
         <DialogTitle>docker 服务</DialogTitle>
         <DialogDescription>
@@ -272,7 +302,7 @@ function stateCls(s: ServiceView): string {
               </Button>
             </div>
             <div v-if="expandedJob === j.id" class="mt-1.5">
-              <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed">{{
+              <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed">{{
                 expandedJob === j.id ? fullLog.join('\n') : (j.logTail ?? []).join('\n')
               }}</pre>
             </div>
@@ -288,7 +318,7 @@ function stateCls(s: ServiceView): string {
           还没有服务。点「新建服务」起一个 postgres 试试——容器里就能 <code>psql -h pg</code> 直连。
         </div>
 
-        <!-- 服务表：桌面 7 列表格；手机卡片化（md:hidden/md:block 双渲染，数据源相同）。 -->
+        <!-- 服务表：桌面 8 列表格；手机卡片化（md:hidden/md:block 双渲染，数据源相同）。 -->
         <div v-if="items.length" class="hidden md:block">
           <Table>
             <TableHeader>
@@ -299,6 +329,7 @@ function stateCls(s: ServiceView): string {
                 <TableHead>IP</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>卷</TableHead>
+                <TableHead>描述</TableHead>
                 <TableHead class="w-10"></TableHead>
               </TableRow>
             </TableHeader>
@@ -331,13 +362,17 @@ function stateCls(s: ServiceView): string {
                 <TableCell class="max-w-36 truncate font-mono text-xs" :title="s.volume ?? '无数据卷'">
                   {{ s.volume ?? '-' }}
                 </TableCell>
+                <TableCell class="text-xs">
+                  <p class="max-w-48 truncate" :title="s.description || undefined">{{ s.description || '—' }}</p>
+                  <p v-if="s.createdAt" class="text-muted-foreground">{{ fmtDate(s.createdAt) }}</p>
+                </TableCell>
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger as-child>
                       <Button variant="ghost" size="sm" :disabled="busyName === s.name">⋯</Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem v-if="Object.keys(s.env).length" @click="connectOf = s">连接信息</DropdownMenuItem>
+                      <DropdownMenuItem @click="toggleInfo(s)">{{ expandedInfo === s.name ? '收起详情' : '详情' }}</DropdownMenuItem>
                       <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                       <DropdownMenuItem v-if="s.running" @click="op(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
                       <DropdownMenuItem @click="op(s.name, () => restartService(s.name))">重启</DropdownMenuItem>
@@ -350,9 +385,48 @@ function stateCls(s: ServiceView): string {
                   </DropdownMenu>
                 </TableCell>
               </TableRow>
+              <!-- 详情行：连接命令 + env 凭据 + 创建时间/命令就地展开，取代原嵌套「连接信息」弹窗。 -->
+              <TableRow v-if="expandedInfo === s.name">
+                <TableCell colspan="8" class="bg-muted/30 p-2">
+                  <div class="space-y-2 text-xs">
+                    <p v-if="s.command?.length" class="font-mono text-muted-foreground">命令：{{ s.command.join(' ') }}</p>
+                    <div v-if="s.connect.length">
+                      <p class="mb-1 text-muted-foreground">连接命令（点击复制）：</p>
+                      <div class="space-y-1">
+                        <button
+                          v-for="c in s.connect"
+                          :key="c"
+                          type="button"
+                          class="block w-full cursor-pointer rounded-md border bg-background/60 p-2 text-left font-mono break-all hover:bg-muted/50"
+                          :title="copied === c ? '已复制' : '点击复制'"
+                          @click="copyVal(c)"
+                        >
+                          {{ copied === c ? '已复制' : c }}
+                        </button>
+                      </div>
+                    </div>
+                    <div v-if="Object.keys(s.env).length">
+                      <p class="mb-1 text-muted-foreground">环境变量（点击值复制）：</p>
+                      <div class="divide-y rounded-md border">
+                        <div v-for="(v, k) in s.env" :key="k" class="flex flex-col gap-0.5 px-3 py-1.5 font-mono sm:flex-row sm:gap-3">
+                          <span class="shrink-0 truncate text-muted-foreground sm:w-44">{{ k }}</span>
+                          <button
+                            type="button"
+                            class="cursor-pointer text-left break-all hover:underline"
+                            :title="copied === v ? '已复制' : '点击复制'"
+                            @click="copyVal(String(v))"
+                          >
+                            {{ copied === v ? '已复制' : v }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </TableCell>
+              </TableRow>
               <TableRow v-if="logs[s.name] != null">
-                <TableCell colspan="7" class="bg-muted/30 p-2">
-                  <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{{ logs[s.name] }}</pre>
+                <TableCell colspan="8" class="bg-muted/30 p-2">
+                  <pre class="max-h-80 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{{ logs[s.name] }}</pre>
                 </TableCell>
               </TableRow>
             </template>
@@ -380,7 +454,7 @@ function stateCls(s: ServiceView): string {
                   <Button variant="ghost" size="sm" class="shrink-0" :disabled="busyName === s.name">⋯</Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem v-if="Object.keys(s.env).length" @click="connectOf = s">连接信息</DropdownMenuItem>
+                  <DropdownMenuItem @click="toggleInfo(s)">{{ expandedInfo === s.name ? '收起详情' : '详情' }}</DropdownMenuItem>
                   <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                   <DropdownMenuItem v-if="s.running" @click="op(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
                   <DropdownMenuItem @click="op(s.name, () => restartService(s.name))">重启</DropdownMenuItem>
@@ -393,6 +467,7 @@ function stateCls(s: ServiceView): string {
               </DropdownMenu>
             </div>
             <div class="mt-1.5 space-y-0.5 font-mono text-xs text-muted-foreground">
+              <p v-if="s.description" class="break-all text-foreground/80">{{ s.description }}</p>
               <p class="break-all" :title="s.image">{{ s.image }}</p>
               <p>
                 <template v-if="s.ip">
@@ -407,10 +482,42 @@ function stateCls(s: ServiceView): string {
                 </template>
                 <template v-else>-</template>
                 · {{ s.volume ?? '无数据卷' }}
+                <template v-if="s.createdAt"> · {{ fmtDate(s.createdAt) }}</template>
               </p>
             </div>
+            <div v-if="expandedInfo === s.name" class="mt-1.5 space-y-2 text-xs">
+              <div v-if="s.connect.length">
+                <p class="mb-1 text-muted-foreground">连接命令（点击复制）：</p>
+                <button
+                  v-for="c in s.connect"
+                  :key="c"
+                  type="button"
+                  class="mb-1 block w-full cursor-pointer rounded-md border bg-background/60 p-2 text-left font-mono break-all hover:bg-muted/50"
+                  :title="copied === c ? '已复制' : '点击复制'"
+                  @click="copyVal(c)"
+                >
+                  {{ copied === c ? '已复制' : c }}
+                </button>
+              </div>
+              <div v-if="Object.keys(s.env).length">
+                <p class="mb-1 text-muted-foreground">环境变量（点击值复制）：</p>
+                <div class="divide-y rounded-md border">
+                  <div v-for="(v, k) in s.env" :key="k" class="flex flex-col gap-0.5 px-3 py-1.5 font-mono">
+                    <span class="break-all text-muted-foreground">{{ k }}</span>
+                    <button
+                      type="button"
+                      class="cursor-pointer text-left break-all hover:underline"
+                      :title="copied === v ? '已复制' : '点击复制'"
+                      @click="copyVal(String(v))"
+                    >
+                      {{ copied === v ? '已复制' : v }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div v-if="logs[s.name] != null" class="mt-1.5">
-              <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-2 font-mono text-xs">{{ logs[s.name] }}</pre>
+              <pre class="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-2 font-mono text-xs">{{ logs[s.name] }}</pre>
             </div>
           </div>
         </div>
@@ -431,48 +538,6 @@ function stateCls(s: ServiceView): string {
         @confirm="confirmDelete"
         @cancel="pendingDelete = null"
       />
-
-      <Dialog :open="connectOf != null" @update:open="(v: boolean) => !v && (connectOf = null)">
-        <DialogContent class="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>连接信息 · {{ connectOf?.name }}</DialogTitle>
-            <DialogDescription>
-              容器内按服务名直连；宿主上直连时把服务名换成 IP {{ connectOf?.ip ?? '?' }}。
-            </DialogDescription>
-          </DialogHeader>
-          <div v-if="connectOf" class="space-y-3 text-sm">
-            <div v-if="connectOf.connect.length">
-              <p class="mb-1 text-xs text-muted-foreground">连接命令（点击复制）：</p>
-              <div v-for="c in connectOf.connect" :key="c" class="rounded-md border p-2">
-                <button
-                  type="button"
-                  class="block w-full cursor-pointer break-all text-left font-mono text-xs hover:bg-muted/50"
-                  :title="copied === c ? '已复制' : '点击复制'"
-                  @click="copyVal(c)"
-                >
-                  {{ copied === c ? '已复制' : c }}
-                </button>
-              </div>
-            </div>
-            <div v-if="Object.keys(connectOf.env).length">
-              <p class="mb-1 text-xs text-muted-foreground">环境变量（点击值复制）：</p>
-              <div class="divide-y rounded-md border">
-                <div v-for="(v, k) in connectOf.env" :key="k" class="flex flex-col gap-0.5 px-3 py-1.5 font-mono text-xs sm:flex-row sm:gap-3">
-                  <span class="shrink-0 text-muted-foreground sm:w-44">{{ k }}</span>
-                  <button
-                    type="button"
-                    class="cursor-pointer break-all text-left hover:underline"
-                    :title="copied === v ? '已复制' : '点击复制'"
-                    @click="copyVal(String(v))"
-                  >
-                    {{ copied === v ? '已复制' : v }}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <ServiceCreateDialog
         v-if="showCreate"
