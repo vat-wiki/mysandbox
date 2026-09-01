@@ -1365,9 +1365,10 @@ onUnmounted(() => {
            最左「所有终端」：本机全部活跃终端会话（服务端扫描，跨窗口跨浏览器），常驻入口；
            手机：汉堡键开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
            ＋/文件面板按钮固定右侧。 -->
-      <!-- max-md:min-h-10：手机 40px 托底——tab 行高由 tab 项的 py 撑出，groups 全关/全隐藏时
-           只剩左侧图标按钮（无纵向 padding），不托底整条顶栏会塌到 ~20px。 -->
-      <div class="flex border-b border-border bg-muted/30 max-md:min-h-10">
+      <!-- min-h-7：桌面 28px 托底，= 有 tab 时 tab 项（text-xs + py-1.5）撑出的行高——groups
+           全关/全隐藏时只剩图标按钮（无纵向 padding），不托底整条顶栏会塌到 ~14px。
+           max-md:min-h-10：手机 40px，对应 max-md:py-2.5 + text-sm。 -->
+      <div class="flex min-h-7 border-b border-border bg-muted/30 max-md:min-h-10">
         <button
           v-if="!props.popout"
           class="flex shrink-0 items-center border-r border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:px-4 md:hidden"
