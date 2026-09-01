@@ -78,7 +78,8 @@ idmap 参数取自该容器 config 自己的 `lxc.idmap` 行（不能硬编码�
 
 容器内契约：uid:gid `1000:1000`（用户名 `dev`，home `/home/dev`）、zsh/git/tmux/node/AI CLI 就位、
 `/etc/skel-home/.zshrc` 作首启模板、宿主 `~/.ssh` 只读可见于 `/mnt/host/.ssh`、
-`/etc/systemd/resolved.conf.d/mysandbox.conf` 配上游 DNS（静态 IP 无 DHCP）。
+`/etc/systemd/resolved.conf.d/mysandbox.conf` 配上游 DNS（静态 IP 无 DHCP）、
+`fontconfig` + `fonts-noto-cjk` 中文字体（桌面/容器内 GUI 渲染中文；fc-list 必须在——只装字体包不装 fontconfig 工具，zh 查询恒 0）。
 
 - 容器来源：模板容器 + `lxc-copy` 克隆（`scripts/lxc-template.sh` 制作）。
 - PID 1：发行版自己的 systemd（真系统容器）。

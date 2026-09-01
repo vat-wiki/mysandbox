@@ -97,7 +97,12 @@ apt-get install -y --no-install-recommends \
   zsh git openssh-client ca-certificates jq curl less vim-tiny xz-utils tzdata tmux \
   zsh-autosuggestions zsh-syntax-highlighting \
   python3 make g++ sudo bsdutils locales \
-  xvfb x11vnc xfce4 xfce4-terminal dbus-x11
+  xvfb x11vnc xfce4 xfce4-terminal dbus-x11 \
+  fontconfig fonts-noto-cjk
+# fontconfig + fonts-noto-cjk：桌面/容器内 GUI 的中文渲染（终端是浏览器渲染不依赖它，但 XFCE 桌面、
+# 文件管理器、容器内起的应用没有 CJK 字体全是豆腐块）。fontconfig 要显式写：fonts-noto-cjk 只
+# Depends 到 libfontconfig1 库，不带 fc-list/fc-cache 工具（存量 service 容器实测踩到：字体文件在、
+# fc-list 没有，zh 查询恒 0）。--no-install-recommends 下只装正体不装 extra，体积 ~100MB 可接受。
 # locale：容器内进程必须跑在有效 UTF-8 charmap 下——mysandbox exec 链路 --clear-env 后只带
 # LANG=C.UTF-8 进来（engine/lxc.ts attachArgs），模板侧保证它有效；zh_CN 一并生成给用户手工切换。
 # 不生成的话 C.UTF-8 虽是 glibc 内置、但 zh_CN 缺失会让切 locale 的尝试报 "Cannot set LC_*"。
@@ -217,6 +222,7 @@ chk "skel zshrc"          '[ -f /etc/skel-home/.zshrc ]'
 chk "oh-my-zsh"           '[ -f /usr/share/oh-my-zsh/oh-my-zsh.sh ]'
 chk "ghost 建议插件"      '[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]'
 chk "语法高亮插件"        '[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]'
+chk "中文字体"            'fc-list :lang=zh | grep -q .'
 chk "DNS"                 'getent hosts github.com'
 [ $fail -eq 0 ] || { echo "模板契约未满足" >&2; exit 1; }
 EOS
