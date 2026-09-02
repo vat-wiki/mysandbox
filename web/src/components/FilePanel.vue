@@ -2,7 +2,7 @@
 // 右侧文件面板：跟随终端 pane 的 cwd 展示目录内容（tmux 查询），可逐级浏览、点文件
 // 抛 open-file 给父级开编辑器，右键 新建文件/新建文件夹/重命名/删除。跟随与手动浏览
 // 互斥：手动导航（点目录/输路径/外部定位）暂停跟随，恢复条一键回到终端所在目录。
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   listFiles,
   getTermCwd,
@@ -41,7 +41,7 @@ import {
   Link2,
   RefreshCw,
   X,
-  ChevronUp,
+  FolderUp,
   ChevronRight,
   PenLine,
   FilePlus,
@@ -274,13 +274,41 @@ const crumbs = computed(() => {
   }
   return out
 })
+// 溢出不出滚动条：量容器宽（ResizeObserver），从当前目录（末段）向前尽量多放，
+// 放不下的头部段折叠成「…」（点击 = 进路径编辑，仍可达任意层级）。
+// mono 11px 字符宽约 6.6px + chip 内边距；SEP_W = 分隔符 12px + 两侧 gap。
 const crumbsEl = ref<HTMLElement | null>(null)
-// 路径变化后滚到末端（当前段永远可见，祖先在左边划出）
-watch(path, () => {
-  void nextTick(() => {
-    if (crumbsEl.value) crumbsEl.value.scrollLeft = crumbsEl.value.scrollWidth
-  })
+const crumbsW = ref(0)
+let crumbRO: ResizeObserver | null = null
+watch(crumbsEl, (el) => {
+  crumbRO?.disconnect()
+  crumbsW.value = 0
+  if (el) {
+    crumbRO = new ResizeObserver((es) => (crumbsW.value = es[0].contentRect.width))
+    crumbRO.observe(el)
+  }
 })
+onBeforeUnmount(() => crumbRO?.disconnect())
+function crumbW(name: string): number {
+  return name.length * 6.6 + 10
+}
+const SEP_W = 16
+const ELLIPSIS_W = 26
+const visibleCrumbs = computed(() => {
+  const all = crumbs.value
+  if (!crumbsW.value) return all // 首帧未量宽：全渲染，RO 挂载即触发立刻收敛
+  const budget = crumbsW.value - (all.length > 2 ? ELLIPSIS_W : 0)
+  let w = 0
+  let k = 0
+  while (k < all.length) {
+    const cost = crumbW(all[all.length - 1 - k].name) + (k > 0 ? SEP_W : 0)
+    if (k >= 1 && w + cost > budget) break // 至少保留当前段
+    w += cost
+    k++
+  }
+  return all.slice(all.length - k)
+})
+const crumbsDropped = computed(() => crumbs.value.length - visibleCrumbs.value.length)
 // 路径输入框：进入编辑态时预填当前路径，Enter 提交、Esc/失焦还原。
 function startEditPath() {
   pathInput.value = path.value
@@ -474,7 +502,7 @@ function fmtSize(n: number): string {
         title="新建文件"
         @click="nameDialog = { mode: 'newFile' }"
       >
-        <FilePlus />
+        <FilePlus class="size-3.5" />
       </Button>
       <Button
         variant="ghost"
@@ -484,7 +512,7 @@ function fmtSize(n: number): string {
         title="新建文件夹"
         @click="nameDialog = { mode: 'newDir' }"
       >
-        <FolderPlus />
+        <FolderPlus class="size-3.5" />
       </Button>
       <Button
         variant="ghost"
@@ -495,10 +523,10 @@ function fmtSize(n: number): string {
         :title="loading ? '刷新中…' : '刷新'"
         @click="refresh"
       >
-        <RefreshCw :class="loading ? 'animate-spin' : ''" />
+        <RefreshCw :class="['size-3.5', loading ? 'animate-spin' : '']" />
       </Button>
       <Button variant="ghost" size="icon-xs" class="shrink-0" title="关闭文件面板" @click="emit('close')">
-        <X />
+        <X class="size-3.5" />
       </Button>
     </div>
 
@@ -518,7 +546,9 @@ function fmtSize(n: number): string {
       终端会话未就绪，等待中…
     </p>
 
-    <!-- 路径行：面包屑（祖先可点直达，末段点击进编辑）+ 上一级 + 宿主路径弹框 -->
+    <!-- 路径行：面包屑（祖先可点直达，溢出折叠成…，末段点击进编辑）+ 上一级 + 宿主路径弹框。
+         上一级用彩色 FolderUp：裸 chevron 语义太泛（收起/回顶?），文件夹+上箭头无歧义；
+         蓝色与列表里文件夹图标同色系（目录动作的语言）。 -->
     <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
       <Button
         variant="ghost"
@@ -528,7 +558,7 @@ function fmtSize(n: number): string {
         title="上一级"
         @click="goParent"
       >
-        <ChevronUp />
+        <FolderUp class="size-3.5 shrink-0 text-sky-400" />
       </Button>
       <input
         v-if="editingPath"
@@ -542,19 +572,27 @@ function fmtSize(n: number): string {
       <div
         v-else-if="path"
         ref="crumbsEl"
-        class="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+        class="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
         title="点击任意上级直达；点击当前目录可编辑路径"
       >
-        <template v-for="(c, i) in crumbs" :key="c.p">
-          <ChevronRight v-if="i" class="size-3 shrink-0 text-muted-foreground/40" />
+        <button
+          v-if="crumbsDropped"
+          class="shrink-0 rounded px-1 py-0.5 font-mono text-[11px] leading-none text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="中间层级已折叠，点击编辑完整路径"
+          @click="startEditPath"
+        >
+          …
+        </button>
+        <template v-for="(c, i) in visibleCrumbs" :key="c.p">
+          <ChevronRight v-if="i || crumbsDropped" class="size-3 shrink-0 text-muted-foreground/40" />
           <button
             class="shrink-0 rounded px-1 py-0.5 font-mono text-[11px] leading-none"
             :class="
-              i === crumbs.length - 1
+              i === visibleCrumbs.length - 1
                 ? 'text-foreground'
                 : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
             "
-            @click="i === crumbs.length - 1 ? startEditPath() : openDir(c.p)"
+            @click="i === visibleCrumbs.length - 1 ? startEditPath() : openDir(c.p)"
           >
             {{ c.name }}
           </button>
@@ -566,7 +604,7 @@ function fmtSize(n: number): string {
       <Popover v-if="path">
         <PopoverTrigger as-child>
           <Button variant="ghost" size="icon-xs" class="shrink-0" title="宿主机实际路径">
-            <HardDrive />
+            <HardDrive class="size-3.5" />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" class="w-80">
@@ -656,7 +694,7 @@ function fmtSize(n: number): string {
                     title="更多操作"
                     @click.stop
                   >
-                    <MoreHorizontal />
+                    <MoreHorizontal class="size-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
