@@ -72,10 +72,11 @@ const previewKindV = computed(() => (props.diff ? null : previewKind(name.value)
 const previewUrl = ref('')
 const previewSize = ref(0)
 // svg 预览：本体走 Monaco 文本编辑（源码可改），头部按钮在「编辑 / 预览渲染」间切换。
-// 渲染用当前编辑内容实时生成（改动立即可见），不落盘——想看保存后的效果先保存。
+// 默认落在预览（使用习惯是直接看，编辑是少数场景）；渲染用当前编辑内容实时生成
+// （改动立即可见），不落盘——想看保存后的效果先保存。
 // 刻意用 data: URL 而非 blob:（两者都受控渲染，效果一致），避免与文件预览的 blob 生命周期混管。
 const isSvg = computed(() => !props.diff && extOf(name.value) === 'svg')
-const svgPreview = ref(false)
+const svgPreview = ref(true)
 function clearPreview() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
