@@ -6,7 +6,7 @@
 // 给「以普通方式打开」出口（emit open-normal，父级清 diff 重挂普通模式）。
 import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
 import { langForFilename } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
-import { previewKind, previewMime } from '@/lib/preview'
+import { previewKind, previewMime, extOf } from '@/lib/preview'
 import {
   readFile,
   writeFile,
@@ -18,7 +18,7 @@ import {
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
-import { Music } from 'lucide-vue-next'
+import { Music, Eye, Code } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -71,11 +71,21 @@ let savedFlashTimer: ReturnType<typeof setTimeout> | null = null
 const previewKindV = computed(() => (props.diff ? null : previewKind(name.value)))
 const previewUrl = ref('')
 const previewSize = ref(0)
+// svg 预览：本体走 Monaco 文本编辑（源码可改），头部按钮在「编辑 / 预览渲染」间切换。
+// 渲染用当前编辑内容实时生成（改动立即可见），不落盘——想看保存后的效果先保存。
+// 刻意用 data: URL 而非 blob:（两者都受控渲染，效果一致），避免与文件预览的 blob 生命周期混管。
+const isSvg = computed(() => !props.diff && extOf(name.value) === 'svg')
+const svgPreview = ref(false)
 function clearPreview() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
   previewSize.value = 0
 }
+const svgUrl = computed(() => {
+  if (!svgPreview.value) return ''
+  // encodeURIComponent 再包 data URL：SVG 内联的 < & > 不会打断 data: 头
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content.value)}`
+})
 onBeforeUnmount(clearPreview)
 
 const dirty = computed(() => content.value !== savedContent.value)
@@ -323,6 +333,11 @@ function fmtSize(n: number): string {
           >预览</span
         >
         <span
+          v-if="isSvg && svgPreview"
+          class="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-400"
+          >预览</span
+        >
+        <span
           v-if="diff?.headPath && diff.headPath !== path"
           class="max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
           :title="diff.headPath"
@@ -340,6 +355,18 @@ function fmtSize(n: number): string {
           :title="`${containerName}:${path}`"
           >{{ containerName }}:{{ path }}</span
         >
+        <!-- svg 专属：编辑 ⇄ 预览渲染切换（渲染实时反映编辑内容，未保存也可见） -->
+        <Button
+          v-if="isSvg"
+          variant="ghost"
+          size="xs"
+          class="ml-2 shrink-0"
+          @click="svgPreview = !svgPreview"
+        >
+          <Eye v-if="!svgPreview" class="size-3.5" />
+          <Code v-else class="size-3.5" />
+          {{ svgPreview ? '编辑' : '预览' }}
+        </Button>
       </div>
 
       <!-- 体 -->
@@ -415,23 +442,37 @@ function fmtSize(n: number): string {
           </div>
         </template>
         <template v-else>
-          <!-- 冲突条：文件在编辑期间被外部修改 -->
+          <!-- svg 预览渲染：实时反映编辑内容（data URL，未保存也可见）。白底卡片：
+               透明底 svg 在深色主题下白形状会糊掉，垫白最稳 -->
           <div
-            v-if="conflict"
-            class="flex flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-600 dark:text-amber-400"
+            v-if="svgPreview"
+            class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-muted/20 p-4"
           >
-            <span class="min-w-0 flex-1">文件在编辑期间被修改（mtime 不一致）</span>
-            <Button variant="outline" size="xs" :disabled="busy" @click="reload">重载（丢弃本地）</Button>
-            <Button size="xs" :disabled="busy" @click="overwrite">覆盖保存</Button>
+            <img
+              :src="svgUrl"
+              :alt="name"
+              class="max-h-full max-w-full rounded border bg-white object-contain p-3 shadow-sm"
+            />
           </div>
-          <p v-if="err" class="px-5 py-2 text-xs text-destructive">{{ err }}</p>
-          <CodeEditor
-            v-model="content"
-            :language="language"
-            class="min-h-0 flex-1"
-            @mount="onEditorMount"
-            @save="() => save()"
-          />
+          <template v-else>
+            <!-- 冲突条：文件在编辑期间被外部修改 -->
+            <div
+              v-if="conflict"
+              class="flex flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-600 dark:text-amber-400"
+            >
+              <span class="min-w-0 flex-1">文件在编辑期间被修改（mtime 不一致）</span>
+              <Button variant="outline" size="xs" :disabled="busy" @click="reload">重载（丢弃本地）</Button>
+              <Button size="xs" :disabled="busy" @click="overwrite">覆盖保存</Button>
+            </div>
+            <p v-if="err" class="px-5 py-2 text-xs text-destructive">{{ err }}</p>
+            <CodeEditor
+              v-model="content"
+              :language="language"
+              class="min-h-0 flex-1"
+              @mount="onEditorMount"
+              @save="() => save()"
+            />
+          </template>
         </template>
       </div>
 
