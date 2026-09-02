@@ -1235,7 +1235,7 @@ onUnmounted(() => {
             :class="c.state !== 'running' ? 'opacity-60' : ''"
           >
             <span
-              class="min-w-0 truncate text-[13px] font-medium leading-none text-foreground"
+              class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground"
               :title="c.displayName || c.name"
               >{{ c.displayName || c.name }}</span
             >
@@ -1243,7 +1243,7 @@ onUnmounted(() => {
           <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/外部徽章。
                非 running 整行再降一档，灰色条是「还活着」的唯一信号。 -->
           <div
-            class="flex items-center gap-2 text-[11px] leading-none text-muted-foreground"
+            class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground"
             :class="c.state !== 'running' ? 'opacity-50' : ''"
           >
             <button
