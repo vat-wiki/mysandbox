@@ -273,17 +273,25 @@ function joinPath(name: string): string {
 }
 // 下载（文件或目录）：目录走服务端 tar.gz。浏览器磁盘兜底 Blob，大文件也稳。
 const dlBusy = ref(false)
-async function download(e: FileEntry) {
+async function downloadTo(p: string, name: string, isDir: boolean) {
   if (dlBusy.value) return
   dlBusy.value = true
-  toast(`开始下载 ${e.name}${e.type === 'dir' ? '（tar.gz）' : ''}`)
+  toast(`开始下载 ${name}${isDir ? '（tar.gz）' : ''}`)
   try {
-    await downloadEntry(targetId(), joinPath(e.name), e.name, e.type === 'dir')
+    await downloadEntry(targetId(), p, name, isDir)
   } catch (e) {
     toast.error(e instanceof Error ? e.message : String(e))
   } finally {
     dlBusy.value = false
   }
+}
+function download(e: FileEntry) {
+  return downloadTo(joinPath(e.name), e.name, e.type === 'dir')
+}
+// 空白处右键「下载当前文件夹」：目录名取 path 尾段（根目录在菜单里禁用，服务端也拒 /）。
+function downloadDir() {
+  const p = path.value
+  return downloadTo(p, p.slice(p.lastIndexOf('/') + 1) || p, true)
 }
 async function confirmName(name: string) {
   const d = nameDialog.value
@@ -518,6 +526,9 @@ function fmtSize(n: number): string {
           </ContextMenuItem>
           <ContextMenuSeparator />
         </template>
+        <ContextMenuItem :disabled="!path || path === '/'" @click="downloadDir">
+          <Download /> 下载当前文件夹
+        </ContextMenuItem>
         <ContextMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
           <FilePlus /> 新建文件
         </ContextMenuItem>
