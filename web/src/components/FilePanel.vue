@@ -2,7 +2,7 @@
 // 右侧文件面板：跟随终端 pane 的 cwd 展示目录内容（tmux 查询），可逐级浏览、点文件
 // 抛 open-file 给父级开编辑器，右键 新建文件/新建文件夹/重命名/删除。跟随与手动浏览
 // 互斥：手动导航（点目录/输路径/外部定位）暂停跟随，恢复条一键回到终端所在目录。
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   listFiles,
   getTermCwd,
@@ -45,6 +45,7 @@ import {
   FolderPlus,
   Trash2,
   Download,
+  Search,
   MoreHorizontal,
 } from 'lucide-vue-next'
 
@@ -168,6 +169,7 @@ watch(
     follow.value = true
     entries.value = []
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
+    q.value = '' // 搜索是当前目录视图，切容器一并清掉
     tick()
   },
 )
@@ -292,6 +294,47 @@ function download(e: FileEntry) {
 function downloadDir() {
   const p = path.value
   return downloadTo(p, p.slice(p.lastIndexOf('/') + 1) || p, true)
+}
+
+// —— 名称搜索：命中按相关度前排 + 高亮，未命中不过滤、稳定垫后 ——
+// 纯客户端视图（displayEntries 派生自 entries）：静默轮询换列表时搜索结果自动跟着重算。
+// 相关度：全等 > 前缀 > 词边界（-_. 空格 数字 之后）> 裸包含（位置越靠前越相关）；
+// 同分保持原顺序（服务端目录在前、字母序），未命中 MAX 保持原序垫后。
+const q = ref('')
+function hitRank(name: string, needle: string): number {
+  const n = name.toLowerCase()
+  const idx = n.indexOf(needle)
+  if (idx < 0) return Number.MAX_SAFE_INTEGER
+  if (n === needle) return 0
+  if (idx === 0) return 1
+  if (/[-_.\s\d]/.test(n[idx - 1])) return 2
+  return 3 + Math.min(idx, 64)
+}
+const displayEntries = computed(() => {
+  const needle = q.value.trim().toLowerCase()
+  if (!needle) return entries.value
+  return entries.value
+    .map((e, i) => ({ e, i, r: hitRank(e.name, needle) }))
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map((x) => x.e)
+})
+// 文件名拆段渲染高亮（多处命中全高亮；大小写不敏感，lower 与原串位置一一对应）。
+function nameSegs(name: string): { t: string; hit: boolean }[] {
+  const needle = q.value.trim().toLowerCase()
+  if (!needle) return [{ t: name, hit: false }]
+  const segs: { t: string; hit: boolean }[] = []
+  let rest = name
+  let lower = name.toLowerCase()
+  let pos = lower.indexOf(needle)
+  while (pos >= 0) {
+    if (pos > 0) segs.push({ t: rest.slice(0, pos), hit: false })
+    segs.push({ t: rest.slice(pos, pos + needle.length), hit: true })
+    rest = rest.slice(pos + needle.length)
+    lower = lower.slice(pos + needle.length)
+    pos = lower.indexOf(needle)
+  }
+  if (rest) segs.push({ t: rest, hit: false })
+  return segs
 }
 async function confirmName(name: string) {
   const d = nameDialog.value
@@ -440,6 +483,25 @@ function fmtSize(n: number): string {
       </button>
     </div>
 
+    <!-- 名称搜索：命中相关度前排 + 高亮，未命中垫后不滤掉；Esc/✕ 清空 -->
+    <div v-if="hasTerminal" class="flex h-7 shrink-0 items-center gap-1.5 border-b border-border px-2">
+      <Search class="size-3.5 shrink-0 text-muted-foreground" />
+      <input
+        v-model="q"
+        class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+        placeholder="搜索当前目录文件名…"
+        @keydown.esc="q = ''"
+      />
+      <button
+        v-if="q"
+        class="shrink-0 text-muted-foreground hover:text-foreground"
+        title="清除搜索"
+        @click="q = ''"
+      >
+        <X class="size-3.5" />
+      </button>
+    </div>
+
     <!-- Git 变更区块：当前目录在仓库内才渲染（组件内部对 repo:false 也整体 v-if）。
          :key=容器 id：切容器重建（折叠态复位），path 变化组件内部自会重查。 -->
     <FilePanelGit
@@ -471,7 +533,7 @@ function fmtSize(n: number): string {
               空目录
             </p>
             <div
-              v-for="e in entries"
+              v-for="e in displayEntries"
               :key="e.name"
               :data-entry="e.name"
               class="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 hover:bg-accent/50"
@@ -480,7 +542,12 @@ function fmtSize(n: number): string {
               <Folder v-if="e.type === 'dir'" class="size-3.5 shrink-0 text-sky-400" />
               <Link2 v-else-if="e.type === 'link'" class="size-3.5 shrink-0 text-violet-400" />
               <FileText v-else class="size-3.5 shrink-0 text-muted-foreground" />
-              <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ e.name }}</span>
+              <span class="min-w-0 flex-1 truncate font-mono text-xs">
+                <template v-for="(s, i) in nameSegs(e.name)" :key="i">
+                  <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
+                  <template v-else>{{ s.t }}</template>
+                </template>
+              </span>
               <span v-if="e.type !== 'dir'" class="shrink-0 text-[10px] text-muted-foreground">{{
                 fmtSize(e.size)
               }}</span>
