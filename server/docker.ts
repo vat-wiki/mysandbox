@@ -91,6 +91,18 @@ export async function dockerStatus(): Promise<{ reachable: boolean; version?: st
 }
 
 // —— 网络 ——
+
+// 创建用户网络（bridge，指定子网/网关）。调用方保证幂等（先 inspectNetwork，缺失才建）。
+// 不钉桥设备名（com.docker.network.bridge.name）：桥是 docker 的实现细节，mysandbox
+// 不引用桥名（DOCKER-USER 放行用 br+ 通配），钉名反而会掉出通配范围。
+export async function createNetwork(name: string, subnet: string, gateway: string): Promise<void> {
+  const r = await dockerExec(
+    ['network', 'create', '--driver', 'bridge', '--subnet', subnet, '--gateway', gateway, name],
+    15_000,
+  );
+  if (!r.ok) throw new Error(`docker network create failed: ${r.stderr.trim() || r.stdout.trim()}`);
+}
+
 export interface NetworkInfo {
   name: string;
   id: string;

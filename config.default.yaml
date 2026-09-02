@@ -33,7 +33,8 @@ services:
   enabled: true
   # docker 网络名（≠ 上面 network 的桥设备名）。LXC 在自有桥 mysandbox0 上，两网段经宿主路由互通
   # （mysandbox-docker-interop.service 放行跨桥转发；LXC → 服务 IP 由它保障，勿删）。
-  # ⚠️ 必须是现有网络：docker 新建网络会落到 10.201.0.0/16 地址池，与 LXC 网段不通。
+  # 网络自持：缺失时 mysandbox 按服务池隐含的 /24 自动创建——手工建会落到 docker 默认池
+  # （10.201.x/172.x，与 LXC 网段不通），别手工建。
   network: dev-lan
   # 服务静态 IP 池（docker 动态分配从 .2 顺排，.200+ 天然隔离）。
   ipPool:

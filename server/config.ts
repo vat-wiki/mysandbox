@@ -42,8 +42,7 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
       // docker 网络名（⚠️ 不是顶层 network 的桥设备名）。LXC 在自有桥 mysandbox0 上，
       // 两网段经宿主路由互通（mysandbox-docker-interop.service 放行跨桥转发）。
-      // 服务必须挂现有网络——新建 docker 网络会落到 daemon.json 的 10.201.0.0/16 池，
-      // 与 LXC 网段不通。
+      // 网络自持：缺失时按服务池隐含的 /24 自动创建（services.ts ensureServiceNetwork）。
       network: z.string().default('dev-lan'),
       // 服务静态 IP 池（docker 动态分配从 .2 顺排，.200+ 天然隔离；占用判定见
       // services.ts allocateServiceIp——网络端点 ∪ state.services ∪ reserved）。

@@ -295,4 +295,5 @@ mysandbox0 → start（经 systemd-run 瞬态单元）。create() 本来就按 c
 只为克隆来源一致。
 
 **行为变化**：clash TUN 开关不再影响容器出网（开着走 Meta、关着走 MASQUERADE 直连，两态都通）；
-dev-lan 重建/docker 停机不再影响 LXC 网络。
+dev-lan 重建/docker 停机不再影响 LXC 网络。服务网络 dev-lan 也转为 mysandbox 自持（`ensureServiceNetwork`
+缺失自动按服务池网段重建），与 LXC 桥配套，网络拓扑整体不再有任何「外部必须先建好」的依赖。

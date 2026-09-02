@@ -9,6 +9,7 @@
 // docker 原语在 docker.ts（CLI 客户端）；这里只有业务编排。对标 base.ts 的「路由薄 + 实现厚」。
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
+import type { NetworkInfo } from './docker.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { applyServicesBlock } from './hosts-sync.js';
 import { log } from './logger.js';
@@ -30,6 +31,7 @@ import {
   imageExistsLocal,
   pullImageStream,
   registryMirrors,
+  createNetwork,
   ensureVolume,
   removeVolume,
   subscribeServiceEvents,
@@ -242,28 +244,40 @@ async function cachedRegistryMirrors(): Promise<string[] | null> {
 
 export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
   const docker = await dockerStatus();
+  // 网络自持：dev-lan 属于服务层基础设施，缺失（被 prune / 手工删）就按服务池网段
+  // 重建——面板每 3–15s 轮询一次 status，自愈周期即一个轮询间隔。
+  const net = docker.reachable ? await ensureServiceNetwork(cfg) : null;
   const poolView = await servicePoolView(cfg);
   const status: ServicesStatus = {
     enabled: cfg.services.enabled,
     reachable: docker.reachable,
     version: docker.version,
     error: docker.error,
-    network: { name: cfg.services.network, bridgeOk: false, subnet: null },
+    network: { name: cfg.services.network, bridgeOk: !!net, subnet: net?.subnet ?? null },
     pool: poolView,
   };
-  if (!docker.reachable) return status;
+  if (!net) return status;
   status.registryMirrors = (await cachedRegistryMirrors()) ?? undefined;
-  const net = await inspectNetwork(cfg.services.network);
-  if (!net) {
-    status.network.detail = `docker 网络 "${cfg.services.network}" 不存在——在 docker 里创建它（或改 services.network 配置）`;
-    return status;
+  // 子网体检：网络存在但子网与服务池隐含的 /24 不符（如被手工重建到 docker 默认池）
+  // ——LXC 与服务网段经宿主路由互通，子网漂移会断跨桥连通，值得一句人话提示。
+  const expected = `${poolView.from.split('.').slice(0, 3).join('.')}.0/24`;
+  if (net.subnet && net.subnet !== expected) {
+    status.network.detail =
+      `网络 "${net.name}" 子网 ${net.subnet} 与服务池隐含的 ${expected} 不符——` +
+      '跨桥到 LXC 的互通可能失效（重建网络或改 services.ipPool）';
   }
-  status.network.subnet = net.subnet;
-  // LXC 自有独立网桥（cfg.network = mysandbox0）后，docker 桥与 LXC 桥天然不同——
-  // 「桥一致」检查退役，网络存在即就绪（跨桥互通由 mysandbox-docker-interop.service
-  // + ufw 放行保障，与本检查无关）。
-  status.network.bridgeOk = true;
   return status;
+}
+
+// 服务网络自持：存在即返回；缺失则按服务池隐含的 /24 建出来（网关 = 前缀.1）。
+// docker 桥设备名交给 docker（见 docker.ts createNetwork 注释）。
+export async function ensureServiceNetwork(cfg: Config): Promise<NetworkInfo | null> {
+  const existing = await inspectNetwork(cfg.services.network);
+  if (existing) return existing;
+  const prefix = cfg.services.ipPool.from.split('.').slice(0, 3).join('.');
+  await createNetwork(cfg.services.network, `${prefix}.0/24`, `${prefix}.1`);
+  log.info({ network: cfg.services.network, subnet: `${prefix}.0/24` }, 'service network auto-created');
+  return inspectNetwork(cfg.services.network);
 }
 
 // 服务池视图：占用 = 网络 running 端点（10.88.0.x 全体，含非服务容器）∪ state.services
@@ -345,6 +359,9 @@ export async function prepareServiceCreate(cfg: Config, input: CreateServiceInpu
   }
   if (!cfg.services.enabled) throw badRequest('services 层未启用（config services.enabled）');
 
+  // 网络自持：第一个服务创建前把网络建好（缺失才建，幂等）。
+  await ensureServiceNetwork(cfg);
+
   const preset = input.preset === 'custom' ? null : findPreset(input.preset);
   if (!preset && input.preset !== 'custom') throw badRequest(`未知预设 "${input.preset}"`);
 
@@ -395,6 +412,9 @@ export async function runServiceCreate(cfg: Config, plan: CreateServicePlan, ctx
       throw e;
     }
   };
+
+  // prepare 之后网络可能又被删（prune 等）——job 起步再兜一次底。
+  await ensureServiceNetwork(cfg);
 
   if (await imageExistsLocal(image)) {
     ctx.status(`镜像 ${image} 已在本地，跳过拉取`);
