@@ -22,7 +22,7 @@ const view = ref<GitStatusView | null>(null)
 const err = ref('') // 温和降级：灰字提示，不进面板主错误条
 // 折叠态本地保存（path 变不清，切容器随 :key 重建复位）。dock 在面板底部（VSCode 源代码
 // 管理式），默认收起：变更数在折叠头徽章上仍可见，展开才占列表高度。
-const collapsed = ref(true)
+const collapsed = ref(false)
 
 let gitSeq = 0
 let inFlight = false // 门闩：上一发没回来不发下一发（慢仓不排队堆积）
@@ -145,8 +145,8 @@ function onClick(c: GitChange) {
         {{ view.truncated ? '999+' : (view.changes?.length ?? 0) }}
       </span>
     </button>
-    <!-- 变更列表：高度受限（可滚动，不挤压下方目录主体） -->
-    <div v-if="!collapsed" class="scroll-thin max-h-72 overflow-y-auto">
+    <!-- 变更列表：默认展开、高度定档 h-40（可滚动）——太矮没存在感，太高又挤压目录主体 -->
+    <div v-if="!collapsed" class="scroll-thin h-40 overflow-y-auto">
       <p v-if="err" class="px-2.5 py-1 text-[11px] text-muted-foreground">{{ err }}</p>
       <p
         v-else-if="!view.changes?.length"

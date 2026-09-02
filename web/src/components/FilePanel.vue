@@ -546,20 +546,38 @@ function fmtSize(n: number): string {
       终端会话未就绪，等待中…
     </p>
 
+    <!-- 名称搜索：命中相关度前排 + 高亮，未命中垫后不滤掉；Esc/✕ 清空 -->
+    <div v-if="hasTerminal" class="flex h-7 shrink-0 items-center gap-1.5 border-b border-border px-2">
+      <Search class="size-3.5 shrink-0 text-muted-foreground" />
+      <input
+        v-model="q"
+        class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+        placeholder="搜索当前目录文件名…"
+        @keydown.esc="q = ''"
+      />
+      <button
+        v-if="q"
+        class="shrink-0 text-muted-foreground hover:text-foreground"
+        title="清除搜索"
+        @click="q = ''"
+      >
+        <X class="size-3.5" />
+      </button>
+    </div>
+
     <!-- 路径行：面包屑（祖先可点直达，溢出折叠成…，末段点击进编辑）+ 上一级 + 宿主路径弹框。
          上一级用彩色 FolderUp：裸 chevron 语义太泛（收起/回顶?），文件夹+上箭头无歧义；
-         蓝色与列表里文件夹图标同色系（目录动作的语言）。 -->
+         蓝色与列表里文件夹图标同色系（目录动作的语言）。行内图标一律裸按钮（与搜索行同款，
+         无 Button 外壳的 6px 盒子），两行字形垂直完全对齐。 -->
     <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :disabled="path === '/' || !path"
+      <button
+        v-if="path && path !== '/'"
+        class="shrink-0 text-muted-foreground hover:text-foreground"
         title="上一级"
         @click="goParent"
       >
         <FolderUp class="size-3.5 shrink-0 text-sky-400" />
-      </Button>
+      </button>
       <input
         v-if="editingPath"
         ref="pathInputEl"
@@ -603,9 +621,9 @@ function fmtSize(n: number): string {
            宿主行点击复制。容器路径不设复制——就在屏上，终端里 tab 补全更顺手。 -->
       <Popover v-if="path">
         <PopoverTrigger as-child>
-          <Button variant="ghost" size="icon-xs" class="shrink-0" title="宿主机实际路径">
+          <button class="shrink-0 text-muted-foreground hover:text-foreground" title="宿主机实际路径">
             <HardDrive class="size-3.5" />
-          </Button>
+          </button>
         </PopoverTrigger>
         <PopoverContent align="end" class="w-80">
           <div v-if="!isHost" class="mb-2">
@@ -627,25 +645,6 @@ function fmtSize(n: number): string {
           </button>
         </PopoverContent>
       </Popover>
-    </div>
-
-    <!-- 名称搜索：命中相关度前排 + 高亮，未命中垫后不滤掉；Esc/✕ 清空 -->
-    <div v-if="hasTerminal" class="flex h-7 shrink-0 items-center gap-1.5 border-b border-border px-2">
-      <Search class="size-3.5 shrink-0 text-muted-foreground" />
-      <input
-        v-model="q"
-        class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
-        placeholder="搜索当前目录文件名…"
-        @keydown.esc="q = ''"
-      />
-      <button
-        v-if="q"
-        class="shrink-0 text-muted-foreground hover:text-foreground"
-        title="清除搜索"
-        @click="q = ''"
-      >
-        <X class="size-3.5" />
-      </button>
     </div>
 
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
