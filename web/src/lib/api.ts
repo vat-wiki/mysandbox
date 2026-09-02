@@ -1,4 +1,6 @@
 // API 客户端：token 存 localStorage，请求带 X-Sandbox-Token。
+import { PREVIEW_MAX_BYTES } from './preview'
+
 const TOKEN_KEY = 'mysandbox.token'
 
 // 宿主哨兵 id：ContainerList 的 host 终端组用它当 containerId；文件 API 据此切宿主端点
@@ -503,8 +505,7 @@ export const deleteEntry = (id: string, path: string) =>
 // 浏览器历史，401/4xx 能解析 JSON 走统一报错（裸导航会把错误 JSON 直接存成文件）。
 // Blob 由浏览器磁盘后端兜内存，大文件无压力；目录是服务端现打的 tar.gz 流。
 // 不走 api()：那条路径有 10s 超时，掐死大下载。
-export async function downloadEntry(id: string, path: string, name: string, isDir: boolean): Promise<void> {
-  const res = await fetch(`${filesBase(id)}/download?path=${encodeURIComponent(path)}`, {
+export async function downloadEntry(id: string, path: string, name: string, isDir: boolean): Promise<void> {  const res = await fetch(`${filesBase(id)}/download?path=${encodeURIComponent(path)}`, {
     headers: { 'x-sandbox-token': getToken() ?? '' },
   })
   if (res.status === 401) throw new Unauthorized()
@@ -522,6 +523,26 @@ export async function downloadEntry(id: string, path: string, name: string, isDi
   a.remove()
   // 保存流程还要读 URL 指向的 Blob，点完立即 revoke 在部分浏览器会断下载；延时回收。
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+// 在线预览取流：与 downloadEntry 同一端点（二进制安全、无 2MB 文本上限），但不落盘。
+// mime 由调用方按扩展名给出（服务端统一 octet-stream，浏览器对 blob URL 靠 MIME 解码）。
+// Content-Length 先查后读：超过 PREVIEW_MAX_BYTES 直接拒（整文件进内存的硬顶）。
+export async function fetchFileBlob(id: string, path: string, mime: string): Promise<Blob> {
+  const res = await fetch(`${filesBase(id)}/download?path=${encodeURIComponent(path)}`, {
+    headers: { 'x-sandbox-token': getToken() ?? '' },
+  })
+  if (res.status === 401) throw new Unauthorized()
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new ApiError(body?.error?.message || res.statusText, res.status, body?.error?.code || 'error')
+  }
+  const len = res.headers.get('content-length')
+  if (len && Number(len) > PREVIEW_MAX_BYTES) {
+    throw new ApiError(`文件超过 ${Math.round(PREVIEW_MAX_BYTES / 1024 / 1024)}MB，不在线预览（可用下载）`, 413, 'too_large')
+  }
+  const buf = await res.arrayBuffer()
+  return new Blob([buf], { type: mime })
 }
 export const getListenPorts = (id: string) =>
   // ports：全部监听端口；web：其中实测返回 HTML 的（真网页，可放心点击打开）

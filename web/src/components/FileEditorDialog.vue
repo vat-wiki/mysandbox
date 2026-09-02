@@ -4,17 +4,21 @@
 // diff prop 存在时切「git 变更对比」模式：getGitDiff 快照（左 HEAD 右工作区）、只读、
 // 无保存/脏确认；各降级路径（单侧二进制/超大/缺失）只影响那一侧，双侧都不可渲染时
 // 给「以普通方式打开」出口（emit open-normal，父级清 diff 重挂普通模式）。
-import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
 import { langForFilename } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
+import { previewKind, previewMime } from '@/lib/preview'
 import {
   readFile,
   writeFile,
   getGitDiff,
+  downloadEntry,
+  fetchFileBlob,
   Unauthorized,
   ApiError,
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
+import { Music } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -61,6 +65,19 @@ const confirmDiscard = ref(false) // 未保存关闭的确认弹窗
 const isNew = ref(false) // 新建态：读取 404 进入，保存成功后退出
 let savedFlashTimer: ReturnType<typeof setTimeout> | null = null
 
+// —— 在线预览（图片/视频/音频/PDF）——
+// 走 download 端点整文件进内存 Blob（二进制安全、无 2MB 文本上限），objectURL 渲染。
+// 只读：无编辑/保存/dirty 语义；关闭与重载时回收 objectURL。
+const previewKindV = computed(() => (props.diff ? null : previewKind(name.value)))
+const previewUrl = ref('')
+const previewSize = ref(0)
+function clearPreview() {
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  previewUrl.value = ''
+  previewSize.value = 0
+}
+onBeforeUnmount(clearPreview)
+
 const dirty = computed(() => content.value !== savedContent.value)
 
 // —— diff 模式状态 ——
@@ -92,6 +109,22 @@ async function load() {
       await loadDiff()
       return
     }
+    // 可预览类型（图片/视频/音频/PDF）：直接取流预览，不进 readFile 文本管线
+    //（这类文件必是 binary，readFile 只会给死胡同卡，且大图会撞 2MB 上限）。
+    // 404 也不进「新建态」——二进制文件没有新建语义，照常报错。
+    if (previewKindV.value) {
+      meta.value = null
+      isNew.value = false
+      const blob = await fetchFileBlob(
+        props.containerId,
+        props.path,
+        previewMime(name.value) ?? 'application/octet-stream',
+      )
+      clearPreview()
+      previewUrl.value = URL.createObjectURL(blob)
+      previewSize.value = blob.size
+      return
+    }
     const v = await readFile(props.containerId, props.path)
     meta.value = v
     isNew.value = false
@@ -105,7 +138,7 @@ async function load() {
       emit('close')
       return
     }
-    if (e instanceof ApiError && e.status === 404) {
+    if (e instanceof ApiError && e.status === 404 && !previewKindV.value) {
       // 不存在 = 新建：空编辑器，无 mtime（不带乐观锁，保存即创建）。
       isNew.value = true
       meta.value = { path: props.path, name: name.value, size: 0, mtime: 0, binary: false }
@@ -246,6 +279,19 @@ function doDiscard() {
   emit('close')
 }
 
+// 预览态的下载出口：复用 downloadEntry（落盘保存），失败进对话框错误条。
+async function downloadPreview() {
+  try {
+    await downloadEntry(props.containerId, props.path, name.value, false)
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    err.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -269,6 +315,12 @@ function fmtSize(n: number): string {
           class="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-400"
           title="git 变更对比（左 HEAD · 右 工作区）"
           >对比</span
+        >
+        <span
+          v-if="previewKindV"
+          class="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-400"
+          title="浏览器在线预览（只读）"
+          >预览</span
         >
         <span
           v-if="diff?.headPath && diff.headPath !== path"
@@ -327,6 +379,34 @@ function fmtSize(n: number): string {
             />
           </template>
         </template>
+        <!-- 在线预览：图片 / 视频 / 音频 / PDF（objectURL，只读） -->
+        <template v-else-if="previewKindV && previewUrl">
+          <div
+            v-if="previewKindV === 'image'"
+            class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-muted/20 p-4"
+          >
+            <img :src="previewUrl" :alt="name" class="max-h-full max-w-full object-contain" />
+          </div>
+          <div
+            v-else-if="previewKindV === 'video'"
+            class="flex min-h-0 flex-1 items-center justify-center bg-black/70 p-4"
+          >
+            <video :src="previewUrl" controls class="max-h-full max-w-full" />
+          </div>
+          <div
+            v-else-if="previewKindV === 'audio'"
+            class="flex min-h-0 flex-1 flex-col items-center justify-center gap-4"
+          >
+            <Music class="size-10 text-muted-foreground/50" />
+            <audio :src="previewUrl" controls class="w-80 max-w-full" />
+          </div>
+          <iframe
+            v-else-if="previewKindV === 'pdf'"
+            :src="previewUrl"
+            :title="name"
+            class="min-h-0 flex-1 border-0 bg-muted/20"
+          />
+        </template>
         <!-- 普通模式 -->
         <template v-else-if="meta?.binary">
           <div class="flex flex-1 flex-col items-center justify-center gap-2 px-5 py-8 text-muted-foreground">
@@ -366,11 +446,13 @@ function fmtSize(n: number): string {
             <span v-if="savedFlash" class="text-emerald-500">已保存</span>
             <span v-else-if="dirty" class="text-amber-500">未保存</span>
             <span v-else-if="isNew">新文件，保存时创建</span>
+            <span v-else-if="previewKindV">在线预览 · {{ fmtSize(previewSize) }} · 只读</span>
             <span v-else-if="meta && !meta.binary">{{ fmtSize(meta.size) }}</span>
           </template>
         </span>
         <Button variant="outline" size="sm" @click="tryClose">关闭</Button>
-        <Button v-if="!diff" size="sm" :disabled="!dirty || busy || !!meta?.binary" @click="save()">
+        <Button v-if="previewKindV" variant="outline" size="sm" @click="downloadPreview">下载</Button>
+        <Button v-if="!diff && !previewKindV" size="sm" :disabled="!dirty || busy || !!meta?.binary" @click="save()">
           {{ busy ? '保存中…' : '保存 (Ctrl+S)' }}
         </Button>
         <Button v-else variant="outline" size="sm" @click="emit('open-normal')">以普通方式打开</Button>
