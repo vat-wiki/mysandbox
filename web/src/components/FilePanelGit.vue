@@ -2,8 +2,7 @@
 // 文件面板内嵌的「Git 变更」区块：面板当前目录位于 git 仓库内时展示分支与变更文件列表。
 // path（面板当前目录）是唯一刷新键：跟随/手动导航、外部 locate 都只是换 path。
 // 非仓库目录整块不渲染；结果含 repo:false 时缓存住，同一 path 下不再重复打（/etc 这类
-// 目录不每 8s 白跑一次 rev-parse）。变更文件点击分流：普通条目抛 open-change（父级开
-// diff 对比）、untracked 回退普通打开、折叠目录条目抛 locate-dir 进目录浏览。
+// 目录不每 8s 白跑一次 rev-parse）。列表纯展示：条目不可点，点开文件走上方目录列表。
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { getGitStatus, Unauthorized, type GitStatusView, type GitChange } from '@/lib/api'
 import { GitBranch, ChevronDown, ChevronRight } from 'lucide-vue-next'
@@ -12,16 +11,11 @@ const props = defineProps<{
   containerId: string
   path: string
 }>()
-const emit = defineEmits<{
-  (e: 'open-change', c: { absPath: string; oldAbsPath?: string; entry: GitChange }): void
-  (e: 'open-file', path: string): void
-  (e: 'locate-dir', path: string): void
-}>()
 
 const view = ref<GitStatusView | null>(null)
 const err = ref('') // 温和降级：灰字提示，不进面板主错误条
 // 折叠态本地保存（path 变不清，切容器随 :key 重建复位）。dock 在面板底部（VSCode 源代码
-// 管理式），默认收起：变更数在折叠头徽章上仍可见，展开才占列表高度。
+// 管理式），默认展开、高度定档：变更数在折叠头徽章上仍可见，收起省列表高度。
 const collapsed = ref(false)
 
 let gitSeq = 0
@@ -106,26 +100,6 @@ function kindTitle(c: GitChange): string {
   }
   return t[badgeOf(c).text] ?? '已修改'
 }
-function toAbs(rel: string): string {
-  const top = view.value?.toplevel ?? ''
-  return top === '/' ? `/${rel}` : `${top}/${rel.replace(/\/$/, '')}`
-}
-function onClick(c: GitChange) {
-  if (c.file.endsWith('/')) {
-    // untracked 折叠目录：进目录浏览（porcelain 对未跟踪目录默认折叠为 dir/）
-    emit('locate-dir', toAbs(c.file))
-    return
-  }
-  if (c.x === '?' && c.y === '?') {
-    emit('open-file', toAbs(c.file)) // 无 HEAD 版本可对比，回退普通打开
-    return
-  }
-  emit('open-change', {
-    absPath: toAbs(c.file),
-    oldAbsPath: c.oldFile ? toAbs(c.oldFile) : undefined,
-    entry: c,
-  })
-}
 </script>
 
 <template>
@@ -158,9 +132,8 @@ function onClick(c: GitChange) {
       <div
         v-for="c in view.changes"
         :key="c.file"
-        class="flex cursor-pointer items-center gap-1.5 px-2.5 py-1 hover:bg-accent/50"
+        class="flex items-center gap-1.5 px-2.5 py-1"
         :title="kindTitle(c)"
-        @click="onClick(c)"
       >
         <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(c).cls">{{
           badgeOf(c).text

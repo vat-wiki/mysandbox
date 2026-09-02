@@ -34,7 +34,6 @@ import NameDialog from '@/components/NameDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import type { GitChange } from '@/lib/api'
 import {
   Folder,
   FileText,
@@ -66,7 +65,6 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'open-file', path: string): void
   (e: 'pane-pick', termId: string): void
-  (e: 'open-change', c: { absPath: string; oldAbsPath?: string; entry: GitChange }): void
 }>()
 
 // 跟随模式：path 跟着终端 cwd 走。手动导航置 false（容器 id 冻结到 manualContainerId，
@@ -290,10 +288,10 @@ watch(crumbsEl, (el) => {
 })
 onBeforeUnmount(() => crumbRO?.disconnect())
 function crumbW(name: string): number {
-  return name.length * 6.6 + 10
+  return name.length * 6.6 + 6 // mono 11px 字宽 + chip px-0.5 内边距（略保守）
 }
-const SEP_W = 16
-const ELLIPSIS_W = 26
+const SEP_W = 12
+const ELLIPSIS_W = 18
 const visibleCrumbs = computed(() => {
   const all = crumbs.value
   if (!crumbsW.value) return all // 首帧未量宽：全渲染，RO 挂载即触发立刻收敛
@@ -590,21 +588,21 @@ function fmtSize(n: number): string {
       <div
         v-else-if="path"
         ref="crumbsEl"
-        class="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
+        class="flex min-w-0 flex-1 items-center gap-0 overflow-hidden"
         title="点击任意上级直达；点击当前目录可编辑路径"
       >
         <button
           v-if="crumbsDropped"
-          class="shrink-0 rounded px-1 py-0.5 font-mono text-[11px] leading-none text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          class="flex shrink-0 items-center rounded px-0.5 font-mono text-[11px] leading-none text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           title="中间层级已折叠，点击编辑完整路径"
           @click="startEditPath"
         >
           …
         </button>
         <template v-for="(c, i) in visibleCrumbs" :key="c.p">
-          <ChevronRight v-if="i || crumbsDropped" class="size-3 shrink-0 text-muted-foreground/40" />
+          <ChevronRight v-if="i || crumbsDropped" class="size-2.5 shrink-0 text-muted-foreground/40" />
           <button
-            class="shrink-0 rounded px-1 py-0.5 font-mono text-[11px] leading-none"
+            class="flex shrink-0 items-center rounded px-0.5 font-mono text-[11px] leading-none"
             :class="
               i === visibleCrumbs.length - 1
                 ? 'text-foreground'
@@ -737,16 +735,13 @@ function fmtSize(n: number): string {
       </ContextMenuContent>
     </ContextMenu>
 
-    <!-- Git 变更 dock（底部）：可折叠，折叠头常显分支+变更数 -->
+    <!-- Git 变更 dock（底部）：纯列表展示，可折叠，折叠头常显分支+变更数 -->
     <FilePanelGit
       v-if="hasTerminal && path"
       ref="gitRef"
       :key="targetId()"
       :container-id="targetId()"
       :path="path"
-      @open-change="(c) => emit('open-change', c)"
-      @open-file="(p) => emit('open-file', p)"
-      @locate-dir="openDir"
     />
 
     <!-- 命名弹窗（新建/重命名共用） -->

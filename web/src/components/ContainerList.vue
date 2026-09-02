@@ -428,10 +428,6 @@ function openFile(cId: string, cName: string, path: string, diff?: { headPath?: 
   }
   editorTarget.value = diff ? { containerId: cId, containerName: cName, path, diff } : { containerId: cId, containerName: cName, path }
 }
-// git 面板点变更条目：以 diff 对比模式打开（FilePanelGit 组装好绝对路径）。
-function onOpenChange(cId: string, cName: string, c: { absPath: string; oldAbsPath?: string }) {
-  openFile(cId, cName, c.absPath, c.oldAbsPath ? { headPath: c.oldAbsPath } : {})
-}
 // diff 对话框「以普通方式打开」：清 diff 标记，dialog 的 watch(diff) 自动重走普通加载。
 function onOpenNormal() {
   if (editorTarget.value) {
@@ -1654,7 +1650,6 @@ onUnmounted(() => {
           :has-terminal="!!activeGroup"
           @close="showFiles = false"
           @open-file="(p: string) => activeGroup && openFile(activeGroup.containerId, activeGroup.name, p)"
-          @open-change="(c) => activeGroup && onOpenChange(activeGroup.containerId, activeGroup.name, c)"
           @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
         />
       </div>
