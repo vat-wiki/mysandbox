@@ -42,6 +42,7 @@ import {
   RefreshCw,
   X,
   ChevronUp,
+  ChevronRight,
   PenLine,
   FilePlus,
   FolderPlus,
@@ -259,6 +260,27 @@ function goParent() {
   const i = path.value.lastIndexOf('/')
   openDir(i <= 0 ? '/' : path.value.slice(0, i))
 }
+// —— 面包屑 ——
+// 返回上级的高频痛点：上级按钮只有路径行一颗，深层目录连点多次才到顶。面包屑让任意
+// 祖先一键直达（点击中间段 = 跳到那级），末段保留「点击进路径编辑」的老交互。
+const crumbs = computed(() => {
+  if (!path.value) return []
+  const segs = path.value.split('/').filter(Boolean)
+  const out: { name: string; p: string }[] = [{ name: '/', p: '/' }]
+  let acc = ''
+  for (const s of segs) {
+    acc += `/${s}`
+    out.push({ name: s, p: acc })
+  }
+  return out
+})
+const crumbsEl = ref<HTMLElement | null>(null)
+// 路径变化后滚到末端（当前段永远可见，祖先在左边划出）
+watch(path, () => {
+  void nextTick(() => {
+    if (crumbsEl.value) crumbsEl.value.scrollLeft = crumbsEl.value.scrollWidth
+  })
+})
 // 路径输入框：进入编辑态时预填当前路径，Enter 提交、Esc/失焦还原。
 function startEditPath() {
   pathInput.value = path.value
@@ -496,7 +518,7 @@ function fmtSize(n: number): string {
       终端会话未就绪，等待中…
     </p>
 
-    <!-- 路径行：可点击进入编辑 -->
+    <!-- 路径行：面包屑（祖先可点直达，末段点击进编辑）+ 上一级 + 宿主路径弹框 -->
     <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
       <Button
         variant="ghost"
@@ -517,14 +539,28 @@ function fmtSize(n: number): string {
         @keydown.esc="editingPath = false"
         @blur="commitPath"
       />
-      <button
-        v-else
-        class="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
-        :title="path || '（等待终端目录…）'"
-        @click="startEditPath"
+      <div
+        v-else-if="path"
+        ref="crumbsEl"
+        class="scroll-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+        title="点击任意上级直达；点击当前目录可编辑路径"
       >
-        {{ path || '…' }}
-      </button>
+        <template v-for="(c, i) in crumbs" :key="c.p">
+          <ChevronRight v-if="i" class="size-3 shrink-0 text-muted-foreground/40" />
+          <button
+            class="shrink-0 rounded px-1 py-0.5 font-mono text-[11px] leading-none"
+            :class="
+              i === crumbs.length - 1
+                ? 'text-foreground'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+            "
+            @click="i === crumbs.length - 1 ? startEditPath() : openDir(c.p)"
+          >
+            {{ c.name }}
+          </button>
+        </template>
+      </div>
+      <span v-else class="min-w-0 flex-1 font-mono text-[11px] text-muted-foreground">…</span>
       <!-- 宿主实际路径：弹框展示容器路径与宿主 rootfs 实址（D1 直通，宿主可直读直写），
            宿主行点击复制。容器路径不设复制——就在屏上，终端里 tab 补全更顺手。 -->
       <Popover v-if="path">
@@ -573,19 +609,6 @@ function fmtSize(n: number): string {
         <X class="size-3.5" />
       </button>
     </div>
-
-    <!-- Git 变更区块：当前目录在仓库内才渲染（组件内部对 repo:false 也整体 v-if）。
-         :key=容器 id：切容器重建（折叠态复位），path 变化组件内部自会重查。 -->
-    <FilePanelGit
-      v-if="hasTerminal && path"
-      ref="gitRef"
-      :key="targetId()"
-      :container-id="targetId()"
-      :path="path"
-      @open-change="(c) => emit('open-change', c)"
-      @open-file="(p) => emit('open-file', p)"
-      @locate-dir="openDir"
-    />
 
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
     <ContextMenu @update:open="(v: boolean) => (menuOpen = v)">
@@ -676,6 +699,18 @@ function fmtSize(n: number): string {
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+
+    <!-- Git 变更 dock（底部）：可折叠，折叠头常显分支+变更数 -->
+    <FilePanelGit
+      v-if="hasTerminal && path"
+      ref="gitRef"
+      :key="targetId()"
+      :container-id="targetId()"
+      :path="path"
+      @open-change="(c) => emit('open-change', c)"
+      @open-file="(p) => emit('open-file', p)"
+      @locate-dir="openDir"
+    />
 
     <!-- 命名弹窗（新建/重命名共用） -->
     <NameDialog

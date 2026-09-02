@@ -20,7 +20,9 @@ const emit = defineEmits<{
 
 const view = ref<GitStatusView | null>(null)
 const err = ref('') // 温和降级：灰字提示，不进面板主错误条
-const collapsed = ref(false) // 折叠态本地保存（path 变不清，切容器随 :key 重建复位）
+// 折叠态本地保存（path 变不清，切容器随 :key 重建复位）。dock 在面板底部（VSCode 源代码
+// 管理式），默认收起：变更数在折叠头徽章上仍可见，展开才占列表高度。
+const collapsed = ref(true)
 
 let gitSeq = 0
 let inFlight = false // 门闩：上一发没回来不发下一发（慢仓不排队堆积）
@@ -127,8 +129,8 @@ function onClick(c: GitChange) {
 </script>
 
 <template>
-  <!-- repo:false 时整块不渲染（v-if 在父级也判断，双保险） -->
-  <div v-if="view?.repo" class="shrink-0 border-b border-border">
+  <!-- repo:false 时整块不渲染（v-if 在父级也判断，双保险）。dock 在面板底部：border-t -->
+  <div v-if="view?.repo" class="shrink-0 border-t border-border">
     <!-- 折叠头：分支 + 变更数 -->
     <button
       class="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/50"
@@ -169,7 +171,7 @@ function onClick(c: GitChange) {
       </div>
     </div>
   </div>
-  <p v-else-if="err" class="shrink-0 border-b border-border px-2.5 py-1 text-[11px] text-muted-foreground">
+  <p v-else-if="err" class="shrink-0 border-t border-border px-2.5 py-1 text-[11px] text-muted-foreground">
     git：{{ err }}
   </p>
 </template>
