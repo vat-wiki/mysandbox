@@ -321,7 +321,32 @@ const delTarget = ref<ContainerView | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
 
 // ---- 文件面板 ----
-const showFiles = ref(false)
+// 开合与「正在编辑哪个文件」都持久化：刷新后原样恢复（终端 tab 有存档，文件侧不能比它短）。
+// 与 tabs 同款：popout 独立 key，窗口间互不读写。编辑器只存 target（容器/路径/diff 模式）；
+// line/col 是一次性的 Ctrl+点击定位，不还原。
+const FILES_OPEN_KEY =
+  props.popout && props.popoutTarget
+    ? `mysandbox:files-open-popout-${props.popoutTarget}`
+    : 'mysandbox:files-open'
+const EDITOR_KEY =
+  props.popout && props.popoutTarget
+    ? `mysandbox:editor-popout-${props.popoutTarget}`
+    : 'mysandbox:editor-target'
+function loadBool(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+const showFiles = ref(loadBool(FILES_OPEN_KEY))
+watch(showFiles, (v) => {
+  try {
+    localStorage.setItem(FILES_OPEN_KEY, v ? '1' : '0')
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+})
 // 面板宽度（像素制，拖动独立于终端 pane 的比例制 grows）。
 const filesW = ref(320)
 // 拖宽快照：dragstart 记下起始宽度与容器总宽，drag 按位移换算。
@@ -355,14 +380,45 @@ const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // 文件编辑器目标（v1 单编辑器：已有目标时轻提示换文件需先关）。
 // diff 存在 = git 变更对比模式（FileEditorDialog 走 getGitDiff 只读快照分支）。
 // line/col 来自终端 Ctrl+点击的 `:行:列` 后缀（Monaco 定位用）。
-const editorTarget = ref<{
+type EditorTarget = {
   containerId: string
   containerName: string
   path: string
   diff?: { headPath?: string }
   line?: number
   col?: number
-} | null>(null)
+}
+function loadEditorTarget(): EditorTarget | null {
+  try {
+    const raw = localStorage.getItem(EDITOR_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as Record<string, unknown>
+    if (typeof p.containerId !== 'string' || !p.containerId) return null
+    if (typeof p.path !== 'string' || !p.path.startsWith('/')) return null
+    const d = p.diff as { headPath?: unknown } | null | undefined
+    return {
+      containerId: p.containerId,
+      containerName: typeof p.containerName === 'string' ? p.containerName : p.containerId,
+      path: p.path,
+      diff: d && typeof d === 'object' && typeof d.headPath === 'string' ? { headPath: d.headPath } : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+const editorTarget = ref<EditorTarget | null>(loadEditorTarget())
+watch(editorTarget, (t) => {
+  try {
+    if (t)
+      localStorage.setItem(
+        EDITOR_KEY,
+        JSON.stringify({ containerId: t.containerId, containerName: t.containerName, path: t.path, diff: t.diff }),
+      )
+    else localStorage.removeItem(EDITOR_KEY)
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+})
 // 桌面查看目标：null 关；打开时存容器 id/显示名。
 const desktopTarget = ref<{ containerId: string; containerName: string } | null>(null)
 function openFile(cId: string, cName: string, path: string, diff?: { headPath?: string }) {
