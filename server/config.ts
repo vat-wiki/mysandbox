@@ -34,15 +34,16 @@ export const ConfigSchema = z.object({
       template: z.string().default('ms-template'),
     })
     .default({ template: 'ms-template' }),
-  // 容器 veth 挂的宿主网桥设备名（如 br-f0cc7d98dca0）。
-  network: z.string().default('dev-lan'),
+  // 容器 veth 挂的宿主网桥设备名（mysandbox 自有桥 mysandbox0，mysandbox-net.service 建）。
+  network: z.string().default('mysandbox0'),
   // docker 服务层：配套服务（数据库等）跑在 docker 里，与 LXC 容器同桥互通。
   services: z
     .object({
       enabled: z.boolean().default(true),
-      // docker 网络名（⚠️ 不是顶层 network 的桥设备名；两者经 br-<网络id前12位> 对应，
-      // services.ts 的 bridgeOk 校验这个关系）。服务必须挂现有网络——新建 docker 网络
-      // 会落到 daemon.json 的 10.201.0.0/16 池，不在 LXC 同桥。
+      // docker 网络名（⚠️ 不是顶层 network 的桥设备名）。LXC 在自有桥 mysandbox0 上，
+      // 两网段经宿主路由互通（mysandbox-docker-interop.service 放行跨桥转发）。
+      // 服务必须挂现有网络——新建 docker 网络会落到 daemon.json 的 10.201.0.0/16 池，
+      // 与 LXC 网段不通。
       network: z.string().default('dev-lan'),
       // 服务静态 IP 池（docker 动态分配从 .2 顺排，.200+ 天然隔离；占用判定见
       // services.ts allocateServiceIp——网络端点 ∪ state.services ∪ reserved）。

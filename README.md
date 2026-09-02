@@ -28,8 +28,9 @@ mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），�
 - **mysandbox 必须以 systemd user service 形态运行**（cgroup 委派；裸 shell 里 `lxc-start` 会因 cgroup 权限失败）：
   `systemctl --user enable --now mysandbox` + `loginctl enable-linger <user>`。
 - LXC 工具链：`apt install lxc uidmap lxcfs`（本仓按 LXC 5.0.x 开发）。
-- 一座宿主网桥 + 网关 IP：容器 veth 挂到 `network` 配置的桥上，网关 = `<ipPool 前缀>.1`
-  （宿主在桥上的副 IP，参考 `mysandbox-bridge-subnet.service` 的做法）。
+- 一座宿主网桥 + 网关 IP：容器 veth 挂到 `network` 配置的桥上（自有桥 `mysandbox0`，参考
+  `mysandbox-net.service`：桥 + 网关副 IP + 出网 MASQUERADE），网关 = `<ipPool 前缀>.1`。
+  与 docker 服务网段互通需 `mysandbox-docker-interop.service`（DOCKER-USER 放行）+ ufw 转发 ACCEPT。
 
 ## 功能
 
@@ -113,7 +114,7 @@ listen:
   port: 7321
 lxc:
   template: ms-template   # 新建容器 = lxc-copy 克隆它（须 STOPPED）
-network: br-f0cc7d98dca0  # 容器 veth 挂的宿主网桥设备名
+network: mysandbox0  # 容器 veth 挂的宿主网桥设备名（mysandbox-net.service 自建）
 sshSource: ""         # 宿主 ~/.ssh 源；空= 当前用户 ~/.ssh（只读进容器 /mnt/host/.ssh）
 claudeSettingsTemplate: ""  # 空=不挂载
 ipPool:

@@ -266,7 +266,33 @@ config schema 的 docker 字段（engine/docker/image/registry/imageTag/imageDir
 
 **剩余的 docker 依赖（待办，本轮刻意不做）**：
 
-- **网桥本身还是 docker 的**（dev-lan = br-f0cc7d98dca0）。重建 dev-lan → 桥名变 → 要更新 config.network
-  与 mysandbox-bridge-subnet.service。彻底解耦：用 systemd-networkd 建原生桥替代，迁移 LXC 容器 veth，
-  然后才能动 dev-lan / 卸 docker。
+- ~~**网桥本身还是 docker 的**（dev-lan = br-f0cc7d98dca0）~~ ✅ 已于 2026-09-02 解耦，见文末补记。
 - 宿主上还有 7 个 dener-* docker 容器在跑（外部工作负载），mysandbox 已不管它们。
+
+## 补记：2026-09-02 迁移到独立网桥 mysandbox0
+
+**起因**：10.88.10.0/24 从来没有自己的 MASQUERADE，容器出网一直寄生在 clash TUN 上（`ip rule 9002
+not iif lo → table 2022 → Meta` 把转发流量吸进 mihomo，gvisor 用户态栈事实充当容器网段的 NAT；DNS 靠
+`dns-hijack any:53` 兜底）。关 clash TUN → 容器出网全断，才暴露这个缺口。
+
+**新拓扑**：LXC veth 挂自有桥 `mysandbox0`（`mysandbox-net.service`：桥 + 网关副 IP 10.88.10.1 +
+`-s 10.88.10.0/24 ! -o mysandbox0 MASQUERADE`，不依赖 docker）；docker 服务留 dev-lan 自建桥；
+两网段经宿主路由互通。容器侧零变化（IP/网关/DNS 配置原样），只有 veth 换了座桥。
+
+**宿主一次性准备**：
+- `/etc/lxc/lxc-usernet`：`leon veth mysandbox0 20`（按桥名放行，旧 br-f0cc 行已删）。
+- `/etc/systemd/system/mysandbox-net.service`（替代 mysandbox-bridge-subnet.service，后者已删）。
+- `/etc/systemd/system/mysandbox-docker-interop.service`：`DOCKER-USER -i mysandbox0 -o br+ ACCEPT`
+  —— docker 的 DOCKER 链有 `! -i <桥> -o <桥> DROP`，且 DOCKER-USER/FORWARD 挂在 FORWARD 最顶端
+  （早于 ufw），跨桥进 docker 容器的新连接必须在这里放行。docker 重启不清空 DOCKER-USER。
+- ufw before.rules：`-A ufw-before-forward -i mysandbox0 -j ACCEPT`（ufw 默认 routed deny；此前靠
+  docker 的 `-i <docker桥> ACCEPT` 兜着，mysandbox0 不是 docker 桥，没有这条就全被拒）。
+- 迁移时顺带删了 raw 表两条历史手工规则（`-d 10.88.0.20x/32 ! -i br-f0cc7d98dca0 DROP`，写死旧桥名，
+  会静默吞掉跨桥访问服务 IP 的流量——排查时注意这个坑：FORWARD 各链计数为 0 但 tcpdump 只见 SYN In）。
+
+**存量容器迁移**：4 台（dev/mytest/service/ms-template）逐台 stop → config 的 `lxc.net.0.link` 改
+mysandbox0 → start（经 systemd-run 瞬态单元）。create() 本来就按 cfg.network 写新容器 link，模板迁移
+只为克隆来源一致。
+
+**行为变化**：clash TUN 开关不再影响容器出网（开着走 Meta、关着走 MASQUERADE 直连，两态都通）；
+dev-lan 重建/docker 停机不再影响 LXC 网络。

@@ -311,9 +311,9 @@ function createdAtMs(m: ContainerMeta | undefined): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
-// 配置的网桥设备名 → 存在性确认（cfg.network 必须直接给桥名，如 br-f0cc7d98dca0）。
-// 桥目前由 docker 的 dev-lan 网络拥有（重建后桥名会变，见 config 注释）——彻底脱离是待办。
-// 缓存：桥名只在配置里变，查一次 /sys/class/net 足够。
+// 配置的网桥设备名 → 存在性确认（cfg.network 直接给桥名，如 mysandbox0）。
+// 桥由 mysandbox-net.service 建（独立于 docker）。缓存：桥名只在配置里变，查一次
+// /sys/class/net 足够。
 let bridgeCache: { network: string; bridge: string | null } | null = null;
 export async function resolveBridge(cfg: Config): Promise<string | null> {
   if (bridgeCache && bridgeCache.network === cfg.network) return bridgeCache.bridge;

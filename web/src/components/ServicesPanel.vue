@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // docker 服务面板：配套服务（数据库等）的列表 / 启停 / 日志 / 删除 / 新建。
 // 服务 = mysandbox 启动的单容器 docker 服务（label 标记），固定 IP 直连、不发布端口，
-// LXC 容器经 hosts 注入按服务名访问。头部状态行展示 docker 可达性与 dev-lan 桥一致性
-// （桥名变了 = dev-lan 被重建过，需要同步 config 与网关 unit）；创建走后台任务，
+// LXC 容器经 hosts 注入按服务名访问（LXC 在自有桥 mysandbox0 上，与 dev-lan 经宿主
+// 路由互通）。头部状态行展示 docker 可达性与服务网络就绪态；创建走后台任务，
 // 表格上方任务区展示进度/日志/取消，完成通知由 lib/serviceJobs.ts 全局去重发 toast。
 import { ref, onMounted, onUnmounted } from 'vue'
 import {
@@ -256,7 +256,7 @@ function stateCls(s: ServiceView): string {
           docker {{ status.reachable ? `可达（${status.version ?? '?'}）` : '不可达' }}
           <template v-if="status.reachable">
             · 网络 {{ status.network.name }}（{{ status.network.subnet ?? '?' }}）
-            <template v-if="status.network.bridgeOk">· 桥一致</template>
+            <template v-if="status.network.bridgeOk">· 网络就绪</template>
           </template>
           · 服务池 {{ status.pool.from }}–{{ status.pool.to }}（已用 {{ status.pool.assigned.length }}）
         </p>

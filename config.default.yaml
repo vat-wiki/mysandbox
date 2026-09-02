@@ -21,18 +21,19 @@ lxc:
   template: ms-template
 
 # 容器 veth 挂的宿主网桥设备名（不是 docker 网络名）。必须是 /sys/class/net 下存在的桥。
-# 网关 = <ipPool 前缀>.1，由宿主在桥上的副 IP 提供（/etc/systemd/system/mysandbox-bridge-subnet.service）。
-# ⚠️ 桥 br-f0cc7d98dca0 目前由 docker 的 dev-lan 网络拥有：docker 里重建 dev-lan 后桥名会变，
-# 需更新此值与上述 unit。彻底脱离 docker 桥是待办（docs/lxc-migration.md P8）。
-network: br-f0cc7d98dca0
+# mysandbox 自有独立网桥 mysandbox0：由 /etc/systemd/system/mysandbox-net.service 建（含网关副 IP
+# <ipPool 前缀>.1 与网段出网 MASQUERADE），不依赖 docker——dev-lan 重建/停 docker 都不影响容器网络。
+# 与 docker 服务网段（services.network）的互通见 mysandbox-docker-interop.service（DOCKER-USER 放行）。
+network: mysandbox0
 
-# docker 服务层：配套服务（数据库等）由 mysandbox 启动并管理，挂在 dev-lan 上与 LXC 容器同桥互通。
+# docker 服务层：配套服务（数据库等）由 mysandbox 启动并管理，挂在 dev-lan 上。
 # 服务 = 单容器 + 固定 IP + 命名卷 mysandbox-svc-<名称>；不发布端口到宿主（LXC 容器按服务名直连，
 # hosts 自动注入 <ip> <服务名>）。mysandbox 只管理自己创建的服务（label 标记），不碰外部容器。
 services:
   enabled: true
-  # docker 网络名（≠ 上面 network 的桥设备名，两者经 br-<网络id前12位> 对应，面板会校验一致性）。
-  # ⚠️ 必须是现有网络：docker 新建网络会落到 10.201.0.0/16 地址池，不在 LXC 同桥。
+  # docker 网络名（≠ 上面 network 的桥设备名）。LXC 在自有桥 mysandbox0 上，两网段经宿主路由互通
+  # （mysandbox-docker-interop.service 放行跨桥转发；LXC → 服务 IP 由它保障，勿删）。
+  # ⚠️ 必须是现有网络：docker 新建网络会落到 10.201.0.0/16 地址池，与 LXC 网段不通。
   network: dev-lan
   # 服务静态 IP 池（docker 动态分配从 .2 顺排，.200+ 天然隔离）。
   ipPool:

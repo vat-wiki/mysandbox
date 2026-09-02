@@ -1,7 +1,7 @@
 // LXC IP 池：权威源 = 各容器 config 里的 lxc.net.0.ipv4.address（停机容器的 IP 也算占用）。
 // 假设 /24：前 3 段为前缀，第 4 段在 from..to 间分配。
-// 网关约定为 <前缀>.1（宿主在网桥上的副 IP，见 docs/lxc-migration.md P8 与
-// /etc/systemd/system/mysandbox-bridge-subnet.service）。
+// 网关约定为 <前缀>.1（宿主在 mysandbox0 桥上的副 IP，由
+// /etc/systemd/system/mysandbox-net.service 挂载，含网段出网 MASQUERADE）。
 import type { Config } from './config.js';
 import { lxcEngine } from './engine/index.js';
 

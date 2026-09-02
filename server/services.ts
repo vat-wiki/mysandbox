@@ -170,9 +170,9 @@ export interface ServicesStatus {
   error?: string;
   network: {
     name: string;
-    bridgeOk: boolean;
+    bridgeOk: boolean; // docker 网络存在即 true（LXC 已用独立网桥，桥一致性检查退役）
     subnet: string | null;
-    detail?: string; // bridgeOk=false 时的人话说明
+    detail?: string; // 网络不存在等异常时的人话说明
   };
   pool: { from: string; to: string; reserved: string[]; assigned: string[]; free: string[] };
   // daemon 的 registry-mirrors（docker info）。undefined = 探测失败省略；[] = 直连
@@ -259,12 +259,10 @@ export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
     return status;
   }
   status.network.subnet = net.subnet;
-  status.network.bridgeOk = net.bridge === cfg.network;
-  if (!status.network.bridgeOk) {
-    status.network.detail =
-      `网络 "${net.name}" 对应桥 ${net.bridge}，与 config.network（${cfg.network}）不一致——` +
-      'dev-lan 被重建过？需同步更新 config.network 与 mysandbox-bridge-subnet.service';
-  }
+  // LXC 自有独立网桥（cfg.network = mysandbox0）后，docker 桥与 LXC 桥天然不同——
+  // 「桥一致」检查退役，网络存在即就绪（跨桥互通由 mysandbox-docker-interop.service
+  // + ufw 放行保障，与本检查无关）。
+  status.network.bridgeOk = true;
   return status;
 }
 

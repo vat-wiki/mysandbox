@@ -96,8 +96,8 @@ export interface NetworkInfo {
   id: string;
   subnet: string | null;
   gateway: string | null;
-  // docker 用户网络桥设备名 = br-<网络id前12位>（本机 dev-lan 实测吻合）。与 cfg.network
-  // （桥设备名）的一致性校验靠它——dev-lan 被重建后桥名变，面板要能指出来。
+  // docker 用户网络桥设备名 = br-<网络id前12位>（本机 dev-lan 实测吻合）。LXC 已用独立
+  // 网桥 mysandbox0（桥一致性检查退役），此字段保留给状态展示与排障。
   bridge: string | null;
   endpoints: { name: string; ip: string }[];
 }
