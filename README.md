@@ -153,7 +153,7 @@ mysandbox base status                          # 模板在不在、STOPPED 与�
 LXC 容器用到的数据库/缓存等服务，由 mysandbox 在宿主 docker 上统一起与管理（header「服务」徽标进面板）：
 
 - **单容器服务**：预设 postgres / redis / mysql（表单只问密码等必填项）或任意自定义镜像 + env + 命令。
-- **固定 IP、不发布端口**：服务挂在与 LXC 同座的 docker 网络（默认 `dev-lan`），从服务池 `10.88.0.200–240` 分配静态 IP。容器内**按服务名直连**——mysandbox 把 `服务名 IP` 自动注入所有容器 hosts（服务增删/启停时自动追平，容器重启不丢）。
+- **固定 IP、不发布端口**：服务挂在与 LXC 互通的 docker 网络（默认 `mysandbox-lan`，桥 `br-mysandbox`），从服务池 `10.88.0.200–240` 分配静态 IP。容器内**按服务名直连**——mysandbox 把 `服务名 IP` 自动注入所有容器 hosts（服务增删/启停时自动追平，容器重启不丢）。
 - **数据持久**：每服务一个命名卷 `mysandbox-svc-<名>`；删除默认留卷（同名重建数据还在），「连数据删」需输入服务名确认。
 - **管理边界**：mysandbox 只管理自己创建的服务（docker label 标记），宿主上其他容器（如 compose 起的）永不触碰。密码等 env 值只存本地 sidecar（`0600`），API 不回传。
 - docker 不可达时面板降级提示（容器管理不受影响），`/api/health` 的 `services.available` 反映可用性。

@@ -99,7 +99,7 @@ caps 经 `/api/health` 下发，前端存在 `web/src/lib/caps.ts` 单例（默�
 ### LXC 引擎的运行环境约束（`engine/lxc.ts` 文件头有详版）
 
 - mysandbox **必须以 systemd user service 形态跑**（cgroup 委派）。`lxc-attach` 可直接 spawn（继承 cgroup），但 `lxc-start` 必须进独立瞬态单元（`systemd-run --user --unit=mysandbox-<name> ... lxc-start -n <name> -F`），否则重启 mysandbox 会连带杀掉所有容器。
-- LXC veth 挂在 **mysandbox 自有网桥 `mysandbox0`** 上（`cfg.network` 直接配桥设备名；桥由系统 unit `mysandbox-net.service` 建：桥 + 网关副 IP `<ipPool 前缀>.1` + 网段出网 MASQUERADE，**不依赖 docker**）。容器网段 10.88.10.0/24 与 docker 服务网段 10.88.0.0/24 分桥、经宿主路由互通——跨桥放行有两处：`mysandbox-docker-interop.service`（DOCKER-USER 链，docker 的 `! -i <桥>` DROP 会吞外来新连接）与 ufw before.rules 的 `-i mysandbox0 ACCEPT`（ufw 默认 routed deny）。`/etc/lxc/lxc-usernet` 按桥名放行 `leon veth mysandbox0`。历史：2026-09 前挂在 docker 的 dev-lan 桥（br-<hash>）上，见 docs/lxc-migration.md 补记。
+- LXC veth 挂在 **mysandbox 自有网桥 `mysandbox0`** 上（`cfg.network` 直接配桥设备名；桥由系统 unit `mysandbox-net.service` 建：桥 + 网关副 IP `<ipPool 前缀>.1` + 网段出网 MASQUERADE，**不依赖 docker**）。容器网段 10.88.10.0/24 与 docker 服务网段 10.88.0.0/24 分桥、经宿主路由互通——跨桥放行有**三处**：`mysandbox-docker-interop.service` 的 raw 表 ACCEPT（**docker 29 会在每次服务容器 start 时重写 `-t raw -A -d <服务IP> ! -i <桥> DROP` 隔离规则，删了会回来，必须 -I 1 恒压其上**）、同 unit 的 DOCKER-USER 链 ACCEPT、ufw before.rules 的 `-i mysandbox0 ACCEPT`（ufw 默认 routed deny）。`/etc/lxc/lxc-usernet` 按桥名放行 `leon veth mysandbox0`。历史：2026-09 前挂在 docker 的 dev-lan 桥（br-<hash>）上，见 docs/lxc-migration.md 补记。
 - 静态 IP 无 DHCP → 容器内 systemd-resolved 没有上游 DNS，模板必须写 `/etc/systemd/resolved.conf.d/mysandbox.conf`（模板脚本已做）。
 - `lxc-attach -u/-g` **只吃数字**，而调用方传的 User 混着名字（`'root'`/`'root:root'`/`'1000:1000'`）——`parseUser` 负责映射，改它时小心：早前 `Number('root')` → NaN 落回 1000，导致「以 root 写 /etc/hosts」静默变成 dev 身份、Permission denied。
 - `scripts/lxc-template.sh` 里给容器喂脚本必须走 **stdin**（`bash -s`）而非 `bash -c "<脚本>"`：systemd-run 会先展开自己的 `${VAR}` 规格符，把脚本里的 `${ARCH}` 吃成空串。
@@ -109,7 +109,7 @@ caps 经 `/api/health` 下发，前端存在 `web/src/lib/caps.ts` 单例（默�
 
 ### docker 服务层——「容器旁边的数据库们」
 
-docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在宿主 docker 上起单容器服务（postgres/redis/mysql/自定义），挂在与 LXC 互通的 docker 网络（`cfg.services.network`，默认 `dev-lan`），固定 IP + 命名卷；LXC 容器按服务名直连（hosts 自动注入，跨桥互通见上面 LXC 网络段）。**服务网络自持**：`ensureServiceNetwork` 在缺失时按服务池隐含的 /24 自动重建（status 自愈 + 创建兜底），别手工建网络——手工建会落到 docker 默认池，与 LXC 网段不通。
+docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在宿主 docker 上起单容器服务（postgres/redis/mysql/自定义），挂在与 LXC 互通的 docker 网络（`cfg.services.network`，默认 `mysandbox-lan`，桥钉 `br-mysandbox`），固定 IP + 命名卷；LXC 容器按服务名直连（hosts 自动注入，跨桥互通见上面 LXC 网络段）。**服务网络自持**：`ensureServiceNetwork` 在缺失时按服务池隐含的 /24 自动重建（status 自愈 + 创建兜底），别手工建网络——手工建会落到 docker 默认池，与 LXC 网段不通。
 
 - **模块归属**：`server/docker.ts`（docker CLI 客户端：execFile/spawn 数组参数、`--format '{{json .}}'` 解析、label 过滤、卷操作、`docker events` NDJSON 订阅）+ `server/services.ts`（预设/编排/路由，对标 `base.ts`）+ `server/jobs.ts`（服务创建的后台任务注册表）。**不经过 engine 抽象**——`Engine` 接口是容器生命周期形状，服务是另一种生命周期；上面「业务层只 import engine/index.js」的约定限于容器引擎。
 - **创建是后台任务**（不是 SSE）：`POST /api/services` 快校验（`prepareServiceCreate`：校验/查重/IP 分配，失败回 4xx 内联显示）+ **同步预占名称与 IP**（`serviceNameExists` 查不到「还没建容器」的进行中任务，不锁名会双双通过查重）→ 立即返回 `{jobId}`；拉镜像/建容器在 `jobs.ts` 的进程内任务里跑（`runServiceCreate`）。任务 = 内存 Map + 环形日志（400 行）+ 终态保留 20 个，**刻意不持久化**（进程重启即丢，daemon 层缓存让重试近乎免费）。路由：`GET /api/services/jobs?tail=`（tail=0 极小 payload，侧栏轮询用）、`GET .../jobs/:id`（全量日志）、`POST .../jobs/:id/cancel`。**取消只对 pull 阶段生效**（`cancellable` 标志；docker create/start 是 execFile 杀不掉，其余阶段 409）。jobs.ts 不运行时 import services.ts（编排以 thunk 传入，防循环依赖）。
@@ -151,5 +151,5 @@ docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在
 
 - LXC 引擎需 `/etc/subuid`/`subgid` 有 `leon:100000:65536`、且 mysandbox 以 systemd user service 跑（linger 开着）。
 - LXC 版本是 apt 的 **5.0.3**（刻意不用源码编译的 7.0）。容器落 `~/.local/share/lxc/<name>/`。
-- docker 服务层需 leon 在 `docker` 组（免 sudo 走 CLI）+ 已存在的 docker 网络 `dev-lan`（新网络从 10.201.0.0/16 段划，与 LXC 网段不通，服务必须挂这座桥）。group 成员资格在 systemd user manager 启动时快照——后加组要 `systemctl --user daemon-restart`。
+- docker 服务层需 leon 在 `docker` 组（免 sudo 走 CLI）+ docker 服务网络 `mysandbox-lan`（自持：缺失按服务池网段自动重建，见 docker 服务层段；手工建会落到 docker 默认池与 LXC 网段不通）。group 成员资格在 systemd user manager 启动时快照——后加组要 `systemctl --user daemon-restart`。
 - 容器 zsh 是 oh-my-zsh 基座（`/usr/share/oh-my-zsh`，模板脚本 clone 后须 `chmod g-w,o-w`——compaudit 拒 group/other 可写目录）：history/menu select 补全/ls 颜色/git 别名（`gst`/`gd`/`glo`；注意 `gl` 是 git pull）omz 自带，`scripts/zshrc` 只补 omz 没有的（`ll`/`la`、两个 apt 插件：autosuggestions + syntax-highlighting，**omz 不含这两个**）。老容器 `~/.zshrc` 是首启 seed 的持久化副本不会被覆盖——换新配置要手工从 `/etc/skel-home/.zshrc` 重拷。

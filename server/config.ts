@@ -43,7 +43,7 @@ export const ConfigSchema = z.object({
       // docker 网络名（⚠️ 不是顶层 network 的桥设备名）。LXC 在自有桥 mysandbox0 上，
       // 两网段经宿主路由互通（mysandbox-docker-interop.service 放行跨桥转发）。
       // 网络自持：缺失时按服务池隐含的 /24 自动创建（services.ts ensureServiceNetwork）。
-      network: z.string().default('dev-lan'),
+      network: z.string().default('mysandbox-lan'),
       // 服务静态 IP 池（docker 动态分配从 .2 顺排，.200+ 天然隔离；占用判定见
       // services.ts allocateServiceIp——网络端点 ∪ state.services ∪ reserved）。
       ipPool: z
@@ -57,7 +57,7 @@ export const ConfigSchema = z.object({
       // 5 分钟无输出看门狗先拦下（见 docker.ts pullImageStream 的 idleMs）。
       pullTimeoutMs: z.number().int().default(1_800_000),
     })
-    .default({ enabled: true, network: 'dev-lan', ipPool: { from: '10.88.0.200', to: '10.88.0.240', reserved: [] }, pullTimeoutMs: 1_800_000 }),
+    .default({ enabled: true, network: 'mysandbox-lan', ipPool: { from: '10.88.0.200', to: '10.88.0.240', reserved: [] }, pullTimeoutMs: 1_800_000 }),
   sshSource: z.string(),
   claudeSettingsTemplate: z.string().default(''),
   ipPool: z.object({

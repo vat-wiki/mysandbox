@@ -1,6 +1,6 @@
 // docker 服务层：配套服务（数据库等）的预设、编排与路由。
 //
-// 形态（v1，刻意收窄）：一服务 = 单容器 + 固定 IP（dev-lan 上 --ip）+ 命名卷
+// 形态（v1，刻意收窄）：一服务 = 单容器 + 固定 IP（mysandbox-lan 上 --ip）+ 命名卷
 // mysandbox-svc-<name>；不发布端口到宿主——与 LXC 容器同语义（固定 IP 直连、无 NAT），
 // LXC 容器里 `psql -h <服务名>` 的通路靠 hosts 注入（hosts-sync 组合 listServiceEndpoints）。
 // 管理边界结构性隔离：一切操作带 SERVICE_FILTER（label mysandbox.kind=service），
@@ -244,9 +244,19 @@ async function cachedRegistryMirrors(): Promise<string[] | null> {
 
 export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
   const docker = await dockerStatus();
-  // 网络自持：dev-lan 属于服务层基础设施，缺失（被 prune / 手工删）就按服务池网段
-  // 重建——面板每 3–15s 轮询一次 status，自愈周期即一个轮询间隔。
-  const net = docker.reachable ? await ensureServiceNetwork(cfg) : null;
+  // 网络自持：mysandbox-lan 属于服务层基础设施，缺失（被 prune / 手工删）就按服务池网段
+  // 重建——面板每 3–15s 轮询一次 status，自愈周期即一个轮询间隔。创建失败（daemon 瞬时
+  // 忙等）不炸 status——降级为 detail 提示，下一轮轮询自然重试。
+  let net: NetworkInfo | null = null;
+  let ensureError: string | null = null;
+  if (docker.reachable) {
+    try {
+      net = await ensureServiceNetwork(cfg);
+    } catch (e) {
+      ensureError = (e as Error).message;
+      log.warn({ err: ensureError }, 'ensureServiceNetwork failed');
+    }
+  }
   const poolView = await servicePoolView(cfg);
   const status: ServicesStatus = {
     enabled: cfg.services.enabled,
@@ -256,6 +266,10 @@ export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
     network: { name: cfg.services.network, bridgeOk: !!net, subnet: net?.subnet ?? null },
     pool: poolView,
   };
+  if (ensureError) {
+    status.network.detail = `服务网络自动创建失败：${ensureError}`;
+    return status;
+  }
   if (!net) return status;
   status.registryMirrors = (await cachedRegistryMirrors()) ?? undefined;
   // 子网体检：网络存在但子网与服务池隐含的 /24 不符（如被手工重建到 docker 默认池）
@@ -269,14 +283,17 @@ export async function servicesStatus(cfg: Config): Promise<ServicesStatus> {
   return status;
 }
 
-// 服务网络自持：存在即返回；缺失则按服务池隐含的 /24 建出来（网关 = 前缀.1）。
-// docker 桥设备名交给 docker（见 docker.ts createNetwork 注释）。
+// 服务网络自持：存在即返回；缺失则按服务池隐含的 /24 建出来（网关 = 前缀.1），并钉桥
+// 设备名 br-<网络名首段>（mysandbox-lan → br-mysandbox：Linux 网卡名 ≤15 字符，网络名
+// 全量进 br- 前缀会超长；-lan 等语义后缀不进桥名）。br- 前缀保持在 DOCKER-USER 的
+// br+ 通配范围内（mysandbox-docker-interop.service）。
 export async function ensureServiceNetwork(cfg: Config): Promise<NetworkInfo | null> {
   const existing = await inspectNetwork(cfg.services.network);
   if (existing) return existing;
   const prefix = cfg.services.ipPool.from.split('.').slice(0, 3).join('.');
-  await createNetwork(cfg.services.network, `${prefix}.0/24`, `${prefix}.1`);
-  log.info({ network: cfg.services.network, subnet: `${prefix}.0/24` }, 'service network auto-created');
+  const bridge = `br-${cfg.services.network.split('-')[0]}`;
+  await createNetwork(cfg.services.network, `${prefix}.0/24`, `${prefix}.1`, bridge);
+  log.info({ network: cfg.services.network, subnet: `${prefix}.0/24`, bridge }, 'service network auto-created');
   return inspectNetwork(cfg.services.network);
 }
 

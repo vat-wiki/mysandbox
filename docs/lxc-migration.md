@@ -294,6 +294,18 @@ not iif lo → table 2022 → Meta` 把转发流量吸进 mihomo，gvisor 用户
 mysandbox0 → start（经 systemd-run 瞬态单元）。create() 本来就按 cfg.network 写新容器 link，模板迁移
 只为克隆来源一致。
 
+**2026-09-02 追记**：服务网络 dev-lan 更名 **mysandbox-lan**（桥设备钉名 `br-mysandbox`——
+Linux 网卡名 ≤15 字符，`br-` 前缀保持在 DOCKER-USER 的 `br+` 通配范围内；`br-<网络名首段>`
+是 createNetwork 的推导规则）。存量 pg/pg2 停机重建迁移（数据在命名卷，同 IP 重连；容器
+HostConfig.NetworkMode 指旧网名，connect 改不了，只能 rm + create）。**docker 29 隔离加固**
+：dockerd 在每次服务容器 start 时重写 `-t raw -A PREROUTING -d <服务IP> ! -i <桥> -j DROP`
+（bpftrace 实证 ppid=dockerd），跨桥访问会被静默吞（症状：FORWARD 各链计数 0、tcpdump 只见
+SYN In）——`mysandbox-docker-interop.service` 的 raw `-I 1 ACCEPT` 恒压其上。另：rootfs 内
+ping 的 file capability（cap_net_raw）在 unprivileged 制作链路里丢失，存量容器与模板已用
+lxc-attach/lxc-usernsexec 补齐（lxc-template.sh 若重做模板需在容器内 `setcap cap_net_raw+ep
+/usr/bin/ping`）。
+
 **行为变化**：clash TUN 开关不再影响容器出网（开着走 Meta、关着走 MASQUERADE 直连，两态都通）；
-dev-lan 重建/docker 停机不再影响 LXC 网络。服务网络 dev-lan 也转为 mysandbox 自持（`ensureServiceNetwork`
-缺失自动按服务池网段重建），与 LXC 桥配套，网络拓扑整体不再有任何「外部必须先建好」的依赖。
+dev-lan 重建/docker 停机不再影响 LXC 网络。服务网络 mysandbox-lan 也转为 mysandbox 自持
+（`ensureServiceNetwork` 缺失自动按服务池网段重建，钉桥名 + managed-by label），与 LXC 桥配套，
+网络拓扑整体不再有任何「外部必须先建好」的依赖。

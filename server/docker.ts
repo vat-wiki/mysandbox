@@ -92,12 +92,24 @@ export async function dockerStatus(): Promise<{ reachable: boolean; version?: st
 
 // —— 网络 ——
 
-// 创建用户网络（bridge，指定子网/网关）。调用方保证幂等（先 inspectNetwork，缺失才建）。
-// 不钉桥设备名（com.docker.network.bridge.name）：桥是 docker 的实现细节，mysandbox
-// 不引用桥名（DOCKER-USER 放行用 br+ 通配），钉名反而会掉出通配范围。
-export async function createNetwork(name: string, subnet: string, gateway: string): Promise<void> {
+// 创建用户网络（bridge，指定子网/网关，钉桥设备名 + managed-by label——mysandbox 自有资产）。
+// 调用方保证幂等（先 inspectNetwork，缺失才建）。桥名以 br- 开头是有意的：DOCKER-USER
+// 放行用 br+ 通配，钉名不得掉出通配范围；桥名由调用方按「br-<网络名首段>」推导
+// （Linux 网卡名 ≤15 字符，网络名带 -lan 后缀会超长）。
+export async function createNetwork(
+  name: string,
+  subnet: string,
+  gateway: string,
+  bridge: string,
+): Promise<void> {
   const r = await dockerExec(
-    ['network', 'create', '--driver', 'bridge', '--subnet', subnet, '--gateway', gateway, name],
+    [
+      'network', 'create', '--driver', 'bridge',
+      '--subnet', subnet, '--gateway', gateway,
+      '--label', `${MANAGED_LABEL}=mysandbox`,
+      '--opt', `com.docker.network.bridge.name=${bridge}`,
+      name,
+    ],
     15_000,
   );
   if (!r.ok) throw new Error(`docker network create failed: ${r.stderr.trim() || r.stdout.trim()}`);
@@ -108,8 +120,9 @@ export interface NetworkInfo {
   id: string;
   subnet: string | null;
   gateway: string | null;
-  // docker 用户网络桥设备名 = br-<网络id前12位>（本机 dev-lan 实测吻合）。LXC 已用独立
-  // 网桥 mysandbox0（桥一致性检查退役），此字段保留给状态展示与排障。
+  // docker 用户网络桥设备名：mysandbox 建的网络钉名 br-<网络名首段>（mysandbox-lan →
+  // br-mysandbox，见 services.ts ensureServiceNetwork）；外部网络则是 br-<网络id前12位>。
+  // 此字段用于状态展示与排障（桥一致性检查已随 LXC 独立网桥退役）。
   bridge: string | null;
   endpoints: { name: string; ip: string }[];
 }
