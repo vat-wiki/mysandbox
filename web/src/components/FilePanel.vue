@@ -11,6 +11,7 @@ import {
   deleteEntry,
   downloadEntry,
   Unauthorized,
+  HOST_ID,
   type FileEntry,
   type FilesView,
 } from '@/lib/api'
@@ -32,6 +33,7 @@ import {
 import NameDialog from '@/components/NameDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { GitChange } from '@/lib/api'
 import {
   Folder,
@@ -46,6 +48,8 @@ import {
   Trash2,
   Download,
   Search,
+  HardDrive,
+  Copy,
   MoreHorizontal,
 } from 'lucide-vue-next'
 
@@ -69,6 +73,8 @@ const emit = defineEmits<{
 const follow = ref(true)
 const manualContainerId = ref(props.containerId)
 const path = ref('')
+// 当前目录对应的宿主机实际路径（listFiles 随视图返回；宿主面板 = path 本身）。
+const hostPath = ref<string | null>(null)
 const entries = ref<FileEntry[]>([])
 const loading = ref(false)
 const err = ref('')
@@ -82,6 +88,42 @@ const pathInputEl = ref<HTMLInputElement | null>(null)
 // 有效目标容器：follow 用 props（active group），手动时冻结。
 function targetId(): string {
   return follow.value ? props.containerId : manualContainerId.value
+}
+// 宿主面板（HOST_ID 哨兵）：路径本来就是宿主路径，弹框里不重复展示容器路径行。
+const isHost = computed(() => targetId() === HOST_ID)
+
+// —— 宿主路径复制 ——
+// navigator.clipboard 不可用（http 局域网访问）时走 execCommand 兜底，必须同步在
+// 用户手势栈里调（与 Terminal.vue / ContainerList.vue 同一手法的第三次落点，体量小不抽公共）。
+function copyHostPath() {
+  const s = hostPath.value
+  if (!s) return
+  const legacy = () => {
+    const ta = document.createElement('textarea')
+    ta.value = s
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+    ta.setAttribute('readonly', '')
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    }
+    ta.remove()
+    return ok
+  }
+  const done = (ok: boolean) =>
+    ok ? toast('已复制宿主路径') : toast.error('复制失败：剪贴板不可用')
+  if (navigator.clipboard) {
+    navigator.clipboard
+      .writeText(s)
+      .then(() => done(true))
+      .catch(() => done(legacy()))
+  } else {
+    done(legacy())
+  }
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -105,6 +147,7 @@ async function loadDir(p: string, opts: { silent?: boolean } = {}) {
     const v = await listFiles(targetId(), p)
     if (seq !== loadSeq) return // 过期响应
     path.value = v.path
+    hostPath.value = v.hostPath ?? null
     const sig = sigOf(v)
     if (!opts.silent || sig !== lastSig) {
       entries.value = v.entries
@@ -197,6 +240,7 @@ async function openLink(p: string) {
     const v = await listFiles(props.containerId, p)
     if (seq !== loadSeq) return
     path.value = v.path
+    hostPath.value = v.hostPath ?? null
     entries.value = v.entries
     lastSig = sigOf(v)
     err.value = ''
@@ -481,6 +525,34 @@ function fmtSize(n: number): string {
       >
         {{ path || '…' }}
       </button>
+      <!-- 宿主实际路径：弹框展示容器路径与宿主 rootfs 实址（D1 直通，宿主可直读直写），
+           宿主行点击复制。容器路径不设复制——就在屏上，终端里 tab 补全更顺手。 -->
+      <Popover v-if="path">
+        <PopoverTrigger as-child>
+          <Button variant="ghost" size="icon-xs" class="shrink-0" title="宿主机实际路径">
+            <HardDrive />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" class="w-80">
+          <div v-if="!isHost" class="mb-2">
+            <p class="mb-0.5 text-[10px] text-muted-foreground">容器内路径</p>
+            <p class="break-all font-mono text-[11px]">{{ path }}</p>
+          </div>
+          <button
+            class="block w-full text-left"
+            title="点击复制宿主路径"
+            @click="copyHostPath"
+          >
+            <p class="mb-0.5 text-[10px] text-muted-foreground">
+              {{ isHost ? '宿主机路径（点击复制）' : '宿主机实际路径（点击复制）' }}
+            </p>
+            <p class="flex items-start gap-1.5 break-all font-mono text-[11px] text-foreground hover:text-primary">
+              <span class="min-w-0">{{ hostPath || '（无法映射）' }}</span>
+              <Copy v-if="hostPath" class="mt-0.5 size-3 shrink-0 opacity-60" />
+            </p>
+          </button>
+        </PopoverContent>
+      </Popover>
     </div>
 
     <!-- 名称搜索：命中相关度前排 + 高亮，未命中垫后不滤掉；Esc/✕ 清空 -->

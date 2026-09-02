@@ -7,7 +7,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Readable } from 'node:stream';
 import type { Config } from './config.js';
-import { execRun, execFeed, execSpawn } from './engine/index.js';
+import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE, sessionName } from './terminal.js';
@@ -33,6 +33,9 @@ export interface FilesView {
   path: string;
   parent: string | null;
   entries: FileEntry[];
+  // 该目录在宿主机上的实际路径。容器 = rootfs 前缀直拼（D1 uid 直通，宿主可直读直写）；
+  // 引擎无法映射（理论上不发生）为 null。宿主面板 = path 本身（hostFiles 回同样语义）。
+  hostPath: string | null;
 }
 export interface FileView {
   path: string;
@@ -170,7 +173,8 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
       if (a.type !== 'dir' && b.type === 'dir') return 1;
       return a.name.localeCompare(b.name);
     });
-    return { path, parent: parentOf(path), entries };
+    const rootfs = rootfsPath(cfg, r.id);
+    return { path, parent: parentOf(path), entries, hostPath: rootfs ? rootfs + path : null };
   });
 
   // —— 读文件 ——

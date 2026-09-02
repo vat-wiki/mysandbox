@@ -108,7 +108,7 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     entries.sort((a, b) =>
       a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1,
     );
-    return { path, parent: parentOf(path), entries };
+    return { path, parent: parentOf(path), entries, hostPath: path };
   });
 
   // —— 读文件 ——

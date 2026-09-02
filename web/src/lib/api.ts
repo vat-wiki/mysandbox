@@ -461,6 +461,8 @@ export interface FilesView {
   path: string
   parent: string | null
   entries: FileEntry[]
+  // 目录对应的宿主机实际路径（容器 = rootfs 前缀直拼；宿主面板 = path 本身）。
+  hostPath?: string | null
 }
 export interface FileView {
   path: string
