@@ -9,9 +9,12 @@ import {
   createEntry,
   renameEntry,
   deleteEntry,
+  downloadEntry,
   Unauthorized,
   type FileEntry,
+  type FilesView,
 } from '@/lib/api'
+import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -41,6 +44,7 @@ import {
   FilePlus,
   FolderPlus,
   Trash2,
+  Download,
   MoreHorizontal,
 } from 'lucide-vue-next'
 
@@ -81,54 +85,76 @@ function targetId(): string {
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let loadSeq = 0 // 竞态防护：慢响应回来时已被新请求取代则丢弃
+// 最近一次列表签名（path + 全部条目）。静默轮询据此判断「有没有变化」——没变化不赋值，
+// keyed v-for 零 DOM 变更，滚动条位置与行悬停状态都不受打扰；有变化也只 patch 增删行，
+// 滚动容器 DOM 节点不重建，scrollTop 原样保留。
+let lastSig = ''
+function sigOf(v: FilesView): string {
+  return (
+    v.path +
+    '\n' +
+    v.entries.map((e) => `${e.type}\u0000${e.name}\u0000${e.size}\u0000${e.mtime}`).join('\u0001')
+  )
+}
 
-async function loadDir(p: string) {
+async function loadDir(p: string, opts: { silent?: boolean } = {}) {
   const seq = ++loadSeq
-  loading.value = true
+  if (!opts.silent) loading.value = true
   try {
     const v = await listFiles(targetId(), p)
     if (seq !== loadSeq) return // 过期响应
     path.value = v.path
-    entries.value = v.entries
-    err.value = ''
+    const sig = sigOf(v)
+    if (!opts.silent || sig !== lastSig) {
+      entries.value = v.entries
+      lastSig = sig
+    }
+    if (!opts.silent) err.value = ''
   } catch (e) {
     if (seq !== loadSeq) return
     if (e instanceof Unauthorized) {
       emit('close')
       return
     }
-    err.value = e instanceof Error ? e.message : String(e)
+    // 静默轮询失败不吭声（多半瞬时：容器重启中/exec 超时），列表保持原样下轮再试；
+    // 主动操作/导航的失败照常进错误条。
+    if (!opts.silent) err.value = e instanceof Error ? e.message : String(e)
   } finally {
-    if (seq === loadSeq) loading.value = false
+    if (seq === loadSeq && !opts.silent) loading.value = false
   }
 }
 
-// cwd 轮询：3s 一次；cwd 变化且处于跟随态 -> 更新列表。会话不存在（404 等）温和提示。
-// 面板用 v-if 挂载，关闭即卸载、onUnmounted 清 timer，不空转。
-// 右键菜单/操作弹窗开着时跳过：换目录会让 ctxEntry 指向已不存在的条目对象、
+// 轮询（3s）两层职责：
+// 1) 跟随态查终端 cwd，变了就跳目录（loadDir 负责拉新列表）；
+// 2) 当前目录内容静默重查：容器内进程/他人新建文件不用手点刷新即出现（签名不变则零
+//    DOM 变更）。面板用 v-if 挂载，关闭即卸载、onUnmounted 清 timer，不空转。
+// 右键菜单/操作弹窗开着时整体跳过：列表被换会让 ctxEntry 指向已不存在的条目对象、
 // 菜单打开瞬间列表被替换（用户正对着菜单里的「重命名」列表却变了）。
-async function pollCwd() {
-  if (!props.termId || !props.containerId) return
+async function tick() {
   if (menuOpen.value || nameDialog.value || delTarget.value) return
-  try {
-    const r = await getTermCwd(props.containerId, props.termId)
-    noSession.value = false
-    if (follow.value && r.cwd !== path.value) {
-      loadDir(r.cwd)
+  if (follow.value && props.termId && props.containerId) {
+    try {
+      const r = await getTermCwd(props.containerId, props.termId)
+      noSession.value = false
+      if (r.cwd !== path.value) {
+        void loadDir(r.cwd)
+        return // 新目录的列表由这次 loadDir 拉，不必再重查一遍
+      }
+    } catch (e) {
+      if (e instanceof Unauthorized) {
+        emit('close')
+        return
+      }
+      // 终端会话还没建好/容器重启中：温和提示，继续轮询等它回来
+      noSession.value = true
     }
-  } catch (e) {
-    if (e instanceof Unauthorized) {
-      emit('close')
-      return
-    }
-    // 终端会话还没建好/容器重启中：温和提示，继续轮询等它回来
-    noSession.value = true
   }
+  if (path.value) void loadDir(path.value, { silent: true })
 }
 
 onMounted(() => {
-  pollCwd() // 立即一次（首帧就有内容）
-  pollTimer = setInterval(pollCwd, 3000)
+  tick() // 立即一次（首帧就有内容）
+  pollTimer = setInterval(tick, 3000)
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
@@ -141,13 +167,14 @@ watch(
   () => {
     follow.value = true
     entries.value = []
-    pollCwd()
+    lastSig = '' // 防止旧签名恰好压住新容器的首拉
+    tick()
   },
 )
 watch(
   () => props.termId,
   () => {
-    if (follow.value) pollCwd()
+    if (follow.value) tick()
   },
 )
 
@@ -169,6 +196,7 @@ async function openLink(p: string) {
     if (seq !== loadSeq) return
     path.value = v.path
     entries.value = v.entries
+    lastSig = sigOf(v)
     err.value = ''
   } catch {
     emit('open-file', p)
@@ -199,14 +227,13 @@ function commitPath() {
 function resumeFollow() {
   follow.value = true
   noSession.value = false
-  pollCwd()
+  tick()
 }
 function refresh() {
-  // 有路径就强刷当前目录列表。不能在跟随态走 pollCwd——它只在「cwd 变了」时才
-  // loadDir，cwd 没变时是空转：右键新建/保存后的刷新、手点刷新按钮全都无效，
-  // 表现为「新建了文件列表不变，要退上级再进来才看到」。
+  // 有路径就强刷当前目录列表。不能在跟随态走 tick 的静默路径等下一轮——右键新建/保存后的
+  // 刷新要立刻可见，所以直接 loadDir 非静默强拉；path 还没定位出来（跟随态空路径）交给 tick。
   if (path.value) loadDir(path.value)
-  else pollCwd()
+  else tick()
   gitRef.value?.refresh()
 }
 
@@ -225,7 +252,7 @@ const gitRef = ref<InstanceType<typeof FilePanelGit> | null>(null)
 // 右键命中的条目（null = 空白处，新建作用于当前目录）。事件委托：trigger 容器上监听
 // contextmenu，按 data-entry 找行——不用嵌套 trigger，也不 .stop（会阻断 reka 监听）。
 const ctxEntry = ref<FileEntry | null>(null)
-// 菜单开合状态（reka update:open）：开=true 期间轮询暂停（见 pollCwd），条目快照不被换掉。
+// 菜单开合状态（reka update:open）：开=true 期间轮询暂停（见 tick），条目快照不被换掉。
 const menuOpen = ref(false)
 function onCtxMenu(ev: MouseEvent) {
   const el = (ev.target as HTMLElement).closest('[data-entry]')
@@ -243,6 +270,20 @@ const opBusy = ref(false)
 // 当前目录下拼完整路径（与 openEntry 同款）。
 function joinPath(name: string): string {
   return path.value === '/' ? `/${name}` : `${path.value}/${name}`
+}
+// 下载（文件或目录）：目录走服务端 tar.gz。浏览器磁盘兜底 Blob，大文件也稳。
+const dlBusy = ref(false)
+async function download(e: FileEntry) {
+  if (dlBusy.value) return
+  dlBusy.value = true
+  toast(`开始下载 ${e.name}${e.type === 'dir' ? '（tar.gz）' : ''}`)
+  try {
+    await downloadEntry(targetId(), joinPath(e.name), e.name, e.type === 'dir')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    dlBusy.value = false
+  }
 }
 async function confirmName(name: string) {
   const d = nameDialog.value
@@ -449,6 +490,9 @@ function fmtSize(n: number): string {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuItem @click="download(e)">
+                    <Download /> 下载
+                  </DropdownMenuItem>
                   <DropdownMenuItem @click="onRowMenu(e); nameDialog = { mode: 'rename' }">
                     <PenLine /> 重命名
                   </DropdownMenuItem>
@@ -463,6 +507,9 @@ function fmtSize(n: number): string {
       </ContextMenuTrigger>
       <ContextMenuContent>
         <template v-if="ctxEntry">
+          <ContextMenuItem @click="download(ctxEntry)">
+            <Download /> 下载
+          </ContextMenuItem>
           <ContextMenuItem @click="nameDialog = { mode: 'rename' }">
             <PenLine /> 重命名
           </ContextMenuItem>

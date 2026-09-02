@@ -67,6 +67,17 @@ export interface ExecStream {
   resize(cols: number, rows: number): Promise<void>;
 }
 
+// —— 二进制安全的流式 exec（files.ts 下载路由：cat/tar stdout 直通 HTTP 回复）——
+// 刻意不复用 ExecStream：那条链路经 script(1) 开 PTY，\n→\r\n 改写会毁二进制流；
+// 也不复用 execRun：整包收 utf8 字符串，大文件既慢又会因解码损坏内容。
+// stdout 保持原始字节流；stderr 聚成字符串（错误归因用）。done 在进程收尾时 resolve，
+// exitCode -1 = spawn 失败/被 kill。
+export interface ExecSpawnHandle {
+  stdout: Readable;
+  done: Promise<{ exitCode: number; stderr: string }>;
+  kill(): void; // 客户端断开等场景终止子进程
+}
+
 // —— 事件订阅（hosts-sync）：容器 start/restart 通知 ——
 export interface EngineEvent {
   containerId: string;
@@ -197,6 +208,9 @@ export interface Engine {
     input: Buffer,
   ): Promise<ExecResult>;
   execStream(cfg: import('../config.js').Config, id: string, opts: ExecOpts): Promise<ExecStream>;
+  // 二进制流式 exec（下载等大输出场景，见 ExecSpawnHandle 注释）。opts.timeoutMs 不生效——
+  // 流式生命周期由消费方管理（客户端断开时 kill()）。
+  execSpawn(cfg: import('../config.js').Config, id: string, opts: ExecOpts): ExecSpawnHandle;
 
   // 网络与事件
   assignedIps(cfg: import('../config.js').Config): Promise<Set<string>>;

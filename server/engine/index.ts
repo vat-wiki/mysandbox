@@ -80,6 +80,10 @@ export async function readTemplateHosts(cfg: Config): Promise<string | null> {
 export async function execStream(cfg: Config, id: string, opts: import('./types.js').ExecOpts) {
   return getEngine(cfg).execStream(cfg, id, opts);
 }
+// files.ts 的二进制流式 exec（下载路由）。
+export function execSpawn(cfg: Config, id: string, opts: import('./types.js').ExecOpts) {
+  return getEngine(cfg).execSpawn(cfg, id, opts);
+}
 // hosts-sync.ts 的事件订阅（lxc-monitor）。
 export async function subscribeEvents(
   cfg: Config,

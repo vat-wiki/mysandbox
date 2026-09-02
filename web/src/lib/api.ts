@@ -497,6 +497,30 @@ export const renameEntry = (id: string, path: string, name: string) =>
   postJson(`${filesBase(id)}/fs/rename`, { path, name }) as Promise<{ ok: true; to: string }>
 export const deleteEntry = (id: string, path: string) =>
   postJson(`${filesBase(id)}/fs/delete`, { path }) as Promise<{ ok: true }>
+// 下载（文件/目录）：fetch + Blob 中转而非 <a href="?token="> 裸导航——token 不落 URL/
+// 浏览器历史，401/4xx 能解析 JSON 走统一报错（裸导航会把错误 JSON 直接存成文件）。
+// Blob 由浏览器磁盘后端兜内存，大文件无压力；目录是服务端现打的 tar.gz 流。
+// 不走 api()：那条路径有 10s 超时，掐死大下载。
+export async function downloadEntry(id: string, path: string, name: string, isDir: boolean): Promise<void> {
+  const res = await fetch(`${filesBase(id)}/download?path=${encodeURIComponent(path)}`, {
+    headers: { 'x-sandbox-token': getToken() ?? '' },
+  })
+  if (res.status === 401) throw new Unauthorized()
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new ApiError(body?.error?.message || res.statusText, res.status, body?.error?.code || 'error')
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = isDir ? `${name}.tar.gz` : name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  // 保存流程还要读 URL 指向的 Blob，点完立即 revoke 在部分浏览器会断下载；延时回收。
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
 export const getListenPorts = (id: string) =>
   // ports：全部监听端口；web：其中实测返回 HTML 的（真网页，可放心点击打开）
   api(`/api/containers/${id}/listen`) as Promise<{ ports: number[]; web: number[] }>

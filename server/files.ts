@@ -5,8 +5,9 @@
 // 安全边界：容器即沙箱（终端 exec 本就任意命令），故不做 .. 防护；路径校验只保证
 // 「绝对路径、无 \0、长度合理」让 exec 不被怪输入玩坏。
 import type { FastifyInstance } from 'fastify';
+import type { Readable } from 'node:stream';
 import type { Config } from './config.js';
-import { execRun, execFeed } from './engine/index.js';
+import { execRun, execFeed, execSpawn } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE, sessionName } from './terminal.js';
@@ -71,6 +72,48 @@ export function classifyContent(buf: Buffer): { binary: boolean; content?: strin
   } catch {
     return { binary: true };
   }
+}
+
+// Content-Disposition：ASCII 兜底 filename（引号/反斜杠与非 ASCII 一律打码，防头注入/坏头）+
+// RFC 5987 filename*（原样 UTF-8 名，现代浏览器优先用它）。hostFiles.ts 复用。
+export function contentDisposition(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+// 下载流的「首块数据就绪」与「进程收尾」竞速。进程先退 = 一个字节都没产出（如 tar 对
+// 整体不可读的目录秒退），此时还能干净回 4xx/5xx，不让浏览器落一个空文件；数据先到 =
+// 流已开跑，之后 tar 对个别不可读条目的报错只能随流终止（浏览器拿到截断包，与「边下
+// 边打包」的现实一致）。返回 null = 调用方直接发流；否则拿到收尾结果自行映射错误。
+// stdout 会被 pause（防 send 挂管前数据流失），fastify 接管后 pipe 自动恢复流动。
+// hostFiles.ts 复用（宿主侧 tar 下载同款语义）。
+export async function streamProbe(
+  stdout: Readable,
+  done: Promise<{ exitCode: number; stderr: string }>,
+): Promise<{ exitCode: number; stderr: string } | null> {
+  stdout.pause();
+  let settled = false;
+  const gotData = new Promise<null>((resolve) => {
+    const onData = () => {
+      // readableLength 0 的 'readable' 是 EOF 时的空唤醒（如 cat 空文件），不算数据——
+      // 让 done 定夺：exit 0 = 合法空输出照发；非 0 = 干净报错。
+      if (stdout.readableLength > 0 && !settled) {
+        settled = true;
+        stdout.off('readable', onData);
+        resolve(null);
+      }
+    };
+    stdout.on('readable', onData);
+    // 迟到的流错误（对端断开等）不吞会崩进程；按无数据处理让 done 收场。
+    stdout.on('error', () => {
+      if (!settled) {
+        settled = true;
+        stdout.off('readable', onData);
+        resolve(null);
+      }
+    });
+  });
+  return Promise.race([done, gotData]);
 }
 
 // 每条路由统一前置：受管理容器 + 运行中（exec 只对 running 容器有意义）。
@@ -162,6 +205,59 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const buf = Buffer.from(lines.slice(1).join('\n'), 'base64');
     const { binary, content } = classifyContent(buf);
     return { path, name, size, mtime, binary, ...(binary ? {} : { content }) };
+  });
+
+  // —— 下载（文件/目录，流式）——
+  // 文件 = cat 直通；目录 = tar -C 父目录 -czf -（名字不含 /，无路径注入面）。经 execSpawn
+  // 二进制流直通 HTTP（execStream 经 script 的 PTY 会 \n→\r\n 毁流，不可用；execRun 整包
+  // 收 utf8 字符串大文件既慢又坏内容）。探测（stat）与产出之间有竞态窗口（文件刚被删）：
+  // 首块数据前的非 0 退出经 streamProbe 干净回 4xx/5xx；已发流后的 tar 局部报错随流终止。
+  // 以 dev(1000) 身份执行，与列目录同视角（看得见才下得动）。
+  app.get('/api/containers/:id/download', async (req, reply) => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    if (!name) throw badRequest('cannot download /');
+    const st = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        // -d/-f 都跟随尾 symlink：链接到文件/目录按目标下载（与 openLink 的语义一致）；
+        // 断链/特殊文件落 exit 2。stat 取尺寸（Content-Length 给浏览器进度条）。
+        'f="$1"; if [ -d "$f" ]; then echo dir; elif [ -f "$f" ]; then stat -c "file %s" -- "$f" || exit 2; else exit 2; fi',
+        'sh', path,
+      ],
+      Tty: false,
+      timeoutMs: 10_000,
+    });
+    if (st.exitCode !== 0) throw mapListErr(st, path);
+    const [kind, sizeS] = st.stdout.trim().split(' ');
+    const isDir = kind === 'dir';
+    // parentOf 对根级条目回 null：tar -C / 即可（名字不含 /，无注入面）。
+    const parent = parentOf(path) ?? '/';
+    const h = execSpawn(
+      cfg,
+      r.id,
+      isDir
+        ? { Cmd: ['tar', '-C', parent, '-czf', '-', '--', name], User: '1000:1000', Tty: false }
+        : { Cmd: ['cat', '--', path], User: '1000:1000', Tty: false },
+    );
+    reply.header('content-type', isDir ? 'application/gzip' : 'application/octet-stream');
+    reply.header('content-disposition', contentDisposition(isDir ? `${name}.tar.gz` : name));
+    if (!isDir && Number(sizeS) > 0) reply.header('content-length', String(Number(sizeS)));
+    // 客户端中途断开：kill 子进程（socket 断开本身也会让 tar/cat 撞 SIGPIPE，双保险）。
+    reply.raw.on('close', () => {
+      if (!reply.raw.writableFinished) h.kill();
+    });
+    const guard = await streamProbe(h.stdout, h.done);
+    if (guard && guard.exitCode !== 0) {
+      throw new HttpError(
+        400,
+        guard.stderr.trim() || `download failed (exit ${guard.exitCode})`,
+        'download_failed',
+      );
+    }
+    return reply.send(h.stdout);
   });
 
   // —— 写文件 ——

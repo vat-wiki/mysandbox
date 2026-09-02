@@ -6,7 +6,7 @@
 // 安全边界：token 本就等价宿主 leon 用户（uid 1000 直通，见 CLAUDE.md 安全模型），文件路由不
 // 扩大权限面；实际权限受 server 运行用户约束，EACCES/EPERM 如实反馈 403（与容器侧 400
 // 的唯一刻意差异——容器内以 uid 1000 执行，宿主侧无这层包装）。
-import { stat, lstat, readdir, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
+import { stat, lstat, readdir, readFile, writeFile, mkdir, rename, rm, open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -17,6 +17,8 @@ import {
   parentOf,
   MAX_BYTES,
   classifyContent,
+  contentDisposition,
+  streamProbe,
   parseDiffProto,
   type FileEntry,
   type FilesView,
@@ -130,6 +132,63 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     });
     const { binary, content } = classifyContent(buf);
     return { path, name, size: st.size, mtime: mtimeOf(st), binary, ...(binary ? {} : { content }) };
+  });
+
+  // —— 下载（文件/目录，流式）——（与容器侧 files.ts /download 一比一：探测→头→流，
+  // streamProbe 竞速空产出归因；仅实现层换成 node fs / 宿主 tar）
+  app.get('/api/host-terminal/download', async (req, reply) => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    if (!name) throw badRequest('cannot download /');
+    let st;
+    try {
+      st = await stat(path);
+    } catch (e) {
+      throw mapErr(e, `path not found: ${path}`);
+    }
+    if (st.isDirectory()) {
+      const parent = dirname(path);
+      const sp = spawn('tar', ['-C', parent, '-czf', '-', '--', name], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      sp.stderr?.on('error', () => { /* noop */ });
+      sp.stderr?.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+      sp.stdout?.on('error', () => { /* noop */ });
+      const done = new Promise<{ exitCode: number; stderr: string }>((resolve) => {
+        sp.on('error', (e) => resolve({ exitCode: -1, stderr: stderr + (stderr ? '\n' : '') + e.message }));
+        sp.on('close', (code) => resolve({ exitCode: code ?? -1, stderr }));
+      });
+      reply.header('content-type', 'application/gzip');
+      reply.header('content-disposition', contentDisposition(`${name}.tar.gz`));
+      reply.raw.on('close', () => {
+        if (!reply.raw.writableFinished) {
+          try { sp.kill('SIGKILL'); } catch { /* noop */ }
+        }
+      });
+      const guard = await streamProbe(sp.stdout!, done);
+      if (guard && guard.exitCode !== 0) {
+        throw new HttpError(
+          400,
+          guard.stderr.trim() || `download failed (exit ${guard.exitCode})`,
+          'download_failed',
+        );
+      }
+      return reply.send(sp.stdout!);
+    }
+    if (!st.isFile()) throw badRequest('not a regular file or directory');
+    // 先 open 再流：EACCES 这类「stat 能过但读不动」在发头前映射 403，不给浏览器半个坏文件。
+    let fh;
+    try {
+      fh = await open(path, 'r');
+    } catch (e) {
+      throw mapErr(e, 'open failed');
+    }
+    reply.header('content-type', 'application/octet-stream');
+    reply.header('content-length', String(st.size));
+    reply.header('content-disposition', contentDisposition(name));
+    return reply.send(fh.createReadStream()); // autoClose 默认 true，读完/断开自动关句柄
   });
 
   // —— 写文件 ——

@@ -57,6 +57,7 @@ import type {
   CreateSource,
   ExecOpts,
   ExecResult,
+  ExecSpawnHandle,
   ExecStream,
   BaseAction,
   BaseActionOpts,
@@ -817,6 +818,33 @@ process.on('exit', () => {
   }
 });
 
+// —— 二进制流式 exec（files.ts 下载路由）——
+// 与 runAttach 同参同环境（attachArgs），但 stdout 保持原始字节流不收包、stderr 聚成
+// 字符串。错误兜底形状与 runAttach 一致（exitCode -1、stderr 带原因），调用方好归因。
+function execSpawn(_cfg: Config, id: string, opts: ExecOpts): ExecSpawnHandle {
+  const args = attachArgs(assertName(id), opts);
+  const child = spawn(args[0], args.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  // 三流 error 必挂：容器没跑/attach 失败时写 stdin EPIPE，不吞会崩整个 mysandbox（runAttach 同款）。
+  child.stdin?.on('error', () => { /* noop */ });
+  child.stderr?.on('error', () => { /* noop */ });
+  child.stdout?.on('error', () => { /* noop */ });
+  child.stderr?.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+  const done = new Promise<{ exitCode: number; stderr: string }>((resolve) => {
+    child.on('error', (e) => {
+      resolve({ exitCode: -1, stderr: stderr + (stderr ? '\n' : '') + (e instanceof Error ? e.message : String(e)) });
+    });
+    child.on('close', (code) => resolve({ exitCode: code ?? -1, stderr }));
+  });
+  return {
+    stdout: child.stdout!,
+    done,
+    kill: () => {
+      try { child.kill('SIGKILL'); } catch { /* noop */ }
+    },
+  };
+}
+
 // script 子进程的 pts。script 自己的 controlling tty 继承自 node（无 tty），
 // 它为命令开的 pts 挂在**子进程**身上，所以查 --ppid。同 hostTerminal.ts 的 childTty。
 function childTty(pid: number): Promise<string | null> {
@@ -950,6 +978,7 @@ export const lxcEngine: Engine = {
   execRun,
   execFeed,
   execStream,
+  execSpawn,
   assignedIps,
   subscribeEvents,
   baseStatus,
