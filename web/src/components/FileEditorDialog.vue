@@ -444,9 +444,11 @@ function fmtSize(n: number): string {
         </template>
         <template v-else>
           <!-- svg 预览渲染：实时反映编辑内容（data URL，未保存也可见）。白底卡片：
-               透明底 svg 在深色主题下白形状会糊掉，垫白最稳 -->
+               透明底 svg 在深色主题下白形状会糊掉，垫白最稳。
+               必须带 isSvg 门——svgPreview 初始 true，漏判会让所有文本文件都落进预览卡
+               （Monaco 不挂载、且无切换按钮，编辑直接废掉） -->
           <div
-            v-if="svgPreview"
+            v-if="isSvg && svgPreview"
             class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-muted/20 p-4"
           >
             <img
