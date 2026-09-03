@@ -8,6 +8,11 @@ import * as monaco from 'monaco-editor/api'
 // worker：相对路径（带 ?worker）让 Vite 单独打成 worker chunk。别名 + ?worker 在 rollup
 // 解析阶段不稳定，故 worker 用相对路径、仅 api 走别名。
 import editorWorker from '../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker'
+// json 智能语言的专用 worker（校验/格式化/悬停）。json 是语言集里唯一带语言服务的：
+// 其 WorkerManager 会以 label='json' 调 MonacoEnvironment.getWorker，请求 doValidation
+// 等方法——打错 worker 就抛 "Missing requestHandler or method: doValidation"，
+// worker 反复崩死重生，多开几个 json 文件直接把页面拖崩（实测）。
+import jsonWorker from '../../node_modules/monaco-editor/esm/vs/languages/features/json/json.worker.js?worker'
 import { loader } from '@guolao/vue-monaco-editor'
 
 // 文件编辑器用的语言集：每语言只引 register.js（<1KB 元数据），语法本体是懒加载
@@ -44,8 +49,11 @@ import '../../node_modules/monaco-editor/esm/vs/features/codicon/register.js' //
 import '../../node_modules/monaco-editor/esm/vs/features/find/register.js' // Ctrl+F 查找（FindController + FindWidget）
 import '../../node_modules/monaco-editor/esm/vs/features/diffEditor/register.js' // diff 视图的命令/菜单贡献
 
-;(self as unknown as { MonacoEnvironment: { getWorker: () => Worker } }).MonacoEnvironment = {
-  getWorker: () => new editorWorker(),
+;(self as unknown as { MonacoEnvironment: { getWorker: (moduleId: string, label: string) => Worker } }).MonacoEnvironment = {
+  // 按 label 分流：json 语言服务的请求必须进 json.worker（内含完整 workerMain +
+  // JSONWorker handler）；其余（editorWorkerService 的 diff/links 等内核请求）回基础 worker。
+  // 这里定义了 getWorker 就会盖过 json 包自带的 createWorker 兜底，所以必须自己分对。
+  getWorker: (_moduleId, label) => (label === 'json' ? new jsonWorker() : new editorWorker()),
 }
 
 loader.config({ monaco })
