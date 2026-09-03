@@ -27,7 +27,7 @@ import {
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
-import { Music, Eye, Code, Check, LoaderCircle } from 'lucide-vue-next'
+import { Music } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
@@ -64,11 +64,9 @@ const savedContent = ref('')
 const mtime = ref<number | undefined>(undefined)
 const busy = ref(false)
 const err = ref('')
-const savedFlash = ref(false) // 「已保存」短暂提示
 const conflict = ref(false) // 409 后的冲突条（重载 / 覆盖）
 const confirmDiscard = ref(false) // 冲突未决时关闭的确认弹窗
 const isNew = ref(false) // 新建态：读取 404 进入，保存成功后退出
-let savedFlashTimer: ReturnType<typeof setTimeout> | null = null
 
 // —— 在线预览（图片/视频/音频/PDF）——
 // 走 download 端点整文件进内存 Blob（二进制安全、无 2MB 文本上限），objectURL 渲染。
@@ -324,9 +322,6 @@ async function save(overwrite = false) {
     mtime.value = r.mtime ?? mtime.value
     isNew.value = false // 保存成功即不再是新建态
     conflict.value = false
-    savedFlash.value = true
-    if (savedFlashTimer) clearTimeout(savedFlashTimer)
-    savedFlashTimer = setTimeout(() => (savedFlash.value = false), 1500)
     emit('saved', props.path)
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -393,7 +388,11 @@ async function requestClose() {
   }
   emit('close')
 }
-defineExpose({ requestClose: () => requestClose() })
+defineExpose({
+  requestClose: () => requestClose(),
+  // 文件 tab 右键菜单的「编辑 ⇄ 预览切换」入口（svg/md 渲染态在 pane 内部）
+  toggleTextPreview: () => (textPreview.value = !textPreview.value),
+})
 function doDiscard() {
   confirmDiscard.value = false
   emit('close')
@@ -421,71 +420,10 @@ function fmtSize(n: number): string {
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-card">
-    <!-- 头：容器:路径 + 形态徽章 + 保存状态 + 动作按钮，单行整合（原底部状态条已并入——
-         省一档编辑器纵向空间；保存流转常驻可见，不会有「关闭才保存」的误解。自动保存制：
-         输入停顿即落盘，无保存/关闭按钮——关闭走 tab X，Ctrl+S 仍在） -->
-    <div class="flex shrink-0 items-center gap-2 border-b border-border px-4 py-1.5">
-      <span
-        class="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
-        :title="`${containerName}:${path}`"
-        >{{ containerName }}:{{ path }}</span
-      >
-      <span
-        v-if="diff"
-        class="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-400"
-        :title="`git 变更对比（左 HEAD · 右 工作区 · 只读${
-          diffView ? ` · ${fmtBytes(diffView.base.size) || '?'} → ${fmtBytes(diffView.work.size) || '?'}` : ''
-        }）`"
-        >对比</span
-      >
-      <span
-        v-if="previewKindV || ((isSvg || isMd) && textPreview)"
-        class="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-400"
-        :title="'在线预览 · 只读'"
-        >预览{{ previewSize ? ` · ${fmtSize(previewSize)}` : '' }}</span
-      >
-      <span
-        v-if="diff?.headPath && diff.headPath !== path"
-        class="max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-        :title="diff.headPath"
-        >{{ diff.headPath.slice(diff.headPath.lastIndexOf('/') + 1) }} →</span
-      >
-      <span
-        v-else-if="isNew"
-        class="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-        title="新文件：Ctrl+S 或关闭时创建"
-        >新建</span
-      >
-      <!-- 保存状态流转（编辑态专属；diff/预览/二进制只读态无此语义） -->
-      <span v-if="savedFlash" class="flex shrink-0 items-center gap-1 text-[11px] text-emerald-500">
-        <Check class="size-3" />已保存
-      </span>
-      <span
-        v-else-if="!diff && !previewKindV && !meta?.binary && busy"
-        class="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"
-      >
-        <LoaderCircle class="size-3 animate-spin" />保存中
-      </span>
-      <span
-        v-else-if="!diff && !previewKindV && !meta?.binary && dirty"
-        class="shrink-0 text-[11px] text-amber-500"
-        title="输入停顿后自动保存 · Ctrl+S 立即保存"
-        >未保存</span
-      >
-      <!-- svg / md 专属：编辑 ⇄ 预览渲染切换（渲染实时反映编辑内容，未保存也可见） -->
-      <div class="ml-auto flex shrink-0 items-center gap-1.5">
-        <Button v-if="isSvg || isMd" variant="ghost" size="xs" @click="textPreview = !textPreview">
-          <Eye v-if="!textPreview" class="size-3.5" />
-          <Code v-else class="size-3.5" />
-          {{ textPreview ? '编辑' : '预览' }}
-        </Button>
-        <Button v-if="previewKindV" variant="outline" size="xs" @click="downloadPreview">下载</Button>
-        <Button v-if="diff || previewKindV" variant="outline" size="xs" @click="emit('open-normal')">
-          以普通方式打开
-        </Button>
-      </div>
-    </div>
-
+    <!-- 无 header 的极简形态：路径语境在 tab title（hover）与右键「复制路径」里，
+         形态徽章（对比）在 tab 上，动作按钮（编辑⇄预览/下载/以普通方式打开）收进
+         文件 tab 右键菜单（ContainerList）——编辑区一行不占。只读态说明条
+         （diffNotice/冲突/错误）保留在编辑区上方，它们是内容的一部分而非工具栏。 -->
     <!-- 体 -->
     <div class="flex min-h-0 flex-1 flex-col">
       <p v-if="loading" class="px-5 py-8 text-center text-sm text-muted-foreground">加载中…</p>

@@ -9,6 +9,7 @@ import {
   deleteContainer,
   updateMeta,
   listFiles,
+  downloadEntry,
   getListenPorts,
   resolveTermPath,
   listServices,
@@ -26,6 +27,8 @@ import { newId } from '@/lib/id'
 import { containerColor, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
 import { isPhone } from '@/composables/useDevice'
+import { extOf, previewKind } from '@/lib/preview'
+import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -44,7 +47,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, SquareTerminal, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks, Container } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, SquareTerminal, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks, Container, Eye, FileText, Download, Copy, HardDrive, ArrowLeftToLine, ArrowRightToLine } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -459,11 +462,15 @@ watch(
 )
 // 各 tab 的脏标（pane 上报，tab 上画 ● ——自动保存窗口内/冲突未决时可见）
 const tabDirty = ref<Record<string, boolean>>({})
-// pane 引用表：tab X 要先让 pane 冲刷未落改动（requestClose），冲完 pane 自己 emit close。
-const paneRefs = new Map<string, { requestClose: () => void }>()
+// pane 引用表：tab X 要先让 pane 冲刷未落改动（requestClose），冲完 pane 自己 emit close；
+// toggleTextPreview 供 tab 右键菜单切换 svg/md 的编辑⇄预览渲染。
+const paneRefs = new Map<
+  string,
+  { requestClose: () => void; toggleTextPreview?: () => void }
+>()
 function setPaneRef(t: EditorTab, el: unknown) {
   const key = tabId(t)
-  if (el) paneRefs.set(key, el as { requestClose: () => void })
+  if (el) paneRefs.set(key, el as { requestClose: () => void; toggleTextPreview?: () => void })
   else paneRefs.delete(key)
 }
 function openFile(cId: string, cName: string, path: string, opts?: { diff?: { headPath?: string }; line?: number; col?: number }) {
@@ -485,6 +492,62 @@ function onFileTabClick(i: number) {
 // tab X：pane 冲刷后自己 close；这里不直接摘（冲刷失败/冲突要留在原处裁决）
 function closeFileTab(t: EditorTab) {
   paneRefs.get(tabId(t))?.requestClose()
+}
+// —— 文件 tab 右键批量关闭 ——
+// 逐个走 pane 的 requestClose（dirty 先冲刷落盘）；409 冲突/保存失败的 pane 会自己
+// 留在 tab 栏上等裁决（见 FileEditorPane.requestClose），不静默丢数据。activeIdx
+// 由 editorTabs 的 watch 自动钳制。
+function closeFileTabsRange(t: EditorTab, range: 'other' | 'left' | 'right') {
+  const i = editorTabs.value.findIndex((x) => tabId(x) === tabId(t))
+  if (i < 0) return
+  const doomed =
+    range === 'other'
+      ? editorTabs.value.filter((_, k) => k !== i)
+      : range === 'left'
+        ? editorTabs.value.slice(0, i)
+        : editorTabs.value.slice(i + 1)
+  for (const d of doomed) paneRefs.get(tabId(d))?.requestClose()
+}
+// —— 文件 tab 右键复制路径 ——
+// 容器路径直接复制；宿主实址惰性派生：listFiles(dirname) 的 hostPath（容器 rootfs 前缀
+// 或宿主原样）拼回文件名——一次目录列表请求，对普通/diff/预览态一致成立，无需后端加字段。
+async function copyTabText(s: string, okMsg: string) {
+  if (!s) return
+  let ok = false
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(s)
+      ok = true
+    } catch {
+      /* 落 execCommand 兜底（同 copyIpOf 手法） */
+    }
+  }
+  if (!ok) ok = legacyCopy(s)
+  if (ok) toast(okMsg)
+  else toast.error('复制失败：剪贴板不可用')
+}
+function copyTabPath(t: EditorTab) {
+  void copyTabText(t.path, '已复制容器路径')
+}
+// tab 右键「下载」：仅可预览类型（图片/视频/音频/PDF）出现——走整文件流，与编辑器
+// 预览的取流路径同源。目录下载在文件面板右键，不在 tab 上。
+async function downloadTab(t: EditorTab) {
+  try {
+    await downloadEntry(t.containerId, t.path, t.path.slice(t.path.lastIndexOf('/') + 1), false)
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : String(e))
+  }
+}
+async function copyTabHostPath(t: EditorTab) {
+  const dir = t.path.slice(0, t.path.lastIndexOf('/')) || '/'
+  try {
+    const v = await listFiles(t.containerId, dir)
+    const hp = v.hostPath ? v.hostPath.replace(/\/$/, '') + '/' + t.path.slice(t.path.lastIndexOf('/') + 1) : null
+    if (!hp) return toast.error('该文件无宿主机实际路径')
+    void copyTabText(hp, '已复制宿主机路径')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : String(e))
+  }
 }
 function removeTab(t: EditorTab) {
   const i = editorTabs.value.findIndex((x) => tabId(x) === tabId(t))
@@ -1533,7 +1596,10 @@ onUnmounted(() => {
               @pointerup="tabPointerCancel"
               @pointercancel="tabPointerCancel"
               :class="[
-                'flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm relative',
+                // 多 tab 时逐个收缩（浏览器式）：桌面允许 flex 收缩 + truncate，max-w 防少
+                // tab 时无限拉宽；min-w-0 是 truncate 生效前提。手机不收缩（shrink-0），
+                // 横向滚动——窄屏压到几十像素不可读。
+                'flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm relative md:shrink md:max-w-44',
                 idx === activeIdx && areaMode === 'terminal'
                   ? 'bg-card text-foreground shadow-[inset_0_-2px_0_0_var(--primary)] font-medium'
                   : 'text-muted-foreground hover:bg-accent/50',
@@ -1542,13 +1608,13 @@ onUnmounted(() => {
               :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：新开一组 / 独立窗口 / 隐藏 / 关闭'"
             >
               <span
-                class="h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
+                class="h-1.5 w-1.5 shrink-0 rounded-full max-md:h-2 max-md:w-2"
                 :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
               />
-              <span>{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
+              <span class="min-w-0 truncate">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
               <button
                 @click.stop="closeGroupById(g.id)"
-                class="ml-1 flex items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
+                class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
                 title="关闭终端组"
               ><X class="size-3 max-md:size-3.5" /></button>
             </div>
@@ -1739,43 +1805,83 @@ onUnmounted(() => {
            色点=所属容器色（宿主琥珀），●=有未落盘改动（自动保存窗口内/冲突未决），
            对比徽章=git diff 只读态。主区同区切换：点文件 tab 主区给编辑器，
            点顶部终端 tab 主区给终端。主要内容是终端——没开文件时整条不渲染，
-           不占终端区高度；激活样式用上缘色条（栏在底部，压边方向反转）。 -->
+           不占终端区高度；激活样式用上缘色条（栏在底部，压边方向反转）。
+           多 tab 收缩同终端 tab（浏览器式，桌面收缩/手机滚动）；右键菜单承载
+           tab 管理（关闭系）+ 形态动作（编辑⇄预览/下载/普通打开）+ 复制路径。 -->
       <div v-if="editorTabs.length" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
-        <div
-          v-for="(t, i) in editorTabs"
-          :key="tabId(t)"
-          class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
-          :class="
-            i === activeEditorIdx && areaMode === 'editor'
-              ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
-              : 'text-muted-foreground hover:bg-accent/50'
-          "
-          :title="`${t.containerName}:${t.path}`"
-          @click="onFileTabClick(i)"
-        >
-          <span
-            class="h-1.5 w-1.5 shrink-0 rounded-full max-md:h-2 max-md:w-2"
-            :style="{ backgroundColor: t.containerId === HOST_ID ? '#f59e0b' : containerColor(t.containerId) }"
-          />
-          <span class="max-w-52 truncate font-mono">{{ t.path.slice(t.path.lastIndexOf('/') + 1) }}</span>
-          <span
-            v-if="t.diff"
-            class="shrink-0 rounded bg-violet-500/15 px-1 text-[10px] font-medium text-violet-400"
-            >对比</span
-          >
-          <span
-            v-if="tabDirty[tabId(t)]"
-            class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
-            title="有未落盘改动"
-          />
-          <button
-            class="ml-1 flex items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
-            title="关闭（未落盘改动会先自动保存）"
-            @click.stop="closeFileTab(t)"
-          >
-            <X class="size-3 max-md:size-3.5" />
-          </button>
-        </div>
+        <ContextMenu v-for="(t, i) in editorTabs" :key="tabId(t)">
+          <ContextMenuTrigger as-child>
+            <div
+              class="flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm md:shrink md:max-w-56"
+              :class="
+                i === activeEditorIdx && areaMode === 'editor'
+                  ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
+                  : 'text-muted-foreground hover:bg-accent/50'
+              "
+              :title="`${t.containerName}:${t.path}`"
+              @click="onFileTabClick(i)"
+            >
+              <span
+                class="h-1.5 w-1.5 shrink-0 rounded-full max-md:h-2 max-md:w-2"
+                :style="{ backgroundColor: t.containerId === HOST_ID ? '#f59e0b' : containerColor(t.containerId) }"
+              />
+              <span class="min-w-0 truncate">{{ t.path.slice(t.path.lastIndexOf('/') + 1) }}</span>
+              <span
+                v-if="t.diff"
+                class="shrink-0 rounded bg-violet-500/15 px-1 text-[10px] font-medium text-violet-400"
+                >对比</span
+              >
+              <span
+                v-if="tabDirty[tabId(t)]"
+                class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+                title="有未落盘改动"
+              />
+              <button
+                class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
+                title="关闭（未落盘改动会先自动保存）"
+                @click.stop="closeFileTab(t)"
+              >
+                <X class="size-3 max-md:size-3.5" />
+              </button>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <!-- 形态动作：svg/md 编辑⇄预览切换（状态在 pane 内部，经 paneRefs 调）；
+                 diff 态「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
+                 音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
+            <ContextMenuItem v-if="['svg', 'md', 'markdown'].includes(extOf(t.path))" @click="paneRefs.get(tabId(t))?.toggleTextPreview?.()">
+              <Eye /> 编辑 ⇄ 预览
+            </ContextMenuItem>
+            <ContextMenuItem v-if="t.diff" @click="onOpenNormal(t)">
+              <FileText /> 以普通方式打开
+            </ContextMenuItem>
+            <ContextMenuItem v-if="previewKind(t.path)" @click="downloadTab(t)">
+              <Download /> 下载
+            </ContextMenuItem>
+            <template v-if="t.diff || previewKind(t.path) || ['svg', 'md', 'markdown'].includes(extOf(t.path))">
+              <ContextMenuSeparator />
+            </template>
+            <ContextMenuItem class="font-mono text-xs" @click="copyTabPath(t)">
+              <Copy /> 复制路径
+            </ContextMenuItem>
+            <ContextMenuItem class="font-mono text-xs" @click="copyTabHostPath(t)">
+              <HardDrive /> 复制宿主机路径
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" @click="closeFileTab(t)">
+              <X /> 关闭
+            </ContextMenuItem>
+            <ContextMenuItem :disabled="editorTabs.length <= 1" @click="closeFileTabsRange(t, 'other')">
+              <SquareX /> 关闭其他
+            </ContextMenuItem>
+            <ContextMenuItem :disabled="i === 0" @click="closeFileTabsRange(t, 'left')">
+              <ArrowLeftToLine /> 关闭左侧
+            </ContextMenuItem>
+            <ContextMenuItem :disabled="i === editorTabs.length - 1" @click="closeFileTabsRange(t, 'right')">
+              <ArrowRightToLine /> 关闭右侧
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
       </div>
 
       <DesktopDialog
