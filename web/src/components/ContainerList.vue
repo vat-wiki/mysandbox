@@ -1671,14 +1671,18 @@ onUnmounted(() => {
       <div class="relative flex min-h-0 flex-1">
         <!-- 交换容器：编辑器区 / 终端区在此二选一占位 -->
         <div class="relative min-h-0 min-w-0 flex-1">
-          <!-- 编辑器区：每个文件 tab 一个 FileEditorPane，全量常驻 -->
-          <div v-show="areaMode === 'editor' && editorTabs.length" class="absolute inset-0 flex">
+          <!-- 编辑器区：每个文件 tab 一个 FileEditorPane，全量常驻。
+               非激活面板用 invisible（visibility:hidden）而不是 v-show（display:none）——
+               monaco 的 automaticLayout 在容器塌成 0×0 时对带标记（json 校验 squiggle 等
+               glyph margin 装饰）的编辑器做 layout 会死循环（实测整页冻结）。visibility
+               隐藏保留布局盒，尺寸恒定，彻底绕开 0 尺寸 layout。 -->
+          <div v-show="areaMode === 'editor' && editorTabs.length" class="absolute inset-0">
             <FileEditorPane
               v-for="(t, i) in editorTabs"
               :key="tabId(t)"
               :ref="(el) => setPaneRef(t, el)"
-              v-show="i === activeEditorIdx"
-              class="min-h-0 min-w-0 flex-1"
+              class="absolute inset-0"
+              :class="i === activeEditorIdx ? '' : 'invisible'"
               :container-id="t.containerId"
               :container-name="t.containerName"
               :path="t.path"

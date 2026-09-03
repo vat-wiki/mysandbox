@@ -296,16 +296,9 @@ function onEditorMount(ed: unknown) {
   revealTarget()
 }
 watch(() => [props.line, props.col], revealTarget)
-// 隐藏期间 Monaco 拿到 0 尺寸（v-show display:none），切回时重算一次布局；
-// 面板刚挂载即 active 的场景由 mount 流程自然覆盖，无需处理。
-watch(
-  () => props.active,
-  async (a) => {
-    if (!a) return
-    await nextTick()
-    editorRef.value?.layout()
-  },
-)
+// 注意：不要在 active 变化时手动 editor.layout()——面板以 visibility:hidden 隐藏（布局盒
+// 恒定，父级 ContainerList 有说明），automaticLayout 自会跟进真实尺寸变化；在 0×0/
+// 刚恢复可见的容器上同步 layout 曾实测触发 monaco 渲染死循环（整页冻结）。
 
 // 侧内容取值：absent/binary 侧给空串（diff 视图里呈全增/全删形态，可读）。
 // 参数可空：模板 diffDead 分支已保证 diffView 非空，但类型上不体现，这里兜住。
