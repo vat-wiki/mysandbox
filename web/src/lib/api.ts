@@ -4,7 +4,7 @@ import { PREVIEW_MAX_BYTES } from './preview'
 const TOKEN_KEY = 'mysandbox.token'
 
 // 宿主哨兵 id：ContainerList 的 host 终端组用它当 containerId；文件 API 据此切宿主端点
-// （两侧路由形状一一对应，FilePanel/FileEditorDialog 无需感知）。
+// （两侧路由形状一一对应，FilePanel/FileEditorPane 无需感知）。
 export const HOST_ID = '__host__'
 // 容器 / 宿主文件端点前缀。
 const filesBase = (id: string) => (id === HOST_ID ? '/api/host-terminal' : `/api/containers/${id}`)
