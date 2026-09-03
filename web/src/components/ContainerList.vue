@@ -664,6 +664,12 @@ async function locateContainerPath(
   }
 }
 
+// 文件面板 open-file 汇聚点：目录列表点文件（无 opts）与 Git 变更条目点击（opts.diff
+// = 对比形态）共用。写成函数而非模板内联箭头——对象类型字面量在模板表达式里编不过。
+function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string } }) {
+  if (activeGroup.value) openFile(activeGroup.value.containerId, activeGroup.value.name, p, o)
+}
+
 // 容器内 mysandbox 命令（web 终端 OSC 7677）：kind 未知 -> listFiles 探测（200=目录 /
 // 400 not_a_directory 或 404 不存在=文件，编辑器侧对不存在的文件走新建态），
 // 定位后聚焦来源 group、面板跟随来源 pane（termId -> DFS 序号）。
@@ -1742,7 +1748,7 @@ onUnmounted(() => {
           :term-id="fileTermId"
           :has-terminal="!!activeGroup"
           @close="showFiles = false"
-          @open-file="(p: string) => activeGroup && openFile(activeGroup.containerId, activeGroup.name, p)"
+          @open-file="onPanelOpenFile"
           @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
         />
       </div>

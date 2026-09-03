@@ -195,6 +195,9 @@ const diffNotice = computed(() => {
   const say = (s: typeof v.base, which: string): string | null => {
     if (s.binary) return `${which}侧为二进制/非 UTF-8，无法对比`
     if (s.absent === 'too_large') return `${which}侧超过 2MB，已省略`
+    if (s.absent === 'no_head_path') return `${which}侧 HEAD 无此文件（新增/未跟踪）`
+    if (s.absent === 'deleted') return `${which}侧文件已删除`
+    if (s.absent === 'unborn') return `${which}侧尚无提交（HEAD 不存在）`
     return null
   }
   return say(v.base, '左（HEAD）') ?? say(v.work, '右（工作区）')
@@ -265,17 +268,10 @@ async function loadDiff() {
   }
   diffView.value = v
 }
-// diff prop 变化（父级把 tab 从对比态转普通）时重走加载。
-// path/containerId 变化由父级 tab 身份（key）重建组件，不需要 watch。
-watch(
-  () => props.diff,
-  () => {
-    if (!props.diff) {
-      diffView.value = null
-      void load()
-    }
-  },
-)
+// diff prop 变化（父级把 tab 在对比/普通两形态间切换，或 R 条目换 headPath）时重走加载：
+// load 内部按 props.diff 分流，两个方向都能到。path/containerId 变化由父级 tab 身份（key）
+// 重建组件，不需要 watch。
+watch(() => props.diff, () => void load())
 onMounted(load)
 
 // —— :行:列 定位（终端 Ctrl+点击）——

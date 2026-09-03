@@ -63,7 +63,8 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'open-file', path: string): void
+  // opts.diff 存在 = git 变更对比形态（Git 变更区块点击上抛；目录列表点文件不传）。
+  (e: 'open-file', path: string, opts?: { diff?: { headPath?: string } }): void
   (e: 'pane-pick', termId: string): void
 }>()
 
@@ -735,13 +736,16 @@ function fmtSize(n: number): string {
       </ContextMenuContent>
     </ContextMenu>
 
-    <!-- Git 变更 dock（底部）：纯列表展示，可折叠，折叠头常显分支+变更数 -->
+    <!-- Git 变更 dock（底部）：条目点击以对比形态开 tab，可折叠，折叠头常显分支+变更数 -->
     <FilePanelGit
       v-if="hasTerminal && path"
       ref="gitRef"
       :key="targetId()"
       :container-id="targetId()"
       :path="path"
+      @open-change="
+        (t) => emit('open-file', t.path, t.headPath ? { diff: { headPath: t.headPath } } : undefined)
+      "
     />
 
     <!-- 命名弹窗（新建/重命名共用） -->

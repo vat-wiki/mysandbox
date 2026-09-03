@@ -2,17 +2,24 @@
 // 文件面板内嵌的「Git 变更」区块：面板当前目录位于 git 仓库内时展示分支与变更文件列表。
 // path（面板当前目录）是唯一刷新键：跟随/手动导航、外部 locate 都只是换 path。
 // 非仓库目录整块不渲染；结果含 repo:false 时缓存住，同一 path 下不再重复打（/etc 这类
-// 目录不每 8s 白跑一次 rev-parse）。列表纯展示：条目不可点，点开文件走上方目录列表。
+// 目录不每 8s 白跑一次 rev-parse）。条目可点：点文件行抛 open-change（拼 toplevel 绝对
+// 路径 + R 旧路径作 headPath），父级接 openFile 以 diff 形态开 tab；目录行仍是折叠开关。
 // 视图双模式：list 平铺（服务端 -uall 保证全是单个文件、无目录条目）/ tree 目录树
 // （前端按相对路径聚合；纯 untracked 子树默认折叠——大 untracked 目录不刷屏，同 git
 // porcelain / VSCode 的折叠展示习惯）。模式存 localStorage，跨窗口一致。
+// dock 高度可拖（PaneDivider 夹在折叠头与列表之间），像素值 localStorage 持久化。
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { getGitStatus, Unauthorized, type GitStatusView, type GitChange } from '@/lib/api'
 import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder } from 'lucide-vue-next'
+import PaneDivider from '@/components/PaneDivider.vue'
 
 const props = defineProps<{
   containerId: string
   path: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'open-change', target: { path: string; headPath?: string }): void
 }>()
 
 const view = ref<GitStatusView | null>(null)
@@ -125,6 +132,49 @@ function kindTitle(c: GitChange): string {
     '??': '未跟踪',
   }
   return t[badgeOf(c).text] ?? '已修改'
+}
+
+// —— 条目点击：以 git 对比形态打开 ——
+// 相对路径拼 toplevel 变容器内绝对路径（openFile/readFile 链路只认绝对路径）；
+// R/C 的旧路径经 headPath 传给 diff 端点（HEAD 侧取旧版本 + 标题「旧 → 新」）。
+function absOf(rel: string): string {
+  const t = view.value?.toplevel ?? ''
+  return t === '/' ? `/${rel}` : `${t}/${rel}`
+}
+function openChange(c: GitChange) {
+  emit('open-change', {
+    path: absOf(c.file),
+    ...(c.oldFile ? { headPath: absOf(c.oldFile) } : {}),
+  })
+}
+
+// —— dock 高度拖拽（PaneDivider 夹在折叠头与列表之间）：dock 在底部，向上拖（delta<0）
+// 变高；像素值持久化 localStorage，跨容器/跨窗口一致（:key 重建也读同一份）。 ——
+const H_KEY = 'mysandbox:git-panel-h'
+const H_MIN = 80
+const H_MAX = 480
+function loadH(): number {
+  try {
+    const v = Number(localStorage.getItem(H_KEY))
+    return v >= H_MIN && v <= H_MAX ? v : 160
+  } catch {
+    return 160
+  }
+}
+const gitH = ref(loadH())
+let hDragStart = 0
+function onHDragStart() {
+  hDragStart = gitH.value
+}
+function onHDrag(delta: number) {
+  gitH.value = Math.min(Math.max(hDragStart - delta, H_MIN), H_MAX)
+}
+function persistH() {
+  try {
+    localStorage.setItem(H_KEY, String(gitH.value))
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
 }
 
 // —— 树视图：从变更文件的相对路径聚合目录树（纯前端，8s 轮询重建一次，≤1000 条廉价） ——
@@ -266,73 +316,79 @@ watch(view, (v) => {
         </button>
       </div>
     </div>
-    <!-- 变更列表：默认展开、高度定档 h-40（可滚动）——太矮没存在感，太高又挤压目录主体 -->
-    <div v-if="!collapsed" class="scroll-thin h-40 overflow-y-auto">
-      <p v-if="err" class="px-2.5 py-1 text-[11px] text-muted-foreground">{{ err }}</p>
-      <p
-        v-else-if="!view.changes?.length"
-        class="px-2.5 py-1.5 text-[11px] text-muted-foreground"
-        title="工作区与 HEAD 无差异"
-      >
-        无变更
-      </p>
-      <!-- 平铺：全路径逐文件（服务端 -uall，untracked 目录已展开为单个文件） -->
-      <template v-else-if="viewMode === 'list'">
-        <div
-          v-for="c in view.changes"
-          :key="c.file"
-          class="flex items-center gap-1.5 px-2.5 py-1"
-          :title="kindTitle(c)"
+    <!-- 高度拖动条（折叠时无列表可调，一并隐藏）+ 变更列表（默认展开；高度可拖，
+         80–480px 记 localStorage——太矮没存在感，太高又挤压目录主体） -->
+    <template v-if="!collapsed">
+      <PaneDivider vertical @dragstart="onHDragStart" @drag="onHDrag" @dragend="persistH" />
+      <div class="scroll-thin overflow-y-auto" :style="{ height: gitH + 'px' }">
+        <p v-if="err" class="px-2.5 py-1 text-[11px] text-muted-foreground">{{ err }}</p>
+        <p
+          v-else-if="!view.changes?.length"
+          class="px-2.5 py-1.5 text-[11px] text-muted-foreground"
+          title="工作区与 HEAD 无差异"
         >
-          <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(c).cls">{{
-            badgeOf(c).text
-          }}</span>
-          <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="c.oldFile ? `${c.oldFile} → ${c.file}` : c.file">
-            <template v-if="c.oldFile">{{ c.oldFile }} →</template> {{ c.file }}
-          </span>
-        </div>
-      </template>
-      <!-- 目录树：目录行聚合子树计数、点击折叠；文件行只显段名（完整路径进 title） -->
-      <template v-else>
-        <template v-for="r in rows" :key="r.key">
-          <button
-            v-if="r.dir"
-            class="flex w-full items-center gap-1.5 py-1 pr-2.5 text-left hover:bg-accent/50"
-            :style="{ paddingLeft: 8 + r.depth * 12 + 'px' }"
-            :title="`${r.dir.fileCount} 个变更文件${r.dir.allUntracked ? '（全部未跟踪）' : ''}`"
-            @click="toggleDir(r.dir.path)"
-          >
-            <component
-              :is="collapsedDirs.has(r.dir.path) ? ChevronRight : ChevronDown"
-              class="size-3 shrink-0 text-muted-foreground"
-            />
-            <Folder class="size-3 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.dir.name }}</span>
-            <span class="shrink-0 font-mono text-[10px] text-muted-foreground/70">{{ r.dir.fileCount }}</span>
-          </button>
+          无变更
+        </p>
+        <!-- 平铺：全路径逐文件（服务端 -uall，untracked 目录已展开为单个文件）；点行开对比 -->
+        <template v-else-if="viewMode === 'list'">
           <div
-            v-else
-            class="flex items-center gap-1.5 py-1 pr-2.5"
-            :style="{ paddingLeft: 8 + r.depth * 12 + 'px' }"
-            :title="
-              r.change
-                ? r.change.oldFile
-                  ? `${kindTitle(r.change)} · ${r.change.oldFile} → ${r.change.file}`
-                  : `${kindTitle(r.change)} · ${r.change.file}`
-                : ''
-            "
+            v-for="c in view.changes"
+            :key="c.file"
+            class="flex cursor-pointer items-center gap-1.5 px-2.5 py-1 hover:bg-accent/50"
+            :title="`${kindTitle(c)} · 点击查看对比`"
+            @click="openChange(c)"
           >
-            <span
-              class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold"
-              :class="r.change ? badgeOf(r.change).cls : ''"
-            >
-              {{ r.change ? badgeOf(r.change).text : '' }}
+            <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(c).cls">{{
+              badgeOf(c).text
+            }}</span>
+            <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="c.oldFile ? `${c.oldFile} → ${c.file}` : c.file">
+              <template v-if="c.oldFile">{{ c.oldFile }} →</template> {{ c.file }}
             </span>
-            <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.change ? fileNameOf(r.change.file) : '' }}</span>
           </div>
         </template>
-      </template>
-    </div>
+        <!-- 目录树：目录行聚合子树计数、点击折叠；文件行只显段名、点行开对比（完整路径进 title） -->
+        <template v-else>
+          <template v-for="r in rows" :key="r.key">
+            <button
+              v-if="r.dir"
+              class="flex w-full items-center gap-1.5 py-1 pr-2.5 text-left hover:bg-accent/50"
+              :style="{ paddingLeft: 8 + r.depth * 12 + 'px' }"
+              :title="`${r.dir.fileCount} 个变更文件${r.dir.allUntracked ? '（全部未跟踪）' : ''}`"
+              @click="toggleDir(r.dir.path)"
+            >
+              <component
+                :is="collapsedDirs.has(r.dir.path) ? ChevronRight : ChevronDown"
+                class="size-3 shrink-0 text-muted-foreground"
+              />
+              <Folder class="size-3 shrink-0 text-muted-foreground" />
+              <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.dir.name }}</span>
+              <span class="shrink-0 font-mono text-[10px] text-muted-foreground/70">{{ r.dir.fileCount }}</span>
+            </button>
+            <div
+              v-else
+              class="flex cursor-pointer items-center gap-1.5 py-1 pr-2.5 hover:bg-accent/50"
+              :style="{ paddingLeft: 8 + r.depth * 12 + 'px' }"
+              :title="
+                r.change
+                  ? r.change.oldFile
+                    ? `${kindTitle(r.change)} · 点击查看对比 · ${r.change.oldFile} → ${r.change.file}`
+                    : `${kindTitle(r.change)} · 点击查看对比 · ${r.change.file}`
+                  : ''
+              "
+              @click="r.change && openChange(r.change)"
+            >
+              <span
+                class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold"
+                :class="r.change ? badgeOf(r.change).cls : ''"
+              >
+                {{ r.change ? badgeOf(r.change).text : '' }}
+              </span>
+              <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.change ? fileNameOf(r.change.file) : '' }}</span>
+            </div>
+          </template>
+        </template>
+      </div>
+    </template>
   </div>
   <p v-else-if="err" class="shrink-0 border-t border-border px-2.5 py-1 text-[11px] text-muted-foreground">
     git：{{ err }}
