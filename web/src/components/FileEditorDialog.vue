@@ -523,7 +523,7 @@ function fmtSize(n: number): string {
           <div
             v-else-if="isMd && textPreview"
             ref="mdBody"
-            class="md-body min-h-0 flex-1 overflow-auto px-8 py-5"
+            class="md-body scroll-thin min-h-0 flex-1 overflow-auto px-8 py-5"
             v-html="mdHtml"
           />
           <template v-else>
@@ -671,6 +671,25 @@ function fmtSize(n: number): string {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   overflow-x: auto;
+  /* 代码块横向滚动条同 scroll-thin（v-html 里挂不了全局类，这里同款复刻） */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+.md-body :deep(pre::-webkit-scrollbar) {
+  width: 8px;
+  height: 8px;
+}
+.md-body :deep(pre::-webkit-scrollbar-track) {
+  background: transparent;
+}
+.md-body :deep(pre::-webkit-scrollbar-thumb) {
+  background-color: var(--scroll-thumb);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.md-body :deep(pre::-webkit-scrollbar-thumb:hover) {
+  background-color: var(--scroll-thumb-hover);
 }
 .md-body :deep(pre code) {
   padding: 0;
