@@ -320,7 +320,7 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       return { repo: false }; // rev-parse 失败 = 非仓库（正常态）
     }
     const out = await gitExec([
-      '--no-optional-locks', '-C', top, 'status', '--porcelain=v1', '-z', '--branch',
+      '--no-optional-locks', '-C', top, 'status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all',
     ]);
     return { repo: true, toplevel: top, ...parsePorcelainZ(out) };
   });

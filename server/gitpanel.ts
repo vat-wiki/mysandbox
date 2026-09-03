@@ -9,7 +9,7 @@
 import { HttpError, badRequest } from './errors.js';
 
 export interface GitChange {
-  file: string; // 相对 toplevel 的 posix 相对路径；untracked 折叠目录带尾 /
+  file: string; // 相对 toplevel 的 posix 相对路径；两侧 status 均 -uall 展开 untracked 目录，恒为单个文件（不出现尾 / 的目录条目）
   x: string; // porcelain 第 1 列（index 态）
   y: string; // porcelain 第 2 列（worktree 态）
   oldFile?: string; // 仅 R/C 条目：改名/拷贝前旧路径（-z 下跟在记录后的独立字段）
@@ -47,8 +47,8 @@ export const MAX_CHANGES = 1000;
 // 解析 `git status --porcelain=v1 -z --branch` 的输出（不含 toplevel 行——那是容器侧
 // 脚本协议自己拼的首行，由调用方先剥掉）。
 //
-// -z 格式要点（实测确认）：
-//   ## master^@ M k.txt^@R  new.txt^@old.txt^@?? udir/^@?? untracked.txt^@
+// -z 格式要点（实测确认；--untracked-files=all 下 untracked 逐文件列出，无目录条目）：
+//   ## master^@ M k.txt^@R  new.txt^@old.txt^@?? u/a.txt^@?? u/b.txt^@?? untracked.txt^@
 // - 全部字段以 NUL 分隔（含分支行），文件名含换行天然免疫（这正是选 -z 的理由）；
 // - rename/copy 记录是两个字段：「XY newpath」后紧跟裸的 oldpath——解析时遇到 X∈{R,C}
 //   要把下一个不匹配记录形状的 token 当 oldPath 消费掉；

@@ -498,7 +498,8 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const res = await execRun(cfg, r.id, {
       Cmd: [
         'sh', '-c',
-        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" status --porcelain=v1 -z --branch',
+        // --untracked-files=all：untracked 目录展开成逐个文件，列表不出现「目录」条目
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" status --porcelain=v1 -z --branch --untracked-files=all',
         'sh', path,
       ],
       User: '1000:1000',
