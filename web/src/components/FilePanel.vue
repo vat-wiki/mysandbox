@@ -736,7 +736,10 @@ function fmtSize(n: number): string {
       </ContextMenuContent>
     </ContextMenu>
 
-    <!-- Git 变更 dock（底部）：条目点击以对比形态开 tab，可折叠，折叠头常显分支+变更数 -->
+    <!-- Git 变更 dock（底部）：条目点击以对比形态开 tab，可折叠，折叠头常显分支+变更数。
+         diff 恒传（headPath 仅 R/C 有）：任何条目点击都以对比形态打开（untracked/新增 =
+         左侧空的全增视图，服务端 absent 协议已兜住）——若写成「有 headPath 才带 diff」，
+         M/A/D 等普通修改条目会静默落回普通编辑器形态。 -->
     <FilePanelGit
       v-if="hasTerminal && path"
       ref="gitRef"
@@ -744,7 +747,7 @@ function fmtSize(n: number): string {
       :container-id="targetId()"
       :path="path"
       @open-change="
-        (t) => emit('open-file', t.path, t.headPath ? { diff: { headPath: t.headPath } } : undefined)
+        (t) => emit('open-file', t.path, { diff: t.headPath ? { headPath: t.headPath } : {} })
       "
     />
 

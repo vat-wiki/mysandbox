@@ -417,7 +417,9 @@ function loadEditorTabs(): EditorTab[] {
           containerId: r.containerId,
           containerName: typeof r.containerName === 'string' ? r.containerName : r.containerId,
           path: r.path,
-          diff: d && typeof d === 'object' && typeof d.headPath === 'string' ? { headPath: d.headPath } : undefined,
+          // diff 形态整体保留（headPath 仅 R/C 条目有；{} = 无旧路径的普通对比）。
+          // 严校 headPath 会把后者刷回普通态——diff: {} 经 JSON.stringify 仍是 {}，得放行。
+          diff: d && typeof d === 'object' ? { ...(typeof d.headPath === 'string' ? { headPath: d.headPath } : {}) } : undefined,
         },
       ]
     })
