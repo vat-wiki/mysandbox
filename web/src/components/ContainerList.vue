@@ -47,7 +47,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Database, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1476,7 +1476,7 @@ onUnmounted(() => {
             title="docker 配套服务（postgres/redis…，容器内按服务名访问）——点击管理"
             @click="emit('open-services')"
           >
-            <Database class="size-4 text-muted-foreground" />
+            <img src="/docker.svg" alt="" class="size-4" />
             <span :class="['absolute bottom-1 right-1 h-2 w-2 rounded-full ring-1 ring-background', svcDotClass]" />
           </button>
           <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部 -->
@@ -1513,7 +1513,7 @@ onUnmounted(() => {
       <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题
            上下叠着会互相竞争。⟳ 刷新 / ＋ 新建（基座未就绪时禁用）/ ⋯ 低频配置 -->
       <div class="flex shrink-0 items-center gap-2 border-b border-border py-1.5 pl-3 pr-1.5">
-        <span class="text-xs font-medium text-muted-foreground">容器</span>
+        <img src="/lxc.svg" alt="" class="size-3.5" /><span class="text-xs font-medium text-muted-foreground">系统容器</span>
         <span class="text-[10px] text-muted-foreground/70">{{ items.length }}</span>
         <div class="ml-auto flex items-center gap-0.5">
           <Button
@@ -1763,7 +1763,7 @@ onUnmounted(() => {
         title="docker 配套服务（postgres/redis…，容器内按服务名访问）——点击管理"
         @click="emit('open-services')"
       >
-        <Database class="size-3.5 shrink-0 text-muted-foreground" />
+        <img src="/docker.svg" alt="" class="size-3.5 shrink-0" />
         <span :class="['h-2 w-2 shrink-0 rounded-full', svcDotClass]" />
         <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">{{ svcSummary }}</span>
         <Button
