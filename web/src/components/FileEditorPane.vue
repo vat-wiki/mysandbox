@@ -605,17 +605,19 @@ function fmtSize(n: number): string {
       <Button v-if="previewKindV" variant="outline" size="sm" @click="downloadPreview">下载</Button>
       <Button v-if="diff || previewKindV" variant="outline" size="sm" @click="emit('open-normal')">以普通方式打开</Button>
     </div>
+    <!-- 冲突未决强关确认。刻意放在根 div 内部：本组件必须保持单根——多根片段会让
+         父级的 class 透传（min-w-0 flex-1 尺寸）与 v-show（激活面板切换）双双失效，
+         多个编辑器会并排罗列铺开（DialogContent 走 DialogPortal 传送 body，放里面无副作用）。 -->
+    <ConfirmDialog
+      v-if="confirmDiscard"
+      title="放弃未落盘的修改？"
+      :description="`${name} 存在保存冲突，未落盘的改动关闭后将丢失。`"
+      confirm-text="放弃修改"
+      variant="destructive"
+      @confirm="doDiscard"
+      @close="confirmDiscard = false"
+    />
   </div>
-
-  <ConfirmDialog
-    v-if="confirmDiscard"
-    title="放弃未落盘的修改？"
-    :description="`${name} 存在保存冲突，未落盘的改动关闭后将丢失。`"
-    confirm-text="放弃修改"
-    variant="destructive"
-    @confirm="doDiscard"
-    @close="confirmDiscard = false"
-  />
 </template>
 
 <style scoped>
