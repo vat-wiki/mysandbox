@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-API_URL="${IMAGE_READ_API_URL:-http://10.12.135.150:7800/openai/v1/chat/completions}"
+API_URL="${IMAGE_READ_API_URL:-http://10.88.10.21:7800/openai/v1/chat/completions}"
 MODEL="image-read"
 API_KEY="${IMAGE_READ_API_KEY:-sk-myapikey--Je5xkIdBtiyJT9oTuzEqoCFse5OYLIZ}"
 DEFAULT_PROMPT="${IMAGE_READ_PROMPT:-请详细描述这张图片的内容。}"
