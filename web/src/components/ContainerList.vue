@@ -362,10 +362,14 @@ function onFilesDragStart(_g: unknown, pIdx: number, parentWidth: number) {
   filesDragStartW = filesW.value
   filesDragAvailW = parentWidth
 }
+// 面板提为根级通栏列后，dragstart 的 parentWidth = 根容器宽（含侧栏）——380 预留之外
+// 还要扣掉侧栏本身，否则上限会越过一个侧栏宽、把终端主列挤到 124px。
+// 侧栏桌面恒 w-64（popout 无侧栏）；手机侧栏是抽屉不占位，且拖宽本来就不渲染。
+const FILES_SIDEBAR_W = props.popout ? 0 : 256
 function onFilesDrag(dx: number) {
   // 面板在右侧：向左拖（负 dx）变宽
   const w = filesDragStartW - dx
-  filesW.value = Math.min(Math.max(w, 220), Math.max(220, filesDragAvailW - 380))
+  filesW.value = Math.min(Math.max(w, 220), Math.max(220, filesDragAvailW - FILES_SIDEBAR_W - 380))
 }
 // 文件面板跟随哪个 pane（active group 内的序号；group 切换/结构变化时归零）。
 const filePaneIdx = ref(0)
@@ -1673,7 +1677,7 @@ onUnmounted(() => {
       </div>
 
       <!-- 工作区：同区切换——文件 tab 栏激活时主区给编辑器，终端 tab 栏激活时给终端。
-           右侧文件面板是真正的 flex 兄弟（不参与叠加），编辑器/终端都不遮挡它。
+           （文件面板原在此行内与终端并列，已提为根级通栏列——见根容器尾部的 FilePanel。）
            两区在交换容器内 absolute inset-0 叠放、v-show 切换（终端组/编辑器面板
            各自全量保活，切回现场不丢）。 -->
       <div class="relative flex min-h-0 flex-1">
@@ -1729,30 +1733,6 @@ onUnmounted(() => {
           </div>
           </div>
         </div>
-
-        <!-- 右侧文件面板：跟随 active group 第一个 pane 的 cwd（可切 pane）。
-             宿主组同样渲染：api.ts 按 HOST_ID 哨兵把文件请求切到 /api/host-terminal/*。
-             手机全屏覆盖（absolute inset-0）：固定像素宽 + 分隔条在窄屏放不下，
-             PaneDivider 跳过、filesW 不绑定；桌面原路径（filesW + PaneDivider）全保留。 -->
-        <PaneDivider
-          v-if="showFiles && !isPhone"
-          @dragstart="(w: number) => onFilesDragStart(activeGroup, 1, w)"
-          @drag="onFilesDrag"
-        />
-        <FilePanel
-          v-if="showFiles"
-          ref="filePanelRef"
-          class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
-          :style="isPhone ? undefined : { width: filesW + 'px' }"
-          :container-id="activeGroup ? activeGroup.containerId : ''"
-          :container-name="activeGroup ? activeGroup.name : ''"
-          :panes="filePanes"
-          :term-id="fileTermId"
-          :has-terminal="!!activeGroup"
-          @close="showFiles = false"
-          @open-file="onPanelOpenFile"
-          @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
-        />
       </div>
 
       <!-- 文件 tab 栏（底部，VSCode 式）：每个 tab 一个常驻编辑器面板（v-show 保活）。
@@ -1805,6 +1785,32 @@ onUnmounted(() => {
         @close="desktopTarget = null"
       />
     </div>
+
+    <!-- 右侧文件面板：通栏列（与主列平级、根 flex row 的第三个兄弟）——高度撑满整个
+         视口（邮件客户端列表式），不被终端/文件 tab 栏压住。跟随 active group 第一个
+         pane 的 cwd（可切 pane）。宿主组同样渲染：api.ts 按 HOST_ID 哨兵把文件请求切到
+         /api/host-terminal/*。手机全屏覆盖（absolute inset-0，根容器 relative）：固定
+         像素宽 + 分隔条在窄屏放不下，PaneDivider 跳过、filesW 不绑定；桌面原路径
+         （filesW + PaneDivider）全保留，拖宽钳制的可用宽随之变成根容器宽。 -->
+    <PaneDivider
+      v-if="showFiles && !isPhone"
+      @dragstart="(w: number) => onFilesDragStart(activeGroup, 1, w)"
+      @drag="onFilesDrag"
+    />
+    <FilePanel
+      v-if="showFiles"
+      ref="filePanelRef"
+      class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
+      :style="isPhone ? undefined : { width: filesW + 'px' }"
+      :container-id="activeGroup ? activeGroup.containerId : ''"
+      :container-name="activeGroup ? activeGroup.name : ''"
+      :panes="filePanes"
+      :term-id="fileTermId"
+      :has-terminal="!!activeGroup"
+      @close="showFiles = false"
+      @open-file="onPanelOpenFile"
+      @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
+    />
   </div>
 
   <CreateDialog

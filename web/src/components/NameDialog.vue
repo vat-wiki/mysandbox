@@ -10,7 +10,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -44,10 +43,20 @@ function submit() {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-sm">
-      <DialogHeader>
-        <DialogTitle>{{ title }}</DialogTitle>
-        <DialogDescription v-if="desc">{{ desc }}</DialogDescription>
+    <!-- 单区布局：标题行右侧直接放动作按钮，无 footer——弹框就一个输入框，上下两段
+         各占一行太空。X 关闭钮关掉（与「取消」重复且会压住右侧按钮），Esc/取消仍可达。 -->
+    <DialogContent class="max-w-sm" :show-close-button="false">
+      <DialogHeader class="flex-row items-center gap-2">
+        <div class="min-w-0 flex-1">
+          <DialogTitle>{{ title }}</DialogTitle>
+          <DialogDescription v-if="desc" class="truncate">{{ desc }}</DialogDescription>
+        </div>
+        <div class="flex shrink-0 items-center gap-1.5">
+          <Button variant="ghost" size="xs" :disabled="busy" @click="emit('close')">取消</Button>
+          <Button size="xs" :disabled="!nameOk || busy" @click="submit">
+            {{ busy ? '处理中…' : okText || '确定' }}
+          </Button>
+        </div>
       </DialogHeader>
 
       <div class="flex flex-col gap-1.5">
@@ -61,13 +70,6 @@ function submit() {
         <p v-if="name && !nameOk" class="text-xs text-destructive">名称不能包含 /</p>
         <p v-if="err" class="text-xs text-destructive">{{ err }}</p>
       </div>
-
-      <DialogFooter>
-        <Button variant="outline" :disabled="busy" @click="emit('close')">取消</Button>
-        <Button :disabled="!nameOk || busy" @click="submit">
-          {{ busy ? '处理中…' : okText || '确定' }}
-        </Button>
-      </DialogFooter>
     </DialogContent>
   </Dialog>
 </template>
