@@ -544,7 +544,7 @@ async function copyTabHostPath(t: EditorTab) {
     const v = await listFiles(t.containerId, dir)
     const hp = v.hostPath ? v.hostPath.replace(/\/$/, '') + '/' + t.path.slice(t.path.lastIndexOf('/') + 1) : null
     if (!hp) return toast.error('该文件无宿主机实际路径')
-    void copyTabText(hp, '已复制宿主机路径')
+    void copyTabText(hp, '已复制实际路径')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : String(e))
   }
@@ -1861,11 +1861,11 @@ onUnmounted(() => {
             <template v-if="t.diff || previewKind(t.path) || ['svg', 'md', 'markdown'].includes(extOf(t.path))">
               <ContextMenuSeparator />
             </template>
-            <ContextMenuItem class="font-mono text-xs" @click="copyTabPath(t)">
-              复制路径
+            <ContextMenuItem @click="copyTabPath(t)">
+              复制容器路径
             </ContextMenuItem>
-            <ContextMenuItem class="font-mono text-xs" @click="copyTabHostPath(t)">
-              复制宿主机路径
+            <ContextMenuItem @click="copyTabHostPath(t)">
+              复制实际路径
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem variant="destructive" @click="closeFileTab(t)">
