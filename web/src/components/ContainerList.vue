@@ -1481,130 +1481,8 @@ onUnmounted(() => {
         <Button variant="destructive" size="xs" class="ml-auto" @click="emit('open-base')">{{ baseLabel }}管理</Button>
       </div>
 
-      <!-- 文件 tab 栏（顶部，VSCode 式）：每个 tab 一个常驻编辑器面板（v-show 保活）。
-           色点=所属容器色（宿主琥珀），●=有未落盘改动（自动保存窗口内/冲突未决），
-           对比徽章=git diff 只读态。主区同区切换：点文件 tab 主区给编辑器，
-           点底部终端 tab 主区给终端。激活样式与终端 tab 同款（底部色条压边）。 -->
-      <div class="flex min-h-7 items-stretch border-b border-border bg-muted/30 max-md:min-h-10">
-        <template v-if="editorTabs.length">
-          <div
-            v-for="(t, i) in editorTabs"
-            :key="tabId(t)"
-            class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
-            :class="
-              i === activeEditorIdx && areaMode === 'editor'
-                ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
-                : 'text-muted-foreground hover:bg-accent/50'
-            "
-            :title="`${t.containerName}:${t.path}`"
-            @click="onFileTabClick(i)"
-          >
-            <span
-              class="h-1.5 w-1.5 shrink-0 rounded-full max-md:h-2 max-md:w-2"
-              :style="{ backgroundColor: t.containerId === HOST_ID ? '#f59e0b' : containerColor(t.containerId) }"
-            />
-            <span class="max-w-52 truncate font-mono">{{ t.path.slice(t.path.lastIndexOf('/') + 1) }}</span>
-            <span
-              v-if="t.diff"
-              class="shrink-0 rounded bg-violet-500/15 px-1 text-[10px] font-medium text-violet-400"
-              >对比</span
-            >
-            <span
-              v-if="tabDirty[tabId(t)]"
-              class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
-              title="有未落盘改动"
-            />
-            <button
-              class="ml-1 flex items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
-              title="关闭（未落盘改动会先自动保存）"
-              @click.stop="closeFileTab(t)"
-            >
-              <X class="size-3 max-md:size-3.5" />
-            </button>
-          </div>
-        </template>
-        <div v-else class="flex items-center px-3 text-xs text-muted-foreground/60">
-          未打开文件 —— 从文件面板点开（可多开，Ctrl+S / 自动保存）
-        </div>
-      </div>
-
-      <!-- 工作区：同区切换——文件 tab 栏激活时主区给编辑器，终端 tab 栏激活时给终端，
-           右侧文件面板不受影响始终停靠。两区都 absolute inset-0 叠放、v-show 切换
-           （终端组/编辑器面板各自全量保活，切回现场不丢）。 -->
-      <div class="relative flex min-h-0 flex-1">
-        <!-- 编辑器区：每个文件 tab 一个 FileEditorPane，全量常驻 -->
-        <div v-show="areaMode === 'editor' && editorTabs.length" class="absolute inset-0 flex">
-          <FileEditorPane
-            v-for="(t, i) in editorTabs"
-            :key="tabId(t)"
-            :ref="(el) => setPaneRef(t, el)"
-            v-show="i === activeEditorIdx"
-            class="min-h-0 min-w-0 flex-1"
-            :container-id="t.containerId"
-            :container-name="t.containerName"
-            :path="t.path"
-            :diff="t.diff"
-            :line="t.line"
-            :col="t.col"
-            :active="areaMode === 'editor' && i === activeEditorIdx"
-            @close="removeTab(t)"
-            @open-normal="onOpenNormal(t)"
-            @saved="onEditorSaved"
-            @dirty="(v: boolean) => (tabDirty[tabId(t)] = v)"
-          />
-        </div>
-        <div v-show="!(areaMode === 'editor' && editorTabs.length)" class="relative min-h-0 min-w-0 flex-1 bg-zinc-950">
-        <div
-          v-for="(g, gIdx) in groups"
-          :key="g.id"
-          v-show="gIdx === activeIdx"
-          class="absolute inset-0 flex"
-        >
-          <!-- 布局树根：TermLayoutNode 递归渲染叶子/split；所有组常驻 DOM，v-show 切换 -->
-          <TermLayoutNode
-            :node="g.root"
-            :group="g"
-            :active="gIdx === activeIdx"
-            class="min-h-0 min-w-0 flex-1"
-          />
-        </div>
-        <div
-          v-if="!groups.length"
-          class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground"
-        >
-          <TerminalIcon class="size-8 opacity-40" />
-          <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开终端' }}</p>
-          <p class="text-xs opacity-70">同一容器可左右/上下分屏（每组最多 {{ MAX_GROUP_PANES }} 块）；tab 右键随时新开一组</p>
-        </div>
-        </div>
-
-        <!-- 右侧文件面板：跟随 active group 第一个 pane 的 cwd（可切 pane）。
-             宿主组同样渲染：api.ts 按 HOST_ID 哨兵把文件请求切到 /api/host-terminal/*。
-             手机全屏覆盖（absolute inset-0）：固定像素宽 + 分隔条在窄屏放不下，
-             PaneDivider 跳过、filesW 不绑定；桌面原路径（filesW + PaneDivider）全保留。 -->
-        <PaneDivider
-          v-if="showFiles && !isPhone"
-          @dragstart="(w: number) => onFilesDragStart(activeGroup, 1, w)"
-          @drag="onFilesDrag"
-        />
-        <FilePanel
-          v-if="showFiles"
-          ref="filePanelRef"
-          class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
-          :style="isPhone ? undefined : { width: filesW + 'px' }"
-          :container-id="activeGroup ? activeGroup.containerId : ''"
-          :container-name="activeGroup ? activeGroup.name : ''"
-          :panes="filePanes"
-          :term-id="fileTermId"
-          :has-terminal="!!activeGroup"
-          @close="showFiles = false"
-          @open-file="(p: string) => activeGroup && openFile(activeGroup.containerId, activeGroup.name, p)"
-          @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
-        />
-      </div>
-
-      <!-- 终端 tab 栏（底部）：原顶部整条下移——会话扫描/网络信息/文件面板开关都是终端
-           作用域动作，随栏落底。每组一个 tab，色条=容器色，·N=pane 数（>1 才显示）。
+      <!-- 终端 tab 栏（顶部）：主要内容是终端，tab 栏常驻主区上方。每组一个 tab，
+           色条=容器色，·N=pane 数（>1 才显示）。
            右键（触屏长按合成同款事件）弹菜单：独立窗口（popout 该容器/宿主的工作区，容器
            要 running）/ 隐藏（保留会话，会话对话框可恢复）/ 关闭（真杀）。
            最左「所有终端」：本机全部活跃终端会话（服务端扫描，跨窗口跨浏览器），常驻入口；
@@ -1613,7 +1491,7 @@ onUnmounted(() => {
            min-h-7：桌面 28px 托底，= 有 tab 时 tab 项（text-xs + py-1.5）撑出的行高——groups
            全关/全隐藏时只剩图标按钮（无纵向 padding），不托底整条栏会塌到 ~14px。
            max-md:min-h-10：手机 40px，对应 max-md:py-2.5 + text-sm。 -->
-      <div class="flex min-h-7 border-t border-border bg-muted/30 max-md:min-h-10">
+      <div class="flex min-h-7 border-b border-border bg-muted/30 max-md:min-h-10">
         <button
           v-if="!props.popout"
           class="flex shrink-0 items-center border-r border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:px-4 md:hidden"
@@ -1645,7 +1523,7 @@ onUnmounted(() => {
               :class="[
                 'flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm relative',
                 idx === activeIdx && areaMode === 'terminal'
-                  ? 'bg-card text-foreground shadow-[inset_0_2px_0_0_var(--primary)] font-medium'
+                  ? 'bg-card text-foreground shadow-[inset_0_-2px_0_0_var(--primary)] font-medium'
                   : 'text-muted-foreground hover:bg-accent/50',
                 dragTabIdx === idx ? 'opacity-40' : '',
               ]"
@@ -1703,7 +1581,7 @@ onUnmounted(() => {
               <Network class="size-3.5 max-md:size-5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" side="top">
+          <DropdownMenuContent align="end">
             <template v-if="activeContainer && activeContainer.state === 'running'">
               <DropdownMenuLabel class="text-xs font-normal text-muted-foreground">
                 {{ activeContainer.displayName || activeContainer.name }}
@@ -1784,6 +1662,128 @@ onUnmounted(() => {
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
         </button>
+      </div>
+
+      <!-- 工作区：同区切换——文件 tab 栏激活时主区给编辑器，终端 tab 栏激活时给终端。
+           右侧文件面板是真正的 flex 兄弟（不参与叠加），编辑器/终端都不遮挡它。
+           两区在交换容器内 absolute inset-0 叠放、v-show 切换（终端组/编辑器面板
+           各自全量保活，切回现场不丢）。 -->
+      <div class="relative flex min-h-0 flex-1">
+        <!-- 交换容器：编辑器区 / 终端区在此二选一占位 -->
+        <div class="relative min-h-0 min-w-0 flex-1">
+          <!-- 编辑器区：每个文件 tab 一个 FileEditorPane，全量常驻 -->
+          <div v-show="areaMode === 'editor' && editorTabs.length" class="absolute inset-0 flex">
+            <FileEditorPane
+              v-for="(t, i) in editorTabs"
+              :key="tabId(t)"
+              :ref="(el) => setPaneRef(t, el)"
+              v-show="i === activeEditorIdx"
+              class="min-h-0 min-w-0 flex-1"
+              :container-id="t.containerId"
+              :container-name="t.containerName"
+              :path="t.path"
+              :diff="t.diff"
+              :line="t.line"
+              :col="t.col"
+              :active="areaMode === 'editor' && i === activeEditorIdx"
+              @close="removeTab(t)"
+              @open-normal="onOpenNormal(t)"
+              @saved="onEditorSaved"
+              @dirty="(v: boolean) => (tabDirty[tabId(t)] = v)"
+            />
+          </div>
+          <div v-show="!(areaMode === 'editor' && editorTabs.length)" class="absolute inset-0 bg-zinc-950">
+          <div
+            v-for="(g, gIdx) in groups"
+            :key="g.id"
+            v-show="gIdx === activeIdx"
+            class="absolute inset-0 flex"
+          >
+            <!-- 布局树根：TermLayoutNode 递归渲染叶子/split；所有组常驻 DOM，v-show 切换 -->
+            <TermLayoutNode
+              :node="g.root"
+              :group="g"
+              :active="gIdx === activeIdx"
+              class="min-h-0 min-w-0 flex-1"
+            />
+          </div>
+          <div
+            v-if="!groups.length"
+            class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground"
+          >
+            <TerminalIcon class="size-8 opacity-40" />
+            <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开终端' }}</p>
+            <p class="text-xs opacity-70">同一容器可左右/上下分屏（每组最多 {{ MAX_GROUP_PANES }} 块）；tab 右键随时新开一组</p>
+          </div>
+          </div>
+        </div>
+
+        <!-- 右侧文件面板：跟随 active group 第一个 pane 的 cwd（可切 pane）。
+             宿主组同样渲染：api.ts 按 HOST_ID 哨兵把文件请求切到 /api/host-terminal/*。
+             手机全屏覆盖（absolute inset-0）：固定像素宽 + 分隔条在窄屏放不下，
+             PaneDivider 跳过、filesW 不绑定；桌面原路径（filesW + PaneDivider）全保留。 -->
+        <PaneDivider
+          v-if="showFiles && !isPhone"
+          @dragstart="(w: number) => onFilesDragStart(activeGroup, 1, w)"
+          @drag="onFilesDrag"
+        />
+        <FilePanel
+          v-if="showFiles"
+          ref="filePanelRef"
+          class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
+          :style="isPhone ? undefined : { width: filesW + 'px' }"
+          :container-id="activeGroup ? activeGroup.containerId : ''"
+          :container-name="activeGroup ? activeGroup.name : ''"
+          :panes="filePanes"
+          :term-id="fileTermId"
+          :has-terminal="!!activeGroup"
+          @close="showFiles = false"
+          @open-file="(p: string) => activeGroup && openFile(activeGroup.containerId, activeGroup.name, p)"
+          @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
+        />
+      </div>
+
+      <!-- 文件 tab 栏（底部，VSCode 式）：每个 tab 一个常驻编辑器面板（v-show 保活）。
+           色点=所属容器色（宿主琥珀），●=有未落盘改动（自动保存窗口内/冲突未决），
+           对比徽章=git diff 只读态。主区同区切换：点文件 tab 主区给编辑器，
+           点顶部终端 tab 主区给终端。主要内容是终端——没开文件时整条不渲染，
+           不占终端区高度；激活样式用上缘色条（栏在底部，压边方向反转）。 -->
+      <div v-if="editorTabs.length" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
+        <div
+          v-for="(t, i) in editorTabs"
+          :key="tabId(t)"
+          class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
+          :class="
+            i === activeEditorIdx && areaMode === 'editor'
+              ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
+              : 'text-muted-foreground hover:bg-accent/50'
+          "
+          :title="`${t.containerName}:${t.path}`"
+          @click="onFileTabClick(i)"
+        >
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full max-md:h-2 max-md:w-2"
+            :style="{ backgroundColor: t.containerId === HOST_ID ? '#f59e0b' : containerColor(t.containerId) }"
+          />
+          <span class="max-w-52 truncate font-mono">{{ t.path.slice(t.path.lastIndexOf('/') + 1) }}</span>
+          <span
+            v-if="t.diff"
+            class="shrink-0 rounded bg-violet-500/15 px-1 text-[10px] font-medium text-violet-400"
+            >对比</span
+          >
+          <span
+            v-if="tabDirty[tabId(t)]"
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+            title="有未落盘改动"
+          />
+          <button
+            class="ml-1 flex items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
+            title="关闭（未落盘改动会先自动保存）"
+            @click.stop="closeFileTab(t)"
+          >
+            <X class="size-3 max-md:size-3.5" />
+          </button>
+        </div>
       </div>
 
       <DesktopDialog
