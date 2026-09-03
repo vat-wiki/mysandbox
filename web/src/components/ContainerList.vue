@@ -24,7 +24,7 @@ import {
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
 import { newId } from '@/lib/id'
-import { containerColor, stateLabel } from '@/lib/utils'
+import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
 import { isPhone } from '@/composables/useDevice'
 import { extOf, previewKind } from '@/lib/preview'
@@ -47,7 +47,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Database, Settings2, Network, ArrowRightLeft, ListChecks, Container } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Database, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -244,6 +244,18 @@ watch(hiddenGroups, saveHidden, { deep: true })
 // 默认收起；选完容器/宿主自动收（见 openTerm/openHostTerm）。
 const drawerOpen = ref(false)
 
+// 侧栏收起（窄边 rail）：桌面(md+)专属形态——手机抽屉忽略此状态恒展开（rail 对触屏没意义）。
+// 收起态只留导航骨架：展开键 / ＋ 新建 / 容器首字图标列（title 带全名与状态）/ 底部环境区。
+// loadBool 为 function 声明（提升），此处可安全前置调用。
+const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
+watch(collapsed, (v) => {
+  try {
+    localStorage.setItem('mysandbox:sidebar-collapsed', v ? '1' : '0')
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+})
+
 // ---- 分屏树的动作与拖拽 ----
 // 树操作纯函数在 lib/termlayout.ts；这里经 TERM_OPS 注入给递归的 TermLayoutNode 上抛动作。
 // 分隔条拖动只调相邻两块 grows：dragstart 快照，move 把像素位移换算成 grow 增量
@@ -368,11 +380,13 @@ function onFilesDragStart(_g: unknown, pIdx: number, parentWidth: number) {
 // 面板提为根级通栏列后，dragstart 的 parentWidth = 根容器宽（含侧栏）——380 预留之外
 // 还要扣掉侧栏本身，否则上限会越过一个侧栏宽、把终端主列挤到 124px。
 // 侧栏桌面恒 w-64（popout 无侧栏）；手机侧栏是抽屉不占位，且拖宽本来就不渲染。
-const FILES_SIDEBAR_W = props.popout ? 0 : 256
+// 侧栏宽度（像素）：展开 256（md:w-64），收起 rail 48（md:w-12）——文件面板拖宽的
+// 可用宽上限随之联动，rail 时文件面板能拖得更宽。
+const FILES_SIDEBAR_W = computed(() => (props.popout ? 0 : collapsed.value ? 48 : 256))
 function onFilesDrag(dx: number) {
   // 面板在右侧：向左拖（负 dx）变宽
   const w = filesDragStartW - dx
-  filesW.value = Math.min(Math.max(w, 220), Math.max(220, filesDragAvailW - FILES_SIDEBAR_W - 380))
+  filesW.value = Math.min(Math.max(w, 220), Math.max(220, filesDragAvailW - FILES_SIDEBAR_W.value - 380))
 }
 // 文件面板跟随哪个 pane（active group 内的序号；group 切换/结构变化时归零）。
 const filePaneIdx = ref(0)
@@ -635,6 +649,8 @@ async function loadListenPorts() {
     if (seq !== listenSeq) return
     listenPorts.value = r.ports
     webPorts.value = r.web ?? []
+    // 同步进卡片端口表：active 容器的图标 5s 跟新（慢轮询 15s 之外更及时）
+    portsById.value = { ...portsById.value, [c.id]: { ports: r.ports, web: r.web ?? [] } }
   } catch {
     if (seq !== listenSeq) return
     listenPorts.value = [] // 容器刚停/权限等：静默置空
@@ -663,10 +679,11 @@ onUnmounted(() => {
   }
 })
 // docker 映射端口（去重：ipv4/ipv6 两条同名映射）。hostPort 在宿主侧可访问。
-const mappedPorts = computed(() => {
+// 抽成函数：tab 下拉的 mappedPorts 与侧栏卡片端口浮层（cardPortRows）共用。
+function mappedPortsOf(c: ContainerView): { pub: number; priv: number }[] {
   const seen = new Set<string>()
   const out: { pub: number; priv: number }[] = []
-  for (const p of activeContainer.value?.ports ?? []) {
+  for (const p of c.ports ?? []) {
     if (!p.publicPort || !p.privatePort) continue
     const key = `${p.publicPort}->${p.privatePort}`
     if (seen.has(key)) continue
@@ -674,13 +691,69 @@ const mappedPorts = computed(() => {
     out.push({ pub: p.publicPort, priv: p.privatePort })
   }
   return out
-})
+}
+const mappedPorts = computed(() => (activeContainer.value ? mappedPortsOf(activeContainer.value) : []))
 async function copyIp() {
   await copyIpOf(activeContainer.value?.ip ?? '')
 }
 function openUrl(url: string) {
   window.open(url, '_blank', 'noopener')
 }
+
+// ---- 侧栏卡片端口图标：全部运行中容器的监听端口 ----
+// active 容器已有 5s 精刷（tab 下拉用，loadListenPorts 顺手同步进来）；这里补一个 15s
+// 慢轮询覆盖所有 running 容器——每容器一次 awk 读 /proc/net/tcp（无 ss 依赖）+ 内网
+// 毫秒级 TCP 探测，个人 sandbox 个位数容器，成本可忽略。页面隐藏时跳过、回前台立即补刷；
+// 失败静默（容器刚停/重启中等），下次轮询自愈。结果整表重建：已删/已停的条目自然消失。
+const portsById = ref<Record<string, { ports: number[]; web: number[] }>>({})
+let portsTimer: ReturnType<typeof setInterval> | null = null
+let portsSeq = 0 // 竞态：慢轮询响应乱序时丢弃旧表
+async function refreshAllPorts() {
+  if (props.popout || document.hidden) return
+  const running = items.value.filter((c) => c.state === 'running')
+  if (!running.length) {
+    portsById.value = {}
+    return
+  }
+  const seq = ++portsSeq
+  const rs = await Promise.allSettled(running.map((c) => getListenPorts(c.id)))
+  if (seq !== portsSeq) return
+  const next: Record<string, { ports: number[]; web: number[] }> = {}
+  running.forEach((c, i) => {
+    if (rs[i].status === 'fulfilled') next[c.id] = rs[i].value
+  })
+  portsById.value = next
+}
+function onVisChange() {
+  if (!document.hidden) void refreshAllPorts()
+}
+// 卡片端口浮层的行：web（实测返回 HTML）/ other（其余监听）/ map（docker 宿主映射）
+// 三态合一，渲染与点击行为按 kind 分支——与 tab 栏网络下拉同信息结构，纵向更紧凑。
+type PortRow = { kind: 'web' | 'other' | 'map'; port: number; priv?: number }
+function cardPortRows(id: string): PortRow[] {
+  const v = portsById.value[id]
+  if (!v) return []
+  const rows: PortRow[] = v.web.map((p) => ({ kind: 'web' as const, port: p }))
+  for (const p of v.ports) {
+    if (!v.web.includes(p)) rows.push({ kind: 'other' as const, port: p })
+  }
+  const c = items.value.find((x) => x.id === id)
+  if (c) for (const m of mappedPortsOf(c)) rows.push({ kind: 'map' as const, port: m.pub, priv: m.priv })
+  return rows
+}
+function portRowTarget(c: ContainerView, r: PortRow): string {
+  return r.kind === 'map' ? `http://127.0.0.1:${r.port}` : `http://${c.ip}:${r.port}`
+}
+function portRowTitle(c: ContainerView, r: PortRow): string {
+  const t = portRowTarget(c, r)
+  if (r.kind === 'web') return `已验证返回网页，点击打开 ${t}`
+  if (r.kind === 'map') return `宿主端口 ${r.port} → 容器 ${r.priv}，点击打开`
+  return `容器内监听 ${r.port}（未返回 HTML），点击打开 ${t}`
+}
+// 浮层显隐：mouseenter/leave 挂在图标+浮层共用的 wrapper（移进浮层不算离开）；
+// 触屏无 hover——点按图标切换 pinned，再点收起。
+const portsHover = ref<string | null>(null)
+const portsPinned = ref<string | null>(null)
 
 // ---- CLI open 深链消费 ----
 // 双条件：openReq 存在 + 容器列表已就绪（openReq 可能早于首次 listContainers 到达）。
@@ -1113,6 +1186,11 @@ async function refresh(silent = false) {
     itemsReady.value = true
     lastOkAt.value = Date.now()
     connLost.value = false
+    // 卡片端口表还空着且存在运行中容器（首屏 / 全停过后又启动）→ 立即补刷一次，
+    // 不等 15s 慢轮询——表非空时跳过，不会叠加成 5s 高频轮询。
+    if (!Object.keys(portsById.value).length && r.items.some((c) => c.state === 'running')) {
+      void refreshAllPorts()
+    }
     const valid = new Set(r.items.map((c) => c.id))
     // 关闭已消失容器的终端 group（容器已删，会话随容器消失，只从 UI 移除、不调 kill）。
     // 宿主 group 不依赖容器存在，豁免修剪。
@@ -1275,11 +1353,16 @@ onMounted(() => {
   if (!props.popout) {
     void refreshServices()
     armSvcTimer()
+    void refreshAllPorts() // 首刷不等 15s：首屏卡片就有端口图标
+    portsTimer = setInterval(() => void refreshAllPorts(), 15_000)
+    document.addEventListener('visibilitychange', onVisChange)
   }
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (svcTimer) clearInterval(svcTimer)
+  if (portsTimer) clearInterval(portsTimer)
+  document.removeEventListener('visibilitychange', onVisChange)
 })
 </script>
 
@@ -1298,12 +1381,107 @@ onUnmounted(() => {
     />
     <aside
       v-if="!props.popout"
-      class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:w-64"
-      :class="drawerOpen ? '' : 'max-md:-translate-x-full'"
+      class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:transition-[width] md:duration-200"
+      :class="[drawerOpen ? '' : 'max-md:-translate-x-full', collapsed && !isPhone ? 'md:w-12' : 'md:w-64']"
     >
+      <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：只留导航骨架——
+           展开键 / ＋ 新建 / 容器首字图标列（容器色淡染，title 带全名·状态·IP）/ 底部
+           环境区（配置菜单 · 宿主 · 服务）。列表异常给一枚提示点，点击展开并重试。 -->
+      <template v-if="collapsed && !isPhone">
+        <div class="flex h-10 shrink-0 items-center justify-center border-b border-border">
+          <Button variant="ghost" size="icon-xs" title="展开侧栏" @click="collapsed = false">
+            <PanelLeftOpen />
+          </Button>
+        </div>
+        <div class="flex shrink-0 items-center justify-center border-b border-border py-1.5">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :disabled="baseReady === false"
+            :title="baseReady === false ? `${baseLabel}未就绪，无法新建` : '新建容器'"
+            @click="showCreate = true"
+          >
+            <Plus />
+          </Button>
+        </div>
+        <button
+          v-if="err || connLost"
+          type="button"
+          class="mx-auto mt-2 shrink-0"
+          :title="err || '连接失败，列表可能过期 · 点击展开并重试'"
+          @click="((collapsed = false), refresh())"
+        >
+          <span class="block size-2 rounded-full" :class="err ? 'bg-destructive' : 'bg-amber-500 animate-pulse'" />
+        </button>
+        <div class="scroll-thin flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-2">
+          <button
+            v-for="c in items"
+            :key="c.id"
+            type="button"
+            class="flex size-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-medium transition-colors"
+            :class="[
+              activeGroup?.containerId === c.id ? 'ring-1 ring-border' : 'hover:bg-accent/40',
+              c.state !== 'running' ? 'opacity-40' : '',
+            ]"
+            :style="{
+              backgroundColor: containerColorA(c.id, activeGroup?.containerId === c.id ? 0.22 : 0.1),
+              color: containerColor(c.id),
+            }"
+            :title="`${c.displayName || c.name} · ${stateLabel(c.state)}${c.ip ? ` · ${c.ip}` : ''}`"
+            @click="openTerm(c)"
+          >
+            {{ (c.displayName || c.name).trim().slice(0, 1).toUpperCase() }}
+          </button>
+          <Container v-if="!items.length && !loading" class="size-4 text-muted-foreground/40" />
+        </div>
+        <div class="flex shrink-0 flex-col items-center gap-0.5 border-t border-border py-1.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button variant="ghost" size="icon-xs" title="容器环境配置">
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="right" align="start">
+              <DropdownMenuItem @click="emit('open-base')">
+                <Settings2 /> {{ baseLabel }}管理
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                :disabled="!selectableItems.length"
+                :title="selectableItems.length ? '' : '没有受管理的容器'"
+                @click="showBatch = true"
+              >
+                <ListChecks /> 批量配置
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <button
+            type="button"
+            class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
+            :class="activeGroup?.kind === 'host' ? 'bg-accent/50' : ''"
+            title="宿主终端"
+            @click="openHostTerm()"
+          >
+            <Monitor class="size-4 text-amber-500" />
+          </button>
+          <button
+            type="button"
+            class="relative flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
+            title="docker 配套服务（postgres/redis…，容器内按服务名访问）——点击管理"
+            @click="emit('open-services')"
+          >
+            <Database class="size-4 text-muted-foreground" />
+            <span :class="['absolute bottom-1 right-1 h-2 w-2 rounded-full ring-1 ring-background', svcDotClass]" />
+          </button>
+        </div>
+      </template>
+
+      <!-- 展开态：品牌块 + 容器卡片列表 + 底部环境区 -->
+      <template v-else>
       <!-- 品牌块：纯身份标识，居中。系统健康不做常驻展示——引擎/连接出问题时终端连不上，
-           tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。手机抽屉态左侧加收起按钮。 -->
-      <div class="flex h-10 shrink-0 items-center justify-center gap-2 border-b border-border px-3">
+           tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。手机抽屉态左侧加收起按钮；
+           桌面右侧加侧栏收起（窄边 rail）按钮。 -->
+      <div class="relative flex h-10 shrink-0 items-center justify-center gap-2 border-b border-border px-3">
         <Button
           variant="ghost"
           size="icon-xs"
@@ -1315,6 +1493,15 @@ onUnmounted(() => {
         </Button>
         <img src="/logo.svg" alt="" class="size-5" />
         <span class="text-sm font-semibold tracking-tight">MySandbox</span>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="absolute right-1 max-md:hidden"
+          title="收起侧栏（窄边）"
+          @click="collapsed = true"
+        >
+          <PanelLeftClose />
+        </Button>
       </div>
 
       <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题
@@ -1453,6 +1640,45 @@ onUnmounted(() => {
               class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
               >外部</Badge
             >
+            <!-- 右下角端口图标：running 且扫到监听端口才出现（全部容器 15s 慢轮询，
+                 active 容器随 tab 下拉 5s 精刷）。hover 浮出端口面板（触屏点按切换，
+                 再点收起）；面板向上弹（列表底部卡片不出屏），行点击打开浏览器。 -->
+            <div
+              v-if="c.state === 'running' && (portsById[c.id]?.ports.length ?? 0) > 0"
+              class="relative shrink-0"
+              @mouseenter="portsHover = c.id"
+              @mouseleave="portsHover = null"
+            >
+              <button
+                type="button"
+                class="flex rounded transition-colors"
+                :class="portsHover === c.id || portsPinned === c.id ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'"
+                title="监听端口"
+                @click.stop="portsPinned = portsPinned === c.id ? null : c.id"
+              >
+                <Network class="size-3" />
+              </button>
+              <div
+                v-if="portsHover === c.id || portsPinned === c.id"
+                class="absolute bottom-full right-0 z-30 mb-1 w-44 rounded-md border border-border bg-popover p-1 shadow-md"
+              >
+                <button
+                  v-for="r in cardPortRows(c.id)"
+                  :key="r.kind + r.port"
+                  type="button"
+                  class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-[11px] transition-colors hover:bg-accent"
+                  :title="portRowTitle(c, r)"
+                  @click.stop="openUrl(portRowTarget(c, r))"
+                >
+                  <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                  <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
+                  <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
+                  <span class="flex-1 tabular-nums">{{ r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port }}</span>
+                  <span v-if="r.kind === 'web'" class="text-[10px] text-emerald-500">网页</span>
+                  <span v-else-if="r.kind === 'map'" class="text-[10px] text-muted-foreground">宿主</span>
+                </button>
+              </div>
+            </div>
           </div>
           <!-- ⋯ 菜单：低频操作收进来（外部的容器只有「纳入管理」）。触屏常显。 -->
           <DropdownMenu>
@@ -1544,6 +1770,7 @@ onUnmounted(() => {
           <Plus />
         </Button>
       </button>
+      </template>
     </aside>
 
     <!-- 右侧终端主区：tab 栏 + 分屏，占满剩余空间 -->
