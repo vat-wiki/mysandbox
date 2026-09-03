@@ -27,7 +27,7 @@ import {
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
-import { Music, Eye, Code } from 'lucide-vue-next'
+import { Music, Eye, Code, Check, LoaderCircle } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
@@ -158,9 +158,12 @@ const dirty = computed(() => content.value !== savedContent.value)
 watch(dirty, (v) => emit('dirty', v), { immediate: true })
 
 // —— 自动保存（VSCode afterDelay 式）——
-// 停手 1.2s 落盘；Ctrl+S 保留为立即冲一次。参与自动落盘的门槛：非 diff/预览/二进制、
-// 非新建（误触即建文件太激进——新文件 Ctrl+S 或关闭冲刷时才创建）、无未决冲突。
-const AUTOSAVE_MS = 1200
+// 输入停顿 300ms 即落盘：短防抖≈实时——连续键入不逐键打请求（每次键入重置计时），
+// 一停顿就存；保存飞行期间的键入由「定时器到期撞 busy → 重挂」接力补拍，感知为
+// 「改完就存」，不存在「关闭才保存」。Ctrl+S 保留为立即冲一次。参与自动落盘的门槛：
+// 非 diff/预览/二进制、非新建（误触即建文件太激进——新文件 Ctrl+S 或关闭冲刷时才创建）、
+// 无未决冲突。
+const AUTOSAVE_MS = 300
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 function canAutosave(): boolean {
   return !props.diff && !previewKindV.value && !meta.value?.binary && !isNew.value && !conflict.value
@@ -418,7 +421,9 @@ function fmtSize(n: number): string {
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-card">
-    <!-- 头：容器:路径（文件名在 tab 上，这里留完整路径语境）+ 形态徽章 + 预览切换 -->
+    <!-- 头：容器:路径 + 形态徽章 + 保存状态 + 动作按钮，单行整合（原底部状态条已并入——
+         省一档编辑器纵向空间；保存流转常驻可见，不会有「关闭才保存」的误解。自动保存制：
+         输入停顿即落盘，无保存/关闭按钮——关闭走 tab X，Ctrl+S 仍在） -->
     <div class="flex shrink-0 items-center gap-2 border-b border-border px-4 py-1.5">
       <span
         class="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
@@ -428,13 +433,16 @@ function fmtSize(n: number): string {
       <span
         v-if="diff"
         class="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-400"
-        title="git 变更对比（左 HEAD · 右 工作区）"
+        :title="`git 变更对比（左 HEAD · 右 工作区 · 只读${
+          diffView ? ` · ${fmtBytes(diffView.base.size) || '?'} → ${fmtBytes(diffView.work.size) || '?'}` : ''
+        }）`"
         >对比</span
       >
       <span
-        v-if="(previewKindV || ((isSvg || isMd) && textPreview))"
+        v-if="previewKindV || ((isSvg || isMd) && textPreview)"
         class="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-400"
-        >预览</span
+        :title="'在线预览 · 只读'"
+        >预览{{ previewSize ? ` · ${fmtSize(previewSize)}` : '' }}</span
       >
       <span
         v-if="diff?.headPath && diff.headPath !== path"
@@ -442,19 +450,40 @@ function fmtSize(n: number): string {
         :title="diff.headPath"
         >{{ diff.headPath.slice(diff.headPath.lastIndexOf('/') + 1) }} →</span
       >
-      <span v-else-if="isNew" class="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">新建</span>
-      <!-- svg / md 专属：编辑 ⇄ 预览渲染切换（渲染实时反映编辑内容，未保存也可见） -->
-      <Button
-        v-if="isSvg || isMd"
-        variant="ghost"
-        size="xs"
-        class="ml-auto shrink-0"
-        @click="textPreview = !textPreview"
+      <span
+        v-else-if="isNew"
+        class="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+        title="新文件：Ctrl+S 或关闭时创建"
+        >新建</span
       >
-        <Eye v-if="!textPreview" class="size-3.5" />
-        <Code v-else class="size-3.5" />
-        {{ textPreview ? '编辑' : '预览' }}
-      </Button>
+      <!-- 保存状态流转（编辑态专属；diff/预览/二进制只读态无此语义） -->
+      <span v-if="savedFlash" class="flex shrink-0 items-center gap-1 text-[11px] text-emerald-500">
+        <Check class="size-3" />已保存
+      </span>
+      <span
+        v-else-if="!diff && !previewKindV && !meta?.binary && busy"
+        class="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"
+      >
+        <LoaderCircle class="size-3 animate-spin" />保存中
+      </span>
+      <span
+        v-else-if="!diff && !previewKindV && !meta?.binary && dirty"
+        class="shrink-0 text-[11px] text-amber-500"
+        title="输入停顿后自动保存 · Ctrl+S 立即保存"
+        >未保存</span
+      >
+      <!-- svg / md 专属：编辑 ⇄ 预览渲染切换（渲染实时反映编辑内容，未保存也可见） -->
+      <div class="ml-auto flex shrink-0 items-center gap-1.5">
+        <Button v-if="isSvg || isMd" variant="ghost" size="xs" @click="textPreview = !textPreview">
+          <Eye v-if="!textPreview" class="size-3.5" />
+          <Code v-else class="size-3.5" />
+          {{ textPreview ? '编辑' : '预览' }}
+        </Button>
+        <Button v-if="previewKindV" variant="outline" size="xs" @click="downloadPreview">下载</Button>
+        <Button v-if="diff || previewKindV" variant="outline" size="xs" @click="emit('open-normal')">
+          以普通方式打开
+        </Button>
+      </div>
     </div>
 
     <!-- 体 -->
@@ -573,26 +602,6 @@ function fmtSize(n: number): string {
           />
         </template>
       </template>
-    </div>
-
-    <!-- 底部：状态条（自动保存制，无保存/关闭按钮——关闭走 tab X，Ctrl+S 仍在） -->
-    <div class="flex shrink-0 items-center gap-3 border-t px-5 py-1.5">
-      <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-        <template v-if="diff">
-          git 对比快照 · 左 HEAD · 右 工作区 · 只读
-          <span v-if="diffView">（{{ fmtBytes(diffView.base.size) || '?' }} → {{ fmtBytes(diffView.work.size) || '?' }}）</span>
-        </template>
-        <template v-else>
-          <span v-if="savedFlash" class="text-emerald-500">已保存</span>
-          <span v-else-if="busy" class="text-muted-foreground">保存中…</span>
-          <span v-else-if="dirty" class="text-amber-500">待自动保存</span>
-          <span v-else-if="isNew">新文件，Ctrl+S 或关闭时创建</span>
-          <span v-else-if="previewKindV">在线预览 · {{ fmtSize(previewSize) }} · 只读</span>
-          <span v-else-if="meta && !meta.binary">{{ fmtSize(meta.size) }} · 自动保存开启</span>
-        </template>
-      </span>
-      <Button v-if="previewKindV" variant="outline" size="sm" @click="downloadPreview">下载</Button>
-      <Button v-if="diff || previewKindV" variant="outline" size="sm" @click="emit('open-normal')">以普通方式打开</Button>
     </div>
     <!-- 冲突未决强关确认。刻意放在根 div 内部：本组件必须保持单根——多根片段会让
          父级的 class 透传（min-w-0 flex-1 尺寸）与 v-show（激活面板切换）双双失效，
