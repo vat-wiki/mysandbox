@@ -1,6 +1,8 @@
 <script setup lang="ts">
-// 容器文件编辑对话框：Monaco 大编辑空间 + Ctrl+S 保存 + mtime 乐观锁冲突处理。
-// 二进制 / 超大文件只读提示。未保存关闭需确认（ConfirmDialog 复用）。
+// 容器文件编辑对话框：Monaco 大编辑空间 + 自动保存（停手 1.2s 落盘，Ctrl+S 立即冲一次）。
+// mtime 乐观锁冲突处理：409 后自动保存暂停，等用户重载/覆盖，绝不静默覆盖外部改动。
+// 二进制 / 超大文件只读提示。关闭（X / Esc）时先把防抖窗口内的改动冲一遍，失败/冲突留在
+// 窗口里裁决；新建文件不参与自动落盘（误触即建文件太激进），显式保存或关闭时才创建。
 // diff prop 存在时切「git 变更对比」模式：getGitDiff 快照（左 HEAD 右工作区）、只读、
 // 无保存/脏确认；各降级路径（单侧二进制/超大/缺失）只影响那一侧，双侧都不可渲染时
 // 给「以普通方式打开」出口（emit open-normal，父级清 diff 重挂普通模式）。
@@ -146,11 +148,34 @@ async function hydrateMdImages() {
 }
 watch(mdHtml, () => void nextTick(hydrateMdImages))
 onBeforeUnmount(() => {
+  if (autosaveTimer) clearTimeout(autosaveTimer)
   clearPreview()
   clearMdBlobs()
 })
 
 const dirty = computed(() => content.value !== savedContent.value)
+
+// —— 自动保存（VSCode afterDelay 式）——
+// 停手 1.2s 落盘；Ctrl+S 保留为立即冲一次。参与自动落盘的门槛：非 diff/预览/二进制、
+// 非新建（误触即建文件太激进——新文件 Ctrl+S 或关闭冲刷时才创建）、无未决冲突。
+const AUTOSAVE_MS = 1200
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null
+function canAutosave(): boolean {
+  return !props.diff && !previewKindV.value && !meta.value?.binary && !isNew.value && !conflict.value
+}
+function scheduleAutosave() {
+  if (!canAutosave()) return
+  if (autosaveTimer) clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null
+    // 上一次保存还在飞：撞回去会被 busy 门槛吞掉，重挂定时器等下一拍
+    if (busy.value) scheduleAutosave()
+    else void save()
+  }, AUTOSAVE_MS)
+}
+watch(content, () => {
+  if (!loading.value && dirty.value) scheduleAutosave()
+})
 
 // —— diff 模式状态 ——
 const diffView = ref<GitDiffView | null>(null)
@@ -305,7 +330,11 @@ async function save(overwrite = false) {
       return
     }
     if (e instanceof ApiError && e.status === 409) {
-      conflict.value = true
+      conflict.value = true // 自动保存到此暂停，等用户重载/覆盖后恢复
+      if (autosaveTimer) {
+        clearTimeout(autosaveTimer)
+        autosaveTimer = null
+      }
     } else {
       err.value = e instanceof Error ? e.message : String(e)
     }
@@ -338,11 +367,25 @@ async function overwrite() {
   await save(true)
 }
 
-// 关闭流程：脏改动先过确认（diff 只读快照无脏态，直接关）。
-function tryClose() {
-  if (!props.diff && dirty.value && !meta.value?.binary) {
+// 关闭流程：自动保存覆盖日常落盘——关闭（X/Esc）时把防抖窗口内的改动冲一次；失败/冲突
+// 留在窗口里让用户裁决，不静默丢数据。冲突未决关闭 = 丢弃未落改动，过确认。diff 只读
+// 快照无脏态，直接关。
+async function tryClose() {
+  if (props.diff) {
+    emit('close')
+    return
+  }
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = null
+  }
+  if (conflict.value) {
     confirmDiscard.value = true
     return
+  }
+  if (dirty.value && !meta.value?.binary && !previewKindV.value) {
+    await save()
+    if (err.value || conflict.value) return
   }
   emit('close')
 }
@@ -504,6 +547,16 @@ function fmtSize(n: number): string {
           </div>
         </template>
         <template v-else>
+          <!-- 冲突条：文件在编辑期间被外部修改。挂在预览/编辑两种形态之外——自动保存
+               可能在预览态打出 409，收进编辑分支用户会看不见 -->
+          <div
+            v-if="conflict"
+            class="flex flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-600 dark:text-amber-400"
+          >
+            <span class="min-w-0 flex-1">文件在编辑期间被修改（mtime 不一致）</span>
+            <Button variant="outline" size="xs" :disabled="busy" @click="reload">重载（丢弃本地）</Button>
+            <Button size="xs" :disabled="busy" @click="overwrite">覆盖保存</Button>
+          </div>
           <!-- svg 预览渲染：实时反映编辑内容（data URL，未保存也可见）。白底卡片：
                透明底 svg 在深色主题下白形状会糊掉，垫白最稳。
                必须带 isSvg 门——textPreview 初始 true，漏判会让所有文本文件都落进预览卡
@@ -527,15 +580,6 @@ function fmtSize(n: number): string {
             v-html="mdHtml"
           />
           <template v-else>
-            <!-- 冲突条：文件在编辑期间被外部修改 -->
-            <div
-              v-if="conflict"
-              class="flex flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-600 dark:text-amber-400"
-            >
-              <span class="min-w-0 flex-1">文件在编辑期间被修改（mtime 不一致）</span>
-              <Button variant="outline" size="xs" :disabled="busy" @click="reload">重载（丢弃本地）</Button>
-              <Button size="xs" :disabled="busy" @click="overwrite">覆盖保存</Button>
-            </div>
             <p v-if="err" class="px-5 py-2 text-xs text-destructive">{{ err }}</p>
             <CodeEditor
               v-model="content"
@@ -548,7 +592,7 @@ function fmtSize(n: number): string {
         </template>
       </div>
 
-      <!-- 底部：状态 + 保存（diff 态是只读快照，无保存） -->
+      <!-- 底部：状态条（自动保存制，无保存/关闭按钮——关闭走 X/Esc，Ctrl+S 仍在） -->
       <div class="flex items-center gap-3 border-t px-5 py-2.5">
         <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           <template v-if="diff">
@@ -557,18 +601,15 @@ function fmtSize(n: number): string {
           </template>
           <template v-else>
             <span v-if="savedFlash" class="text-emerald-500">已保存</span>
-            <span v-else-if="dirty" class="text-amber-500">未保存</span>
-            <span v-else-if="isNew">新文件，保存时创建</span>
+            <span v-else-if="busy" class="text-muted-foreground">保存中…</span>
+            <span v-else-if="dirty" class="text-amber-500">待自动保存</span>
+            <span v-else-if="isNew">新文件，Ctrl+S 或关闭时创建</span>
             <span v-else-if="previewKindV">在线预览 · {{ fmtSize(previewSize) }} · 只读</span>
-            <span v-else-if="meta && !meta.binary">{{ fmtSize(meta.size) }}</span>
+            <span v-else-if="meta && !meta.binary">{{ fmtSize(meta.size) }} · 自动保存开启</span>
           </template>
         </span>
-        <Button variant="outline" size="sm" @click="tryClose">关闭</Button>
         <Button v-if="previewKindV" variant="outline" size="sm" @click="downloadPreview">下载</Button>
-        <Button v-if="!diff && !previewKindV" size="sm" :disabled="!dirty || busy || !!meta?.binary" @click="save()">
-          {{ busy ? '保存中…' : '保存 (Ctrl+S)' }}
-        </Button>
-        <Button v-else variant="outline" size="sm" @click="emit('open-normal')">以普通方式打开</Button>
+        <Button v-if="diff || previewKindV" variant="outline" size="sm" @click="emit('open-normal')">以普通方式打开</Button>
       </div>
     </DialogContent>
   </Dialog>
@@ -576,7 +617,7 @@ function fmtSize(n: number): string {
   <ConfirmDialog
     v-if="confirmDiscard"
     title="放弃未保存的修改？"
-    :description="`${name} 有未保存的修改，关闭后将丢失。`"
+    :description="`${name} 有未落盘的修改（存在保存冲突），关闭后将丢失。`"
     confirm-text="放弃修改"
     variant="destructive"
     @confirm="doDiscard"
