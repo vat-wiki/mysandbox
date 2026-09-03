@@ -4,7 +4,9 @@
 // diff prop 存在时切「git 变更对比」模式：getGitDiff 快照（左 HEAD 右工作区）、只读、
 // 无保存/脏确认；各降级路径（单侧二进制/超大/缺失）只影响那一侧，双侧都不可渲染时
 // 给「以普通方式打开」出口（emit open-normal，父级清 diff 重挂普通模式）。
-import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { langForFilename } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
 import { previewKind, previewMime, extOf } from '@/lib/preview'
 import {
@@ -71,23 +73,82 @@ let savedFlashTimer: ReturnType<typeof setTimeout> | null = null
 const previewKindV = computed(() => (props.diff ? null : previewKind(name.value)))
 const previewUrl = ref('')
 const previewSize = ref(0)
-// svg 预览：本体走 Monaco 文本编辑（源码可改），头部按钮在「编辑 / 预览渲染」间切换。
-// 默认落在预览（使用习惯是直接看，编辑是少数场景）；渲染用当前编辑内容实时生成
-// （改动立即可见），不落盘——想看保存后的效果先保存。
+// —— 文本型预览（svg / markdown）——
+// 本体走 Monaco 文本编辑（源码可改），头部按钮在「编辑 / 预览渲染」间切换。
+// 默认落在预览（svg 直接看形状、md 直接读排版，编辑是少数场景）；渲染用当前编辑内容
+// 实时生成（改动立即可见），不落盘——想看保存后的效果先保存。
 // 刻意用 data: URL 而非 blob:（两者都受控渲染，效果一致），避免与文件预览的 blob 生命周期混管。
 const isSvg = computed(() => !props.diff && extOf(name.value) === 'svg')
-const svgPreview = ref(true)
+const isMd = computed(() => !props.diff && ['md', 'markdown'].includes(extOf(name.value)))
+const textPreview = ref(true)
 function clearPreview() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
   previewSize.value = 0
 }
 const svgUrl = computed(() => {
-  if (!svgPreview.value) return ''
+  if (!isSvg.value || !textPreview.value) return ''
   // encodeURIComponent 再包 data URL：SVG 内联的 < & > 不会打断 data: 头
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content.value)}`
 })
-onBeforeUnmount(clearPreview)
+
+// —— markdown 渲染 ——
+// marked（同步）+ DOMPurify 消毒：md 允许内联 HTML，落 v-html 前必须过 sanitizer。
+// 相对图片引用浏览器解不了（download 端点走 header token，<img> 带不上）——渲染后把
+// 相对路径的 <img> 换成 fetchFileBlob 的 objectURL：相对段相对 md 所在目录、`/` 开头
+// 按容器路径原样，`..` 逐段归一化；同图只取一次流。
+marked.setOptions({ gfm: true, breaks: true })
+const mdHtml = computed(() => {
+  if (!isMd.value || !textPreview.value) return ''
+  return DOMPurify.sanitize(marked.parse(content.value, { async: false }))
+})
+const mdBody = ref<HTMLElement | null>(null)
+let mdBlobUrls: string[] = []
+let mdImgSeq = 0
+function clearMdBlobs() {
+  for (const u of mdBlobUrls) URL.revokeObjectURL(u)
+  mdBlobUrls = []
+}
+function resolveMdImgPath(dir: string, src: string): string {
+  const raw = src.startsWith('/') ? src : dir + src
+  const parts: string[] = []
+  for (const seg of raw.split('/')) {
+    if (!seg || seg === '.') continue
+    if (seg === '..') parts.pop()
+    else parts.push(seg)
+  }
+  return '/' + parts.join('/')
+}
+async function hydrateMdImages() {
+  const root = mdBody.value
+  if (!root) return
+  const seq = ++mdImgSeq // 内容重渲染后旧回调作废
+  clearMdBlobs()
+  const dir = props.path.slice(0, props.path.lastIndexOf('/') + 1)
+  const srcs = new Map<string, Promise<string>>() // 同图去重
+  for (const img of Array.from(root.querySelectorAll('img[src]'))) {
+    const src = img.getAttribute('src') ?? ''
+    if (!src || /^(https?:|data:|blob:)/i.test(src)) continue
+    const target = resolveMdImgPath(dir, src)
+    let p = srcs.get(target)
+    if (!p) {
+      p = fetchFileBlob(props.containerId, target, previewMime(target) ?? 'application/octet-stream')
+        .then((b) => URL.createObjectURL(b))
+        .catch(() => '')
+      srcs.set(target, p)
+    }
+    void p.then((url) => {
+      if (seq !== mdImgSeq || !url) return
+      mdBlobUrls.push(url)
+      img.setAttribute('src', url)
+    })
+  }
+}
+watch(mdHtml, () => void nextTick(hydrateMdImages))
+onBeforeUnmount(() => {
+  clearPreview()
+  clearMdBlobs()
+})
 
 const dirty = computed(() => content.value !== savedContent.value)
 
@@ -334,7 +395,7 @@ function fmtSize(n: number): string {
           >预览</span
         >
         <span
-          v-if="isSvg && svgPreview"
+          v-if="(isSvg || isMd) && textPreview"
           class="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-400"
           >预览</span
         >
@@ -356,17 +417,17 @@ function fmtSize(n: number): string {
           :title="`${containerName}:${path}`"
           >{{ containerName }}:{{ path }}</span
         >
-        <!-- svg 专属：编辑 ⇄ 预览渲染切换（渲染实时反映编辑内容，未保存也可见） -->
+        <!-- svg / md 专属：编辑 ⇄ 预览渲染切换（渲染实时反映编辑内容，未保存也可见） -->
         <Button
-          v-if="isSvg"
+          v-if="isSvg || isMd"
           variant="ghost"
           size="xs"
           class="ml-2 shrink-0"
-          @click="svgPreview = !svgPreview"
+          @click="textPreview = !textPreview"
         >
-          <Eye v-if="!svgPreview" class="size-3.5" />
+          <Eye v-if="!textPreview" class="size-3.5" />
           <Code v-else class="size-3.5" />
-          {{ svgPreview ? '编辑' : '预览' }}
+          {{ textPreview ? '编辑' : '预览' }}
         </Button>
       </div>
 
@@ -445,10 +506,10 @@ function fmtSize(n: number): string {
         <template v-else>
           <!-- svg 预览渲染：实时反映编辑内容（data URL，未保存也可见）。白底卡片：
                透明底 svg 在深色主题下白形状会糊掉，垫白最稳。
-               必须带 isSvg 门——svgPreview 初始 true，漏判会让所有文本文件都落进预览卡
+               必须带 isSvg 门——textPreview 初始 true，漏判会让所有文本文件都落进预览卡
                （Monaco 不挂载、且无切换按钮，编辑直接废掉） -->
           <div
-            v-if="isSvg && svgPreview"
+            v-if="isSvg && textPreview"
             class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-muted/20 p-4"
           >
             <img
@@ -457,6 +518,14 @@ function fmtSize(n: number): string {
               class="max-h-full max-w-full rounded border bg-white object-contain p-3 shadow-sm"
             />
           </div>
+          <!-- md 预览：marked + DOMPurify 渲染当前编辑内容；走主题变量排版（长文阅读，
+               不用 svg 那种白底卡），相对图片在 hydrateMdImages 里换 objectURL -->
+          <div
+            v-else-if="isMd && textPreview"
+            ref="mdBody"
+            class="md-body min-h-0 flex-1 overflow-auto px-8 py-5"
+            v-html="mdHtml"
+          />
           <template v-else>
             <!-- 冲突条：文件在编辑期间被外部修改 -->
             <div
@@ -514,3 +583,121 @@ function fmtSize(n: number): string {
     @close="confirmDiscard = false"
   />
 </template>
+
+<style scoped>
+/* markdown 排版：全走主题变量（深浅色自适应）。v-html 内容不吃 scoped 属性，
+   一律经 :deep 下探；无 @tailwindcss/typography，手写这套就够预览用 */
+.md-body {
+  color: var(--color-foreground);
+  font-size: 14px;
+  line-height: 1.75;
+}
+.md-body :deep(h1),
+.md-body :deep(h2),
+.md-body :deep(h3),
+.md-body :deep(h4) {
+  margin: 1.4em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.md-body :deep(h1:first-child),
+.md-body :deep(h2:first-child),
+.md-body :deep(h3:first-child) {
+  margin-top: 0;
+}
+.md-body :deep(h1) {
+  font-size: 1.6em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--color-border);
+}
+.md-body :deep(h2) {
+  font-size: 1.35em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--color-border);
+}
+.md-body :deep(h3) {
+  font-size: 1.15em;
+}
+.md-body :deep(p) {
+  margin: 0.7em 0;
+}
+.md-body :deep(a) {
+  color: var(--color-sky-400);
+  text-underline-offset: 3px;
+}
+.md-body :deep(ul),
+.md-body :deep(ol) {
+  margin: 0.7em 0;
+  padding-left: 1.6em;
+}
+.md-body :deep(ul) {
+  list-style: disc;
+}
+.md-body :deep(ol) {
+  list-style: decimal;
+}
+.md-body :deep(li) {
+  margin: 0.25em 0;
+}
+.md-body :deep(li > ul),
+.md-body :deep(li > ol) {
+  margin: 0.25em 0;
+}
+.md-body :deep(li:has(> input[type='checkbox'])) {
+  list-style: none;
+  margin-left: -1.2em;
+}
+.md-body :deep(input[type='checkbox']) {
+  margin-right: 0.4em;
+  accent-color: var(--color-primary);
+}
+.md-body :deep(blockquote) {
+  margin: 0.8em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--color-border);
+  color: var(--color-muted-foreground);
+}
+.md-body :deep(code) {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--color-muted);
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+}
+.md-body :deep(pre) {
+  margin: 0.9em 0;
+  padding: 0.8em 1em;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.md-body :deep(pre code) {
+  padding: 0;
+  background: none;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.md-body :deep(table) {
+  margin: 0.9em 0;
+  border-collapse: collapse;
+}
+.md-body :deep(th),
+.md-body :deep(td) {
+  border: 1px solid var(--color-border);
+  padding: 0.35em 0.8em;
+}
+.md-body :deep(th) {
+  background: var(--color-muted);
+  font-weight: 600;
+}
+.md-body :deep(hr) {
+  margin: 1.4em 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+.md-body :deep(img) {
+  max-width: 100%;
+  border-radius: 6px;
+}
+</style>
