@@ -714,24 +714,24 @@ function fmtSize(n: number): string {
       <ContextMenuContent>
         <template v-if="ctxEntry">
           <ContextMenuItem @click="download(ctxEntry)">
-            <Download /> 下载
+            下载
           </ContextMenuItem>
           <ContextMenuItem @click="nameDialog = { mode: 'rename' }">
-            <PenLine /> 重命名
+            重命名
           </ContextMenuItem>
           <ContextMenuItem variant="destructive" @click="delTarget = ctxEntry">
-            <Trash2 /> 删除
+            删除
           </ContextMenuItem>
           <ContextMenuSeparator />
         </template>
         <ContextMenuItem :disabled="!path || path === '/'" @click="downloadDir">
-          <Download /> 下载当前文件夹
+          下载当前文件夹
         </ContextMenuItem>
         <ContextMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
-          <FilePlus /> 新建文件
+          新建文件
         </ContextMenuItem>
         <ContextMenuItem :disabled="!path" @click="nameDialog = { mode: 'newDir' }">
-          <FolderPlus /> 新建文件夹
+          新建文件夹
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

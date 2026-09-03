@@ -47,7 +47,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, SquareTerminal, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, AppWindow, Plus, Database, Settings2, Network, EyeOff, ArrowRightLeft, ListChecks, Container, Eye, FileText, Download, Copy, HardDrive, ArrowLeftToLine, ArrowRightToLine } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Database, Settings2, Network, ArrowRightLeft, ListChecks, Container } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1621,7 +1621,7 @@ onUnmounted(() => {
           </ContextMenuTrigger>
           <ContextMenuContent>
             <ContextMenuItem @click="openNewGroup(g)">
-              <SquareTerminal /> 新开一组终端
+              新开一组终端
             </ContextMenuItem>
             <ContextMenuSeparator />
             <!-- popout 是组级动作（给该容器/宿主开独立工作区），收在这里而不是 pane 头部。
@@ -1630,15 +1630,15 @@ onUnmounted(() => {
               v-if="g.kind === 'host' || containerRunning(g.containerId)"
               @click="openPopout(g.kind === 'host' ? HOST_ID : g.containerId)"
             >
-              <AppWindow /> 在独立窗口打开
+              在独立窗口打开
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem @click="hideGroupById(g.id)">
-              <EyeOff /> 隐藏
+              隐藏
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem variant="destructive" @click="closeGroupById(g.id)">
-              <X /> 关闭
+              关闭
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
@@ -1850,35 +1850,35 @@ onUnmounted(() => {
                  diff 态「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
                  音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
             <ContextMenuItem v-if="['svg', 'md', 'markdown'].includes(extOf(t.path))" @click="paneRefs.get(tabId(t))?.toggleTextPreview?.()">
-              <Eye /> 编辑 ⇄ 预览
+              编辑 ⇄ 预览
             </ContextMenuItem>
             <ContextMenuItem v-if="t.diff" @click="onOpenNormal(t)">
-              <FileText /> 以普通方式打开
+              以普通方式打开
             </ContextMenuItem>
             <ContextMenuItem v-if="previewKind(t.path)" @click="downloadTab(t)">
-              <Download /> 下载
+              下载
             </ContextMenuItem>
             <template v-if="t.diff || previewKind(t.path) || ['svg', 'md', 'markdown'].includes(extOf(t.path))">
               <ContextMenuSeparator />
             </template>
             <ContextMenuItem class="font-mono text-xs" @click="copyTabPath(t)">
-              <Copy /> 复制路径
+              复制路径
             </ContextMenuItem>
             <ContextMenuItem class="font-mono text-xs" @click="copyTabHostPath(t)">
-              <HardDrive /> 复制宿主机路径
+              复制宿主机路径
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem variant="destructive" @click="closeFileTab(t)">
-              <X /> 关闭
+              关闭
             </ContextMenuItem>
             <ContextMenuItem :disabled="editorTabs.length <= 1" @click="closeFileTabsRange(t, 'other')">
-              <SquareX /> 关闭其他
+              关闭其他
             </ContextMenuItem>
             <ContextMenuItem :disabled="i === 0" @click="closeFileTabsRange(t, 'left')">
-              <ArrowLeftToLine /> 关闭左侧
+              关闭左侧
             </ContextMenuItem>
             <ContextMenuItem :disabled="i === editorTabs.length - 1" @click="closeFileTabsRange(t, 'right')">
-              <ArrowRightToLine /> 关闭右侧
+              关闭右侧
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
