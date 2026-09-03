@@ -1385,13 +1385,19 @@ onUnmounted(() => {
       :class="[drawerOpen ? '' : 'max-md:-translate-x-full', collapsed && !isPhone ? 'md:w-12' : 'md:w-64']"
     >
       <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：只留导航骨架——
-           展开键 / ＋ 新建 / 容器首字图标列（容器色淡染，title 带全名·状态·IP）/ 底部
-           环境区（配置菜单 · 宿主 · 服务）。列表异常给一枚提示点，点击展开并重试。 -->
+            logo（点击展开，收缩后品牌仍在） / ＋ 新建 / 容器首字图标列（容器色淡染，
+            title 带全名·状态·IP）/ 底部环境区（配置菜单 · 宿主 · 服务 · 展开键）。
+            列表异常给一枚提示点，点击展开并重试。 -->
       <template v-if="collapsed && !isPhone">
         <div class="flex h-10 shrink-0 items-center justify-center border-b border-border">
-          <Button variant="ghost" size="icon-xs" title="展开侧栏" @click="collapsed = false">
-            <PanelLeftOpen />
-          </Button>
+          <button
+            type="button"
+            class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
+            title="展开侧栏"
+            @click="collapsed = false"
+          >
+            <img src="/logo.svg" alt="" class="size-5" />
+          </button>
         </div>
         <div class="flex shrink-0 items-center justify-center border-b border-border py-1.5">
           <Button
@@ -1473,6 +1479,15 @@ onUnmounted(() => {
             <Database class="size-4 text-muted-foreground" />
             <span :class="['absolute bottom-1 right-1 h-2 w-2 rounded-full ring-1 ring-background', svcDotClass]" />
           </button>
+          <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部 -->
+          <button
+            type="button"
+            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="展开侧栏"
+            @click="collapsed = false"
+          >
+            <PanelLeftOpen class="size-4" />
+          </button>
         </div>
       </template>
 
@@ -1480,7 +1495,7 @@ onUnmounted(() => {
       <template v-else>
       <!-- 品牌块：纯身份标识，居中。系统健康不做常驻展示——引擎/连接出问题时终端连不上，
            tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。手机抽屉态左侧加收起按钮；
-           桌面右侧加侧栏收起（窄边 rail）按钮。 -->
+           桌面收起动作在服务摘要行下方（与收缩态展开键同一位置，肌肉记忆一致）。 -->
       <div class="relative flex h-10 shrink-0 items-center justify-center gap-2 border-b border-border px-3">
         <Button
           variant="ghost"
@@ -1493,15 +1508,6 @@ onUnmounted(() => {
         </Button>
         <img src="/logo.svg" alt="" class="size-5" />
         <span class="text-sm font-semibold tracking-tight">MySandbox</span>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          class="absolute right-1 max-md:hidden"
-          title="收起侧栏（窄边）"
-          @click="collapsed = true"
-        >
-          <PanelLeftClose />
-        </Button>
       </div>
 
       <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题
@@ -1769,6 +1775,18 @@ onUnmounted(() => {
         >
           <Plus />
         </Button>
+      </button>
+
+      <!-- 侧栏收起行：环境区最底（服务摘要之下）——收/展动作统一钉在这个位置，
+           与收缩态 rail 底部的展开键互为镜像。 -->
+      <button
+        type="button"
+        class="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+        title="收起侧栏（窄边）"
+        @click="collapsed = true"
+      >
+        <PanelLeftClose class="size-3.5 shrink-0" />
+        <span class="min-w-0 flex-1 truncate text-xs">收起侧栏</span>
       </button>
       </template>
     </aside>
