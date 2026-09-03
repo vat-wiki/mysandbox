@@ -309,3 +309,38 @@ lxc-attach/lxc-usernsexec 补齐（lxc-template.sh 若重做模板需在容器�
 dev-lan 重建/docker 停机不再影响 LXC 网络。服务网络 mysandbox-lan 也转为 mysandbox 自持
 （`ensureServiceNetwork` 缺失自动按服务池网段重建，钉桥名 + managed-by label），与 LXC 桥配套，
 网络拓扑整体不再有任何「外部必须先建好」的依赖。
+
+## 补记：2026-09-03 防火墙（ufw）放行自管
+
+**起因**：容器内 `curl 宿主:7321` 卡在 SYN——ufw 默认 deny incoming，而 7321 的 ALLOW 只手工
+放行了热点网段，容器网段（10.88.10.0/24）没有规则。 FORWARD 层早已有自管单元
+（mysandbox-net / mysandbox-docker-interop），唯独 **ufw INPUT 层（容器 → 宿主服务）一直是手敲
+规则**——漏一条就是「容器访问不到服务、SYN 静默被丢」，且三方互通（宿主 ↔ LXC ↔ docker 服务）
+是项目基础，不该依赖手工记忆。
+
+**方案**（规则计算与应用分离）：
+
+- **算**：`server/firewall.ts` 纯读 config 推导期望规则，`mysandbox firewall print` 输出（免 root、
+  不起 server）。核心规则：LXC 网段 → 宿主 53（模板 resolved 的首选上游 = 网关 IP，容器 DNS 根基）；
+  非 localhost 监听时两个容器网段 → console 端口（localhost 监听下容器反正连不上，规则不发）；
+  LXC 桥 `ufw route allow in on <桥>`（等价旧 before.rules 手改的 `-A ufw-before-forward -i <桥>
+  ACCEPT`，那条保留无害）。环境特例（热点 7321、宿主 clash 7899、GLM 网关 7800）走 config
+  `firewall.allow` 追加。
+- **应用**：`scripts/mysandbox-firewall.sh`（root，单元 `scripts/mysandbox-firewall.service` 开机跑）——
+  幂等（verbose status 里已有同 spec+from 就跳过）、**只增不删**（手敲的历史规则不会被回收；
+  要清理手工 `ufw delete`）。config 相关变更后 `sudo systemctl restart mysandbox-firewall`。
+  删除规则会被下次运行自动补回（自愈实测过）。
+- **宿主一次性准备**：`cp scripts/mysandbox-firewall.service /etc/systemd/system/` +
+  `systemctl enable --now mysandbox-firewall`（本次已装）。unit 与脚本进仓库，与 net/interop 两个
+  手装单元不同——它们还没进仓库。
+
+**踩坑（本轮实测）**：
+
+- **裸 `ufw status` 的 INPUT 行是 `ALLOW` 单列**（没有 `IN`），route 行才是 `ALLOW FWD`——
+  verbose/numbered 下 INPUT 行才是 `ALLOW IN`。按行解析判定规则是否已存在时必须用
+  `ufw status verbose`（首版脚本用裸 status，幂等判定全空转，靠 ufw 自身的 spec 去重才没写出
+  重复规则）。
+- ufw 在中文 locale 下连 "Status: inactive" 都会本地化（"状态：未激活"）——脚本里 `LC_ALL=C`。
+- YAML 里 `comment: mysandbox: xxx` 这种值含 `: ` 的要加引号，否则解析直接炸。
+- `ufw allow` 对相同 spec（哪怕 comment 不同）自身会去重（"Skipping adding existing rule"），
+  所以判定失效也不会立刻产生重复——但别依赖这个，判定要写对。

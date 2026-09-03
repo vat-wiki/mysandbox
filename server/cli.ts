@@ -8,6 +8,7 @@ import { getEngine } from './engine/index.js';
 import { runBaseCommand } from './base.js';
 import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
+import { runFirewallCommand } from './firewall.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
 import { startServicesEventSync } from './services.js';
@@ -81,6 +82,11 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
       template, docker services/volumes, host-terminal sessions, transient
       systemd units, sidecar files). Read-only; does not need the server.
 
+  mysandbox firewall print
+      Print the desired ufw rules for host<->LXC<->docker interconnect
+      (computed from config; applied by mysandbox-firewall.service).
+      Read-only; does not need the server or root.
+
 Options:
   --port <n>     listen port (default 7321)
   --host <addr|auto>
@@ -106,6 +112,14 @@ async function main(): Promise<void> {
   if (process.argv[2] === 'status') {
     const { config } = await loadConfig();
     await runStatusCommand(config);
+    return;
+  }
+
+  // 一次性子命令：mysandbox firewall print（不启动 server、不需要 root；输出期望规则，
+  // 由 scripts/mysandbox-firewall.sh——root 单元 mysandbox-firewall.service——消费）。
+  if (process.argv[2] === 'firewall') {
+    const { config } = await loadConfig();
+    await runFirewallCommand(process.argv.slice(3), config);
     return;
   }
 

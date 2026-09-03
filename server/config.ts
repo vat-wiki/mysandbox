@@ -72,6 +72,23 @@ export const ConfigSchema = z.object({
   ui: z.object({
     defaultShell: z.string().default('zsh'),
   }),
+  // 宿主防火墙（ufw）追加放行（环境特例：热点访问 console、宿主 clash 代理/GLM 网关等）。
+  // 核心放行（容器 DNS 53、非 localhost 监听时的 console 端口、LXC 桥 route）由
+  // firewall.ts 从 listen/ipPool/services 推导，不经这里；应用在 mysandbox-firewall.service。
+  firewall: z
+    .object({
+      allow: z
+        .array(
+          z.object({
+            from: z.string(), // 来源网段（CIDR 或 IP）
+            port: z.number().int().optional(), // 缺省 = 全端口
+            proto: z.enum(['tcp', 'udp']).optional(), // 缺省 tcp（有 port 时）
+            comment: z.string().optional(),
+          }),
+        )
+        .default([]),
+    })
+    .default({ allow: [] }),
   token: z.string().optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
@@ -157,6 +174,7 @@ export async function loadConfig(): Promise<LoadResult> {
       ipPool: parsed.ipPool,
       git: parsed.git,
       ui: parsed.ui,
+      firewall: parsed.firewall,
       token: parsed.token,
     });
     await writeFile(CONFIG_FILE, out, { mode: 0o600 });

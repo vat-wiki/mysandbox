@@ -31,6 +31,9 @@ mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），�
 - 一座宿主网桥 + 网关 IP：容器 veth 挂到 `network` 配置的桥上（自有桥 `mysandbox0`，参考
   `mysandbox-net.service`：桥 + 网关副 IP + 出网 MASQUERADE），网关 = `<ipPool 前缀>.1`。
   与 docker 服务网段互通需 `mysandbox-docker-interop.service`（DOCKER-USER 放行）+ ufw 转发 ACCEPT。
+- 防火墙（ufw）放行自管：宿主 ↔ 容器 ↔ docker 服务三方互通所需的 ufw 规则由
+  `mysandbox-firewall.service` 按 config 计算应用（幂等、只增不删；详见 `server/firewall.ts`，
+  `mysandbox firewall print` 可预览期望规则）。
 
 ## 功能
 
@@ -77,6 +80,8 @@ CLI 选项：
 mysandbox [--port 7321] [--host 127.0.0.1] [-V|--version] [-h|--help]
 mysandbox base <status|clone|export|import>    # 模板容器管理（image 是历史别名）
 mysandbox open <path> [--container <name>]
+mysandbox status                               # 宿主资产总览（只读，不需要服务在跑）
+mysandbox firewall print                       # 预览期望的 ufw 放行规则（免 root）
 ```
 
 环境变量：`MYSANDBOX_LOG_LEVEL=debug|info|warn|error`（默认 `info`）。
@@ -218,11 +223,13 @@ server/        TypeScript 后端（fastify + lxc-* CLI）
   base.ts        /api/base*（模板操作）+ CLI base 命令
   docker.ts      docker CLI 客户端（服务层用，label 过滤）
   services.ts    /api/services*（配套服务：预设/编排/路由）
-  hosts-sync.ts  hosts 自动应用（含服务发现注入）
-  state.ts       sidecar 元数据
+   hosts-sync.ts  hosts 自动应用（含服务发现注入）
+   firewall.ts    宿主 ufw 放行规则计算（mysandbox firewall print）
+   state.ts       sidecar 元数据
 web/           Vue 3 + Vite + Tailwind v4 前端
 config.default.yaml   随包默认配置
 scripts/lxc-template.sh  模板制作脚本
+scripts/mysandbox-firewall.sh(.service)  ufw 放行应用脚本 + 系统单元
 ```
 
 ---

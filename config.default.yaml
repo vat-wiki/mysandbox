@@ -64,3 +64,16 @@ git:
 
 ui:
   defaultShell: zsh   # 网页终端默认 shell；可在 URL ?shell= 覆盖
+
+# 宿主防火墙（ufw）——三方互通（宿主 ↔ LXC ↔ docker 服务）的放行自管。
+# 核心规则由 server/firewall.ts 按 config 推导（容器 DNS 53、非 localhost 监听时的 console
+# 端口、LXC 桥 route 放行），由 mysandbox-firewall.service 开机应用（幂等、只增不删）。
+# 这里只放环境特例的追加规则（默认空）。示例：
+# firewall:
+#   allow:
+#     - from: 10.88.18.0/24   # 来源网段
+#       port: 7321            # 缺省 = 全端口
+#       proto: tcp            # 缺省 tcp
+#       comment: hotspot -> mysandbox 7321
+firewall:
+  allow: []

@@ -1,0 +1,18 @@
+[Unit]
+# mysandbox 宿主防火墙放行（ufw）——三方互通（宿主 ↔ LXC 容器 ↔ docker 服务）的 INPUT 与
+# LXC 桥 route 层。转发层各有归属：LXC 网段出网 MASQUERADE = mysandbox-net.service；
+# LXC → docker 跨桥（raw + DOCKER-USER）= mysandbox-docker-interop.service，均在 ufw 之前。
+# 期望规则由 `mysandbox firewall print` 按 config 计算（server/firewall.ts），本单元只负责应用：
+# 幂等（已存在跳过）、只增不删（手敲的历史规则不会被回收）。config 变更后手工重启本单元。
+# unit 文件随仓库维护（scripts/mysandbox-firewall.service），改动后同步到 /etc/systemd/system/。
+Description=mysandbox firewall (ufw allows for host<->LXC<->docker interconnect)
+After=network-online.target ufw.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/leon/projects/mysandbox/scripts/mysandbox-firewall.sh
+
+[Install]
+WantedBy=multi-user.target

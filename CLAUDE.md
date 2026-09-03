@@ -22,7 +22,7 @@ node dist/server/cli.js    # 跑产物验证
 
 没有测试框架；改动后验证方式是 `npm run typecheck` + `npm -C web run build` + 实际起服务走一遍流程。
 
-CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模板操作：status/clone/export/import，`mysandbox image` 是历史别名），`mysandbox status`（宿主上全部 mysandbox 资产总览：容器/模板/docker 服务与卷/宿主终端会话/瞬态单元/sidecar，只读、各段独立降级、不需要服务在跑），`mysandbox open <路径>`。日志级别 `MYSANDBOX_LOG_LEVEL=debug`。
+CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模板操作：status/clone/export/import，`mysandbox image` 是历史别名），`mysandbox status`（宿主上全部 mysandbox 资产总览：容器/模板/docker 服务与卷/宿主终端会话/瞬态单元/sidecar，只读、各段独立降级、不需要服务在跑），`mysandbox firewall print`（按 config 算出期望 ufw 规则，`server/firewall.ts`，免 root），`mysandbox open <路径>`。日志级别 `MYSANDBOX_LOG_LEVEL=debug`。
 
 模板制作：`scripts/lxc-template.sh <容器名>`。
 
@@ -99,7 +99,7 @@ caps 经 `/api/health` 下发，前端存在 `web/src/lib/caps.ts` 单例（默�
 ### LXC 引擎的运行环境约束（`engine/lxc.ts` 文件头有详版）
 
 - mysandbox **必须以 systemd user service 形态跑**（cgroup 委派）。`lxc-attach` 可直接 spawn（继承 cgroup），但 `lxc-start` 必须进独立瞬态单元（`systemd-run --user --unit=mysandbox-<name> ... lxc-start -n <name> -F`），否则重启 mysandbox 会连带杀掉所有容器。
-- LXC veth 挂在 **mysandbox 自有网桥 `mysandbox0`** 上（`cfg.network` 直接配桥设备名；桥由系统 unit `mysandbox-net.service` 建：桥 + 网关副 IP `<ipPool 前缀>.1` + 网段出网 MASQUERADE，**不依赖 docker**）。容器网段 10.88.10.0/24 与 docker 服务网段 10.88.0.0/24 分桥、经宿主路由互通——跨桥放行有**三处**：`mysandbox-docker-interop.service` 的 raw 表 ACCEPT（**docker 29 会在每次服务容器 start 时重写 `-t raw -A -d <服务IP> ! -i <桥> DROP` 隔离规则，删了会回来，必须 -I 1 恒压其上**）、同 unit 的 DOCKER-USER 链 ACCEPT、ufw before.rules 的 `-i mysandbox0 ACCEPT`（ufw 默认 routed deny）。`/etc/lxc/lxc-usernet` 按桥名放行 `leon veth mysandbox0`。历史：2026-09 前挂在 docker 的 dev-lan 桥（br-<hash>）上，见 docs/lxc-migration.md 补记。
+- LXC veth 挂在 **mysandbox 自有网桥 `mysandbox0`** 上（`cfg.network` 直接配桥设备名；桥由系统 unit `mysandbox-net.service` 建：桥 + 网关副 IP `<ipPool 前缀>.1` + 网段出网 MASQUERADE，**不依赖 docker**）。容器网段 10.88.10.0/24 与 docker 服务网段 10.88.0.0/24 分桥、经宿主路由互通。防火墙放行**全部自管**，别手敲 ufw：FORWARD 层三处——`mysandbox-docker-interop.service` 的 raw 表 ACCEPT（**docker 29 会在每次服务容器 start 时重写 `-t raw -A -d <服务IP> ! -i <桥> DROP` 隔离规则，删了会回来，必须 -I 1 恒压其上**）、同 unit 的 DOCKER-USER 链 ACCEPT、ufw before.rules 的 `-i mysandbox0 ACCEPT`（ufw 默认 routed deny；`mysandbox-firewall.service` 会补一条等价的 `ufw route allow in on mysandbox0`，before.rules 那条留着无害）；INPUT 层（容器 → 宿主服务：DNS 53、非 localhost 监听时的 console 端口）由 `mysandbox-firewall.service`（`scripts/mysandbox-firewall.sh` + `server/firewall.ts` 的 `mysandbox firewall print`）按 config 计算应用——幂等、只增不删，环境特例（热点/clash/GLM 端口）配 `firewall.allow`，config 变更后 `sudo systemctl restart mysandbox-firewall`。ufw status 有坑：**裸 `ufw status` 的 INPUT 行是 `ALLOW` 单列没有 `IN`**（verbose/numbered 才有），按行解析判定已存在规则时要用 verbose。`/etc/lxc/lxc-usernet` 按桥名放行 `leon veth mysandbox0`。历史：2026-09 前挂在 docker 的 dev-lan 桥（br-<hash>）上，见 docs/lxc-migration.md 补记。
 - 静态 IP 无 DHCP → 容器内 systemd-resolved 没有上游 DNS，模板必须写 `/etc/systemd/resolved.conf.d/mysandbox.conf`（模板脚本已做）。
 - `lxc-attach -u/-g` **只吃数字**，而调用方传的 User 混着名字（`'root'`/`'root:root'`/`'1000:1000'`）——`parseUser` 负责映射，改它时小心：早前 `Number('root')` → NaN 落回 1000，导致「以 root 写 /etc/hosts」静默变成 dev 身份、Permission denied。
 - `scripts/lxc-template.sh` 里给容器喂脚本必须走 **stdin**（`bash -s`）而非 `bash -c "<脚本>"`：systemd-run 会先展开自己的 `${VAR}` 规格符，把脚本里的 `${ARCH}` 吃成空串。
