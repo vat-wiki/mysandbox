@@ -36,6 +36,9 @@ export interface TermGroup {
   // 同容器内的创建序号（1 起）：多组并存时显示 name·seq，身份稳定——关掉中间的组
   // 留缺口也不换号（语义同 tmux 窗口号）。单组独存时不显示后缀。
   seq?: number
+  // 「无输出提醒」开关（tab 右键切换，随组持久化）：false = 关；undefined = 开
+  // （默认，老存档兼容）。
+  quietNotify?: boolean
 }
 
 export function newSplitId(): string {

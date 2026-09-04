@@ -14,6 +14,7 @@ import {
   resolveTermPath,
   listServices,
   listServiceJobs,
+  listTermActivity,
   termSessionKey,
   HOST_ID,
   Unauthorized,
@@ -21,8 +22,15 @@ import {
   type ResolveView,
   type ServiceView,
   type TermSessionView,
+  type TermActivityView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
+import {
+  lastTermOutput,
+  forgetTerm,
+  trackTerminalActivity,
+  type QuietFeedItem,
+} from '@/lib/terminalActivity'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
@@ -42,6 +50,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -175,6 +184,7 @@ function parseGroup(o: unknown): TermGroup | null {
     name: typeof r.name === 'string' ? r.name : r.containerId,
     kind: r.kind === 'host' ? ('host' as const) : undefined,
     seq: typeof r.seq === 'number' && r.seq >= 1 ? r.seq : undefined,
+    quietNotify: typeof r.quietNotify === 'boolean' ? r.quietNotify : undefined,
     root,
   }
 }
@@ -977,6 +987,11 @@ function hideGroupById(gId: string) {
   const gi = groups.value.findIndex((g) => g.id === gId)
   if (gi < 0) return
   const [g] = groups.value.splice(gi, 1)
+  // 「在看」关系收尾：隐藏激活中的组 = 离开它（此刻起算 leftAt）。必须在挪进
+  // hiddenGroups 之后、watch 追不上——watch 回调里 byId 已找不到该组，不会执行 markLeft。
+  // 非激活组本就有历史 leftAt（离开时刻），覆盖成 now 只会让隐藏前的输出少积资格，
+  // 而那部分输出若已过安静阈值、其提醒在隐藏前的轮询里就发过了，无损失。
+  if (gi === activeIdx.value) markLeft(g)
   hiddenGroups.value.push(g)
   if (hiddenGroups.value.length > MAX_HIDDEN_GROUPS) hiddenGroups.value.shift()
   if (groups.value.length === 0) {
@@ -1347,9 +1362,145 @@ const svcSummary = computed(() => {
   return names.length > 3 ? `${shown} 等 ${names.length} 个` : shown
 })
 
+// —— 终端无输出提醒（agent 干完活/等输入）——
+// 服务端（server/activity.ts）已在周期扫 tmux 输出，这里 5s 拉一次快照做提醒决策。
+// 「在不在看」前端自判：可见 tab 是 v-show 常驻（WS 恒 attach），tmux 的 attached 完全
+// 不代表用户在看——只有「当前激活 tab + 终端区」才算看。每叶子两份时刻：
+//   - lastOutput（lib/terminalActivity，Terminal.vue 每个数据帧登记）：可见叶子用它，
+//     比服务端 5s 扫描精确；
+//   - leftAt（离开时刻）：从「正在看」切走/切去编辑器/隐藏的时刻；WATCHING = 正在看。
+//     提醒资格 = 安静超过阈值 && 最后一次输出发生在离开之后——看过结果再走的人不再被
+//     打扰（否则「看着它跑完→切走」每次都误报），而中途离开后 agent 才收尾的能收到。
+// 隐藏组收不到流，用服务端 quiet + 反推的输出时刻对齐 leftAt（留扫描周期余量）。
+// 开关 per 组（tab 右键「无输出时提醒」），随组进 localStorage。
+const WATCHING = Number.POSITIVE_INFINITY
+const leftAtByTerm = new Map<string, number>()
+function markWatch(g: TermGroup) {
+  for (const t of leafIds(g.root)) leftAtByTerm.set(t, WATCHING)
+}
+function markLeft(g: TermGroup) {
+  const now = Date.now()
+  for (const t of leafIds(g.root)) leftAtByTerm.set(t, now)
+}
+// 激活组 / 主区形态变化 = 「在看」关系变化。首跑（页面加载恢复的 tabs）统一落基线：
+// 激活组在看，其余组从加载起就没看过（它们常驻挂载、此后有输出就能积资格）。
+watch(
+  () => [groups.value[activeIdx.value]?.id ?? '', areaMode.value] as const,
+  ([gid, mode], prev) => {
+    if (!prev) {
+      const now = Date.now()
+      for (const g of groups.value) {
+        const watching = g.id === gid && mode === 'terminal'
+        for (const t of leafIds(g.root)) leftAtByTerm.set(t, watching ? WATCHING : now)
+      }
+      return
+    }
+    const [oldGid, oldMode] = prev
+    const byId = (id: string) => groups.value.find((x) => x.id === id)
+    if (oldMode === 'terminal' && oldGid && (oldGid !== gid || mode !== 'terminal')) {
+      const g = byId(oldGid)
+      if (g) markLeft(g)
+    }
+    if (mode === 'terminal' && gid) {
+      const g = byId(gid)
+      if (g) markWatch(g)
+    }
+  },
+  { immediate: true },
+)
+
+function activityKeyOf(g: TermGroup, t: string): string {
+  return g.kind === 'host' ? termSessionKey('host', undefined, t) : termSessionKey('container', g.containerId, t)
+}
+function switchToGroup(g: TermGroup) {
+  if (hiddenGroups.value.some((x) => x.id === g.id)) {
+    restoreHidden(g) // 恢复即激活（内部已设 activeIdx）
+    return
+  }
+  const gi = groups.value.findIndex((x) => x.id === g.id)
+  if (gi >= 0) {
+    activeIdx.value = gi
+    areaMode.value = 'terminal'
+  }
+}
+let actTimer: ReturnType<typeof setInterval> | null = null
+const ACTIVITY_MS = 5000
+async function refreshActivity() {
+  if (!groups.value.length && !hiddenGroups.value.length) return
+  let threshold = 15
+  let rows: TermActivityView[]
+  try {
+    const r = await listTermActivity()
+    threshold = r.threshold > 0 ? r.threshold : 15
+    rows = r.items
+  } catch (e) {
+    if (e instanceof Unauthorized) emit('unauthorized')
+    return // 轮询失败静默（服务重启窗口期常见），下拍再试
+  }
+  const rowByKey = new Map(rows.map((r) => [termSessionKey(r.kind, r.containerId, r.termId), r]))
+  const feed: QuietFeedItem[] = []
+  const keyToGroup = new Map<string, TermGroup>()
+  for (const g of [...groups.value, ...hiddenGroups.value]) {
+    if (g.quietNotify === false) continue
+    const visible = groups.value.includes(g)
+    for (const t of leafIds(g.root)) {
+      const key = activityKeyOf(g, t)
+      keyToGroup.set(key, g)
+      const leftAt = leftAtByTerm.get(t) ?? WATCHING
+      let quiet = false
+      let quietMs = 0
+      if (visible) {
+        const last = lastTermOutput(t)
+        if (last !== undefined) {
+          quietMs = Date.now() - last
+          quiet = quietMs >= threshold * 1000 && last > leftAt
+        }
+      } else {
+        const r = rowByKey.get(key)
+        if (r?.state === 'quiet') {
+          quietMs = r.quietSeconds * 1000
+          // 服务端输出时刻反推（±一个扫描周期，留 6s 余量）：隐藏前就停了的不打扰
+          quiet = Date.now() - quietMs > leftAt + 6000
+        }
+      }
+      feed.push({ key, quiet, quietMs })
+    }
+  }
+  const hits = trackTerminalActivity(feed)
+  // 同组分屏多叶子同时安静归并成一条；正看着的组 leftAt=WATCHING 不会命中资格。
+  const byGroup = new Map<TermGroup, number>()
+  for (const hit of hits) {
+    const g = keyToGroup.get(hit.key)
+    if (!g) continue
+    byGroup.set(g, Math.max(byGroup.get(g) ?? 0, hit.quietMs))
+  }
+  for (const [g, ms] of byGroup) {
+    const sec = Math.max(1, Math.round(ms / 1000))
+    toast.info(`${groupLabel(g)} 已 ${sec}s 无输出`, {
+      description: '可能已完成或在等你输入。',
+      action: { label: '切换', onClick: () => switchToGroup(g) },
+      duration: 12_000,
+    })
+  }
+  // 修剪已不存在的叶子登记（组关了 / 开关关了）：两张表同步清，防无界增长
+  const alive = new Set<string>()
+  for (const g of [...groups.value, ...hiddenGroups.value]) {
+    for (const t of leafIds(g.root)) alive.add(t)
+  }
+  for (const t of [...leftAtByTerm.keys()]) {
+    if (!alive.has(t)) {
+      leftAtByTerm.delete(t)
+      forgetTerm(t)
+    }
+  }
+}
+
 onMounted(() => {
   refresh()
   timer = setInterval(() => refresh(true), 5000)
+  // 无输出提醒：popout 独立窗口也有自己的终端组，同样参与轮询。
+  void refreshActivity()
+  actTimer = setInterval(() => void refreshActivity(), ACTIVITY_MS)
   if (!props.popout) {
     void refreshServices()
     armSvcTimer()
@@ -1362,6 +1513,7 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (svcTimer) clearInterval(svcTimer)
   if (portsTimer) clearInterval(portsTimer)
+  if (actTimer) clearInterval(actTimer)
   document.removeEventListener('visibilitychange', onVisChange)
 })
 </script>
@@ -1869,6 +2021,14 @@ onUnmounted(() => {
               新开一组终端
             </ContextMenuItem>
             <ContextMenuSeparator />
+            <!-- 无输出提醒（per 组，随组持久化）：agent 干完活/等输入时弹 toast。
+                 默认开；跑 dev server 这类长驻进程的 tab 可关。 -->
+            <ContextMenuCheckboxItem
+              :checked="g.quietNotify !== false"
+              @update:checked="(v: boolean | 'indeterminate') => (g.quietNotify = v === true)"
+            >
+              无输出时提醒
+            </ContextMenuCheckboxItem>
             <!-- popout 是组级动作（给该容器/宿主开独立工作区），收在这里而不是 pane 头部。
                  容器要 running 才有意义（停着的容器 popout 出来是死终端）。 -->
             <ContextMenuItem

@@ -9,7 +9,6 @@
 //      可见 tab 是 v-show 常驻（WS 恒 attach），这比服务端 5s 扫描精确得多；
 //   2) trackTerminalActivity：喂入调用方算好的每叶子 quiet 布尔，只在 false→true
 //      跳变时返回该叶子，调用方按组归并弹 toast。
-import { termSessionKey, type TermActivityView } from '@/lib/api'
 
 // termId -> 最后输出时刻（epoch ms）。仅本窗口 attach 着的终端有值且持续更新。
 const lastOutput = new Map<string, number>()
@@ -48,6 +47,3 @@ export function trackTerminalActivity(feed: QuietFeedItem[]): QuietFeedItem[] {
   for (const k of [...prevQuiet.keys()]) if (!seen.has(k)) prevQuiet.delete(k)
   return hits
 }
-
-export { termSessionKey }
-export type { TermActivityView }

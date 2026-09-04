@@ -101,6 +101,9 @@ function connectWs() {
       }
       return
     }
+    // 终端数据帧 = 有输出：登记最后输出时刻（「无输出提醒」用，见 lib/terminalActivity）。
+    // 常驻 tab（v-show 非激活）也在收流，登记对所有可见组生效；历史回填（文本帧）不算。
+    noteTermOutput(props.termId)
     term?.write(new Uint8Array(ev.data as ArrayBuffer))
   }
   // 非正常关闭（非 1000/1001）视为意外断线，置 lost 徽标；点「重连」条或刷新恢复。
