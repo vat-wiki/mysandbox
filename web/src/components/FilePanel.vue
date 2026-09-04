@@ -2,7 +2,7 @@
 // 右侧文件面板：跟随终端 pane 的 cwd 展示目录内容（tmux 查询），可逐级浏览、点文件
 // 抛 open-file 给父级开编辑器，右键 新建文件/新建文件夹/重命名/删除。跟随与手动浏览
 // 互斥：手动导航（点目录/输路径/外部定位）暂停跟随，恢复条一键回到终端所在目录。
-import { ref, computed, watch, onMounted, onUnmounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   listFiles,
   getTermCwd,
@@ -48,6 +48,7 @@ import {
   Trash2,
   Download,
   Search,
+  Loader2,
   HardDrive,
   Copy,
   MoreHorizontal,
@@ -172,7 +173,7 @@ async function loadDir(p: string, opts: { silent?: boolean } = {}) {
 // 1) 跟随态查终端 cwd，变了就跳目录（loadDir 负责拉新列表）；
 // 2) 当前目录内容静默重查：容器内进程/他人新建文件不用手点刷新即出现（签名不变则零
 //    DOM 变更）。面板用 v-if 挂载，关闭即卸载、onUnmounted 清 timer，不空转。
-// 右键菜单/操作弹窗开着时整体跳过：列表被换会让 ctxEntry 指向已不存在的条目对象、
+// 右键菜单/操作弹窗开着时整体跳过：列表被换会让 ctxTarget 指向已不存在的条目对象、
 // 菜单打开瞬间列表被替换（用户正对着菜单里的「重命名」列表却变了）。
 async function tick() {
   if (menuOpen.value || nameDialog.value || delTarget.value) return
@@ -194,6 +195,10 @@ async function tick() {
     }
   }
   if (path.value) void loadDir(path.value, { silent: true })
+  // 展开的子目录跟着静默刷新（per-dir 签名，内容没变零 DOM 变更）。
+  for (const [p, st] of expanded) {
+    if (st.open) void loadExpanded(p, true)
+  }
 }
 
 onMounted(() => {
@@ -222,6 +227,9 @@ watch(
     if (follow.value) tick()
   },
 )
+// 路径变化（跟随跳转/手动导航/面包屑）：树展开整体收起——展开是「当前目录视图」的形态，
+// 换了目录旧展开没有意义；静默轮询写回同值不触发 watch，展开原样保留。
+watch(path, () => expanded.clear())
 
 // —— 导航（均暂停跟随）——
 function pauseFollow() {
@@ -247,12 +255,6 @@ async function openLink(p: string) {
   } catch {
     emit('open-file', p)
   }
-}
-function openEntry(e: FileEntry) {
-  const p = path.value === '/' ? `/${e.name}` : `${path.value}/${e.name}`
-  if (e.type === 'dir') openDir(p)
-  else if (e.type === 'link') void openLink(p)
-  else emit('open-file', p)
 }
 function goParent() {
   if (path.value === '/') return
@@ -345,28 +347,27 @@ const gitRef = ref<InstanceType<typeof FilePanelGit> | null>(null)
 
 // —— 右键操作（新建/重命名/删除）——
 // 右键命中的条目（null = 空白处，新建作用于当前目录）。事件委托：trigger 容器上监听
-// contextmenu，按 data-entry 找行——不用嵌套 trigger，也不 .stop（会阻断 reka 监听）。
-const ctxEntry = ref<FileEntry | null>(null)
+// contextmenu，按 data-path 找行（展开视图里同名条目可出现在多层，名字不再唯一）——
+// 不用嵌套 trigger，也不 .stop（会阻断 reka 监听）。
+const ctxTarget = ref<EntryRow | null>(null)
 // 菜单开合状态（reka update:open）：开=true 期间轮询暂停（见 tick），条目快照不被换掉。
 const menuOpen = ref(false)
 function onCtxMenu(ev: MouseEvent) {
-  const el = (ev.target as HTMLElement).closest('[data-entry]')
-  ctxEntry.value = el ? (entries.value.find((e) => e.name === el.getAttribute('data-entry')) ?? null) : null
+  const p = (ev.target as HTMLElement).closest('[data-path]')?.getAttribute('data-path') ?? null
+  ctxTarget.value = p
+    ? (rows.value.find((r): r is EntryRow => r.kind === 'entry' && r.path === p) ?? null)
+    : null
 }
 // 触屏行内 ⋯ 菜单（手机右键不可达）：与 ContextMenu 同一批动作/处理器，只是入口不同。
-function onRowMenu(e: FileEntry) {
-  ctxEntry.value = e
+function onRowMenu(row: EntryRow) {
+  ctxTarget.value = row
 }
 // 命名弹窗：mode 区分三个操作；entry 为重命名/删除目标。err 是异步结果回显。
 const nameDialog = ref<null | { mode: 'newFile' | 'newDir' | 'rename' }>(null)
-const delTarget = ref<FileEntry | null>(null)
+const delTarget = ref<EntryRow | null>(null)
 const opErr = ref('')
 const opBusy = ref(false)
-// 当前目录下拼完整路径（与 openEntry 同款）。
-function joinPath(name: string): string {
-  return path.value === '/' ? `/${name}` : `${path.value}/${name}`
-}
-// 下载（文件或目录）：目录走服务端 tar.gz。浏览器磁盘兜底 Blob，大文件也稳。
+// 下载（文件或目录，目录走服务端 tar.gz）：名字取路径尾段，展开视图里的子层条目同样适用。
 const dlBusy = ref(false)
 async function downloadTo(p: string, name: string, isDir: boolean) {
   if (dlBusy.value) return
@@ -380,8 +381,9 @@ async function downloadTo(p: string, name: string, isDir: boolean) {
     dlBusy.value = false
   }
 }
-function download(e: FileEntry) {
-  return downloadTo(joinPath(e.name), e.name, e.type === 'dir')
+function download(row: EntryRow) {
+  const name = row.path.slice(row.path.lastIndexOf('/') + 1) || row.path
+  return downloadTo(row.path, name, row.entry.type === 'dir')
 }
 // 空白处右键「下载当前文件夹」：目录名取 path 尾段（根目录在菜单里禁用，服务端也拒 /）。
 function downloadDir() {
@@ -429,6 +431,110 @@ function nameSegs(name: string): { t: string; hit: boolean }[] {
   if (rest) segs.push({ t: rest, hit: false })
   return segs
 }
+
+// —— 目录展开（行内树形视图）——
+// 点行 = 进入目录（原导航不变）；点行首 chevron 或文件夹图标 = 原位展开子内容，子目录
+// 可继续层层展开。展开状态按完整路径记（子层会出现与顶层同名的条目，路径才唯一）；
+// 导航去新目录（path 变化）整体收起（见上方 watch），搜索时收起、只按相关度平铺——
+// 树展开与搜索排序混排会让人迷失层级。
+// 展开的目录随 3s 静默轮询刷新（per-dir 签名，内容没变零 DOM 变更，与主列表同手法）。
+type EntryRow = { kind: 'entry'; entry: FileEntry; path: string; depth: number }
+type TreeRow =
+  | EntryRow
+  | { kind: 'err'; path: string; depth: number; msg: string }
+  | { kind: 'empty'; path: string; depth: number }
+type ExpandState = { open: boolean; loading: boolean; entries: FileEntry[]; err: string; sig: string }
+// 行几何：基础左距（原 px-2.5）+ 每层缩进；展开错误/空目录行再右移到名字列
+// （chevron 16px + gap 8px），与同层文件名对齐。
+const ROW_BASE = 10
+const ROW_INDENT = 16
+
+const expanded = reactive(new Map<string, ExpandState>())
+const expandSeq = new Map<string, number>()
+
+// 当前目录下拼完整路径（rows 顶层与新建/删除共用）。
+function joinPath(name: string): string {
+  return path.value === '/' ? `/${name}` : `${path.value}/${name}`
+}
+
+async function loadExpanded(p: string, silent: boolean) {
+  const st = expanded.get(p)
+  if (!st) return
+  const seq = (expandSeq.get(p) ?? 0) + 1
+  expandSeq.set(p, seq)
+  if (!silent) st.loading = true
+  try {
+    const v = await listFiles(targetId(), p)
+    if (seq !== expandSeq.get(p)) return // 过期响应
+    const sig = sigOf(v)
+    if (!silent || sig !== st.sig) {
+      st.entries = v.entries
+      st.sig = sig
+    }
+    if (!silent) st.err = ''
+  } catch (e) {
+    if (seq !== expandSeq.get(p)) return
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    // 静默失败保留旧内容下轮再试；手动展开的失败进行内错误行（点击重试）。
+    if (!silent) st.err = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (seq === expandSeq.get(p) && !silent) st.loading = false
+  }
+}
+
+function toggleExpand(row: EntryRow) {
+  const p = row.path
+  const st = expanded.get(p)
+  if (st) {
+    st.open = !st.open
+    // 收起过的缓存还在（内容冻结在收起时刻）——重开有缓存先显示，空/出错才重拉，
+    // 打开后的下一轮静默轮询会把内容追平。
+    if (st.open && !st.entries.length && !st.err && !st.loading) void loadExpanded(p, false)
+    return
+  }
+  expanded.set(p, { open: true, loading: true, entries: [], err: '', sig: '' })
+  void loadExpanded(p, false)
+}
+
+// 行点击语义：目录进目录、link 先试目录后回退文件、文件抛 open-file（与原 openEntry 一致）。
+function openRow(row: EntryRow) {
+  if (row.entry.type === 'dir') openDir(row.path)
+  else if (row.entry.type === 'link') void openLink(row.path)
+  else emit('open-file', row.path)
+}
+
+// 平面化渲染模型：主列表 + 各展开目录的子内容（递归，带缩进层级），v-for 直接吃它。
+// 搜索态退化为 displayEntries 的单层平铺。sigOf 吃 FilesView（子目录视图同构，签名复用）。
+const rows = computed<TreeRow[]>(() => {
+  if (q.value.trim()) {
+    return displayEntries.value.map((e) => ({
+      kind: 'entry' as const,
+      entry: e,
+      path: joinPath(e.name),
+      depth: 0,
+    }))
+  }
+  const out: TreeRow[] = []
+  const walk = (list: FileEntry[], parent: string, depth: number) => {
+    for (const e of list) {
+      const p = parent === '/' ? `/${e.name}` : `${parent}/${e.name}`
+      out.push({ kind: 'entry', entry: e, path: p, depth })
+      if (e.type !== 'dir') continue
+      const st = expanded.get(p)
+      if (!st?.open) continue
+      if (st.err) out.push({ kind: 'err', path: p, depth: depth + 1, msg: st.err })
+      else if (!st.entries.length) {
+        if (!st.loading) out.push({ kind: 'empty', path: p, depth: depth + 1 })
+      } else walk(st.entries, p, depth + 1)
+    }
+  }
+  walk(entries.value, path.value, 0)
+  return out
+})
+
 async function confirmName(name: string) {
   const d = nameDialog.value
   if (!d) return
@@ -437,8 +543,8 @@ async function confirmName(name: string) {
   try {
     const id = targetId()
     if (d.mode === 'rename') {
-      const p = joinPath(ctxEntry.value?.name ?? '')
-      if (name !== ctxEntry.value?.name) await renameEntry(id, p, name)
+      const t = ctxTarget.value
+      if (t && name !== t.entry.name) await renameEntry(id, t.path, name)
     } else {
       await createEntry(id, joinPath(name), d.mode === 'newDir' ? 'dir' : 'file')
     }
@@ -455,7 +561,7 @@ async function confirmDelete() {
   opErr.value = ''
   opBusy.value = true
   try {
-    await deleteEntry(targetId(), joinPath(delTarget.value.name))
+    await deleteEntry(targetId(), delTarget.value.path)
     delTarget.value = null
     refresh()
   } catch (e) {
@@ -663,63 +769,100 @@ function fmtSize(n: number): string {
             >
               空目录
             </p>
-            <div
-              v-for="e in displayEntries"
-              :key="e.name"
-              :data-entry="e.name"
-              class="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 hover:bg-accent/50"
-              @click="openEntry(e)"
-            >
-              <Folder v-if="e.type === 'dir'" class="size-3.5 shrink-0 text-sky-400" />
-              <Link2 v-else-if="e.type === 'link'" class="size-3.5 shrink-0 text-violet-400" />
-              <FileText v-else class="size-3.5 shrink-0 text-muted-foreground" />
-              <span class="min-w-0 flex-1 truncate font-mono text-xs">
-                <template v-for="(s, i) in nameSegs(e.name)" :key="i">
-                  <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
-                  <template v-else>{{ s.t }}</template>
-                </template>
-              </span>
-              <span v-if="e.type !== 'dir'" class="shrink-0 text-[10px] text-muted-foreground">{{
-                fmtSize(e.size)
-              }}</span>
-              <!-- 行内 ⋯（重命名/删除）：触屏无右键，这是手机上的唯一入口；桌面隐藏 -->
-              <DropdownMenu>
-                <DropdownMenuTrigger as-child>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    class="shrink-0 md:hidden"
-                    title="更多操作"
-                    @click.stop
-                  >
-                    <MoreHorizontal class="size-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem @click="download(e)">
-                    <Download /> 下载
-                  </DropdownMenuItem>
-                  <DropdownMenuItem @click="onRowMenu(e); nameDialog = { mode: 'rename' }">
-                    <PenLine /> 重命名
-                  </DropdownMenuItem>
-                  <DropdownMenuItem variant="destructive" @click="onRowMenu(e); delTarget = e">
-                    <Trash2 /> 删除
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+            <!-- 行 = 树平面化结果（rows）：主列表 + 各展开目录的子内容。点行 = 进入/打开，
+                 点行首 chevron 或文件夹图标 = 原位展开子目录（.stop 防止触发行点击）；
+                 文件行用等宽占位保持名字列对齐。 -->
+            <template v-for="row in rows" :key="row.kind + ':' + row.path">
+              <!-- 展开失败的行内错误（点击重试）与空目录占位：缩进到同层名字列 -->
+              <button
+                v-if="row.kind === 'err'"
+                class="block w-full py-1 text-left font-mono text-[11px] text-destructive/80 hover:text-destructive"
+                :style="{ paddingLeft: `${ROW_BASE + row.depth * ROW_INDENT + 24}px` }"
+                title="点击重试"
+                @click="loadExpanded(row.path, false)"
+              >
+                {{ row.msg }}（点击重试）
+              </button>
+              <p
+                v-else-if="row.kind === 'empty'"
+                class="py-1 font-mono text-[11px] text-muted-foreground/50"
+                :style="{ paddingLeft: `${ROW_BASE + row.depth * ROW_INDENT + 24}px` }"
+              >
+                （空）
+              </p>
+              <div
+                v-else
+                :data-path="row.path"
+                class="flex cursor-pointer items-center gap-2 py-1.5 pr-2.5 hover:bg-accent/50"
+                :style="{ paddingLeft: `${ROW_BASE + row.depth * ROW_INDENT}px` }"
+                @click="openRow(row)"
+              >
+                <button
+                  v-if="row.entry.type === 'dir'"
+                  class="flex size-4 shrink-0 items-center justify-center text-muted-foreground/50 hover:text-foreground"
+                  title="展开 / 收起"
+                  @click.stop="toggleExpand(row)"
+                >
+                  <Loader2 v-if="expanded.get(row.path)?.loading" class="size-3 animate-spin" />
+                  <ChevronDown v-else-if="expanded.get(row.path)?.open" class="size-3" />
+                  <ChevronRight v-else class="size-3" />
+                </button>
+                <span v-else class="h-4 w-4 shrink-0" />
+                <Folder
+                  v-if="row.entry.type === 'dir'"
+                  class="size-3.5 shrink-0 text-sky-400"
+                  @click.stop="toggleExpand(row)"
+                />
+                <Link2 v-else-if="row.entry.type === 'link'" class="size-3.5 shrink-0 text-violet-400" />
+                <FileText v-else class="size-3.5 shrink-0 text-muted-foreground" />
+                <span class="min-w-0 flex-1 truncate font-mono text-xs">
+                  <template v-for="(s, i) in nameSegs(row.entry.name)" :key="i">
+                    <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
+                    <template v-else>{{ s.t }}</template>
+                  </template>
+                </span>
+                <span v-if="row.entry.type !== 'dir'" class="shrink-0 text-[10px] text-muted-foreground">{{
+                  fmtSize(row.entry.size)
+                }}</span>
+                <!-- 行内 ⋯（重命名/删除）：触屏无右键，这是手机上的唯一入口；桌面隐藏 -->
+                <DropdownMenu>
+                  <DropdownMenuTrigger as-child>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      class="shrink-0 md:hidden"
+                      title="更多操作"
+                      @click.stop
+                    >
+                      <MoreHorizontal class="size-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem @click="download(row)">
+                      <Download /> 下载
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @click="onRowMenu(row); nameDialog = { mode: 'rename' }">
+                      <PenLine /> 重命名
+                    </DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" @click="onRowMenu(row); delTarget = row">
+                      <Trash2 /> 删除
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </template>
           </template>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <template v-if="ctxEntry">
-          <ContextMenuItem @click="download(ctxEntry)">
+        <template v-if="ctxTarget">
+          <ContextMenuItem @click="download(ctxTarget)">
             下载
           </ContextMenuItem>
           <ContextMenuItem @click="nameDialog = { mode: 'rename' }">
             重命名
           </ContextMenuItem>
-          <ContextMenuItem variant="destructive" @click="delTarget = ctxEntry">
+          <ContextMenuItem variant="destructive" @click="delTarget = ctxTarget">
             删除
           </ContextMenuItem>
           <ContextMenuSeparator />
@@ -755,8 +898,8 @@ function fmtSize(n: number): string {
     <NameDialog
       v-if="nameDialog"
       :title="nameDialog.mode === 'rename' ? '重命名' : nameDialog.mode === 'newDir' ? '新建文件夹' : '新建文件'"
-      :desc="nameDialog.mode === 'rename' ? ctxEntry?.name : path"
-      :initial="nameDialog.mode === 'rename' ? ctxEntry?.name : ''"
+      :desc="nameDialog.mode === 'rename' ? ctxTarget?.path : path"
+      :initial="nameDialog.mode === 'rename' ? ctxTarget?.entry.name : ''"
       :ok-text="nameDialog.mode === 'rename' ? '重命名' : '创建'"
       :err="opErr"
       :busy="opBusy"
@@ -767,8 +910,8 @@ function fmtSize(n: number): string {
     <ConfirmDialog
       v-if="delTarget"
       title="删除"
-      :description="`确定删除 ${delTarget.type === 'dir' ? '目录' : ''}“${delTarget.name}”？${
-        delTarget.type === 'dir' ? '目录内所有内容将一并删除，' : ''
+      :description="`确定删除 ${delTarget.entry.type === 'dir' ? '目录' : ''}“${delTarget.entry.name}”？${
+        delTarget.entry.type === 'dir' ? '目录内所有内容将一并删除，' : ''
       }此操作不可恢复。`"
       confirm-text="删除"
       variant="destructive"
