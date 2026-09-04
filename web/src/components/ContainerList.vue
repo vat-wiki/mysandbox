@@ -518,6 +518,32 @@ function onFileTabClick(i: number) {
 function closeFileTab(t: EditorTab) {
   paneRefs.get(tabId(t))?.requestClose()
 }
+// Esc 关闭当前文件 tab（与 tab X 同链路：pane 先冲刷未落改动，冲突/失败时 tab
+// 留在原处裁决，不丢数据）。只在「主区正显示编辑器且焦点不在编辑语境」时生效：
+// - Monaco 的 textarea / 文件面板搜索 / 各 Dialog 输入都是 input/textarea，Esc 的
+//   第一职责在输入框自身（清搜索 / Monaco 关自己的查找、建议 widget），不抢；
+// - Dialog/菜单/Select 弹层开着时 reka-ui 的 Esc 关弹层本身，不抢（弹层打开标记 =
+//   其 content 的 data-state=open）；
+// - 终端激活时 Esc 是普通键（vim/shell），整条不介入。
+function onEscCloseFile(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || e.repeat) return
+  if (areaMode.value !== 'editor' || !editorTabs.value.length) return
+  const target = e.target
+  if (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || target.closest('input, textarea, select, .monaco-editor'))
+  )
+    return
+  if (
+    document.querySelector(
+      '[role="dialog"][data-state="open"], [role="menu"][data-state="open"], [role="listbox"][data-state="open"]',
+    )
+  )
+    return
+  e.preventDefault()
+  const t = editorTabs.value[activeEditorIdx.value]
+  if (t) closeFileTab(t)
+}
 // —— 文件 tab 右键批量关闭 ——
 // 逐个走 pane 的 requestClose（dirty 先冲刷落盘）；409 冲突/保存失败的 pane 会自己
 // 留在 tab 栏上等裁决（见 FileEditorPane.requestClose），不静默丢数据。activeIdx
@@ -1517,6 +1543,7 @@ onMounted(() => {
   // 无输出提醒：popout 独立窗口也有自己的终端组，同样参与轮询。
   void refreshActivity()
   actTimer = setInterval(() => void refreshActivity(), ACTIVITY_MS)
+  document.addEventListener('keydown', onEscCloseFile) // Esc 关闭当前文件 tab（见函数注释）
   if (!props.popout) {
     void refreshServices()
     armSvcTimer()
@@ -1530,6 +1557,7 @@ onUnmounted(() => {
   if (svcTimer) clearInterval(svcTimer)
   if (portsTimer) clearInterval(portsTimer)
   if (actTimer) clearInterval(actTimer)
+  document.removeEventListener('keydown', onEscCloseFile)
   document.removeEventListener('visibilitychange', onVisChange)
 })
 </script>
