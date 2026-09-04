@@ -10,10 +10,14 @@ import {
   renameEntry,
   deleteEntry,
   downloadEntry,
+  copyEntry,
+  setFileClipboard,
+  getFileClipboard,
   Unauthorized,
   HOST_ID,
   type FileEntry,
   type FilesView,
+  type FileClipboard,
 } from '@/lib/api'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -51,6 +55,7 @@ import {
   Search,
   Loader2,
   HardDrive,
+  ClipboardPaste,
   Copy,
   MoreHorizontal,
 } from 'lucide-vue-next'
@@ -141,6 +146,40 @@ function hostPathOf(row: EntryRow): string | null {
 function copyRowHostPath(row: EntryRow) {
   const hp = hostPathOf(row)
   if (hp) copyText(hp, '已复制实际路径')
+}
+
+// —— 跨面板复制粘贴（文件/文件夹通用）——
+// 剪贴板是模块级单例（api.ts）：复制后切到目标容器/宿主的文件面板粘贴，支持
+// 容器↔宿主↔容器与同容器跨目录。目标冲突由服务端 409 报错（不覆盖）。
+const clip = ref<FileClipboard | null>(getFileClipboard())
+function copyToClipboard(row: EntryRow) {
+  const c: FileClipboard = {
+    containerId: targetId(),
+    containerName: props.containerName,
+    path: row.path,
+    name: row.entry.name,
+    isDir: row.entry.type === 'dir',
+  }
+  setFileClipboard(c)
+  clip.value = c
+  toast(`已复制「${c.name}」，到目标面板粘贴（可跨容器 / 宿主）`)
+}
+function pasteInto(dir: string) {
+  const c = clip.value
+  if (!c || !dir) return
+  const dst = dir === '/' ? `/${c.name}` : `${dir}/${c.name}`
+  const from = c.containerId === HOST_ID ? '宿主' : c.containerName || c.containerId
+  toast.promise(
+    copyEntry({ srcContainer: c.containerId, srcPath: c.path, dstContainer: targetId(), dstPath: dst }),
+    {
+      loading: `正在复制 ${c.name}（${from} → ${isHost.value ? '宿主' : props.containerName}）…`,
+      success: () => {
+        if (dir === path.value) refresh() // 粘进当前目录立即刷新；粘进子目录下钻时可见
+        return `已复制到 ${dst}`
+      },
+      error: (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    },
+  )
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -625,13 +664,25 @@ function fmtSize(n: number): string {
       >
         <FilePlus class="size-3.5" />
       </Button>
+      <!-- 粘贴（跨面板剪贴板非空时出现）：粘到当前目录。触屏无右键，这是触屏粘贴入口。 -->
       <Button
+        v-if="clip"
         variant="ghost"
         size="icon-xs"
         class="shrink-0"
         :disabled="!path"
-        title="新建文件夹"
-        @click="nameDialog = { mode: 'newDir' }"
+        :title="`粘贴「${clip.name}」到当前目录`"
+        @click="pasteInto(path)"
+      >
+        <ClipboardPaste class="size-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        class="shrink-0"
+        :disabled="loading"
+        :title="loading ? '刷新中…' : '刷新'"
+        @click="refresh"
       >
         <FolderPlus class="size-3.5" />
       </Button>
@@ -862,6 +913,9 @@ function fmtSize(n: number): string {
                     <DropdownMenuItem @click="download(row)">
                       <Download /> 下载
                     </DropdownMenuItem>
+                    <DropdownMenuItem @click="copyToClipboard(row)">
+                      <ClipboardPaste /> 复制（跨面板粘贴）
+                    </DropdownMenuItem>
                     <DropdownMenuItem v-if="!isHost" @click="copyText(row.path, '已复制容器路径')">
                       <Copy /> 复制容器路径
                     </DropdownMenuItem>
@@ -883,6 +937,9 @@ function fmtSize(n: number): string {
       </ContextMenuTrigger>
       <ContextMenuContent>
         <template v-if="ctxTarget">
+          <ContextMenuItem @click="copyToClipboard(ctxTarget)">
+            复制（跨面板粘贴）
+          </ContextMenuItem>
           <ContextMenuItem v-if="!isHost" @click="copyText(ctxTarget.path, '已复制容器路径')">
             复制容器路径
           </ContextMenuItem>
@@ -898,8 +955,14 @@ function fmtSize(n: number): string {
           <ContextMenuItem variant="destructive" @click="delTarget = ctxTarget">
             删除
           </ContextMenuItem>
+          <ContextMenuItem v-if="clip && ctxTarget.entry.type === 'dir'" @click="pasteInto(ctxTarget.path)">
+            粘贴到该文件夹
+          </ContextMenuItem>
           <ContextMenuSeparator />
         </template>
+        <ContextMenuItem v-if="clip" :disabled="!path" @click="pasteInto(path)">
+          粘贴到当前目录
+        </ContextMenuItem>
         <ContextMenuItem :disabled="!path || path === '/'" @click="downloadDir">
           下载当前文件夹
         </ContextMenuItem>

@@ -62,9 +62,10 @@ export class ApiError extends Error {
 async function api(path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(path, {
     ...init,
-    // 10s 超时：后端挂死（TCP 半开不断连）时 fetch 会无限等待，UI 卡在「刷新中…」。
+    // 10s 超时默认：后端挂死（TCP 半开不断连）时 fetch 会无限等待，UI 卡在「刷新中…」。
     // 普通请求都应在秒级返回；SSE 流式（streamBaseAction）不走这条路径，不受影响。
-    signal: AbortSignal.timeout(10_000),
+    // 耗时请求（跨面板复制等）可通过 init.signal 传入更宽的超时覆盖默认值。
+    signal: init.signal ?? AbortSignal.timeout(10_000),
     headers: {
       'x-sandbox-token': getToken() ?? '',
       // content-type 只在有 body 时带：无 body 的请求（GET、无参 POST）带 JSON
@@ -501,6 +502,34 @@ export const renameEntry = (id: string, path: string, name: string) =>
   postJson(`${filesBase(id)}/fs/rename`, { path, name }) as Promise<{ ok: true; to: string }>
 export const deleteEntry = (id: string, path: string) =>
   postJson(`${filesBase(id)}/fs/delete`, { path }) as Promise<{ ok: true }>
+// —— 跨面板复制粘贴 ——
+// 面板内部剪贴板：模块级单例（非系统剪贴板），跨 FilePanel 实例共享——复制后切到目标
+// 容器/宿主的文件面板粘贴。服务端统一 /api/files/copy（双端解析宿主实址走 tar 管道），
+// containerId 用 HOST_ID 哨兵表示宿主端。
+export interface FileClipboard {
+  containerId: string
+  containerName: string
+  path: string
+  name: string
+  isDir: boolean
+}
+let fileClip: FileClipboard | null = null
+export const setFileClipboard = (c: FileClipboard | null): void => {
+  fileClip = c
+}
+export const getFileClipboard = (): FileClipboard | null => fileClip
+// 大目录是分钟级 tar 管道：显式 10min 超时覆盖 api() 默认的 10s（服务端 watchdog 同长）。
+export const copyEntry = (p: {
+  srcContainer: string
+  srcPath: string
+  dstContainer: string
+  dstPath: string
+}) =>
+  api('/api/files/copy', {
+    method: 'POST',
+    body: JSON.stringify(p),
+    signal: AbortSignal.timeout(10 * 60_000),
+  }) as Promise<{ ok: true }>
 // 下载（文件/目录）：fetch + Blob 中转而非 <a href="?token="> 裸导航——token 不落 URL/
 // 浏览器历史，401/4xx 能解析 JSON 走统一报错（裸导航会把错误 JSON 直接存成文件）。
 // Blob 由浏览器磁盘后端兜内存，大文件无压力；目录是服务端现打的 tar.gz 流。

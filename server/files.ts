@@ -6,6 +6,11 @@
 // 「绝对路径、无 \0、长度合理」让 exec 不被怪输入玩坏。
 import type { FastifyInstance } from 'fastify';
 import type { Readable } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { lstat, mkdir, rename, rm, stat } from 'node:fs/promises';
 import type { Config } from './config.js';
 import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
@@ -65,6 +70,9 @@ export function parentOf(p: string): string | null {
   const i = p.lastIndexOf('/');
   return i <= 0 ? '/' : p.slice(0, i);
 }
+
+// 宿主面板哨兵：与 web/src/lib/api.ts 的 HOST_ID 一致（复制粘贴双端统一在此端点解析）。
+const HOST_ID = '__host__';
 
 // 内容二进制判定：含 \0 或非法 UTF-8（GBK 等）-> 只读（binary=true 不带 content）。
 // 非 UTF-8 文本若照常解码，编辑保存会有损往返毁文件。hostFiles.ts 复用（两侧规则单源）。
@@ -405,6 +413,115 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (res.exitCode !== 0)
       throw new HttpError(400, res.stderr.trim() || `delete failed (exit ${res.exitCode})`, 'delete_failed');
     return { ok: true };
+  });
+
+  // —— 跨面板复制粘贴（容器↔宿主↔容器，文件/目录通用）——
+  // 双端统一解析宿主实址（容器 = rootfs 前缀直拼——unprivileged LXC 的 rootfs 都在固定
+  // 位置，adopted 同样成立；宿主 = 路径本身），宿主侧 tar 管道复制。为什么用 tar 而不是
+  // fs.cp：tar 打包不跟随符号链接，链接字符串原样进包、解到目的端后语义正确（容器内指向
+  // /etc 的绝对链接，fs.cp 会按宿主视角把它解析到宿主 /etc，语义错乱）；包内 uid 全部来自
+  // dev(1000) 可读范围，非 root 解包 --no-same-owner 落为 leon(1000) = 容器 dev（D1 直通
+  // 下属主天然正确）。解包到兄弟临时目录、成功后 rename 落位：失败清理临时目录不留半拷，
+  // 落位是同 fs rename 瞬时完成。容器不要求运行中（rootfs 直操作），但必须受控
+  // （requireControlled：external 容器 adopt 前不碰 rootfs）。无进度上报（本地管道秒级，
+  // 大目录由前端 toast.promise 兜住观感），10min watchdog 硬顶防悬挂进程堆积。
+  app.post('/api/files/copy', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as Record<string, unknown>) || {};
+    const srcC = typeof body.srcContainer === 'string' ? body.srcContainer : '';
+    const dstC = typeof body.dstContainer === 'string' ? body.dstContainer : '';
+    const srcPath = cleanPath(body.srcPath, 'srcPath');
+    const dstPath = cleanPath(body.dstPath, 'dstPath');
+    if (!srcC || !dstC) throw badRequest('srcContainer and dstContainer are required');
+    if (srcPath === '/') throw badRequest('cannot copy /');
+
+    async function locate(id: string, p: string): Promise<string> {
+      if (id === HOST_ID) return p;
+      const r = await resolve(cfg, id); // 存在性校验：容器名来自列表，仍防直调 API 的注入名
+      requireControlled(r);
+      const rootfs = rootfsPath(cfg, r.id);
+      if (!rootfs) throw badRequest(`cannot map container ${id} to a host path`);
+      return rootfs + p;
+    }
+    const [src, dst] = await Promise.all([locate(srcC, srcPath), locate(dstC, dstPath)]);
+
+    const srcName = src.slice(src.lastIndexOf('/') + 1);
+    const dstName = dst.slice(dst.lastIndexOf('/') + 1);
+    if (!srcName || srcName === '.' || srcName === '..' || !dstName || dstName === '.' || dstName === '..') {
+      throw badRequest('cannot copy / or dot paths');
+    }
+    // 预检：源存在（lstat 不跟随——断链也原样复制）；目标不存在；不能拷进自身内部
+    // （tar 边读边写会自噬）。预检到落位有 TOCTOU 窗口（与 rename 路由同思路：best-effort），
+    // 落位前再查一次把窗口压到最小。
+    try {
+      await lstat(src);
+    } catch {
+      throw notFound(`source not found: ${srcPath}`);
+    }
+    try {
+      await lstat(dst);
+      throw conflict('同名文件或目录已存在');
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+    }
+    if (dst === src || dst.startsWith(`${src}/`)) throw badRequest('cannot copy into itself');
+    const dstParent = dst.slice(0, dst.lastIndexOf('/')) || '/';
+    let parentSt;
+    try {
+      parentSt = await stat(dstParent);
+    } catch {
+      throw notFound(`destination directory not found: ${dstPath}`);
+    }
+    if (!parentSt.isDirectory())
+      throw new HttpError(400, 'destination parent is not a directory', 'not_a_directory');
+
+    const tmp = join(dstParent, `.mysandbox-copy-${randomUUID().slice(0, 8)}`);
+    await mkdir(tmp);
+    const kids: ChildProcess[] = [];
+    const errs: string[] = [];
+    try {
+      const pack = spawn('tar', ['-C', join(src, '..'), '-cf', '-', '--', srcName], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const unpack = spawn('tar', ['-x', '-C', tmp, '--no-same-owner'], {
+        stdio: ['pipe', 'ignore', 'pipe'],
+      });
+      for (const [c, tag] of [
+        [pack, 'pack'],
+        [unpack, 'unpack'],
+      ] as const) {
+        kids.push(c);
+        c.stderr?.on('data', (d: Buffer) => errs.push(`${tag}: ${d}`));
+        c.on('error', (e) => errs.push(`${tag}: ${e.message}\n`)); // spawn 失败（tar 不存在等）
+      }
+      pack.stdout.pipe(unpack.stdin);
+      // 客户端中途断开也照常完成（复制已启动就落完）：不挂 reply 事件。watchdog 兜悬挂。
+      const closed = (c: ChildProcess) =>
+        new Promise<number>((res) => c.on('close', (code) => res(code ?? -1)));
+      const watchdog = setTimeout(() => kids.forEach((k) => k.kill('SIGKILL')), 10 * 60_000);
+      const [packCode, unpackCode] = await Promise.all([closed(pack), closed(unpack)]);
+      clearTimeout(watchdog);
+      if (packCode !== 0 || unpackCode !== 0) {
+        const detail = errs.join('').trim().slice(0, 500);
+        throw new HttpError(
+          400,
+          detail || `copy failed (pack ${packCode}, unpack ${unpackCode})`,
+          'copy_failed',
+        );
+      }
+      // 落位前复查冲突（压 TOCTOU 窗口）；rename 对已存在目录会 ENOTEMPTY、对文件会覆盖
+      // ——复查覆盖掉文件场景的竞态窗口。
+      try {
+        await lstat(dst);
+        throw conflict('同名文件或目录已存在');
+      } catch (e) {
+        if (e instanceof HttpError) throw e;
+      }
+      await rename(join(tmp, srcName), dst);
+      return { ok: true };
+    } catch (e) {
+      await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      throw e;
+    }
   });
 
   // —— 终端 pane 当前目录 ——
