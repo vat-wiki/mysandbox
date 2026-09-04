@@ -42,6 +42,7 @@ import {
   X,
   FolderUp,
   ChevronRight,
+  ChevronDown,
   PenLine,
   FilePlus,
   FolderPlus,
@@ -797,24 +798,29 @@ function fmtSize(n: number): string {
                 :style="{ paddingLeft: `${ROW_BASE + row.depth * ROW_INDENT}px` }"
                 @click="openRow(row)"
               >
-                <button
+                <!-- 展开热区 = chevron + 文件夹图标整体（含中间空隙）：点哪都是展开/收起，
+                     间隙不再漏给行点击造成误下钻；hover 双双变亮 + cursor 暗示整块可点，
+                     展开态 chevron 常亮（收起态淡灰）。点名字仍是进入目录。文件/link 行用
+                     等宽占位（w-4 + 行 gap + 图标 = 38px）保持名字列对齐。 -->
+                <span
                   v-if="row.entry.type === 'dir'"
-                  class="flex size-4 shrink-0 items-center justify-center text-muted-foreground/50 hover:text-foreground"
+                  class="group flex shrink-0 cursor-pointer items-center"
                   title="展开 / 收起"
                   @click.stop="toggleExpand(row)"
                 >
-                  <Loader2 v-if="expanded.get(row.path)?.loading" class="size-3 animate-spin" />
-                  <ChevronDown v-else-if="expanded.get(row.path)?.open" class="size-3" />
-                  <ChevronRight v-else class="size-3" />
-                </button>
+                  <span
+                    class="flex size-4 items-center justify-center group-hover:text-foreground"
+                    :class="expanded.get(row.path)?.open ? 'text-foreground' : 'text-muted-foreground/50'"
+                  >
+                    <Loader2 v-if="expanded.get(row.path)?.loading" class="size-3 animate-spin" />
+                    <ChevronDown v-else-if="expanded.get(row.path)?.open" class="size-3" />
+                    <ChevronRight v-else class="size-3" />
+                  </span>
+                  <Folder class="ml-2 size-3.5 shrink-0 text-sky-400 group-hover:text-sky-300" />
+                </span>
                 <span v-else class="h-4 w-4 shrink-0" />
-                <Folder
-                  v-if="row.entry.type === 'dir'"
-                  class="size-3.5 shrink-0 text-sky-400"
-                  @click.stop="toggleExpand(row)"
-                />
-                <Link2 v-else-if="row.entry.type === 'link'" class="size-3.5 shrink-0 text-violet-400" />
-                <FileText v-else class="size-3.5 shrink-0 text-muted-foreground" />
+                <Link2 v-if="row.entry.type === 'link'" class="size-3.5 shrink-0 text-violet-400" />
+                <FileText v-else-if="row.entry.type === 'file'" class="size-3.5 shrink-0 text-muted-foreground" />
                 <span class="min-w-0 flex-1 truncate font-mono text-xs">
                   <template v-for="(s, i) in nameSegs(row.entry.name)" :key="i">
                     <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
