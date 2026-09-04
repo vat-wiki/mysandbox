@@ -517,6 +517,8 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
         if (e instanceof HttpError) throw e;
       }
       await rename(join(tmp, srcName), dst);
+      // 落位后临时目录只剩空壳（包内唯一顶层条目已移走），一并清掉——失败路径在 catch 里清。
+      await rm(tmp, { recursive: true, force: true }).catch(() => {});
       return { ok: true };
     } catch (e) {
       await rm(tmp, { recursive: true, force: true }).catch(() => {});

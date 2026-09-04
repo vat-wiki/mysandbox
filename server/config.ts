@@ -72,6 +72,13 @@ export const ConfigSchema = z.object({
   ui: z.object({
     defaultShell: z.string().default('zsh'),
   }),
+  // 终端输出活动监测（「无输出提醒」）：输出安静超过 quietSeconds 秒且前端判定
+  // 没人看着时弹提醒（agent 干完活/等输入场景）。扫描与判定见 server/activity.ts。
+  terminal: z
+    .object({
+      quietSeconds: z.number().int().default(15),
+    })
+    .default({ quietSeconds: 15 }),
   // 宿主防火墙（ufw）追加放行（环境特例：热点访问 console、宿主 clash 代理/GLM 网关等）。
   // 核心放行（容器 DNS 53、非 localhost 监听时的 console 端口、LXC 桥 route）由
   // firewall.ts 从 listen/ipPool/services 推导，不经这里；应用在 mysandbox-firewall.service。
@@ -174,6 +181,7 @@ export async function loadConfig(): Promise<LoadResult> {
       ipPool: parsed.ipPool,
       git: parsed.git,
       ui: parsed.ui,
+      terminal: parsed.terminal,
       firewall: parsed.firewall,
       token: parsed.token,
     });

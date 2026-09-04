@@ -18,6 +18,7 @@ import { setMeta, getMeta, deleteMeta } from './state.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession } from './hostTerminal.js';
+import { terminalActivity } from './activity.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
 import { beginSse } from './sse.js';
@@ -170,6 +171,14 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     await killContainerSession(cfg, id, termId);
     return { ok: true };
   });
+
+  // —— 终端输出活动快照（「无输出提醒」，server/activity.ts 周期扫 tmux）——
+  // threshold = 服务端判 quiet 的安静秒数（cfg.terminal.quietSeconds），前端对齐用。
+  // 谁在看着由前端自判（可见 tab v-show 常驻，tmux attached ≠ 用户在看）。
+  app.get('/api/terminal-activity', async () => ({
+    threshold: cfg.terminal.quietSeconds,
+    items: terminalActivity(),
+  }));
 
   app.get('/api/network/ips', async () => ipPoolView(cfg));
 

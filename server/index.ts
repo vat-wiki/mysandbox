@@ -15,6 +15,7 @@ import { registerHostTerminal } from './hostTerminal.js';
 import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
 import { registerServices } from './services.js';
+import { startActivityPoller } from './activity.js';
 import { HttpError, wrapEngineError } from './errors.js';
 import { getVersion } from './version.js';
 import { loggerOptions } from './logger.js';
@@ -61,6 +62,8 @@ export async function buildServer(cfg: Config) {
   await registerHostFileRoutes(app);
   await registerBaseRoutes(app, cfg);
   registerServices(app, cfg);
+  // 终端输出活动扫描（server/activity.ts）：进程内周期轮询，供 /api/terminal-activity。
+  startActivityPoller(cfg);
 
   // 前端静态资源（web/dist）。开发期未构建则回退占位。
   const webDist = findWebDist();

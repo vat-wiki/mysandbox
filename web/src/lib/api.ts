@@ -243,6 +243,20 @@ export const killTermSession = (s: TermSessionView) =>
       : `/api/terminal-sessions/container/${encodeURIComponent(s.containerId ?? '')}/${encodeURIComponent(s.termId)}`,
     { method: 'DELETE' },
   ) as Promise<{ ok: true }>
+
+// —— 终端输出活动（「无输出提醒」）——
+// 后端 TermActivityView（server/activity.ts）：服务端周期扫 tmux 尾部输出，
+// state=quiet 表示出现过输出且已安静超过 threshold 秒。「谁在看着」服务端不知道
+// （可见 tab v-show 常驻，tmux attached ≠ 用户在看），由前端自己关联激活 tab。
+export interface TermActivityView {
+  kind: 'host' | 'container'
+  containerId?: string
+  termId: string
+  state: 'active' | 'quiet'
+  quietSeconds: number
+}
+export const listTermActivity = () =>
+  api('/api/terminal-activity') as Promise<{ threshold: number; items: TermActivityView[] }>
 // —— 基座（模板容器）——
 // 后端 BaseStatus（server/engine/types.ts）。
 export interface BaseStatus {

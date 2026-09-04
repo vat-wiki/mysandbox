@@ -65,6 +65,12 @@ git:
 ui:
   defaultShell: zsh   # 网页终端默认 shell；可在 URL ?shell= 覆盖
 
+# 终端输出活动监测（tab 右键「无输出时提醒」）：服务端每 5s 扫 tmux 会话尾部输出，
+# 输出安静超过 quietSeconds 秒且前端判定没人看着该 tab 时弹提醒——agent 干完活/等
+# 输入场景。安静阈值过小会在人读输出时误报，一般不用调。
+terminal:
+  quietSeconds: 15
+
 # 宿主防火墙（ufw）——三方互通（宿主 ↔ LXC ↔ docker 服务）的放行自管。
 # 核心规则由 server/firewall.ts 按 config 推导（容器 DNS 53、非 localhost 监听时的 console
 # 端口、LXC 桥 route 放行），由 mysandbox-firewall.service 开机应用（幂等、只增不删）。

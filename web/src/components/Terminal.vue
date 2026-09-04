@@ -7,6 +7,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { getToken } from '@/lib/api'
+import { noteTermOutput } from '@/lib/terminalActivity'
 import { isPhone } from '@/composables/useDevice'
 
 const props = withDefaults(
