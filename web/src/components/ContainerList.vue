@@ -2020,17 +2020,18 @@ onUnmounted(() => {
               ]"
               :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：新开一组 / 独立窗口 / 隐藏 / 关闭'"
             >
-              <!-- 身份点：组内有叶子在输出（agent 干活中）时叠一层呼吸扩散的光晕
-                  （animate-ping 放大淡出），停手 ~4s 即熄——运行状态的即时视觉信号。 -->
+              <!-- 身份点：组内有叶子在输出（agent 干活中）时叠呼吸光晕（缩放+辉光，
+                  keyframes 见 index.css 的 term-busy-*），停手 ~4s 即熄——运行状态的即时视觉信号。 -->
               <span class="relative flex h-1.5 w-1.5 shrink-0 max-md:h-2 max-md:w-2">
                 <span
                   v-if="busyGroupIds.has(g.id)"
-                  class="absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping"
-                  :style="{ backgroundColor: tabDotColor(g) }"
+                  class="term-busy-halo absolute -inset-1 rounded-full"
+                  :style="{ backgroundColor: tabDotColor(g), '--dot': tabDotColor(g) }"
                 />
                 <span
                   class="relative inline-flex h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
-                  :style="{ backgroundColor: tabDotColor(g) }"
+                  :class="busyGroupIds.has(g.id) && 'term-busy-dot'"
+                  :style="{ backgroundColor: tabDotColor(g), '--dot': tabDotColor(g) }"
                 />
               </span>
               <span class="min-w-0 truncate">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>

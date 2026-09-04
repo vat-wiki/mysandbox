@@ -157,3 +157,24 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--scroll-thumb) transparent;
 }
+
+/* 终端 tab 身份点的「运行中」呼吸光晕（term-busy-halo / term-busy-dot + --dot 颜色变量）。
+   刻意不用 animate-ping：ping 淡出归零，小尺寸下一半时间几乎不可见——这里改成持续的
+   缩放呼吸（opacity 只降到 0.25）+ 辉光投影，本体点同步微缩放，节奏一致。 */
+@keyframes term-busy-halo {
+  0%, 100% { transform: scale(0.9); opacity: 0.85; }
+  50% { transform: scale(1.7); opacity: 0.25; }
+}
+@keyframes term-busy-dot {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.3); }
+}
+.term-busy-halo {
+  animation: term-busy-halo 1.4s ease-in-out infinite;
+  box-shadow: 0 0 5px 1px var(--dot);
+  filter: blur(0.5px);
+}
+.term-busy-dot {
+  animation: term-busy-dot 1.4s ease-in-out infinite;
+  box-shadow: 0 0 4px 0 var(--dot);
+}
