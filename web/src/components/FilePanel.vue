@@ -94,12 +94,10 @@ function targetId(): string {
 // 宿主面板（HOST_ID 哨兵）：路径本来就是宿主路径，弹框里不重复展示容器路径行。
 const isHost = computed(() => targetId() === HOST_ID)
 
-// —— 宿主路径复制 ——
+// —— 路径复制 ——
 // navigator.clipboard 不可用（http 局域网访问）时走 execCommand 兜底，必须同步在
 // 用户手势栈里调（与 Terminal.vue / ContainerList.vue 同一手法的第三次落点，体量小不抽公共）。
-function copyHostPath() {
-  const s = hostPath.value
-  if (!s) return
+function copyText(s: string, okMsg: string) {
   const legacy = () => {
     const ta = document.createElement('textarea')
     ta.value = s
@@ -116,8 +114,7 @@ function copyHostPath() {
     ta.remove()
     return ok
   }
-  const done = (ok: boolean) =>
-    ok ? toast('已复制宿主路径') : toast.error('复制失败：剪贴板不可用')
+  const done = (ok: boolean) => (ok ? toast(okMsg) : toast.error('复制失败：剪贴板不可用'))
   if (navigator.clipboard) {
     navigator.clipboard
       .writeText(s)
@@ -126,6 +123,24 @@ function copyHostPath() {
   } else {
     done(legacy())
   }
+}
+// 顶栏弹框：复制当前目录的宿主路径。
+function copyHostPath() {
+  if (hostPath.value) copyText(hostPath.value, '已复制宿主路径')
+}
+// 行条目的宿主实际路径：当前目录 hostPath 加相对后缀（容器 /home/dev 在宿主 rootfs 是
+// 线性映射，子路径同规则拼接即可，无需额外请求）。hostPath 不可用（挂载点等映射不到的
+// 目录）返回 null，菜单里隐藏该项；宿主面板下 hostPath 就是路径本身，拼接天然成立。
+function hostPathOf(row: EntryRow): string | null {
+  if (!hostPath.value) return null
+  const base = hostPath.value.replace(/\/+$/, '')
+  if (row.path === path.value) return base || '/'
+  const rel = path.value === '/' ? row.path : row.path.slice(path.value.length)
+  return base + rel
+}
+function copyRowHostPath(row: EntryRow) {
+  const hp = hostPathOf(row)
+  if (hp) copyText(hp, '已复制实际路径')
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -847,6 +862,12 @@ function fmtSize(n: number): string {
                     <DropdownMenuItem @click="download(row)">
                       <Download /> 下载
                     </DropdownMenuItem>
+                    <DropdownMenuItem v-if="!isHost" @click="copyText(row.path, '已复制容器路径')">
+                      <Copy /> 复制容器路径
+                    </DropdownMenuItem>
+                    <DropdownMenuItem v-if="hostPathOf(row)" @click="copyRowHostPath(row)">
+                      <Copy /> 复制实际路径
+                    </DropdownMenuItem>
                     <DropdownMenuItem @click="onRowMenu(row); nameDialog = { mode: 'rename' }">
                       <PenLine /> 重命名
                     </DropdownMenuItem>
@@ -862,6 +883,12 @@ function fmtSize(n: number): string {
       </ContextMenuTrigger>
       <ContextMenuContent>
         <template v-if="ctxTarget">
+          <ContextMenuItem v-if="!isHost" @click="copyText(ctxTarget.path, '已复制容器路径')">
+            复制容器路径
+          </ContextMenuItem>
+          <ContextMenuItem v-if="hostPathOf(ctxTarget)" @click="copyRowHostPath(ctxTarget)">
+            复制实际路径
+          </ContextMenuItem>
           <ContextMenuItem @click="download(ctxTarget)">
             下载
           </ContextMenuItem>
