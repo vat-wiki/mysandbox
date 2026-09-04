@@ -29,6 +29,7 @@ import {
   lastTermOutput,
   forgetTerm,
   trackTerminalActivity,
+  termActiveIds,
   type QuietFeedItem,
 } from '@/lib/terminalActivity'
 import { newId } from '@/lib/id'
@@ -1412,6 +1413,21 @@ watch(
 function activityKeyOf(g: TermGroup, t: string): string {
   return g.kind === 'host' ? termSessionKey('host', undefined, t) : termSessionKey('container', g.containerId, t)
 }
+// tab 身份点颜色（宿主琥珀 / 容器色）：光晕与本体共用。
+function tabDotColor(g: TermGroup): string {
+  return g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId)
+}
+// 有输出在流的组（任一叶子 4s 内收到过帧）：tab 身份点呼吸光晕。
+// 帧登记在 lib/terminalActivity（1s 低频投影成响应式集合），agent 干活时长亮、
+// 停手/等输入 ~4s 熄灭——「运行中」的即时视觉状态，与安静提醒（离开后）互补。
+const busyGroupIds = computed(() => {
+  const active = termActiveIds()
+  const s = new Set<string>()
+  for (const g of groups.value) {
+    if (leafIds(g.root).some((t) => active.has(t))) s.add(g.id)
+  }
+  return s
+})
 function switchToGroup(g: TermGroup) {
   if (hiddenGroups.value.some((x) => x.id === g.id)) {
     restoreHidden(g) // 恢复即激活（内部已设 activeIdx）
@@ -2004,10 +2020,19 @@ onUnmounted(() => {
               ]"
               :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：新开一组 / 独立窗口 / 隐藏 / 关闭'"
             >
-              <span
-                class="h-1.5 w-1.5 shrink-0 rounded-full max-md:h-2 max-md:w-2"
-                :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
-              />
+              <!-- 身份点：组内有叶子在输出（agent 干活中）时叠一层呼吸扩散的光晕
+                  （animate-ping 放大淡出），停手 ~4s 即熄——运行状态的即时视觉信号。 -->
+              <span class="relative flex h-1.5 w-1.5 shrink-0 max-md:h-2 max-md:w-2">
+                <span
+                  v-if="busyGroupIds.has(g.id)"
+                  class="absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping"
+                  :style="{ backgroundColor: tabDotColor(g) }"
+                />
+                <span
+                  class="relative inline-flex h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
+                  :style="{ backgroundColor: tabDotColor(g) }"
+                />
+              </span>
               <span class="min-w-0 truncate">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
               <button
                 @click.stop="closeGroupById(g.id)"
