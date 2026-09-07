@@ -119,6 +119,23 @@ proxy:
   ip: auto      # 钉死基 IP；auto = 默认路由接口 IPv4
 ```
 
+## TLS（listen.tls）
+
+`listen.tls: true` 时主端口直接讲 HTTPS（自签名，server/tls.ts）：
+
+- **本地 CA（10y）+ 叶子证书（825d）**，落 `~/.local/share/mysandbox/tls/`。SAN = 代理
+  基域名及其泛域名（`mysandbox.test`、`*.mysandbox.test`、sslip 基…）+ 全部本机
+  IPv4 + localhost；SAN 变化或临期 30d 惰性重签，**CA 生成后永不变**——导入一次终身有效。
+- 信任导入：`~/.pki/nssdb`（certutil，Chromium 系读取；⚠️ Chrome 运行中导入要**重启
+  浏览器**才生效）或系统库 `/usr/local/share/ca-certificates/` + update-ca-certificates
+  （curl/node 系统口径）。Chromium 对 `.local` 走 mDNS 的教训同样说明：别指望单播
+  DNS 侧的配置影响浏览器特殊域行为，TLS 域名也避开 `.local`。
+- 下载入口：`https://<域名>:<port>/tls-ca.crt`（公开材料，天然免鉴权）。
+- CLI（`mysandbox open`）走 https + 同一份 ca.crt（undici Agent dispatcher）。
+- 前端 scheme 全部跟随 `location.protocol`（WS wss、代理 URL、基域名探测）；
+  vite dev 的 `/api` `/ws` `/proxy` 代理 target 转 https + `secure: false`。
+- 「都走域名」重定向、401 引导页、CLI 横幅的 URL 均随 tls 切换 scheme。
+
 ## 已知限制
 
 - 只代理 HTTP/WS；非 HTTP 的 TCP 服务浏览器无解（tailscale 直连）。

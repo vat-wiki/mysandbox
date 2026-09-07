@@ -11,7 +11,7 @@ import { readFile } from 'node:fs/promises'
 // 解析代理 target：读 ~/.config/mysandbox/config.yaml 的 listen.host（vite 不会读 mysandbox
 // config，得自己来）。host 为 auto 时镜像 server/cli.ts 的解析逻辑（默认路由接口 IPv4，
 // 读 /proc/net/route）——本机 IP 变了这里自动跟，不用手工同步。任何失败退回 127.0.0.1。
-async function backendHost(): Promise<string> {
+async function backendHost(): Promise<{ host: string; tls: boolean }> {
   try {
     const y = await readFile(
       `${process.env.HOME ?? ''}/.config/mysandbox/config.yaml`,
@@ -20,7 +20,8 @@ async function backendHost(): Promise<string> {
     // listen 块内的 host 键（简单缩进匹配足够；yaml 库不值得为两条代理配置引入）
     const m = y.match(/^listen:[\s\S]*?^\s+host:\s*(\S+)/m)
     const host = m?.[1] ?? '127.0.0.1'
-    if (host !== 'auto') return host
+    const tls = /listen:[\s\S]*?^\s+tls:\s*true/m.test(y)
+    if (host !== 'auto') return { host, tls }
     const ifaces = networkInterfaces()
     let ifname: string | undefined
     try {
@@ -36,14 +37,17 @@ async function backendHost(): Promise<string> {
     }
     const pick = (name?: string) =>
       name ? (ifaces[name] ?? []).find((a) => a.family === 'IPv4' && !a.internal)?.address : undefined
-    return pick(ifname) ?? Object.keys(ifaces).map(pick).find(Boolean) ?? '127.0.0.1'
+    const ip = pick(ifname) ?? Object.keys(ifaces).map(pick).find(Boolean) ?? '127.0.0.1'
+    return { host: ip, tls }
   } catch {
-    return '127.0.0.1'
+    return { host: '127.0.0.1', tls: false }
   }
 }
 
 // 代理后端端口可用 MYSANDBOX_DEV_PORT 覆盖（并行 dev 实例验证用），默认 7321。
-const backend = `http://${await backendHost()}:${process.env.MYSANDBOX_DEV_PORT ?? 7321}`
+// tls 开启时走 https（自签名：secure: false 跳过校验）。
+const backendInfo = await backendHost()
+const backend = `${backendInfo.tls ? 'https' : 'http'}://${backendInfo.host}:${process.env.MYSANDBOX_DEV_PORT ?? 7321}`
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
@@ -65,11 +69,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': backend,
-      '/ws': { target: backend.replace('http', 'ws'), ws: true },
+      '/api': { target: backend, secure: false },
+      '/ws': { target: backend.replace('http', 'ws'), ws: true, secure: false },
       // Web 代理门面（server/proxy.ts）：dev 下走同源子路径门面（vhost 门面依赖
       // Host 改写，vite 代理是按路径的，做不到——build 后同源服务不受影响）。
-      '/proxy': { target: backend, ws: true },
+      '/proxy': { target: backend, ws: true, secure: false },
     },
   },
   // es2022：@novnc/novnc 1.7 的 rfb.js 用了 top-level await（浏览器动态导入指纹），

@@ -15,8 +15,9 @@ import { registerHostTerminal } from './hostTerminal.js';
 import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
 import { registerServices } from './services.js';
-import { makeRewriteUrl, registerProxy, proxyBases, proxyUnauthorizedHtml } from './proxy.js';
+import { makeRewriteUrl, registerProxy, consoleOrigin, proxyBases, proxyUnauthorizedHtml } from './proxy.js';
 import { startActivityPoller } from './activity.js';
+import { ensureTlsMaterial } from './tls.js';
 import { HttpError, wrapEngineError } from './errors.js';
 import { getVersion } from './version.js';
 import { loggerOptions } from './logger.js';
@@ -33,10 +34,25 @@ function findWebDist(): string | null {
 }
 
 export async function buildServer(cfg: Config) {
+  // 自签名 TLS（listen.tls）：本地 CA + 泛域名叶子，持久化 + 惰性重签（见 tls.ts）。
+  const tls = cfg.listen.tls ? await ensureTlsMaterial(cfg) : null;
   // rewriteUrl：vhost 门面的入口（HTTP 与 WS upgrade 都经 fastify.routing，都吃到改写）。
   // 必须在 Fastify() 构造时传入——它包在路由分发最外层（fastify.js wrapRouting）。
-  const app = Fastify({ logger: loggerOptions, rewriteUrl: makeRewriteUrl(cfg) });
+  const app = Fastify({
+    logger: loggerOptions,
+    rewriteUrl: makeRewriteUrl(cfg),
+    ...(tls ? { https: { key: tls.key, cert: tls.cert } } : {}),
+  });
   await app.register(websocket);
+
+  // CA 下载（公开材料，导入浏览器/系统信任库用）：不在 /api、/ws、/proxy 前缀下，
+  // 全局鉴权 hook 天然不覆盖。
+  if (tls) {
+    app.get('/tls-ca.crt', async (_req, reply) => {
+      reply.type('application/x-x509-ca-cert');
+      return tls.caCert;
+    });
+  }
 
   // 鉴权：health 公开；其余 /api、/ws 与 Web 代理 /proxy 需 token。
   // cookie 仅在 /proxy 门面被承认（vhost 页面路径任意，cookie 必须 Path=/ 才随行；
@@ -52,7 +68,7 @@ export async function buildServer(cfg: Config) {
         return reply
           .code(401)
           .type('text/html; charset=utf-8')
-          .send(proxyUnauthorizedHtml(bases[0]?.base ?? null, cfg.listen.port));
+          .send(proxyUnauthorizedHtml(consoleOrigin(cfg, bases[0]?.base ?? null)));
       }
       await requireToken(req, reply, cfg, isProxy);
     }

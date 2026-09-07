@@ -35,12 +35,13 @@ export async function loadProxyConfig(): Promise<'vhost' | 'subpath'> {
 }
 
 // 探测基域名在当前浏览器能否走通：DNS 可解析 + 控制台端口可达。
-// no-cors 拿不到响应体也不需要——opaque 应答即证明链路通；DNS 失败/拒连都会 reject。
+// no-cors 拿不到响应体也不需要——opaque 应答即证明链路通；DNS 失败/拒连/证书不受信
+// （CA 未导入时 https 自签名的正常现象）都会 reject，逐个候选试到能用的为止。
 // 首标签 msbprobe 无连字符数字，不会误入代理路由（直落控制台的 /api/health）。
 async function probeBase(base: string): Promise<boolean> {
   const portPart = location.port ? `:${location.port}` : ''
   try {
-    await fetch(`http://msbprobe.${base}${portPart}/api/health`, {
+    await fetch(`${location.protocol}//msbprobe.${base}${portPart}/api/health`, {
       mode: 'no-cors',
       cache: 'no-store',
       signal: AbortSignal.timeout(2500),
@@ -59,9 +60,9 @@ export function proxyPrimary(): string | null {
 // 容器（kind 'c'）或 docker 服务（kind 's'）的代理 URL。
 export function serviceUrl(kind: 'c' | 's', name: string, port: number): string {
   if (info.value.mode === 'vhost' && info.value.primary) {
-    // 控制台端口跟当前访问口径走（location.port 为空 = 80/443 默认口）。
+    // scheme/端口跟当前访问口径走（location.port 为空 = 80/443 默认口）。
     const portPart = location.port ? `:${location.port}` : ''
-    return `http://${name}-${port}.${info.value.primary}${portPart}/`
+    return `${location.protocol}//${name}-${port}.${info.value.primary}${portPart}/`
   }
   return `${location.origin}/proxy/${kind}/${name}/${port}/`
 }

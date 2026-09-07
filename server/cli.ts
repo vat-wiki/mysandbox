@@ -176,13 +176,16 @@ async function main(): Promise<void> {
   process.stdout.write(
     `>> mysandbox ${getVersion()}  ${engine.name} ${d.version ?? '?'}${d.apiVersion ? ` (api ${d.apiVersion})` : ''}\n`,
   );
-  process.stdout.write(`>> web UI:  http://${config.listen.host}:${config.listen.port}\n`);
+  const scheme = config.listen.tls ? 'https' : 'http';
+  process.stdout.write(`>> web UI:  ${scheme}://${config.listen.host}:${config.listen.port}\n`);
   // 「都走域名」：vhost 开启时页面访问走基域名（服务端会把 IP 口径的导航 302 过去，
   // 见 proxy.ts 的 redirect hook），IP 行留给 API/脚本口径。
   if (config.proxy.vhost !== 'off') {
     const bases = await proxyBases(config);
     if (bases[0]) {
-      process.stdout.write(`>> web UI(域名): http://${bases[0].base}:${config.listen.port}\n`);
+      const defPort = config.listen.tls ? 443 : 80;
+      const portPart = config.listen.port === defPort ? '' : `:${config.listen.port}`;
+      process.stdout.write(`>> web UI(域名): ${scheme}://${bases[0].base}${portPart}\n`);
     }
   }
   if (firstRun || tokenGenerated) {

@@ -10,9 +10,13 @@
 
 # Web 监听。host 可设 auto（= 默认路由接口的 IPv4，绑本机网卡 IP）。
 # host 为任何非 127.0.0.1 值都会触发启动警告（见 CLI 输出）。
+# tls: 自签名 HTTPS（本地 CA + *.基域名/IP 泛叶子证书，首次启用自动生成到
+# ~/.local/share/mysandbox/tls/）。开启后浏览器需把 ca.crt 导入信任库一次
+# （也可在 https://<域名>:<port>/tls-ca.crt 下载）；CLI/脚本用 --cacert 或 -k。
 listen:
   host: 127.0.0.1
   port: 7321
+  tls: false
 
 lxc:
   # 模板容器名：新建容器 = lxc-copy 克隆它。

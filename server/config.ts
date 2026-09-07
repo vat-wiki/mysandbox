@@ -26,6 +26,9 @@ export const ConfigSchema = z.object({
   listen: z.object({
     host: z.string().default('127.0.0.1'),
     port: z.number().int().default(7321),
+    // 自签名 HTTPS（server/tls.ts：本地 CA + 泛域名叶子，首次启用自动生成，
+    // CA 导入信任库一次即可覆盖控制台与全部 vhost 子域）。关闭 = 纯 HTTP。
+    tls: z.boolean().default(false),
   }),
   // 模板容器：建容器 = lxc-copy 克隆它。
   // 克隆要求模板处于 STOPPED（lxc-copy 对运行中的源静默失败）。

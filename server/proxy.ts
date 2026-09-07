@@ -393,7 +393,9 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   // 走这些路径，不能跟着跳。非 IP 的其他域名口径不拦：tailscale sslip 等远程入口
   // 的设备未必解析得了 mysandbox.test，拦了会把远程用户挡在 DNS 错误页上。
   if (primary) {
-    const portPart = cfg.listen.port === 80 ? '' : `:${cfg.listen.port}`;
+    const scheme = cfg.listen.tls ? 'https' : 'http';
+    const defaultPort = cfg.listen.tls ? 443 : 80;
+    const portPart = cfg.listen.port === defaultPort ? '' : `:${cfg.listen.port}`;
     app.addHook('onRequest', async (req, reply) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return;
       const u = req.url;
@@ -406,7 +408,7 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
         /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
       if (!ipish) return;
       if (hostname === primary.base || hostname.endsWith(`.${primary.base}`)) return;
-      return reply.redirect(`http://${primary.base}${portPart}${u}`, 302);
+      return reply.redirect(`${scheme}://${primary.base}${portPart}${u}`, 302);
     });
   }
 
@@ -623,10 +625,19 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   });
 }
 
+// 控制台入口 origin（「都走域名」401 引导页 / 回跳 / CLI 提示共用）：基域名口径 +
+// scheme/端口随 listen.tls。primary 为 null（off/全败）时退相对路径。
+export function consoleOrigin(cfg: Config, primary: string | null): string {
+  if (!primary) return '/';
+  const scheme = cfg.listen.tls ? 'https' : 'http';
+  const defaultPort = cfg.listen.tls ? 443 : 80;
+  const portPart = cfg.listen.port === defaultPort ? '' : `:${cfg.listen.port}`;
+  return `${scheme}://${primary}${portPart}`;
+}
+
 // 401 内页：vhost 门面下未带 cookie 的导航——JSON 一行人看不懂，给控制台链接引导登录。
-// primary 由调用方 await proxyBases(cfg) 后传入（index.ts 的 hook 本就是 async）。
-export function proxyUnauthorizedHtml(primary: string | null, port: number): string {
-  const origin = primary ? `http://${primary}${port === 80 ? '' : `:${port}`}` : '/';
+// origin 由调用方经 consoleOrigin(cfg, primary) 传入（index.ts 的 hook 本就是 async）。
+export function proxyUnauthorizedHtml(origin: string): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>mysandbox 代理 — 未授权</title>
