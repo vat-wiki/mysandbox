@@ -31,6 +31,8 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 const props = defineProps<{
   // 本窗口隐藏的终端组（父级已在打开时剪掉容器已删的）
   hidden: TermGroup[]
+  // 隐藏组里挂着「无输出提醒」标的组 id：行内身份点描琥珀边，与 tab 上的琥珀点同义
+  attentionIds?: Set<string>
   // 本窗口已占用的会话 key（可见 + 隐藏组的全部叶子）：列表里标「已打开」，不排除任何会话
   occupied: Set<string>
   items: ContainerView[]
@@ -238,6 +240,7 @@ async function doKill() {
           >
             <span
               class="h-2 w-2 shrink-0 rounded-full"
+              :class="props.attentionIds?.has(g.id) && 'ring-2 ring-amber-400 ring-offset-1 ring-offset-popover'"
               :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
             />
             <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="hiddenLabel(g)">{{ hiddenLabel(g) }}</span>

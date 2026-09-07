@@ -31,9 +31,7 @@ import {
   snapTermBaseline,
   termContentChanged,
   forgetTerm,
-  trackTerminalActivity,
   termActiveIds,
-  type QuietFeedItem,
 } from '@/lib/terminalActivity'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
@@ -1443,20 +1441,31 @@ const svcSummary = computed(() => {
 // 服务端（server/activity.ts）已在周期扫 tmux 输出，这里 5s 拉一次快照做提醒决策。
 // 「在不在看」前端自判：可见 tab 是 v-show 常驻（WS 恒 attach），tmux 的 attached 完全
 // 不代表用户在看——只有「当前激活 tab + 终端区」才算看。可见叶子的提醒资格 = 三道门槛
-// 同时过（缺一不弹，宁缺勿滥——误弹比漏弹烦人）：
+// 同时过（宁缺勿滥——误标比漏标烦人）：
 //   - 在看：leftAt=WATCHING（正看着）永不命中；看过结果再走的人不被打扰（否则「看着
 //     它跑完→切走」每次都误报）；
 //   - 时刻：安静超阈值 && 最后一次 prime 窗口后的输出发生在离开之后——prime 窗口
 //     （首帧后 3s，见 lib/terminalActivity）内的帧是打开动作自带的画面（attach 整屏
 //     重绘/新会话 prompt/页面加载批量 attach），不算新内容；
 //   - 内容：当前视口画面 ≠ 离开时快照（markLeft 时 screenHash()）——重连还原、resize
-//     重排这类「有帧但内容没变」的输出不配弹。
+//     重排这类「有帧但内容没变」的输出不配标。
+// 命中不弹 toast（弹窗抢视线，已废），改 tab 身份点右上角常驻琥珀标：标在那儿等你
+// 看，切回组即消——tmux bell 的专业形态。
 // 隐藏组收不到流，用服务端 quiet + 反推的输出时刻对齐 leftAt（留扫描周期余量）。
 // 开关 per 组（tab 右键「无输出时提醒」），随组进 localStorage。
 const WATCHING = Number.POSITIVE_INFINITY
 const leftAtByTerm = new Map<string, number>()
+// 无输出提醒标（tab 身份点右上角琥珀点，tmux bell 形态）：groupId -> 最长安静时长
+// （tooltip 用）。状态制——每拍轮询整体重算替换，不打断视线（原 toast 形态废弃：
+// 弹窗抢焦点毁思绪，专业终端的 bell 就是「标在那儿等你看」）。
+const quietAttention = ref<Map<string, number>>(new Map())
+function attentionTitle(gId: string): string {
+  const ms = quietAttention.value.get(gId) ?? 0
+  return `已 ${Math.max(1, Math.round(ms / 1000))}s 无输出，可能已完成或在等你输入`
+}
 function markWatch(g: TermGroup) {
   for (const t of leafIds(g.root)) leftAtByTerm.set(t, WATCHING)
+  quietAttention.value.delete(g.id) // 提醒标即时消，不等下一拍重算
 }
 function markLeft(g: TermGroup) {
   const now = Date.now()
@@ -1466,6 +1475,12 @@ function markLeft(g: TermGroup) {
     snapTermBaseline(t, termRefs.get(t)?.screenHash?.())
   }
 }
+// 隐藏组里挂着提醒标的：tab 栏「所有终端」钮点琥珀点，对话框列表逐条描边。
+const hiddenAttentionIds = computed(() => {
+  const s = new Set<string>()
+  for (const g of hiddenGroups.value) if (quietAttention.value.has(g.id)) s.add(g.id)
+  return s
+})
 // 激活组 / 主区形态变化 = 「在看」关系变化。首跑（页面加载恢复的 tabs）统一落基线：
 // 激活组在看，其余组从加载起就没看过（它们常驻挂载、此后有输出就能积资格）。
 watch(
@@ -1511,17 +1526,6 @@ const busyGroupIds = computed(() => {
   }
   return s
 })
-function switchToGroup(g: TermGroup) {
-  if (hiddenGroups.value.some((x) => x.id === g.id)) {
-    restoreHidden(g) // 恢复即激活（内部已设 activeIdx）
-    return
-  }
-  const gi = groups.value.findIndex((x) => x.id === g.id)
-  if (gi >= 0) {
-    activeIdx.value = gi
-    areaMode.value = 'terminal'
-  }
-}
 let actTimer: ReturnType<typeof setInterval> | null = null
 const ACTIVITY_MS = 5000
 async function refreshActivity() {
@@ -1537,14 +1541,15 @@ async function refreshActivity() {
     return // 轮询失败静默（服务重启窗口期常见），下拍再试
   }
   const rowByKey = new Map(rows.map((r) => [termSessionKey(r.kind, r.containerId, r.termId), r]))
-  const feed: QuietFeedItem[] = []
-  const keyToGroup = new Map<string, TermGroup>()
+  // 状态制（非跳变制）：每拍整体重算「哪组该挂提醒标」。正看着的组 WATCHING 不命中；
+  // 切回即 markWatch 清标，之后重新快照基线、内容没变就不再资格。
+  const nextAttention = new Map<string, number>()
   for (const g of [...groups.value, ...hiddenGroups.value]) {
     if (g.quietNotify === false) continue
     const visible = groups.value.includes(g)
+    let worstMs = 0
     for (const t of leafIds(g.root)) {
       const key = activityKeyOf(g, t)
-      keyToGroup.set(key, g)
       const leftAt = leftAtByTerm.get(t) ?? WATCHING
       let quiet = false
       let quietMs = 0
@@ -1565,25 +1570,11 @@ async function refreshActivity() {
           quiet = Date.now() - quietMs > leftAt + 6000
         }
       }
-      feed.push({ key, quiet, quietMs })
+      if (quiet) worstMs = Math.max(worstMs, quietMs)
     }
+    if (worstMs > 0) nextAttention.set(g.id, worstMs)
   }
-  const hits = trackTerminalActivity(feed)
-  // 同组分屏多叶子同时安静归并成一条；正看着的组 leftAt=WATCHING 不会命中资格。
-  const byGroup = new Map<TermGroup, number>()
-  for (const hit of hits) {
-    const g = keyToGroup.get(hit.key)
-    if (!g) continue
-    byGroup.set(g, Math.max(byGroup.get(g) ?? 0, hit.quietMs))
-  }
-  for (const [g, ms] of byGroup) {
-    const sec = Math.max(1, Math.round(ms / 1000))
-    toast.info(`${groupLabel(g)} 已 ${sec}s 无输出`, {
-      description: '可能已完成或在等你输入。',
-      action: { label: '切换', onClick: () => switchToGroup(g) },
-      duration: 12_000,
-    })
-  }
+  quietAttention.value = nextAttention
   // 修剪已不存在的叶子登记（组关了 / 开关关了）：两张表同步清，防无界增长
   const alive = new Set<string>()
   for (const g of [...groups.value, ...hiddenGroups.value]) {
@@ -2092,11 +2083,16 @@ onUnmounted(() => {
           <MoreHorizontal class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          class="relative flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           title="所有终端（本机全部活跃会话，含其他窗口 / 浏览器打开的）"
           @click="showSessions = true"
         >
           <TerminalIcon class="size-3.5 max-md:size-5" />
+          <!-- 隐藏组挂着无输出提醒标：钮上点琥珀点，进对话框看是哪组。 -->
+          <span
+            v-if="hiddenAttentionIds.size"
+            class="absolute right-1 top-1 inline-flex h-1.5 w-1.5 rounded-full bg-amber-400 ring-1 ring-background"
+          />
         </button>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin">
         <ContextMenu v-for="(g, idx) in groups" :key="g.id">
@@ -2124,7 +2120,8 @@ onUnmounted(() => {
               :title="groups.length > 1 ? '拖动排序 · 点击切换 · 右键更多' : '右键：新开一组 / 独立窗口 / 隐藏 / 关闭'"
             >
               <!-- 身份点：组内有叶子在输出（agent 干活中）时叠呼吸光晕（缩放+辉光，
-                  keyframes 见 index.css 的 term-busy-*），停手 ~4s 即熄——运行状态的即时视觉信号。 -->
+                  keyframes 见 index.css 的 term-busy-*），停手 ~4s 即熄——运行状态的即时
+                  视觉信号。光晕吃 prime 窗口后的有效输出：attach 重绘/初始 prompt 不点亮。 -->
               <span class="relative flex h-1.5 w-1.5 shrink-0 max-md:h-2 max-md:w-2">
                 <span
                   v-if="busyGroupIds.has(g.id)"
@@ -2135,6 +2132,12 @@ onUnmounted(() => {
                   class="relative inline-flex h-1.5 w-1.5 rounded-full max-md:h-2 max-md:w-2"
                   :class="busyGroupIds.has(g.id) && 'term-busy-dot'"
                   :style="{ backgroundColor: tabDotColor(g), '--dot': tabDotColor(g) }"
+                />
+                <!-- 无输出提醒标：常驻琥珀点（tmux bell 形态，不打断视线），切回组即消。 -->
+                <span
+                  v-if="quietAttention.has(g.id)"
+                  class="absolute -right-1.5 -top-1.5 inline-flex h-1.5 w-1.5 rounded-full bg-amber-400 ring-1 ring-background"
+                  :title="attentionTitle(g.id)"
                 />
               </span>
               <span class="min-w-0 truncate">{{ tabLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
@@ -2150,8 +2153,8 @@ onUnmounted(() => {
               新开一组终端
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <!-- 无输出提醒（per 组，随组持久化）：agent 干完活/等输入时弹 toast。
-                 默认开；跑 dev server 这类长驻进程的 tab 可关。 -->
+            <!-- 无输出提醒（per 组，随组持久化）：agent 干完活/等输入时 tab 挂琥珀状态标
+                 （不打断视线，切回即消）。默认开；跑 dev server 这类长驻进程的 tab 可关。 -->
             <ContextMenuCheckboxItem
               :checked="g.quietNotify !== false"
               @update:checked="(v: boolean | 'indeterminate') => (g.quietNotify = v === true)"
@@ -2539,6 +2542,7 @@ onUnmounted(() => {
   <TermSessionsDialog
     v-if="showSessions"
     :hidden="hiddenGroups"
+    :attention-ids="hiddenAttentionIds"
     :occupied="occupiedSet"
     :items="items"
     @restore="restoreHidden"
