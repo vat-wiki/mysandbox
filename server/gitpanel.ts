@@ -42,6 +42,15 @@ export interface GitDiffView {
   base: GitDiffSide; // 左 = HEAD 版本
   work: GitDiffSide; // 右 = 工作区
 }
+
+// 分支列表视图（GET git/branches）。只列本地分支——远程跟踪/拣选 start point 属于
+// 复杂操作，面板分支菜单刻意只做「切换 / 新建」两个高频动作。
+export interface GitBranchesView {
+  repo: boolean;
+  toplevel?: string;
+  current?: string | null; // 当前分支；detached HEAD 或空仓库（无提交）为 null
+  branches?: string[]; // 本地分支名（当前分支排最前，其余按 git 自身的字母序）
+}
 export const MAX_CHANGES = 1000;
 
 // 解析 `git status --porcelain=v1 -z --branch` 的输出（不含 toplevel 行——那是容器侧
@@ -130,6 +139,31 @@ export function kindOf(c: GitChange): 'modified' | 'added' | 'deleted' | 'rename
   if (c.x === 'T' || (c.x === ' ' && c.y === 'T')) return 'typechange';
   if (c.x === 'U' || c.y === 'U' || c.x === 'A' && c.y === 'A') return 'unmerged';
   return 'modified';
+}
+
+// 解析 `git branch --list --format='%(HEAD)%(refname:short)'` 的输出（容器/宿主两侧
+// 同一格式）：当前分支行带 * 前缀、其余带空格前缀。分支名不含换行（check-ref-format
+// 禁控制字符），按行切分安全；空行跳过。current 为 null = detached 或空仓库。
+// %(HEAD) 只输出 * / 空格（worktree 的 + 标记是 git branch 默认输出才有，指定
+// --format 后不存在），前缀判定无歧义。
+export function parseBranchList(out: string): { current: string | null; branches: string[] } {
+  const branches: string[] = [];
+  let current: string | null = null;
+  for (const l of out.split('\n')) {
+    if (l.startsWith('*')) current = l.slice(1);
+    else if (l.startsWith(' ')) branches.push(l.slice(1));
+  }
+  if (current) branches.unshift(current); // 当前分支也进列表（排最前，可点回来）
+  return { current, branches };
+}
+
+// 分支名入库前校验（容器侧脚本与宿主侧 execFile 共用的第一道防线；git 自身还会做
+// check-ref-format 校验，不合规的把 stderr 原话回给前端）。拒绝空名 / 以 - 开头
+// （防被 git 当选项吃掉）/ 超长；返回 trim 后的名字。
+export function assertBranchName(name: unknown): string {
+  const n = String(name ?? '').trim();
+  if (!n || n.startsWith('-') || n.length > 200) throw badRequest('分支名不合法');
+  return n;
 }
 
 // 容器侧脚本退出码 -> HttpError（null = 正常，继续处理 stdout）。

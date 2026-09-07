@@ -640,6 +640,12 @@ export interface GitDiffView {
   base: GitDiffSide
   work: GitDiffSide
 }
+export interface GitBranchesView {
+  repo: boolean
+  toplevel?: string
+  current?: string | null // detached HEAD / 空仓库为 null
+  branches?: string[] // 本地分支（当前分支排最前）
+}
 export const getGitStatus = (id: string, path: string) =>
   api(`${filesBase(id)}/git/status?path=${encodeURIComponent(path)}`) as Promise<GitStatusView>
 export const getGitDiff = (id: string, path: string, headPath?: string) =>
@@ -647,3 +653,8 @@ export const getGitDiff = (id: string, path: string, headPath?: string) =>
     `${filesBase(id)}/git/diff?path=${encodeURIComponent(path)}` +
       (headPath ? `&headPath=${encodeURIComponent(headPath)}` : ''),
   ) as Promise<GitDiffView>
+export const getGitBranches = (id: string, path: string) =>
+  api(`${filesBase(id)}/git/branches?path=${encodeURIComponent(path)}`) as Promise<GitBranchesView>
+// 切换 / 新建（create=true 时创建并切换）本地分支；冲突等 git 校验错误以 stderr 原话抛 ApiError
+export const gitCheckout = (id: string, path: string, name: string, create = false) =>
+  postJson(`${filesBase(id)}/git/checkout`, { path, name, create }) as Promise<{ ok: true }>

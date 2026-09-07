@@ -24,7 +24,14 @@ import {
   type FilesView,
   type FileView,
 } from './files.js';
-import { parsePorcelainZ, type GitStatusView, type GitDiffView } from './gitpanel.js';
+import {
+  parsePorcelainZ,
+  parseBranchList,
+  assertBranchName,
+  type GitStatusView,
+  type GitDiffView,
+  type GitBranchesView,
+} from './gitpanel.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -389,6 +396,49 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       `@@WORK@@\n${wbuf ? wbuf.toString('base64') : ''}`;
     const view = parseDiffProto(proto, path, headPath);
     return { ...view, toplevel: top };
+  });
+
+  // —— git 分支列表 / 切换（与容器侧 files.ts 两端点一比一对齐，解析单源 gitpanel.ts）——
+  // 切换用 git switch（只做分支操作不碰工作区路径；-c 创建时不带 --，实测 git 2.43 把
+  // -- 当 start-point）。有未提交变更时由 git 自行裁决，冲突把 stderr 原话回给前端。
+  app.get('/api/host-terminal/git/branches', async (req): Promise<GitBranchesView> => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
+      return { repo: false }; // rev-parse 失败 = 非仓库（正常态）
+    }
+    const out = await gitExec([
+      '--no-optional-locks', '-C', top, 'branch', '--list', '--format=%(HEAD)%(refname:short)',
+    ]);
+    return { repo: true, toplevel: top, ...parseBranchList(out) };
+  });
+
+  app.post('/api/host-terminal/git/checkout', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown; name?: unknown; create?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const name = assertBranchName(body.name);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    try {
+      await gitExec(['-C', top, ...(body.create ? ['switch', '-c', name] : ['switch', '--', name])]);
+    } catch (e) {
+      if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
+      // execFile 非 0 退出：stderr 在 error.stderr（git 冲突/校验错误是用户可读的原话，
+      // 400 直传；空 stderr 才落 message 兜底）
+      const err = e as NodeJS.ErrnoException & { stderr?: string | Buffer };
+      const msg = (err.stderr ? String(err.stderr) : err.message || '').trim();
+      throw badRequest(msg || '分支切换失败');
+    }
+    return { ok: true };
   });
 }
 

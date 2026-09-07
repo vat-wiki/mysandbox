@@ -9,9 +9,19 @@
 // porcelain / VSCode 的折叠展示习惯）。模式存 localStorage，跨窗口一致。
 // dock 高度可拖（PaneDivider 夹在折叠头与列表之间），像素值 localStorage 持久化。
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { getGitStatus, Unauthorized, type GitStatusView, type GitChange } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder } from 'lucide-vue-next'
+import {
+  getGitStatus,
+  getGitBranches,
+  gitCheckout,
+  Unauthorized,
+  type GitStatusView,
+  type GitChange,
+  type GitBranchesView,
+} from '@/lib/api'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Input } from '@/components/ui/input'
 
 const props = defineProps<{
   containerId: string
@@ -148,6 +158,59 @@ function openChange(c: GitChange) {
   })
 }
 
+// —— 分支菜单（低频操作刻意收进 popover，平时不占面板注意力）——
+// 点头部分支名弹出（同 VSCode 状态栏分支入口的心智模型）：本地分支切换 + 新建。
+// 打开才拉分支列表（不随 8s 轮询预取）；成功即关窗并 refresh() 立即刷新头部与变更列表
+//（不等轮询）；失败（如切换冲突）把 git stderr 原话留在窗内提示，窗不关。
+const branchOpen = ref(false)
+const branches = ref<GitBranchesView | null>(null)
+const branchLoading = ref(false)
+const branchErr = ref('')
+const newBranch = ref('')
+const creating = ref(false)
+
+watch(branchOpen, (open) => {
+  if (open) {
+    branchErr.value = ''
+    branches.value = null // 清上次打开的残留（path 可能已变）
+    void fetchBranches()
+  }
+})
+
+async function fetchBranches() {
+  branchLoading.value = true
+  try {
+    branches.value = await getGitBranches(props.containerId, props.path)
+  } catch (e) {
+    if (e instanceof Unauthorized) return
+    branchErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    branchLoading.value = false
+  }
+}
+
+async function doCheckout(name: string, create: boolean) {
+  if (creating.value) return
+  branchErr.value = ''
+  creating.value = true
+  try {
+    await gitCheckout(props.containerId, props.path, name, create)
+    branchOpen.value = false
+    newBranch.value = ''
+    refresh()
+  } catch (e) {
+    if (e instanceof Unauthorized) return
+    branchErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    creating.value = false
+  }
+}
+
+function createBranch() {
+  const name = newBranch.value.trim()
+  if (name) void doCheckout(name, true)
+}
+
 // —— dock 高度拖拽（PaneDivider 夹在折叠头与列表之间）：dock 在底部，向上拖（delta<0）
 // 变高；像素值持久化 localStorage，跨容器/跨窗口一致（:key 重建也读同一份）。 ——
 const H_KEY = 'mysandbox:git-panel-h'
@@ -282,21 +345,80 @@ watch(view, (v) => {
 <template>
   <!-- repo:false 时整块不渲染（v-if 在父级也判断，双保险）。dock 在面板底部：border-t -->
   <div v-if="view?.repo" class="shrink-0 border-t border-border">
-    <!-- 折叠头：分支 + 变更数 + 视图切换。模式按钮放在折叠按钮外（button 不可嵌套 button） -->
+    <!-- 折叠头：折叠钮 + 分支菜单触发（点分支名弹 popover，低频操作不占注意力）+ 变更数 +
+         视图切换。原先整条头都是一个折叠按钮，现把分支名拆出来作分支菜单入口（button 不可
+         嵌套 button）；模式按钮同理留在折叠按钮外。 -->
     <div class="flex items-center">
       <button
-        class="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pl-2.5 text-left hover:bg-accent/50"
+        class="flex shrink-0 items-center py-1.5 pl-2.5 pr-1 hover:bg-accent/50"
+        :title="collapsed ? '展开' : '折叠'"
         @click="collapsed = !collapsed"
       >
         <component :is="collapsed ? ChevronRight : ChevronDown" class="size-3 shrink-0 text-muted-foreground" />
-        <GitBranch class="size-3 shrink-0 text-muted-foreground" />
-        <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" :title="view.label">{{
-          view.label
-        }}</span>
-        <span class="shrink-0 rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
-          {{ view.truncated ? '999+' : (view.changes?.length ?? 0) }}
-        </span>
       </button>
+      <Popover v-model:open="branchOpen">
+        <PopoverTrigger as-child>
+          <button
+            class="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left hover:bg-accent/50"
+            title="切换 / 新建分支"
+          >
+            <GitBranch class="size-3 shrink-0 text-muted-foreground" />
+            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" :title="view.label">{{
+              view.label
+            }}</span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" :side-offset="6" class="w-64 p-2">
+          <!-- 新建分支：回车 / ＋提交，创建并切换 -->
+          <form class="mb-1.5 flex items-center gap-1.5" @submit.prevent="createBranch">
+            <Input
+              v-model="newBranch"
+              class="h-7 flex-1 bg-muted/50 px-2 text-xs md:text-xs"
+              placeholder="新建分支名，回车创建并切换"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button
+              type="submit"
+              class="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted/50 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              :disabled="creating || !newBranch.trim()"
+              title="创建并切换"
+            >
+              <Plus class="size-3.5" />
+            </button>
+          </form>
+          <p v-if="branchLoading && !branches" class="px-1 py-1 text-[11px] text-muted-foreground">加载中…</p>
+          <p v-else-if="branches && !branches.branches?.length" class="px-1 py-1 text-[11px] text-muted-foreground">
+            还没有本地分支（空仓库），上面输入名字创建第一个
+          </p>
+          <div v-else class="scroll-thin max-h-48 overflow-y-auto">
+            <template v-for="b in branches?.branches ?? []" :key="b">
+              <!-- 当前分支：纯展示（不可切到自己），Check 占位对齐其余行名字 -->
+              <div
+                v-if="b === branches?.current"
+                class="flex items-center gap-1.5 rounded bg-accent/40 px-1.5 py-1 font-mono text-xs text-foreground"
+              >
+                <Check class="size-3 shrink-0" />
+                <span class="min-w-0 flex-1 truncate" :title="b">{{ b }}</span>
+              </div>
+              <button
+                v-else
+                class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                :disabled="creating"
+                @click="doCheckout(b, false)"
+              >
+                <Check class="size-3 shrink-0 opacity-0" />
+                <span class="min-w-0 flex-1 truncate" :title="b">{{ b }}</span>
+              </button>
+            </template>
+          </div>
+          <!-- 失败（切换冲突等）把 git stderr 原话留在窗内，窗不关 -->
+          <p v-if="branchErr" class="mt-1 whitespace-pre-line px-1 text-[11px] text-destructive">{{ branchErr }}</p>
+        </PopoverContent>
+      </Popover>
+      <span class="shrink-0 rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
+        {{ view.truncated ? '999+' : (view.changes?.length ?? 0) }}
+      </span>
       <div class="flex shrink-0 items-center gap-0.5 pr-1.5">
         <button
           class="rounded p-0.5"

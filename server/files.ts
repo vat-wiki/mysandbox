@@ -18,10 +18,13 @@ import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE, sessionName } from './terminal.js';
 import {
   parsePorcelainZ,
+  parseBranchList,
   mapGitExit,
+  assertBranchName,
   type GitStatusView,
   type GitDiffView,
   type GitDiffSide,
+  type GitBranchesView,
 } from './gitpanel.js';
 
 // 读/写一致的内容上限：超限返回 413（PUT 的路由级 bodyLimit 放得更宽，因 JSON 转义最坏
@@ -679,6 +682,66 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (err) throw err;
 
     return parseDiffProto(res.stdout, path, headPath);
+  });
+
+  // —— git 分支列表 / 切换（面板「Git 变更」dock 的分支菜单数据源与动作）——
+  // branches 协议：首行 toplevel，其后是 branch --list --format='%(HEAD)…' 的逐行输出
+  //（当前分支带 * 前缀）。分支名不含换行，按行切分安全。切换用 git switch——它只做
+  // 分支操作、不碰工作区路径（checkout 会把同名文件误当还原目标）；-c 创建时不能带
+  // --（实测 git 2.43 会把 -- 当 start-point 报「无效引用」），名字已过 assertBranchName
+  // 的 - 开头防线。有未提交变更时由 git 自行裁决（不冲突就携带过去，冲突报 stderr 原话）。
+  // exit 7 = 非仓库 / exit 9 = 分支名不合法（脚本侧防线，与 assertBranchName 双保险）。
+  app.get('/api/containers/:id/git/branches', async (req): Promise<GitBranchesView> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        // --no-optional-locks：只读操作不写 index 锁（与 status 端点同理由）
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" branch --list --format="%(HEAD)%(refname:short)"',
+        'sh', path,
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) return { repo: false };
+    const err = mapGitExit(res, 'branches');
+    if (err) throw err;
+
+    const nl = res.stdout.indexOf('\n');
+    const toplevel = res.stdout.slice(0, nl); // 空串/异常形状按非仓库兜底
+    if (nl < 0 || !toplevel.startsWith('/')) return { repo: false };
+    return { repo: true, toplevel, ...parseBranchList(res.stdout.slice(nl + 1)) };
+  });
+
+  app.post('/api/containers/:id/git/checkout', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown; name?: unknown; create?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const name = assertBranchName(body.name);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'p="$1"; n="$2"; c="$3"',
+          "case \"$n\" in ''|-*) exit 9 ;; esac",
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          'if [ "$c" = 1 ]; then exec git -C "$t" switch -c "$n"; fi',
+          'exec git -C "$t" switch -- "$n"',
+        ].join('\n'),
+        'sh', path, name, body.create ? '1' : '0',
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    if (res.exitCode === 9) throw badRequest('分支名不合法');
+    const err = mapGitExit(res, '分支切换');
+    if (err) throw err;
+    return { ok: true };
   });
 }
 
