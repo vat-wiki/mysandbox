@@ -388,29 +388,9 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   const bases = await proxyBases(cfg);
   const primary = bases[0] ?? null;
 
-  // —— 「都走域名」：IP/localhost 口径的页面导航 302 到基域名 ——
-  // 只拦 GET/HEAD（导航）；/api、/ws、/proxy 豁免——CLI 深链、脚本、curl 探活都
-  // 走这些路径，不能跟着跳。非 IP 的其他域名口径不拦：tailscale sslip 等远程入口
-  // 的设备未必解析得了 mysandbox.test，拦了会把远程用户挡在 DNS 错误页上。
-  if (primary) {
-    const scheme = cfg.listen.tls ? 'https' : 'http';
-    const defaultPort = cfg.listen.tls ? 443 : 80;
-    const portPart = cfg.listen.port === defaultPort ? '' : `:${cfg.listen.port}`;
-    app.addHook('onRequest', async (req, reply) => {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return;
-      const u = req.url;
-      if (u.startsWith('/api/') || u.startsWith('/ws/') || u.startsWith('/proxy/')) return;
-      const hostname = String(req.headers.host ?? '').split(':')[0].toLowerCase();
-      if (!hostname) return;
-      const ipish =
-        hostname === 'localhost' ||
-        hostname.startsWith('[') ||
-        /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
-      if (!ipish) return;
-      if (hostname === primary.base || hostname.endsWith(`.${primary.base}`)) return;
-      return reply.redirect(`${scheme}://${primary.base}${portPart}${u}`, 302);
-    });
-  }
+  // IP:端口 与 域名:端口 是平级的两种口径，服务端不做互转重定向：经 IP 打开控制台
+  // 就用 IP 口径（端口点击由前端按 origin 口径直连目标 IP，见 web/src/lib/proxy.ts），
+  // 经基域名打开就走代理口径。
 
   // —— cookie 会话：/proxy 门面（vhost + 子路径）的鉴权凭证 ——
   // Path=/：vhost 门面的页面路径任意（应用的 /、/dashboard…），Path 限 /proxy 的话
@@ -625,8 +605,8 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   });
 }
 
-// 控制台入口 origin（「都走域名」401 引导页 / 回跳 / CLI 提示共用）：基域名口径 +
-// scheme/端口随 listen.tls。primary 为 null（off/全败）时退相对路径。
+// 控制台入口 origin（/proxy 401 引导页的「打开控制台」链接用，index.ts 传入）：
+// 基域名口径 + scheme/端口随 listen.tls。primary 为 null（off/全败）时退相对路径。
 export function consoleOrigin(cfg: Config, primary: string | null): string {
   if (!primary) return '/';
   const scheme = cfg.listen.tls ? 'https' : 'http';

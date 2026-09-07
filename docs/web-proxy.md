@@ -71,13 +71,22 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
   （防开放重定向），免掉「先开控制台再点端口」两步。
 - 未授权的浏览器导航（GET + Accept html）回 HTML 引导页而非 JSON；其余回 JSON 401。
 
-## 「都走域名」重定向
+## 两种访问口径（IP 直连 ⇄ 域名代理）
 
-registerProxy 里挂的 onRequest hook：**IP/localhost 口径的页面导航（GET/HEAD）302
-到首选基域名**（`http://mysandbox.test:<port>` 原路径原 query，hash 由浏览器保留）。
-豁免三类：`/api/*`、`/ws/*`、`/proxy/*`（CLI 深链/脚本/curl 探活不受影响）；其他
-域名口径也不拦——tailscale sslip 等远程入口的设备未必解析得了 `mysandbox.test`，
-拦了会把远程用户挡在 DNS 错误页上。`proxy.vhost: off` 时整个重定向与 vhost 一起关闭。
+`IP:端口` 与 `域名:端口` 是平级的两种口径，服务端不做互转重定向，用户用什么口径打开
+控制台，端口点击就落什么口径：
+
+- **IP:端口 直连口径**：控制台经 `http://<宿主IP>:7321` 打开（lib/proxy.ts 的
+  originIpish 判定：hostname 是 IP 字面量/localhost）→ 端口点击直连
+  `http://<容器/服务IP>:<端口>`。不经代理、无 cookie 依赖——宿主本机、tailscale
+  子网路由（advertise-routes）下的设备可达。这是代理功能上线前的原始形式，保持一等
+  公民；目标 IP 未知（停机解析不出等）时退同源子路径门面兜底。
+- **域名代理口径**：控制台经基域名打开 → 端口点击拼 vhost URL（探测择优，全败降级
+  子路径门面）。会话 cookie 在 `/api/auth/session` 下发（每个候选基域一份 Domain
+  cookie + 宿主级一份兜子路径）。适合没有到私网路由的 LAN 设备。
+
+`mysandbox open` 深链恒走 IP 口径（任何设备可解析，TLS SAN 覆盖全部本机 IPv4）；
+CLI 横幅把两个口径的入口都列出来。
 
 ## 白名单（SSRF 边界）
 
@@ -134,7 +143,7 @@ proxy:
 - CLI（`mysandbox open`）走 https + 同一份 ca.crt（undici Agent dispatcher）。
 - 前端 scheme 全部跟随 `location.protocol`（WS wss、代理 URL、基域名探测）；
   vite dev 的 `/api` `/ws` `/proxy` 代理 target 转 https + `secure: false`。
-- 「都走域名」重定向、401 引导页、CLI 横幅的 URL 均随 tls 切换 scheme。
+- 401 引导页、CLI 横幅的 URL 均随 tls 切换 scheme。
 
 ## 已知限制
 
@@ -146,8 +155,8 @@ proxy:
 - 子路径门面与控制台同源：被代理应用能读到控制台 origin 的 localStorage（含
   token）。vhost 门面无此问题（应用 origin 独立、localStorage 隔离、cookie 剥除）。
   安全敏感场景优先 vhost / 自有域名。
-- 控制台必须经「域名口径」访问，Domain cookie 才设得进（裸 IP 访问时宿主级 cookie
-  仍够子路径门面用；App 会 toast 提示经基域名打开控制台；401 引导页也给直达链接）。
+- 域名代理口径的会话 cookie 是 Domain 版，只有经基域名访问控制台才设得进；IP 直连
+  口径不走代理、无 cookie 需求（宿主级 cookie 仍兜同源子路径门面）。
 - LAN IP 是 DHCP 时 sslip 基跟着漂：路由器静态租约或 `proxy.ip` 钉死。
 - HTTPS 缺席：http + tailscale（wireguard 加密）够用；要真证书就自有域名 + 泛证书
   （可后挂 Caddy，forward_auth 回 mysandbox 鉴权）。

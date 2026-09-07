@@ -779,11 +779,12 @@ function cardPortRows(id: string): PortRow[] {
   if (c) for (const m of mappedPortsOf(c)) rows.push({ kind: 'map' as const, port: m.pub, priv: m.priv })
   return rows
 }
-// 端口点击目标：经面板 Web 代理（server/proxy.ts）打开——LAN 内直接点容器 IP 只有
-// 同网段可达，代理 URL 让其他设备/其他网络也能访问（vhost 门面，subpath 兜底）。
-// docker 宿主映射端口（历史形态，LXC 无）仍指宿主本机。
+// 端口点击目标跟随控制台访问口径（web/src/lib/proxy.ts）：IP/localhost 打开控制台 →
+// 直连容器 IP（代理上线前的原形式，宿主/tailscale 子网路由下可达）；经基域名打开 →
+// 面板 Web 代理（server/proxy.ts，其他设备/其他网络也能访问，vhost 门面 subpath 兜底）。
+// docker 宿主映射端口（历史形态，LXC 无）恒指宿主本机。
 function portRowTarget(c: ContainerView, r: PortRow): string {
-  return r.kind === 'map' ? `http://127.0.0.1:${r.port}` : serviceUrl('c', c.name, r.port)
+  return r.kind === 'map' ? `http://127.0.0.1:${r.port}` : serviceUrl('c', c.name, r.port, c.ip)
 }
 function portRowTitle(c: ContainerView, r: PortRow): string {
   const t = portRowTarget(c, r)
@@ -2138,13 +2139,13 @@ onUnmounted(() => {
                 <span class="flex-1">{{ activeContainer.ip }}</span>
                 <span class="text-[10px] text-muted-foreground">{{ copiedIp === activeContainer.ip ? '已复制' : '复制' }}</span>
               </DropdownMenuItem>
-              <!-- web 端口：后端实测返回 HTML，Globe 标记，点击经面板代理开浏览器 -->
+              <!-- web 端口：后端实测返回 HTML，Globe 标记，点击按口径直连/经代理打开 -->
               <DropdownMenuItem
                 v-for="p in webPorts"
                 :key="'w' + p"
                 class="font-mono text-xs"
-                :title="`已验证返回网页，点击打开 ${serviceUrl('c', activeContainer.name, p)}`"
-                @click="openUrl(serviceUrl('c', activeContainer.name, p))"
+                :title="`已验证返回网页，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
+                @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
               >
                 <Globe class="size-3.5 !text-emerald-500" />
                 <span class="flex-1">{{ p }}</span>
@@ -2155,8 +2156,8 @@ onUnmounted(() => {
                 v-for="p in otherListenPorts"
                 :key="'o' + p"
                 class="font-mono text-xs"
-                :title="`容器内监听 ${p}，点击打开 ${serviceUrl('c', activeContainer.name, p)}`"
-                @click="openUrl(serviceUrl('c', activeContainer.name, p))"
+                :title="`容器内监听 ${p}，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
+                @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
               >
                 <span class="size-3.5 text-center text-muted-foreground">:</span>
                 <span class="flex-1">{{ p }}</span>

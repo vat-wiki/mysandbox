@@ -191,8 +191,8 @@ async function main(): Promise<void> {
   );
   const scheme = config.listen.tls ? 'https' : 'http';
   process.stdout.write(`>> web UI:  ${scheme}://${config.listen.host}:${config.listen.port}\n`);
-  // 「都走域名」：vhost 开启时页面访问走基域名（服务端会把 IP 口径的导航 302 过去，
-  // 见 proxy.ts 的 redirect hook），IP 行留给 API/脚本口径。
+  // 域名口径（代理门面用）与 IP 口径平级——IP 导航不做重定向，端口点击跟随控制台
+  // 访问口径（IP 口径直连目标 IP，见 web/src/lib/proxy.ts），这里把两个入口都列出来。
   if (config.proxy.vhost !== 'off') {
     const bases = await proxyBases(config);
     if (bases[0]) {

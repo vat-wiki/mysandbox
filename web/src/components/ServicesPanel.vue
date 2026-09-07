@@ -206,9 +206,10 @@ function toggleInfo(s: ServiceView) {
   expandedInfo.value = expandedInfo.value === s.name ? '' : s.name
 }
 
-// 经面板 Web 代理打开服务端口（HTTP/WS 服务；见 lib/proxy.ts 与 server/proxy.ts）。
-function openServicePort(name: string, port: number) {
-  window.open(serviceUrl('s', name, port), '_blank', 'noopener')
+// 打开服务端口：跟随控制台口径——IP/localhost 口径直连服务 IP，基域名口径经面板
+// Web 代理（见 lib/proxy.ts 与 server/proxy.ts）。仅 HTTP/WS 服务适用。
+function openServicePort(s: ServiceView, port: number) {
+  window.open(serviceUrl('s', s.name, port, s.ip), '_blank', 'noopener')
 }
 
 // 首选连接命令（每预设至多一条）；空串 = 无现成命令（自定义镜像）。
@@ -407,15 +408,16 @@ function stateCls(s: ServiceView): string {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem @click="toggleInfo(s)">{{ expandedInfo === s.name ? '收起详情' : '详情' }}</DropdownMenuItem>
-                      <!-- 打开（Web 代理）：只对自定义预设给出——postgres/redis/mysql 的端口
-                           不是 HTTP，浏览器代理进不去；自定义镜像跑管理 UI 是常态。 -->
+                      <!-- 打开：只对自定义预设给出——postgres/redis/mysql 的端口不是 HTTP，
+                           浏览器代理进不去；自定义镜像跑管理 UI 是常态。口径跟随控制台
+                           （IP 直连 / 基域名代理），见 lib/proxy.ts。 -->
                       <template v-if="s.running && s.preset === 'custom' && s.ports.length">
                         <DropdownMenuItem
                           v-for="p in s.ports"
                           :key="'port' + p"
-                          @click="openServicePort(s.name, p)"
+                          @click="openServicePort(s, p)"
                         >
-                          打开 {{ p }}（经代理）
+                          打开 {{ p }}
                         </DropdownMenuItem>
                       </template>
                       <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>

@@ -10,7 +10,6 @@ import type { Config } from './config.js';
 import { STATE_DIR } from './config.js';
 import { getEngine } from './engine/index.js';
 import { getAllMeta } from './state.js';
-import { proxyBases } from './proxy.js';
 
 interface ParsedArgs {
   positionals: string[];
@@ -92,14 +91,10 @@ function baseUrl(cfg: Config): string {
   return `${cfg.listen.tls ? 'https' : 'http'}://${host}:${cfg.listen.port}`;
 }
 
-// 浏览器打开用的控制台 URL：「都走域名」口径——域名 + 证书覆盖的 scheme/端口。
-async function consoleUrl(cfg: Config): Promise<string> {
-  if (cfg.proxy.vhost === 'off') return baseUrl(cfg);
-  const bases = await proxyBases(cfg);
-  if (!bases[0]) return baseUrl(cfg);
-  const defPort = cfg.listen.tls ? 443 : 80;
-  const portPart = cfg.listen.port === defPort ? '' : `:${cfg.listen.port}`;
-  return `${cfg.listen.tls ? 'https' : 'http'}://${bases[0].base}${portPart}`;
+// 浏览器打开用的控制台 URL：IP:端口 口径——任何设备可解析（域名口径要基域名 DNS），
+// TLS 证书 SAN 覆盖本机全部 IPv4 + localhost；IP 口径控制台功能完备，端口点击直连。
+function consoleUrl(cfg: Config): string {
+  return baseUrl(cfg);
 }
 
 function fail(msg: string): never {
@@ -234,7 +229,7 @@ export async function runOpenCommand(argv: string[], cfg: Config): Promise<void>
   }
 
   // 4. 打开浏览器（无论成败都打印 URL——SSH 无显示器的回退）。
-  const url = `${await consoleUrl(cfg)}/#open?c=${container.id}&p=${encodeURIComponent(p)}&k=${kind}`;
+  const url = `${consoleUrl(cfg)}/#open?c=${container.id}&p=${encodeURIComponent(p)}&k=${kind}`;
   process.stdout.write(`>> ${container.displayName || container.name}:${p}\n${url}\n`);
   const openers: Record<string, string[]> = {
     darwin: ['open', url],

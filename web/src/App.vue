@@ -8,7 +8,6 @@ import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
-import { toast } from 'vue-sonner'
 import { Toaster } from '@/components/ui/sonner'
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
 
@@ -68,14 +67,14 @@ function logout() {
 }
 
 // 登录完成后的一次性环境装载：代理会话 cookie（浏览器导航到代理 URL 的鉴权凭证，
-// Path=/、仅 /proxy 承认，见 server/proxy.ts）+ 代理基域名探测（端口点击的 URL 拼装）。
+// Path=/、仅 /proxy 承认，见 server/proxy.ts）+ 代理口径探测（经基域名访问控制台时
+// 端口点击的 URL 拼装；IP/localhost 直连口径用不上，lib/proxy.ts 会跳过探测）。
 // 若带着 401 引导页的 proxyBack 回跳参数：种好 cookie 后直接送回目标页（host 校验
-// 限定基域名内，防开放重定向）。控制台没经基域名访问时提示一次：会话 cookie 是
-// Domain=<基域名> 的，IP 口径下端口点击会撞 401（上面那套回跳是自愈路径）。
+// 限定基域名内，防开放重定向）。
 async function afterAuth() {
   const back = new URLSearchParams(location.search).get('proxyBack')
   await startAuthSession().catch(() => {})
-  const mode = await loadProxyConfig()
+  await loadProxyConfig()
   const primary = proxyPrimary()
   if (back && primary) {
     try {
@@ -84,17 +83,10 @@ async function afterAuth() {
       // TLS-only 端口对明文 HTTP 直接断连，照写死的 http:// 走只会撞 ERR_EMPTY_RESPONSE）。
       if (u.protocol === location.protocol && (u.hostname === primary || u.hostname.endsWith(`.${primary}`))) {
         location.replace(back)
-        return
       }
     } catch {
       /* 非法 URL：留在控制台 */
     }
-  }
-  if (mode === 'vhost' && primary && location.hostname !== primary && !location.hostname.endsWith(`.${primary}`)) {
-    const portPart = location.port ? `:${location.port}` : ''
-    toast.info(`端口代理经 ${primary} 域名访问`, {
-      description: `用 ${location.protocol}//${primary}${portPart} 打开控制台，端口免登录直达。`,
-    })
   }
 }
 

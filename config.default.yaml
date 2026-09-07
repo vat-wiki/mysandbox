@@ -89,8 +89,9 @@ firewall:
   allow: []
 
 # Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
-# 容器行/服务行的端口点击会开 <name>-<port>.<基域名>:<listen.port>，与控制台同端口同
-# token（cookie 会话，Path 限 /proxy）。远程访问的前提仍是宿主可达（LAN 或 tailscale）。
+# 端口点击跟随控制台访问口径：IP:端口 打开控制台 → 直连容器/服务 IP:端口；经基域名
+# 打开 → 走 <name>-<port>.<基域名>:<listen.port> 代理（cookie 会话，Path 限 /proxy）。
+# 远程访问的前提仍是宿主可达（LAN 或 tailscale）。
 proxy:
   # vhost 基域名候选：auto = mysandbox.test（固定好记；⚠️ .local 无公共 DNS，需宿主侧
   # 应答 *.mysandbox.test——mihomo hosts/dnsmasq/路由器均可，没配也不坏：前端逐个探测
