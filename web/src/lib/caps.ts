@@ -11,7 +11,7 @@ const DEFAULTS: EngineCaps = {
   liveRename: false,
   portMappings: false,
   baseKind: 'template',
-  baseActions: ['clone', 'export', 'import'] as BaseAction[],
+  baseActions: ['create', 'clone', 'export', 'import'] as BaseAction[],
 }
 
 // reactive 而非 ref：消费方写 `caps.portMappings` 而不是 `caps.value.portMappings`，

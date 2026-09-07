@@ -88,13 +88,13 @@ export const verifyToken = () => api('/api/containers?limit=1') as Promise<{ ite
 
 // 引擎能力（后端 EngineCaps，见 server/engine/types.ts）。UI 差异一律判 caps，
 // 不要判 engine 名——将来加引擎时才不用改前端。
-export type BaseAction = 'export' | 'import' | 'clone'
+export type BaseAction = 'create' | 'export' | 'import' | 'clone'
 export interface EngineCaps {
   dataInsideContainer: boolean // true：home 在容器内，删容器必连数据一起删
   liveRename: boolean // false：改名前必须先停容器
   portMappings: boolean // false：固定 IP 直连，无端口映射
   baseKind: 'image' | 'template' // 基座形态：模板容器（决定文案）
-  baseActions: BaseAction[] // 可用动作（决定按钮）：clone/export/import
+  baseActions: BaseAction[] // 可用动作（决定按钮）：create/clone/export/import
 }
 export interface Health {
   ok: boolean

@@ -109,7 +109,9 @@ export interface CreateSpec {
 
 // —— 「基座」：新建容器的来源物 = 模板容器（cfg.lxc.template）——
 // 状态归一到 BaseStatus，动作集由 caps.baseActions 声明。
-export type BaseAction = 'export' | 'import' | 'clone';
+// create = 从零制作（lxc-create 下载发行版 rootfs + 跑制作脚本，全新机器的起点；
+// clone/export/import 语义见 engine/template.ts）。
+export type BaseAction = 'create' | 'export' | 'import' | 'clone';
 
 export interface BaseStatus {
   kind: 'image' | 'template';

@@ -35,11 +35,12 @@ import { expandTilde } from '../config.js';
 import { getAllMeta, type ContainerMeta } from '../state.js';
 import { log } from '../logger.js';
 import { notFound, conflict, badRequest } from '../errors.js';
-import { gatewayOf } from '../network.js';
+import { gatewayOf, allocate } from '../network.js';
 import {
   templateStatus,
   templateSize,
   cloneTemplate,
+  createTemplate,
   exportTemplate,
   importTemplate,
   importArchiveTo,
@@ -73,13 +74,14 @@ const execFileAsync = promisify(execFile);
 // - liveRename：LXC 无 rename 原语，lxc-copy -R 要求容器已停。
 // - portMappings：固定 IP 直连（D2），不做 NAT。
 // - baseKind/baseActions：基座是「模板容器」而非镜像，没有 registry 所以没有 build/pull/push；
-//   clone（把调好的容器固化成模板）+ export/import（打包成 tar.zst 当分发形态）见 template.ts。
+//   create（从零制作：lxc-create 下载 rootfs + 跑制作脚本）、clone（把调好的容器固化成模板）、
+//   export/import（打包成 tar.zst 当分发形态）见 template.ts。
 const CAPS: EngineCaps = {
   dataInsideContainer: true,
   liveRename: false,
   portMappings: false,
   baseKind: 'template',
-  baseActions: ['clone', 'export', 'import'],
+  baseActions: ['create', 'clone', 'export', 'import'],
 };
 
 // 受管理标记（D5：LXC 没有 label，用 config 里的纯文本键；可 diff、可手改）。
@@ -938,6 +940,10 @@ const templateDeps: TemplateDeps = {
   containerDir,
   infoLines,
   stop: (cfg, name) => stopContainer(cfg, name),
+  start: (cfg, name) => startContainer(cfg, name),
+  gateway: (cfg) => gatewayOf(cfg),
+  resolveBridge: (cfg) => resolveBridge(cfg),
+  allocateIp: (cfg) => allocate(cfg),
   remove: (cfg, name) => removeContainer(cfg, name, { force: true }),
   assertName,
 };
@@ -952,6 +958,7 @@ async function runBaseAction(
   opts: BaseActionOpts,
   onProgress?: (e: BaseProgress) => void,
 ): Promise<Record<string, unknown>> {
+  if (action === 'create') return createTemplate(cfg, templateDeps, opts, onProgress);
   if (action === 'clone') return cloneTemplate(cfg, templateDeps, opts, onProgress);
   if (action === 'export') return exportTemplate(cfg, templateDeps, opts, onProgress);
   if (action === 'import') return importTemplate(cfg, templateDeps, opts, onProgress);

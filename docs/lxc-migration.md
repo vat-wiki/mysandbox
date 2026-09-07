@@ -344,3 +344,28 @@ dev-lan 重建/docker 停机不再影响 LXC 网络。服务网络 mysandbox-lan
 - YAML 里 `comment: mysandbox: xxx` 这种值含 `: ` 的要加引号，否则解析直接炸。
 - `ufw allow` 对相同 spec（哪怕 comment 不同）自身会去重（"Skipping adding existing rule"），
   所以判定失效也不会立刻产生重复——但别依赖这个，判定要写对。
+
+## 补记：2026-09-07 基座「从零制作」（base create）
+
+**起因**：lxc-template.sh 只会加工「已存在且在跑」的容器，「lxc-create 出这个容器」一直
+靠手工——新机器落地时基座缺位、没有任何入口能拉起来（蛋生鸡缺口）。补成基座第四个动作
+`create`（caps.baseActions：create/clone/export/import），web 基座面板与
+`mysandbox base create [--force]` 同源，SSE 流式进度。
+
+**编排**（engine/template.ts createTemplate，lxc.ts 注入 start/gateway/resolveBridge/allocateIp）：
+force 换旧（默认拒绝）→ 桥就绪检查 → 池内分配模板 IP →
+`lxc-create -t download -- -d ubuntu -r noble -a <arch>`（P2 验证过的原命令；noble 而非
+24.04——索引里没有这个别名）→ **config 网络对齐**（见下）→ startContainer →
+跑 `scripts/lxc-template.sh`（幂等，10–20 分钟）→ lxc-stop → 记 source 文件。
+
+**config 对齐是必须的**：lxc-create 的网络来自 `~/.config/lxc/default.conf`，而它
+不经手就容易陈旧——本机实测它还指着旧 docker 桥（br-f0cc7d98dca0）且**没有静态 IP**，
+不重写就是无网容器，脚本第一步 DNS 就挂。create 后重写
+`lxc.net.0.{type,link,ipv4.address,ipv4.gateway}`（桥 = cfg.network、IP = 池内首个空闲、
+网关 = `<池前缀>.1`，与脚本 dns 步写死的上游一致）+ `lxc.apparmor.profile = unconfined`
+（见上文宿主准备 #4）。模板 IP 经 assignedIps 扫 config 天然计占用，不与容器撞。
+
+**失败语义**：lxc-create 失败清半成品——rootfs 内容属主是宿主 100000 段，宿主 rm 删不净，
+必须走 lxc-destroy（liblxc 自己经 userns 删），config 未写成时再兜一层宿主 rm；
+脚本失败**容器保留**（正在运行）——脚本幂等（每步先探测再装），可进宿主终端手工重跑补缺
+（此时基座状态 = exists 但 not ready「正在运行」，天然挡住克隆），或 force 从零重建。

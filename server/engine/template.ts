@@ -20,7 +20,7 @@
 //     （mode 0755，属主 leon），ns-root 对它有写权（实测确认：ns 里 leon 的 uid 1000
 //     被映射，目录的 owner-write 生效）。
 import { spawn } from 'node:child_process';
-import { mkdir, rm, stat, readFile } from 'node:fs/promises';
+import { mkdir, rm, stat, readFile, writeFile } from 'node:fs/promises';
 import { existsSync, createWriteStream } from 'node:fs';
 import { join, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -174,7 +174,7 @@ export async function templateStatus(cfg: Config, deps: TemplateDeps): Promise<B
   };
   const config = await deps.readConfig(name).catch(() => null);
   if (config == null) {
-    return { ...base, notReady: `模板容器 ${name} 不存在——先制作一个，或 import 一个包` };
+    return { ...base, notReady: `模板容器 ${name} 不存在——用「从零制作」建一个，或 import 一个包` };
   }
   const info = await deps.infoLines(name);
   const state = (info?.State ?? 'STOPPED').toUpperCase();
@@ -223,12 +223,18 @@ export async function templateSize(cfg: Config, deps: TemplateDeps): Promise<num
 }
 
 // engine/lxc.ts 注入的依赖（避免两个模块循环 import：lxc.ts 已经 import 本文件）。
+// gateway/resolveBridge/allocateIp 是 network.ts/lxc.ts 的能力，注入而非直接 import——
+// network.ts 反向 import engine/index.js，template.ts 再去 import 它会多出一个环。
 export interface TemplateDeps {
   readConfig(name: string): Promise<string | null>;
   configPath(name: string): string;
   containerDir(name: string): string;
   infoLines(name: string): Promise<Record<string, string> | null>;
   stop(cfg: Config, name: string): Promise<void>;
+  start(cfg: Config, name: string): Promise<void>;
+  gateway(cfg: Config): string;
+  resolveBridge(cfg: Config): Promise<string | null>;
+  allocateIp(cfg: Config): Promise<string | null>;
   remove(cfg: Config, name: string): Promise<void>;
   assertName(name: string): string;
 }
@@ -281,6 +287,104 @@ async function writeSource(dir: string, text: string): Promise<void> {
   } catch {
     /* 纯展示信息，写不上不影响功能 */
   }
+}
+
+// —— create：从零制作模板（全新机器的起点）——
+// lxc-template.sh 只会加工「已存在且在跑」的容器，缺的前半段（lxc-create 出容器）在这里补齐。
+// 命令就是迁移文档 PoC 验证过的那条（noble 而非 24.04——download 索引里没有这个别名）。
+// 失败语义：lxc-create 失败清掉半成品；脚本失败**容器保留**（正在运行）——脚本幂等
+// （每步先探测再装），可进宿主终端手工重跑补缺，或 force 从零重建。
+export async function createTemplate(
+  cfg: Config,
+  deps: TemplateDeps,
+  opts: BaseActionOpts,
+  onProgress?: (e: BaseProgress) => void,
+): Promise<Record<string, unknown>> {
+  const name = cfg.lxc.template;
+  const script = findTemplateScript();
+  if (!script) throw new Error('scripts/lxc-template.sh not found (packaged without it?)');
+
+  if ((await deps.readConfig(name)) != null) {
+    if (!opts.force) {
+      throw conflict(
+        `template "${name}" already exists — pass force to replace it (the old template is destroyed)`,
+      );
+    }
+    onProgress?.({ status: `销毁旧模板 ${name}` });
+    await deps.remove(cfg, name);
+  }
+
+  // 桥没就绪就别开始：下载 + 十几分钟的脚本全白跑。
+  const bridge = await deps.resolveBridge(cfg);
+  if (!bridge) {
+    throw new Error(`bridge "${cfg.network}" not found — bring it up first (mysandbox-net.service)`);
+  }
+  // 模板自身也占一个池内 IP（assignedIps 扫全部 config，含模板，天然计占用）。
+  const ip = await deps.allocateIp(cfg);
+  if (ip == null) throw new Error('IP pool exhausted — the template itself needs an address from cfg.ipPool');
+
+  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+  onProgress?.({ status: `下载 ubuntu noble rootfs（${arch}，lxc-create download 模板）` });
+  const r = await spawnCollect(
+    'lxc-create',
+    ['-n', name, '-t', 'download', '--', '-d', 'ubuntu', '-r', 'noble', '-a', arch],
+    onProgress,
+    30 * 60_000,
+  );
+  if (!r.ok) {
+    // 半成品清掉。rootfs 内容属主是宿主 uid 100000 段（unprivileged 建时经 userns 落盘），
+    // 宿主 rm 删不净，必须走 lxc-destroy（liblxc 自己经 userns 删）；config 没写成时
+    // destroy 会报「not defined」，再兜一层宿主 rm 清 leon 属主的空壳目录。
+    await deps.remove(cfg, name).catch(() => {});
+    await rm(deps.containerDir(name), { recursive: true, force: true }).catch(() => {});
+    throw new Error(`lxc-create failed: ${tail(r.stderr) || 'unknown error'}`);
+  }
+
+  // 网络对齐当前配置——必须做：lxc-create 的网络来自 default.conf，新机器上可能陈旧/缺
+  // 静态 IP（本机实测 default.conf 还指着旧 docker 桥且无地址，不重写就是无网容器，
+  // 脚本第一步 DNS 就挂）。桥/gateway 跟 cfg 走（gateway = <池前缀>.1，与脚本 dns 步
+  // 写死的上游一致），IP 用上面分配的。
+  await alignCreatedConfig(cfg, deps, name, ip, bridge);
+
+  onProgress?.({ status: '启动新容器' });
+  await deps.start(cfg, name);
+
+  onProgress?.({ status: '跑制作脚本（apt + npm 占大头，10–20 分钟）' });
+  const s = await spawnCollect('bash', [script, name], onProgress, 60 * 60_000);
+  if (!s.ok) {
+    throw new Error(
+      `template script failed — 容器 ${name} 保留（正在运行）供排查：可进宿主终端重跑 ` +
+        `scripts/lxc-template.sh ${name}（脚本幂等，只补缺的），或 force 从零重建。 ${tail(s.stderr) || ''}`,
+    );
+  }
+
+  onProgress?.({ status: `停止 ${name}（克隆要求已停）` });
+  await deps.stop(cfg, name);
+  await writeSource(deps.containerDir(name), 'created from scratch (lxc-create + scripts/lxc-template.sh)');
+  log.info({ template: name }, 'lxc template created from scratch');
+  onProgress?.({ status: `模板 ${name} 就绪（已停止，可直接建容器）` });
+  return { template: name };
+}
+
+// lxc-create 产物的 config 修正（范围对齐 create() 克隆后的改写）：桥/IP/网关 +
+// apparmor unconfined（Ubuntu 默认 profile 不许 systemd 挂 cgroup2，见 docs/lxc-migration.md
+// 宿主准备 #4）。setConfigValue 经动态 import 拿（lxc.ts 反向 import 本文件，同款防环）。
+async function alignCreatedConfig(
+  cfg: Config,
+  deps: TemplateDeps,
+  name: string,
+  ip: string,
+  bridge: string,
+): Promise<void> {
+  const { setConfigValue } = await import('./lxc.js');
+  const content = await deps.readConfig(name);
+  if (content == null) throw new Error(`lxc-create succeeded but config missing for ${name}`);
+  let next = setConfigValue(content, 'lxc.net.0.type', 'veth');
+  next = setConfigValue(next, 'lxc.net.0.link', bridge);
+  next = setConfigValue(next, 'lxc.net.0.ipv4.address', `${ip}/24`);
+  next = setConfigValue(next, 'lxc.net.0.ipv4.gateway', deps.gateway(cfg));
+  next = setConfigValue(next, 'lxc.apparmor.profile', 'unconfined');
+  await writeFile(deps.configPath(name), next);
 }
 
 // —— export：模板/任意容器 -> 单个 tar.zst（config + rootfs）——

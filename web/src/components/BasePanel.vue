@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 基座管理面板：状态详情 + 动作按钮 + 内联流式日志（SSE）。
-// 「基座」= 新建容器的来源物 = 模板容器（clone/export/import）。
+// 「基座」= 新建容器的来源物 = 模板容器（create/clone/export/import）。
 // 按钮由 caps.baseActions 决定，文案由 caps.baseKind 决定（见 web/src/lib/caps.ts）。
 // 完成后 emit changed（让 header 徽标刷新）。鉴权失败 emit close（由 App 触发登出）。
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
@@ -124,6 +124,9 @@ function confirmDesc(action: BaseAction): string | null {
   const label = baseLabel.value
   if (action === 'export') return null // 只写一个文件，无破坏性
   if (!status.value.exists) return null // 首次制作，没有可覆盖的东西
+  if (action === 'create') {
+    return `将销毁当前${label} ${status.value.name} 并从零重建（重新下载 + 跑制作脚本）。已有容器不受影响，新建容器用新${label}。`
+  }
   if (action === 'clone') {
     return `将销毁当前${label} ${status.value.name} 并用容器 ${cloneFrom.value} 重建它。已有容器不受影响，新建容器用新${label}。`
   }
@@ -133,8 +136,9 @@ function confirmDesc(action: BaseAction): string | null {
   return null
 }
 
-// force：clone/import 覆盖既有基座时后端要求显式 force（防误删模板）。
+// force：create/clone/import 覆盖既有基座时后端要求显式 force（防误删模板）。
 function optsFor(action: BaseAction): BaseActionOpts {
+  if (action === 'create') return { force: true }
   if (action === 'export') return { path: archivePath.value.trim() || undefined, force: true }
   if (action === 'import') return { path: archivePath.value.trim() || undefined, force: true }
   if (action === 'clone') return { from: cloneFrom.value.trim(), force: true }
@@ -194,6 +198,12 @@ function onConfirm() {
 // 动作的展示文案（顺序即渲染顺序，caps.baseActions 之外的不渲染）。
 // 卡片名/说明与执行按钮文案分开——按钮语境里「从容器固化」会读成一句话。
 const ACTION_CARD: Record<BaseAction, { name: string; desc: string; button: string; busy: string }> = {
+  create: {
+    name: '从零制作',
+    desc: '下载 ubuntu noble rootfs → 起容器 → 跑制作脚本（10–20 分钟）→ 自动停机。全新机器的起点。',
+    button: '从零制作',
+    busy: '制作中…',
+  },
   clone: {
     name: '从容器固化',
     desc: '把一个现有容器做成新模板（会先停它，完成后不自动重启）',
@@ -203,7 +213,7 @@ const ACTION_CARD: Record<BaseAction, { name: string; desc: string; button: stri
   import: { name: '从包导入', desc: '从 tar.zst 包恢复模板', button: '导入', busy: '导入中…' },
   export: { name: '导出包', desc: '把当前模板打包成 tar.zst', button: '导出', busy: '打包中…' },
 }
-const ORDER: BaseAction[] = ['clone', 'import', 'export']
+const ORDER: BaseAction[] = ['create', 'clone', 'import', 'export']
 const actions = computed(() => ORDER.filter((a) => hasBaseAction(a)))
 
 // 当前选中的动作卡片。参数区与执行按钮只对它生效——动作与输入一一绑定，
@@ -221,7 +231,7 @@ watch(
 
 const title = computed(() => `${baseLabel.value}管理`)
 const description = computed(() =>
-  '模板容器 = 新建容器的来源（克隆它）。可从现有容器固化，或与 tar.zst 包互转。',
+  '模板容器 = 新建容器的来源（克隆它）。可从零制作、从现有容器固化，或与 tar.zst 包互转。',
 )
 
 function fmtSize(bytes: number): string {

@@ -28,7 +28,7 @@ function parseOpts(body: unknown): BaseActionOpts {
   };
 }
 
-const ALL_ACTIONS: BaseAction[] = ['export', 'import', 'clone'];
+const ALL_ACTIONS: BaseAction[] = ['create', 'export', 'import', 'clone'];
 
 export async function registerBaseRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
   // 基座状态。App 轮询这个接口，所以实现里 context 定位失败不能变 500（见 BaseStatus 注释）。
@@ -84,6 +84,9 @@ const BASE_HELP = `mysandbox base <command> — manage the template container
 Usage:
   mysandbox base status
       Show whether the template is present and ready to create containers from.
+  mysandbox base create [--force]
+      Build the template from scratch: download ubuntu noble rootfs, boot it,
+      run scripts/lxc-template.sh (10-20 min), then stop it.
   mysandbox base clone --from <container> [--force]
       Freeze an existing container into the template (stops it first).
   mysandbox base export [<path>] [--from <container>] [--force]
