@@ -69,13 +69,26 @@ function logout() {
 
 // 登录完成后的一次性环境装载：代理会话 cookie（浏览器导航到代理 URL 的鉴权凭证，
 // Path 限 /proxy，见 server/proxy.ts）+ 代理基域名探测（端口点击的 URL 拼装）。
-// 控制台没经基域名访问时提示一次：会话 cookie 是 Domain=<基域名> 的，IP 口径下
-// 端口点击会先撞 401 引导页（自愈路径是经基域名打开一次控制台）。
+// 若带着 401 引导页的 proxyBack 回跳参数：种好 cookie 后直接送回目标页（host 校验
+// 限定基域名内，防开放重定向）。控制台没经基域名访问时提示一次：会话 cookie 是
+// Domain=<基域名> 的，IP 口径下端口点击会撞 401（上面那套回跳是自愈路径）。
 async function afterAuth() {
-  void startAuthSession().catch(() => {})
+  const back = new URLSearchParams(location.search).get('proxyBack')
+  await startAuthSession().catch(() => {})
   const mode = await loadProxyConfig()
   const primary = proxyPrimary()
-  if (mode === 'vhost' && primary && !location.hostname.endsWith(`.${primary}`)) {
+  if (back && primary) {
+    try {
+      const u = new URL(back)
+      if (u.protocol === 'http:' && (u.hostname === primary || u.hostname.endsWith(`.${primary}`))) {
+        location.replace(back)
+        return
+      }
+    } catch {
+      /* 非法 URL：留在控制台 */
+    }
+  }
+  if (mode === 'vhost' && primary && location.hostname !== primary && !location.hostname.endsWith(`.${primary}`)) {
     const portPart = location.port ? `:${location.port}` : ''
     toast.info(`端口代理经 ${primary} 域名访问`, {
       description: `用 http://${primary}${portPart} 打开控制台，端口免登录直达。`,

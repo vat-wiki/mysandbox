@@ -612,6 +612,15 @@ a{color:#93c5fd}
 </style></head><body><div class="card">
 <h1>需要先在控制台登录</h1>
 <p>代理入口与控制台共用同一 token。打开控制台完成 token 校验后，这里会自动带上会话 cookie（SameSite=Strict：从其他应用里点进来的链接不带 cookie，属于预期行为）。</p>
-<p><a href="${esc(origin)}">打开 mysandbox 控制台 →</a></p>
+<p><a id="sb-console-link" data-origin="${esc(origin)}" href="${esc(origin)}">打开 mysandbox 控制台 →</a></p>
+<script>
+// 控制台链接带上回跳：App 种完会话 cookie（Domain=<基域名>）后自动送回本页，
+// 免掉「先开控制台、再回来点端口」的两步。
+(function () {
+  var a = document.getElementById('sb-console-link');
+  var o = a.dataset.origin === '/' ? '' : a.dataset.origin;
+  a.href = o + '/?proxyBack=' + encodeURIComponent(location.href);
+})();
+</script>
 </div></body></html>`;
 }

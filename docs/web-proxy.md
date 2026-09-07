@@ -63,7 +63,9 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
 - Path 限 `/proxy` 是刻意的：被代理页面里的 JS 拿着 cookie 打不进 `/api/*`（维持
   header-only），爆炸半径不扩。
 - SameSite=Strict：控制台内 window.open（同站）与地址栏直贴都带 cookie；从其他应用
-  点链接会 401 → HTML 引导页（`proxyUnauthorizedHtml`）给控制台链接。
+  点链接会 401 → HTML 引导页（`proxyUnauthorizedHtml`）给控制台链接，链接带
+  `?proxyBack=` 回跳参数——App 种完 cookie 校验目标 host 在基域名内后自动送回
+  （防开放重定向），免掉「先开控制台再点端口」两步。
 - 未授权的浏览器导航（GET + Accept html）回 HTML 引导页而非 JSON；其余回 JSON 401。
 
 ## 白名单（SSRF 边界）
