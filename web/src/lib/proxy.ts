@@ -73,12 +73,17 @@ export function proxyPrimary(): string | null {
   return info.value.mode === 'vhost' ? info.value.primary : null
 }
 
+// 直连 URL：容器/服务内网 IP:端口（明文 HTTP，TLS 只在控制台侧终结）。代理上线前的
+// 原始打开形式——宿主本机、tailscale 子网路由下可达；无路由的 LAN/公网设备打不开。
+export function directUrl(ip: string, port: number): string {
+  return `http://${ip}:${port}/`
+}
+
 // 容器（kind 'c'）或 docker 服务（kind 's'）的端口打开 URL。ip = 目标内网 IP（直连
-// 口径用；未知时退代理形式——至少同源子路径可达）。直连恒 http://（容器/服务内是明文
-// HTTP，TLS 只在控制台侧终结）；代理口径 scheme/端口跟当前访问口径走（location.port
-// 为空 = 80/443 默认口）。
+// 口径用；未知时退代理形式——至少同源子路径可达）。代理口径 scheme/端口跟当前访问
+// 口径走（location.port 为空 = 80/443 默认口）。
 export function serviceUrl(kind: 'c' | 's', name: string, port: number, ip?: string | null): string {
-  if (originIpish() && ip) return `http://${ip}:${port}/`
+  if (originIpish() && ip) return directUrl(ip, port)
   if (info.value.mode === 'vhost' && info.value.primary) {
     const portPart = location.port ? `:${location.port}` : ''
     return `${location.protocol}//${name}-${port}.${info.value.primary}${portPart}/`

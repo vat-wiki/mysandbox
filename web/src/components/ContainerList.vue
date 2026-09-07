@@ -25,7 +25,7 @@ import {
   type TermActivityView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
-import { serviceUrl } from '@/lib/proxy'
+import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
   lastTermOutput,
   forgetTerm,
@@ -785,6 +785,14 @@ function cardPortRows(id: string): PortRow[] {
 // docker 宿主映射端口（历史形态，LXC 无）恒指宿主本机。
 function portRowTarget(c: ContainerView, r: PortRow): string {
   return r.kind === 'map' ? `http://127.0.0.1:${r.port}` : serviceUrl('c', c.name, r.port, c.ip)
+}
+// 直连 IP:端口 打开（端口条目上的显式第二方式）：控制台经基域名打开时主点击走代理，
+// 直连作为额外动作给出；IP/localhost 口径下主点击本就是直连，不重复给（directOpenExtra
+// 为 false）。ip 未知（未运行/解析不出）同样无从直连。map 行（docker 宿主映射）本身
+// 就是宿主直连形态，不参与。
+const directOpenExtra = !originIpish()
+function directPortUrl(c: ContainerView, port: number): string {
+  return c.ip ? directUrl(c.ip, port) : ''
 }
 function portRowTitle(c: ContainerView, r: PortRow): string {
   const t = portRowTarget(c, r)
@@ -1869,21 +1877,36 @@ onUnmounted(() => {
                 v-if="portsHover === c.id || portsPinned === c.id"
                 class="absolute bottom-full right-0 z-30 mb-1 w-44 rounded-md border border-border bg-popover p-1 shadow-md"
               >
-                <button
+                <div
                   v-for="r in cardPortRows(c.id)"
                   :key="r.kind + r.port"
-                  type="button"
-                  class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-[11px] transition-colors hover:bg-accent"
-                  :title="portRowTitle(c, r)"
-                  @click.stop="openUrl(portRowTarget(c, r))"
+                  class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left font-mono text-[11px] transition-colors hover:bg-accent"
                 >
-                  <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                  <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
-                  <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
-                  <span class="flex-1 tabular-nums">{{ r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port }}</span>
-                  <span v-if="r.kind === 'web'" class="text-[10px] text-emerald-500">网页</span>
-                  <span v-else-if="r.kind === 'map'" class="text-[10px] text-muted-foreground">宿主</span>
-                </button>
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center gap-1.5"
+                    :title="portRowTitle(c, r)"
+                    @click.stop="openUrl(portRowTarget(c, r))"
+                  >
+                    <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                    <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
+                    <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
+                    <span class="flex-1 tabular-nums">{{ r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port }}</span>
+                    <span v-if="r.kind === 'web'" class="text-[10px] text-emerald-500">网页</span>
+                    <span v-else-if="r.kind === 'map'" class="text-[10px] text-muted-foreground">宿主</span>
+                  </button>
+                  <!-- 直连容器 IP:端口（第二打开方式）：仅域名口径下出现——IP 口径主点击
+                       已是直连；map 行是宿主侧映射，无直连一说。 -->
+                  <button
+                    v-if="directOpenExtra && r.kind !== 'map' && directPortUrl(c, r.port)"
+                    type="button"
+                    class="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                    :title="`直连打开 ${directPortUrl(c, r.port)}`"
+                    @click.stop="openUrl(directPortUrl(c, r.port))"
+                  >
+                    <Network class="size-3" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -2139,29 +2162,48 @@ onUnmounted(() => {
                 <span class="flex-1">{{ activeContainer.ip }}</span>
                 <span class="text-[10px] text-muted-foreground">{{ copiedIp === activeContainer.ip ? '已复制' : '复制' }}</span>
               </DropdownMenuItem>
-              <!-- web 端口：后端实测返回 HTML，Globe 标记，点击按口径直连/经代理打开 -->
-              <DropdownMenuItem
-                v-for="p in webPorts"
-                :key="'w' + p"
-                class="font-mono text-xs"
-                :title="`已验证返回网页，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
-                @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
-              >
-                <Globe class="size-3.5 !text-emerald-500" />
-                <span class="flex-1">{{ p }}</span>
-                <span class="text-[10px] text-emerald-500">网页</span>
-              </DropdownMenuItem>
+              <!-- web 端口：后端实测返回 HTML，Globe 标记，点击按口径直连/经代理打开；
+                   域名口径下附「直连 IP:端口」第二打开方式（IP 口径主点击已是直连） -->
+              <template v-for="p in webPorts" :key="'w' + p">
+                <DropdownMenuItem
+                  class="font-mono text-xs"
+                  :title="`已验证返回网页，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
+                  @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
+                >
+                  <Globe class="size-3.5 !text-emerald-500" />
+                  <span class="flex-1">{{ p }}</span>
+                  <span class="text-[10px] text-emerald-500">网页</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  v-if="directOpenExtra && directPortUrl(activeContainer, p)"
+                  class="pl-8 font-mono text-xs text-muted-foreground"
+                  :title="`直连打开 ${directPortUrl(activeContainer, p)}`"
+                  @click="openUrl(directPortUrl(activeContainer, p))"
+                >
+                  <span class="size-3.5 text-center text-[10px]">↳</span>
+                  <span class="flex-1">直连 {{ activeContainer.ip }}:{{ p }}</span>
+                </DropdownMenuItem>
+              </template>
               <!-- 非 web 监听端口（ssh/db 等）：同样可点开，标记弱化 -->
-              <DropdownMenuItem
-                v-for="p in otherListenPorts"
-                :key="'o' + p"
-                class="font-mono text-xs"
-                :title="`容器内监听 ${p}，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
-                @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
-              >
-                <span class="size-3.5 text-center text-muted-foreground">:</span>
-                <span class="flex-1">{{ p }}</span>
-              </DropdownMenuItem>
+              <template v-for="p in otherListenPorts" :key="'o' + p">
+                <DropdownMenuItem
+                  class="font-mono text-xs"
+                  :title="`容器内监听 ${p}，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
+                  @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
+                >
+                  <span class="size-3.5 text-center text-muted-foreground">:</span>
+                  <span class="flex-1">{{ p }}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  v-if="directOpenExtra && directPortUrl(activeContainer, p)"
+                  class="pl-8 font-mono text-xs text-muted-foreground"
+                  :title="`直连打开 ${directPortUrl(activeContainer, p)}`"
+                  @click="openUrl(directPortUrl(activeContainer, p))"
+                >
+                  <span class="size-3.5 text-center text-[10px]">↳</span>
+                  <span class="flex-1">直连 {{ activeContainer.ip }}:{{ p }}</span>
+                </DropdownMenuItem>
+              </template>
               <!-- docker 映射端口（宿主侧访问） -->
               <DropdownMenuItem
                 v-for="m in mappedPorts"

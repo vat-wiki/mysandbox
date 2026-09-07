@@ -130,7 +130,7 @@ docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在
 - **双口径平级，不做互转**：`IP:端口` 与 `域名:端口` 都是一等访问形式，服务端不重定向。前端端口点击跟随控制台口径（`lib/proxy.ts` 的 `originIpish`）：IP/localhost 打开控制台 → 直连容器/服务 `IP:端口`（代理上线前的原形式，无 cookie 依赖；`mysandbox open` 深链恒走此口径）；经基域名打开 → vhost/subpath 代理。
 - **reply-from 的坑**：body 靠封装作用域内 catch-all content-type parser 透传原始流（在 scope 内注册，别污染全实例）；undici `bodyTimeout: 0` 保长 SSE；Host 默认被改成上游、要 rewriteRequestHeaders 改回来；错误包成 `FST_REPLY_FROM_*`、原始 code 在 `error.cause`；query 不用自己拼（source 不带时自动取原 req.url）。Set-Cookie 的 Path 要收编进代理前缀，否则多应用同名 cookie 在 `/` 互相覆盖。
 - WS 是同路由全声明式 `handler` + `wsHandler` 双挂（wsHandler 类型只在 RouteOptions 上）；基域名 auto = 候选序 `mysandbox.test`（固定好记，**需宿主侧 DNS 应答**——本机 mihomo hosts 已配；`.local` 无公共 DNS 且 mDNS 不做泛解析，跨设备不通）→ LAN sslip → tailscale sslip，**前端逐个探测择优、全败降级子路径**（lib/proxy.ts probeBase，no-cors 打 `msbprobe.<base>/api/health`）；有自有域名优先自有。
-- 前端 URL 拼装在 `lib/proxy.ts` 单例（`serviceUrl`），ContainerList 端口点击与 ServicesPanel 自定义服务「打开」都走它；服务预设（postgres 等）端口非 HTTP 不给「打开」。
+- 前端 URL 拼装在 `lib/proxy.ts` 单例（`serviceUrl` + `directUrl`），ContainerList 端口点击与 ServicesPanel 自定义服务「打开」都走它；域名口径下端口条目附「直连 IP:端口」第二打开方式（`directOpenExtra`——IP 口径主点击已是直连不重复给，map 行/无 IP 不给）；服务预设（postgres 等）端口非 HTTP 不给「打开」。
 - **TLS（`listen.tls`）**：自签名本地 CA + 泛域名叶子（`server/tls.ts`，STATE_DIR/tls/ 持久化；SAN=代理基域名+全部本机 IPv4，临期 30d/SAN 变则重签，CA 永不变）。信任导入走 `~/.pki/nssdb`（Chromium **不读** /etc/ssl；导入后要重启浏览器）或系统库；下载入口 `/tls-ca.crt`。CLI/undici 加载同一份 ca.crt；前端 scheme 全随 `location.protocol`。
 
 ### 宿主终端
