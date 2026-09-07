@@ -37,9 +37,11 @@
 //   放网段等于把代理当 SSRF 跳板指回宿主。rewriteUrl 同步读缓存（TTL 懒刷新，写错
 //   这里会每请求 spawn 进程，见 refreshTargets）。
 // - cookie 鉴权：浏览器导航/新开 tab 带不上 header → POST /api/auth/session 下发
-//   mysandbox_token cookie，**Path 限 /proxy**：/api/* 维持 header-only，被代理页面
-//   的 JS 拿着 cookie 打不进控制台 API。同值再发一份 Domain=<基域名>（vhost 门面用；
-//   从裸 IP/localhost 访问控制台时浏览器拒收 Domain cookie，宿主级那份兜子路径门面）。
+//   mysandbox_token cookie（Path=/，HttpOnly SameSite=Strict）。**隔离性在 auth hook
+//   而非 Path**：cookie 仅在 /proxy 门面被承认，/api、/ws 维持 header/query-only——
+//   被代理页面的 JS 拿着 cookie 打不进控制台 API。每个候选基域各发一份 Domain 版
+//   （本机 mysandbox.test、远程 tailscale 域名各自种上；domain-match 不成立的被
+//   浏览器拒收，无害）。
 // - 转发上游前剥掉 cookie 与 x-sandbox-token（token 不出面板，不喂给被代理应用）。
 // - SameSite=Strict：控制台内 window.open（同站）与地址栏直贴都带 cookie；从其他
 //   站点点链接会 401 → 引导页给控制台链接，接受。
@@ -136,7 +138,7 @@ export interface ProxyBase {
 }
 
 // auto 模式的固定本地域（产品默认的好记域名）。解析前提见 proxyBases 内注释。
-const LOCAL_BASE = 'mysandbox.local';
+const LOCAL_BASE = 'mysandbox.test';
 
 // 默认路由接口的 IPv4（镜像 cli.ts resolveAutoHost 的读法；拿不到返回 null）。
 async function defaultRouteIp(): Promise<string | null> {
@@ -389,7 +391,7 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   // —— 「都走域名」：IP/localhost 口径的页面导航 302 到基域名 ——
   // 只拦 GET/HEAD（导航）；/api、/ws、/proxy 豁免——CLI 深链、脚本、curl 探活都
   // 走这些路径，不能跟着跳。非 IP 的其他域名口径不拦：tailscale sslip 等远程入口
-  // 的设备未必解析得了 mysandbox.local，拦了会把远程用户挡在 DNS 错误页上。
+  // 的设备未必解析得了 mysandbox.test，拦了会把远程用户挡在 DNS 错误页上。
   if (primary) {
     const portPart = cfg.listen.port === 80 ? '' : `:${cfg.listen.port}`;
     app.addHook('onRequest', async (req, reply) => {
@@ -408,11 +410,14 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
     });
   }
 
-  // —— cookie 会话：/proxy 导航的鉴权凭证（Path 限 /proxy，见文件头安全面）——
+  // —— cookie 会话：/proxy 门面（vhost + 子路径）的鉴权凭证 ——
+  // Path=/：vhost 门面的页面路径任意（应用的 /、/dashboard…），Path 限 /proxy 的话
+  // 浏览器根本不会随行。隔离性不靠 Path 靠 auth hook：cookie 仅在 /proxy 被承认，
+  // /api、/ws 维持 header/query-only（见 auth.ts extractToken 的 allowCookie）。
   // 每个候选基域各发一份 Domain cookie（浏览器拒收 domain-match 不成立的那份）：
-  // 本机走 mysandbox.local，远程设备经 tailscale 域名开控制台也能种上。
+  // 本机走 mysandbox.test，远程设备经 tailscale 域名开控制台也能种上。
   app.post('/api/auth/session', async (_req, reply) => {
-    const attrs = `Path=/proxy; HttpOnly; SameSite=Strict; Max-Age=${60 * 60 * 24 * 365}`;
+    const attrs = `Path=/; HttpOnly; SameSite=Strict; Max-Age=${60 * 60 * 24 * 365}`;
     const cookies = new Set<string>([`${COOKIE_NAME}=${cfg.token}; ${attrs}`]);
     for (const b of bases) cookies.add(`${COOKIE_NAME}=${cfg.token}; Domain=${b.base}; ${attrs}`);
     reply.header('set-cookie', [...cookies]);

@@ -111,7 +111,7 @@ export const listContainers = () => api('/api/containers') as Promise<{ items: C
 // vhost 门面基域名信息 + 会话 cookie 下发。URL 拼装在 lib/proxy.ts（单例）。
 export interface ProxyBaseInfo {
   base: string
-  // local = 固定本地域 mysandbox.local（需宿主侧 DNS 应答）；lan/tailscale = sslip 兜底
+  // local = 固定本地域 mysandbox.test（需宿主侧 DNS 应答）；lan/tailscale = sslip 兜底
   kind: 'custom' | 'local' | 'lan' | 'tailscale'
 }
 export interface ProxyConfigInfo {
@@ -120,8 +120,8 @@ export interface ProxyConfigInfo {
   primary: string | null
 }
 export const getProxyConfig = () => api('/api/proxy/config') as Promise<ProxyConfigInfo>
-// 登录后种会话 cookie（Path 限 /proxy）：浏览器直接导航到代理 URL 带不上
-// X-Sandbox-Token header，cookie 是 vhost/子路径两条门面的鉴权凭证。
+// 登录后种会话 cookie（vhost 门面的页面路径任意，Path=/；仅在 /proxy 被承认）：
+// 浏览器直接导航到代理 URL 带不上 X-Sandbox-Token header，cookie 是鉴权凭证。
 export const startAuthSession = () => postJson('/api/auth/session')
 
 // POST 空 body 时不能带 content-type: application/json——Fastify 对「声明 JSON 却无 body」

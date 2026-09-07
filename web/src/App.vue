@@ -68,7 +68,7 @@ function logout() {
 }
 
 // 登录完成后的一次性环境装载：代理会话 cookie（浏览器导航到代理 URL 的鉴权凭证，
-// Path 限 /proxy，见 server/proxy.ts）+ 代理基域名探测（端口点击的 URL 拼装）。
+// Path=/、仅 /proxy 承认，见 server/proxy.ts）+ 代理基域名探测（端口点击的 URL 拼装）。
 // 若带着 401 引导页的 proxyBack 回跳参数：种好 cookie 后直接送回目标页（host 校验
 // 限定基域名内，防开放重定向）。控制台没经基域名访问时提示一次：会话 cookie 是
 // Domain=<基域名> 的，IP 口径下端口点击会撞 401（上面那套回跳是自愈路径）。

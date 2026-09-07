@@ -39,20 +39,22 @@ export async function buildServer(cfg: Config) {
   await app.register(websocket);
 
   // 鉴权：health 公开；其余 /api、/ws 与 Web 代理 /proxy 需 token。
-  // /proxy 额外收 cookie（浏览器导航带不上 header，见 server/proxy.ts）；
-  // 未授权的浏览器导航回 HTML 引导页而不是一行 JSON。
+  // cookie 仅在 /proxy 门面被承认（vhost 页面路径任意，cookie 必须 Path=/ 才随行；
+  // /api、/ws 维持 header/query-only，被代理页面拿 cookie 打不进控制台 API）。
+  // /proxy 未授权的浏览器导航回 HTML 引导页而不是一行 JSON。
   app.addHook('onRequest', async (req, reply) => {
     const u = req.url;
     if (u.startsWith('/api/health')) return;
-    if (u.startsWith('/api/') || u.startsWith('/ws/') || u.startsWith('/proxy/')) {
-      if (u.startsWith('/proxy/') && req.method === 'GET' && !tokenOk(req, cfg)) {
+    const isProxy = u.startsWith('/proxy/');
+    if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
+      if (isProxy && req.method === 'GET' && !tokenOk(req, cfg, true)) {
         const bases = await proxyBases(cfg);
         return reply
           .code(401)
           .type('text/html; charset=utf-8')
           .send(proxyUnauthorizedHtml(bases[0]?.base ?? null, cfg.listen.port));
       }
-      await requireToken(req, reply, cfg);
+      await requireToken(req, reply, cfg, isProxy);
     }
   });
 

@@ -1,6 +1,7 @@
 // token 校验。REST 走 header X-Sandbox-Token 或 query ?token=（WS 复用）；
-// cookie 供 Web 代理门面用——浏览器直接导航到 /proxy/... 带不上 header，靠
-// POST /api/auth/session 种下的会话 cookie（Path 限 /proxy，见 server/proxy.ts）。
+// cookie 供 Web 代理门面用——浏览器导航到 vhost 代理页带不上 header，靠
+// POST /api/auth/session 种下的会话 cookie（Path=/，但仅在 /proxy 门面被承认，
+// 见 server/proxy.ts）。
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import type { Config } from './config.js';
@@ -17,12 +18,16 @@ export function tokenValid(provided: string | undefined, cfg: Config): boolean {
   return timingSafeEqual(a, b);
 }
 
-export function extractToken(req: FastifyRequest): string | undefined {
+export function extractToken(req: FastifyRequest, allowCookie = false): string | undefined {
   const h = req.headers['x-sandbox-token'];
   if (typeof h === 'string') return h;
   const q = req.query as Record<string, unknown> | undefined;
   if (q && typeof q.token === 'string') return q.token;
-  return cookieToken(req);
+  // cookie 只在 /proxy 门面被承认：vhost 门面的页面路径任意（cookie 必须 Path=/ 才
+  // 随行），若 /api 也认 cookie，被代理页面的 JS 就能拿它打控制台 API——header/query
+  // 管住 /api，隔离性不因 Path=/ 而丢。
+  if (allowCookie) return cookieToken(req);
+  return undefined;
 }
 
 // 手工解析（不引 @fastify/cookie）：同名多值时取第一条——按 RFC 6265 更长 Path/更具体
@@ -44,8 +49,9 @@ export async function requireToken(
   req: FastifyRequest,
   reply: FastifyReply,
   cfg: Config,
+  allowCookie = false,
 ): Promise<void> {
-  if (!tokenValid(extractToken(req), cfg)) {
+  if (!tokenValid(extractToken(req, allowCookie), cfg)) {
     await reply.code(401).send({
       error: { code: 'unauthorized', message: 'invalid or missing token' },
     });
@@ -53,6 +59,6 @@ export async function requireToken(
 }
 
 // 布尔版：index.ts 的 hook 对 /proxy 浏览器导航要先判再回 HTML 引导页（而非 JSON 401）。
-export function tokenOk(req: FastifyRequest, cfg: Config): boolean {
-  return tokenValid(extractToken(req), cfg);
+export function tokenOk(req: FastifyRequest, cfg: Config, allowCookie = false): boolean {
+  return tokenValid(extractToken(req, allowCookie), cfg);
 }

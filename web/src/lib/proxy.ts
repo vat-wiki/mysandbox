@@ -2,7 +2,7 @@
 // 拉一次 /api/proxy/config 并对候选基域名**逐个探测择优**，各处 serviceUrl() 只读。
 // 全部候选不可达时降级 subpath（同源 /proxy/... 永远可用）。
 //
-// 为什么要探测：auto 模式的首选 mysandbox.local 需要宿主侧 DNS 应答（mihomo hosts /
+// 为什么要探测：auto 模式的首选 mysandbox.test 需要宿主侧 DNS 应答（mihomo hosts /
 // dnsmasq），并非每台机器都配了——解析失败/端口不通的候选直接跳过，别让端口点击落到
 // 打不开的域名上。探测请求本身免鉴权（health），no-cors 下任何 HTTP 应答都算走通。
 import { ref } from 'vue'

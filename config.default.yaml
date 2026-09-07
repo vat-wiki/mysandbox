@@ -88,8 +88,8 @@ firewall:
 # 容器行/服务行的端口点击会开 <name>-<port>.<基域名>:<listen.port>，与控制台同端口同
 # token（cookie 会话，Path 限 /proxy）。远程访问的前提仍是宿主可达（LAN 或 tailscale）。
 proxy:
-  # vhost 基域名候选：auto = mysandbox.local（固定好记；⚠️ .local 无公共 DNS，需宿主侧
-  # 应答 *.mysandbox.local——mihomo hosts/dnsmasq/路由器均可，没配也不坏：前端逐个探测
+  # vhost 基域名候选：auto = mysandbox.test（固定好记；⚠️ .local 无公共 DNS，需宿主侧
+  # 应答 *.mysandbox.test——mihomo hosts/dnsmasq/路由器均可，没配也不坏：前端逐个探测
   # 候选，自动落到能解析的）→ LAN sslip（零配置兜底）→ tailscale sslip（远程设备）。
   # off = 关闭（退回同源子路径门面）。其他值 = 自有域名：泛解析 *.<域名> → 宿主 IP
   # 即可（最稳，无第三方 DNS 依赖）。
