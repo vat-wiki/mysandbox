@@ -1454,9 +1454,9 @@ const svcSummary = computed(() => {
 //   - 时刻：最后一次 prime 窗口后的输出发生在离开之后——prime 窗口（首帧后 3s，见
 //     lib/terminalActivity）内的帧是打开动作自带的画面（attach 整屏重绘/新会话 prompt/
 //     页面加载批量 attach），不算新内容；
-//   - 活动段：agent 干活的形态特征是「连续输出持续分钟级」——活动段跨度 ≥ SUSTAIN_MS
-//     （3min，帧间隙 <3min 链同段）才算干过活；敲个 ls、dev server 吐两行日志这类秒级
-//     输出不配打扰；
+//   - 活动段：agent 干活的形态特征是「连续输出持续一阵」——活动段跨度 ≥ SUSTAIN_MS
+//     （1min，帧间隙 <3min 链同段）才算干过活；敲个 ls、dev server 吐两行日志这类
+//     秒级输出不配打扰；
 //   - 内容：当前视口画面 ≠ 离开时快照（markLeft 时 screenHash()）——重连还原、resize
 //     重排这类「有帧但内容没变」的输出不配标。
 // 「停了」要静默确认满 max(服务端阈值, QUIET_CONFIRM_MS=1min)——思考停顿 30s 不闪标。

@@ -8,8 +8,8 @@
 //      prime 窗口（首帧后 PRIME_MS）内的帧不登记：attach 整屏重绘/新会话 prompt/
 //      页面加载批量 attach 都落在窗口内，属于「打开动作自带的画面」而非新内容，
 //      既不进提醒资格也不点亮光晕；
-//   2) termRunSpanMs：活动段跨度（帧间隙 < RUN_GAP_MS 链同段）——agent 干活是分钟级
-//      连续输出，秒级输出（敲命令/日志两行）不配打扰，跨度 ≥ SUSTAIN_MS 才有资格；
+//   2) termRunSpanMs：活动段跨度（帧间隙 < RUN_GAP_MS 链同段）——agent 干活是连续
+//      输出，秒级输出（敲命令/日志两行）不配打扰，跨度 ≥ SUSTAIN_MS 才有资格；
 //   3) snapTermBaseline / termContentChanged：离开时刻的画面快照 vs 当前画面，纯重绘
 //      （重连还原、resize 重排）内容不变就不提醒——「内容有过变化」才配标；
 //   4) termActiveIds：把有效输出低频投影成响应式的「正在输出」集合，供 tab 身份点
@@ -63,13 +63,15 @@ export function termContentChanged(termId: string, currentHash: string | undefin
   return base !== currentHash
 }
 
-// —— 提醒资格的「活动段」门槛：agent 干活是分钟级的连续输出 ——
-// 敲个 ls、dev server 吐两行日志都是秒级输出，不配打扰；「连续输出持续了分钟级然后
+// —— 提醒资格的「活动段」门槛：agent 干活是连续输出 ——
+// 敲个 ls、dev server 吐两行日志都是秒级输出，不配打扰；「连续输出持续了一段然后
 // 停下」才是 agent 干完活/等你输入的形态特征。帧间隙 < RUN_GAP_MS 的有效输出链成同
 // 一活动段（间隙阈值取 3min：agent 思考停顿一两分钟不断段，否则收尾前短段会漏报），
 // 段跨度 = 末帧 - 首帧；跨度 ≥ SUSTAIN_MS 的段收尾才算数。静默确认见 QUIET_CONFIRM_MS。
+// SUSTAIN 取 1min：agent 真实干活多数在 1-3 分钟量级，3min 实测偏保守漏报；30s 太近
+// 「几条快速命令链着跑」的下限。出点的总延迟由 QUIET_CONFIRM_MS 决定，降它不更快。
 export const RUN_GAP_MS = 180_000
-export const SUSTAIN_MS = 180_000
+export const SUSTAIN_MS = 60_000
 // 「停了」的确认窗：静默满 1 分钟才认定活动段收尾（<1min 内恢复无感）——agent 思考
 // 停顿 30s 不至于闪标。调用方取 max(服务端阈值, 此值) 作安静门槛。
 export const QUIET_CONFIRM_MS = 60_000
