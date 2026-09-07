@@ -13,12 +13,16 @@ import {
   getGitStatus,
   getGitBranches,
   gitCheckout,
+  gitFetch,
+  gitPull,
+  gitPush,
+  gitBranchDelete,
   Unauthorized,
   type GitStatusView,
   type GitChange,
   type GitBranchesView,
 } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check } from 'lucide-vue-next'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2 } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -159,15 +163,18 @@ function openChange(c: GitChange) {
 }
 
 // —— 分支菜单（低频操作刻意收进 popover，平时不占面板注意力）——
-// 点头部分支名弹出（同 VSCode 状态栏分支入口的心智模型）：本地分支切换 + 新建。
-// 打开才拉分支列表（不随 8s 轮询预取）；成功即关窗并 refresh() 立即刷新头部与变更列表
-//（不等轮询）；失败（如切换冲突）把 git stderr 原话留在窗内提示，窗不关。
+// 点头部分支名弹出（同 VSCode 状态栏分支入口的心智模型）：本地分支切换/新建/删除
+//（-d 安全删，未合并的 git 拒绝）、远端分支检出（switch -c --track 检出为本地跟踪
+// 分支）、底部获取/拉取/推送三件套（作用于当前分支；fetch --all --prune 顺带清掉
+// 已删的远端条目）。打开才拉分支列表（不随 8s 轮询预取）；切换/检出成功即关窗并
+// refresh() 立即刷新头部与变更列表，fetch 原地刷列表，pull/push 刷状态（ahead/behind）；
+// 失败把 git stderr 原话留在窗内提示，窗不关。
 const branchOpen = ref(false)
 const branches = ref<GitBranchesView | null>(null)
 const branchLoading = ref(false)
 const branchErr = ref('')
 const newBranch = ref('')
-const creating = ref(false)
+const busy = ref(false) // 全部分支动作共用一个忙碌位（同一菜单互斥足够）
 
 watch(branchOpen, (open) => {
   if (open) {
@@ -189,27 +196,43 @@ async function fetchBranches() {
   }
 }
 
-async function doCheckout(name: string, create: boolean) {
-  if (creating.value) return
+// 通用动作包装：busy 互斥 + git 错误原话留窗。after 决定成功后的联动：
+// close = 关窗并刷面板状态（切换/新建/检出）；list = 原地刷分支列表（fetch/删分支）；
+// status = 刷面板状态（pull/push 影响 ahead/behind）
+async function runBranchAction(act: () => Promise<unknown>, after: 'close' | 'list' | 'status') {
+  if (busy.value) return
   branchErr.value = ''
-  creating.value = true
+  busy.value = true
   try {
-    await gitCheckout(props.containerId, props.path, name, create)
-    branchOpen.value = false
-    newBranch.value = ''
-    refresh()
+    await act()
+    if (after === 'close') {
+      branchOpen.value = false
+      newBranch.value = ''
+      refresh()
+    } else if (after === 'list') {
+      void fetchBranches()
+    } else {
+      refresh()
+    }
   } catch (e) {
     if (e instanceof Unauthorized) return
     branchErr.value = e instanceof Error ? e.message : String(e)
   } finally {
-    creating.value = false
+    busy.value = false
   }
 }
 
 function createBranch() {
   const name = newBranch.value.trim()
-  if (name) void doCheckout(name, true)
+  if (name) void runBranchAction(() => gitCheckout(props.containerId, props.path, name, { create: true }), 'close')
 }
+const switchTo = (b: string) => runBranchAction(() => gitCheckout(props.containerId, props.path, b), 'close')
+const checkoutRemote = (r: string) =>
+  runBranchAction(() => gitCheckout(props.containerId, props.path, r, { remote: true }), 'close')
+const deleteBranch = (b: string) => runBranchAction(() => gitBranchDelete(props.containerId, props.path, b), 'list')
+const fetchRemotes = () => runBranchAction(() => gitFetch(props.containerId, props.path), 'list')
+const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, props.path), 'status')
+const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, props.path), 'status')
 
 // —— dock 高度拖拽（PaneDivider 夹在折叠头与列表之间）：dock 在底部，向上拖（delta<0）
 // 变高；像素值持久化 localStorage，跨容器/跨窗口一致（:key 重建也读同一份）。 ——
@@ -381,17 +404,20 @@ watch(view, (v) => {
             <button
               type="submit"
               class="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted/50 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-              :disabled="creating || !newBranch.trim()"
+              :disabled="busy || !newBranch.trim()"
               title="创建并切换"
             >
               <Plus class="size-3.5" />
             </button>
           </form>
           <p v-if="branchLoading && !branches" class="px-1 py-1 text-[11px] text-muted-foreground">加载中…</p>
-          <p v-else-if="branches && !branches.branches?.length" class="px-1 py-1 text-[11px] text-muted-foreground">
-            还没有本地分支（空仓库），上面输入名字创建第一个
+          <p
+            v-else-if="branches && !branches.branches?.length && !branches.remotes?.length"
+            class="px-1 py-1 text-[11px] text-muted-foreground"
+          >
+            没有分支（空仓库），上面输入名字创建第一个
           </p>
-          <div v-else class="scroll-thin max-h-48 overflow-y-auto">
+          <div v-else class="scroll-thin max-h-56 overflow-y-auto">
             <template v-for="b in branches?.branches ?? []" :key="b">
               <!-- 当前分支：纯展示（不可切到自己），Check 占位对齐其余行名字 -->
               <div
@@ -401,18 +427,71 @@ watch(view, (v) => {
                 <Check class="size-3 shrink-0" />
                 <span class="min-w-0 flex-1 truncate" :title="b">{{ b }}</span>
               </div>
+              <!-- 其余本地分支：点击切换，hover 出删除（-d 安全删，未合并的 git 拒绝） -->
+              <div v-else class="group flex items-center rounded hover:bg-accent/50">
+                <button
+                  class="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1 text-left font-mono text-xs text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                  :disabled="busy"
+                  @click="switchTo(b)"
+                >
+                  <Check class="size-3 shrink-0 opacity-0" />
+                  <span class="min-w-0 flex-1 truncate" :title="b">{{ b }}</span>
+                </button>
+                <button
+                  class="mr-1 shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:text-destructive group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-50"
+                  :title="`删除分支 ${b}`"
+                  :disabled="busy"
+                  @click="deleteBranch(b)"
+                >
+                  <Trash2 class="size-3" />
+                </button>
+              </div>
+            </template>
+            <!-- 远端：点击检出为本地跟踪分支（switch -c --track） -->
+            <template v-if="branches?.remotes?.length">
+              <p class="mt-1 mb-0.5 px-1.5 text-[10px] text-muted-foreground/70">远端（点击检出为本地）</p>
               <button
-                v-else
-                class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-                :disabled="creating"
-                @click="doCheckout(b, false)"
+                v-for="r in branches.remotes"
+                :key="r"
+                class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-xs text-muted-foreground/80 hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                :disabled="busy"
+                :title="`检出 ${r} 为本地分支`"
+                @click="checkoutRemote(r)"
               >
                 <Check class="size-3 shrink-0 opacity-0" />
-                <span class="min-w-0 flex-1 truncate" :title="b">{{ b }}</span>
+                <span class="min-w-0 flex-1 truncate">{{ r }}</span>
               </button>
             </template>
           </div>
-          <!-- 失败（切换冲突等）把 git stderr 原话留在窗内，窗不关 -->
+          <!-- 底部三件套：获取（fetch --all --prune）/ 拉取（pull --ff-only）/ 推送，
+               都作用于当前分支；推送无上游且恰一个远端时自动建立跟踪 -->
+          <div class="mt-1.5 flex items-center gap-1 border-t border-border pt-1.5">
+            <button
+              class="flex-1 rounded bg-muted/50 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              :disabled="busy"
+              title="获取远端更新（fetch --all --prune）"
+              @click="fetchRemotes()"
+            >
+              获取
+            </button>
+            <button
+              class="flex-1 rounded bg-muted/50 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              :disabled="busy"
+              title="拉取当前分支（pull --ff-only，分叉会拒绝）"
+              @click="pullCurrent()"
+            >
+              拉取
+            </button>
+            <button
+              class="flex-1 rounded bg-muted/50 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              :disabled="busy"
+              title="推送当前分支（无上游时自动建立跟踪）"
+              @click="pushCurrent()"
+            >
+              推送
+            </button>
+          </div>
+          <!-- 失败（切换冲突/push 被拒等）把 git stderr 原话留在窗内，窗不关 -->
           <p v-if="branchErr" class="mt-1 whitespace-pre-line px-1 text-[11px] text-destructive">{{ branchErr }}</p>
         </PopoverContent>
       </Popover>

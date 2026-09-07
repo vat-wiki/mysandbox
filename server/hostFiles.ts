@@ -27,6 +27,7 @@ import {
 import {
   parsePorcelainZ,
   parseBranchList,
+  parseRemoteBranches,
   assertBranchName,
   type GitStatusView,
   type GitDiffView,
@@ -398,9 +399,10 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     return { ...view, toplevel: top };
   });
 
-  // —— git 分支列表 / 切换（与容器侧 files.ts 两端点一比一对齐，解析单源 gitpanel.ts）——
-  // 切换用 git switch（只做分支操作不碰工作区路径；-c 创建时不带 --，实测 git 2.43 把
-  // -- 当 start-point）。有未提交变更时由 git 自行裁决，冲突把 stderr 原话回给前端。
+  // —— git 分支列表 / 切换 / 远端三件套 / 删分支（与容器侧 files.ts 一比一对齐，
+  // 解析单源 gitpanel.ts）——切换用 git switch（只做分支操作不碰工作区路径；-c 创建时
+  // 不带 --，实测 git 2.43 把 -- 当 start-point）。远端模式传全短名，节点侧剥本地名。
+  // 有未提交变更时由 git 自行裁决，冲突把 stderr 原话回给前端。
   app.get('/api/host-terminal/git/branches', async (req): Promise<GitBranchesView> => {
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
@@ -411,14 +413,115 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
       return { repo: false }; // rev-parse 失败 = 非仓库（正常态）
     }
-    const out = await gitExec([
-      '--no-optional-locks', '-C', top, 'branch', '--list', '--format=%(HEAD)%(refname:short)',
-    ]);
-    return { repo: true, toplevel: top, ...parseBranchList(out) };
+    const localOut = await gitExec(['--no-optional-locks', '-C', top, 'branch', '--list', '--format=%(HEAD)%(refname:short)']);
+    const local = parseBranchList(localOut);
+    const remoteOut = await gitExec(['--no-optional-locks', '-C', top, 'branch', '-r', '--list', '--format=%(refname:short)']);
+    return { repo: true, toplevel: top, ...local, remotes: parseRemoteBranches(remoteOut, local.branches) };
   });
 
   app.post('/api/host-terminal/git/checkout', async (req): Promise<{ ok: true }> => {
-    const body = (req.body as { path?: unknown; name?: unknown; create?: unknown }) || {};
+    const body = (req.body as { path?: unknown; name?: unknown; create?: unknown; remote?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const name = assertBranchName(body.name);
+    // remote 模式：name 是远端短名（origin/feat-x），本地名取第一段 '/' 之后
+    const local = body.remote ? assertBranchName(name.slice(name.indexOf('/') + 1)) : '';
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    const args = body.remote
+      ? ['switch', '-c', local, '--track', name]
+      : body.create
+        ? ['switch', '-c', name]
+        : ['switch', '--', name];
+    try {
+      await gitExec(['-C', top, ...args]);
+    } catch (e) {
+      if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
+      throw badRequest(stderrOf(e) || '分支切换失败');
+    }
+    return { ok: true };
+  });
+
+  // fetch/pull/push/删分支：网络类操作超时放宽到 120s（与容器侧一致）
+  const GIT_NET_TIMEOUT = 120_000;
+  const gitNet = (top: string, args: string[]) => gitExec(['-C', top, ...args], GIT_NET_TIMEOUT);
+
+  app.post('/api/host-terminal/git/fetch', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    try {
+      await gitNet(top, ['fetch', '--all', '--prune']);
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || 'fetch 失败');
+    }
+    return { ok: true };
+  });
+
+  app.post('/api/host-terminal/git/pull', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    try {
+      await gitNet(top, ['pull', '--ff-only']); // 分叉交 git 报错，一键不干有损合并
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || 'pull 失败');
+    }
+    return { ok: true };
+  });
+
+  app.post('/api/host-terminal/git/push', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    try {
+      let hasUpstream = true;
+      try {
+        await gitExec(['-C', top, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+      } catch {
+        hasUpstream = false;
+      }
+      if (hasUpstream) {
+        await gitNet(top, ['push']);
+      } else {
+        // 无上游且恰好一个远端时 -u 建跟踪推，多远端不猜
+        const remotes = (await gitExec(['-C', top, 'remote'])).split('\n').map((s) => s.trim()).filter(Boolean);
+        if (remotes.length !== 1) throw badRequest('当前分支没有上游且远端不止一个，请在终端手动推送');
+        await gitNet(top, ['push', '-u', remotes[0], 'HEAD']);
+      }
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || 'push 失败');
+    }
+    return { ok: true };
+  });
+
+  app.post('/api/host-terminal/git/branch-delete', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown; name?: unknown }) || {};
     const path = cleanPath(body.path);
     const name = assertBranchName(body.name);
     let top: string;
@@ -429,24 +532,27 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       throw badRequest('目标目录不在 git 仓库内');
     }
     try {
-      await gitExec(['-C', top, ...(body.create ? ['switch', '-c', name] : ['switch', '--', name])]);
+      await gitExec(['-C', top, 'branch', '-d', name]); // -d 安全删：未合并的 git 自行拒绝
     } catch (e) {
-      if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
-      // execFile 非 0 退出：stderr 在 error.stderr（git 冲突/校验错误是用户可读的原话，
-      // 400 直传；空 stderr 才落 message 兜底）
-      const err = e as NodeJS.ErrnoException & { stderr?: string | Buffer };
-      const msg = (err.stderr ? String(err.stderr) : err.message || '').trim();
-      throw badRequest(msg || '分支切换失败');
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || '删除分支失败');
     }
     return { ok: true };
   });
 }
 
-// git 子进程封装：数组参数、10s 超时、ENOENT（git 未装）映射 400 git_missing。
-async function gitExec(args: string[]): Promise<string> {
+// execFile 非 0 退出的 stderr 提取（git 校验/冲突/网络错误是用户可读的原话，直传前端）
+function stderrOf(e: unknown): string {
+  const err = e as NodeJS.ErrnoException & { stderr?: string | Buffer };
+  return (err.stderr ? String(err.stderr) : err.message || '').trim();
+}
+
+// git 子进程封装：数组参数、默认 10s 超时（fetch/pull/push 网络操作传更宽）、
+// ENOENT（git 未装）映射 400 git_missing。
+async function gitExec(args: string[], timeoutMs = 10_000): Promise<string> {
   try {
     const { stdout } = await execFileAsync('git', args, {
-      timeout: 10_000,
+      timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
     });
     return stdout;

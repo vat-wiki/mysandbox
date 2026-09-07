@@ -126,8 +126,11 @@ export const startAuthSession = () => postJson('/api/auth/session')
 
 // POST 空 body 时不能带 content-type: application/json——Fastify 对「声明 JSON 却无 body」
 // 的请求直接 400（FST_ERR_CTP_EMPTY_JSON_BODY），无参的 start/stop 会被挡掉。
-async function postJson(path: string, body?: unknown): Promise<any> {
-  return api(path, body ? { method: 'POST', body: JSON.stringify(body) } : { method: 'POST' })
+async function postJson(path: string, body?: unknown, timeoutMs?: number): Promise<any> {
+  return api(path, {
+    ...(body ? { method: 'POST', body: JSON.stringify(body) } : { method: 'POST' }),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+  })
 }
 async function patchJson(path: string, body: unknown): Promise<any> {
   return api(path, { method: 'PATCH', body: JSON.stringify(body) })
@@ -645,6 +648,7 @@ export interface GitBranchesView {
   toplevel?: string
   current?: string | null // detached HEAD / 空仓库为 null
   branches?: string[] // 本地分支（当前分支排最前）
+  remotes?: string[] // 远端分支短名（origin/<name>，剔除 origin/HEAD 与已有本地对应者）
 }
 export const getGitStatus = (id: string, path: string) =>
   api(`${filesBase(id)}/git/status?path=${encodeURIComponent(path)}`) as Promise<GitStatusView>
@@ -655,6 +659,21 @@ export const getGitDiff = (id: string, path: string, headPath?: string) =>
   ) as Promise<GitDiffView>
 export const getGitBranches = (id: string, path: string) =>
   api(`${filesBase(id)}/git/branches?path=${encodeURIComponent(path)}`) as Promise<GitBranchesView>
-// 切换 / 新建（create=true 时创建并切换）本地分支；冲突等 git 校验错误以 stderr 原话抛 ApiError
-export const gitCheckout = (id: string, path: string, name: string, create = false) =>
-  postJson(`${filesBase(id)}/git/checkout`, { path, name, create }) as Promise<{ ok: true }>
+// 切换 / 新建（create）本地分支 / 检出远端分支（remote + name=origin/xxx 短名）；
+// 冲突等 git 校验错误以 stderr 原话抛 ApiError
+export const gitCheckout = (
+  id: string,
+  path: string,
+  name: string,
+  opts: { create?: boolean; remote?: boolean } = {},
+) => postJson(`${filesBase(id)}/git/checkout`, { path, name, ...opts }) as Promise<{ ok: true }>
+// 远端三件套 + 删本地分支（-d 安全删）。fetch/pull/push 涉及网络，超时放宽到 120s
+const GIT_NET_TIMEOUT = 120_000
+export const gitFetch = (id: string, path: string) =>
+  postJson(`${filesBase(id)}/git/fetch`, { path }, GIT_NET_TIMEOUT) as Promise<{ ok: true }>
+export const gitPull = (id: string, path: string) =>
+  postJson(`${filesBase(id)}/git/pull`, { path }, GIT_NET_TIMEOUT) as Promise<{ ok: true }>
+export const gitPush = (id: string, path: string) =>
+  postJson(`${filesBase(id)}/git/push`, { path }, GIT_NET_TIMEOUT) as Promise<{ ok: true }>
+export const gitBranchDelete = (id: string, path: string, name: string) =>
+  postJson(`${filesBase(id)}/git/branch-delete`, { path, name }) as Promise<{ ok: true }>

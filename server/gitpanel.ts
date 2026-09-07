@@ -43,13 +43,15 @@ export interface GitDiffView {
   work: GitDiffSide; // 右 = 工作区
 }
 
-// 分支列表视图（GET git/branches）。只列本地分支——远程跟踪/拣选 start point 属于
-// 复杂操作，面板分支菜单刻意只做「切换 / 新建」两个高频动作。
+// 分支列表视图（GET git/branches）。只列本地 + 远端分支——远程跟踪分支点击即检出为
+// 本地跟踪分支（switch -c --track），除此之外的远程管理（fetch/prune/push）属复杂操作，
+// 面板分支菜单刻意只做「切换 / 新建 / 检出远端」。
 export interface GitBranchesView {
   repo: boolean;
   toplevel?: string;
   current?: string | null; // 当前分支；detached HEAD 或空仓库（无提交）为 null
   branches?: string[]; // 本地分支名（当前分支排最前，其余按 git 自身的字母序）
+  remotes?: string[]; // 远端分支短名（origin/<name>）：剔除 origin/HEAD 与已有本地对应者的
 }
 export const MAX_CHANGES = 1000;
 
@@ -155,6 +157,18 @@ export function parseBranchList(out: string): { current: string | null; branches
   }
   if (current) branches.unshift(current); // 当前分支也进列表（排最前，可点回来）
   return { current, branches };
+}
+
+// 解析 `git branch -r --list --format='%(refname:short)'` 输出为远端分支列表：
+// 剔除 origin/HEAD（git 维护的符号引用不是真分支）、不含 '/' 的残段（远程的 detached
+// 态行），以及已有本地对应者的（本地列表已可直达，remote 段只留「待检出」的）。
+// 其余空行跳过。短名形如 origin/feat-x（分支名可含 '/'，取第一段之后的整体为本地名）。
+export function parseRemoteBranches(out: string, local: string[]): string[] {
+  const have = new Set(local);
+  return out
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.includes('/') && !l.endsWith('/HEAD') && !have.has(l.slice(l.indexOf('/') + 1)));
 }
 
 // 分支名入库前校验（容器侧脚本与宿主侧 execFile 共用的第一道防线；git 自身还会做

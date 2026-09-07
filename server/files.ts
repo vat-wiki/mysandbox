@@ -19,6 +19,7 @@ import { TERMID_RE, sessionName } from './terminal.js';
 import {
   parsePorcelainZ,
   parseBranchList,
+  parseRemoteBranches,
   mapGitExit,
   assertBranchName,
   type GitStatusView,
@@ -686,10 +687,13 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
 
   // —— git 分支列表 / 切换（面板「Git 变更」dock 的分支菜单数据源与动作）——
   // branches 协议：首行 toplevel，其后是 branch --list --format='%(HEAD)…' 的逐行输出
-  //（当前分支带 * 前缀）。分支名不含换行，按行切分安全。切换用 git switch——它只做
-  // 分支操作、不碰工作区路径（checkout 会把同名文件误当还原目标）；-c 创建时不能带
-  // --（实测 git 2.43 会把 -- 当 start-point 报「无效引用」），名字已过 assertBranchName
-  // 的 - 开头防线。有未提交变更时由 git 自行裁决（不冲突就携带过去，冲突报 stderr 原话）。
+  //（当前分支带 * 前缀），再一个 '@' 分隔行 + branch -r 的远端短名逐行输出。本地段各行
+  // 恒以 * / 空格开头（%(HEAD) 固定输出），首个不匹配的行即 '@' 分隔，切分无歧义。
+  // 分支名不含换行，按行切分安全。切换用 git switch——它只做分支操作、不碰工作区路径
+  //（checkout 会把同名文件误当还原目标）；-c 创建时不能带 --（实测 git 2.43 会把 --
+  // 当 start-point 报「无效引用」），名字已过 assertBranchName 的 - 开头防线。远端模式
+  // 传全短名（origin/feat-x），节点侧剥出本地名后 -c --track 检出。有未提交变更时由
+  // git 自行裁决（不冲突就携带过去，冲突报 stderr 原话）。
   // exit 7 = 非仓库 / exit 9 = 分支名不合法（脚本侧防线，与 assertBranchName 双保险）。
   app.get('/api/containers/:id/git/branches', async (req): Promise<GitBranchesView> => {
     const r = await resolveRunning(cfg, (req.params as { id: string }).id);
@@ -699,7 +703,14 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
       Cmd: [
         'sh', '-c',
         // --no-optional-locks：只读操作不写 index 锁（与 status 端点同理由）
-        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" branch --list --format="%(HEAD)%(refname:short)"',
+        [
+          'p="$1"',
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          'printf "%s\\n" "$t"',
+          'git --no-optional-locks -C "$t" branch --list --format="%(HEAD)%(refname:short)"',
+          'printf "@\\n"',
+          'git --no-optional-locks -C "$t" branch -r --list --format="%(refname:short)"',
+        ].join('\n'),
         'sh', path,
       ],
       User: '1000:1000',
@@ -713,25 +724,41 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const nl = res.stdout.indexOf('\n');
     const toplevel = res.stdout.slice(0, nl); // 空串/异常形状按非仓库兜底
     if (nl < 0 || !toplevel.startsWith('/')) return { repo: false };
-    return { repo: true, toplevel, ...parseBranchList(res.stdout.slice(nl + 1)) };
+    const lines = res.stdout.slice(nl + 1).split('\n');
+    const sep = lines.findIndex((l) => l !== '' && l[0] !== '*' && l[0] !== ' ');
+    const local = parseBranchList((sep < 0 ? lines : lines.slice(0, sep)).join('\n'));
+    const remotes = sep < 0 ? [] : parseRemoteBranches(lines.slice(sep + 1).join('\n'), local.branches);
+    return { repo: true, toplevel, ...local, remotes };
   });
 
   app.post('/api/containers/:id/git/checkout', async (req): Promise<{ ok: true }> => {
     const r = await resolveRunning(cfg, (req.params as { id: string }).id);
-    const body = (req.body as { path?: unknown; name?: unknown; create?: unknown }) || {};
+    const body = (req.body as { path?: unknown; name?: unknown; create?: unknown; remote?: unknown }) || {};
     const path = cleanPath(body.path);
     const name = assertBranchName(body.name);
+    // remote 模式：name 是远端短名（origin/feat-x），本地名取第一段 '/' 之后（分支名可含
+    // '/'，只剥远端段）；本地名同样过 - 开头防线
+    const local = body.remote ? assertBranchName(name.slice(name.indexOf('/') + 1)) : '';
+    const guard = "case \"$n\" in ''|-*) exit 9 ;; esac";
     const res = await execRun(cfg, r.id, {
       Cmd: [
         'sh', '-c',
-        [
-          'p="$1"; n="$2"; c="$3"',
-          "case \"$n\" in ''|-*) exit 9 ;; esac",
-          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
-          'if [ "$c" = 1 ]; then exec git -C "$t" switch -c "$n"; fi',
-          'exec git -C "$t" switch -- "$n"',
-        ].join('\n'),
-        'sh', path, name, body.create ? '1' : '0',
+        body.remote
+          ? [
+              'p="$1"; n="$2"; l="$3"',
+              guard,
+              "case \"$l\" in ''|-*) exit 9 ;; esac",
+              't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+              'exec git -C "$t" switch -c "$l" --track "$n"',
+            ].join('\n')
+          : [
+              'p="$1"; n="$2"; c="$3"',
+              guard,
+              't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+              'if [ "$c" = 1 ]; then exec git -C "$t" switch -c "$n"; fi',
+              'exec git -C "$t" switch -- "$n"',
+            ].join('\n'),
+        'sh', path, name, ...(body.remote ? [local] : [body.create ? '1' : '0']),
       ],
       User: '1000:1000',
       Tty: false,
@@ -740,6 +767,100 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
     if (res.exitCode === 9) throw badRequest('分支名不合法');
     const err = mapGitExit(res, '分支切换');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  // —— fetch / pull / push（远端三件套，作用于 path 所在仓库；pull 恒 --ff-only，分叉
+  // 交给 git 报错由用户去终端处理，一键不干有损的合并；push 无上游且恰好一个远端时
+  // 自动 -u 建跟踪，多远端不猜）。fetch 涉及网络，两侧超时都放宽到 120s。——
+  const GIT_NET_TIMEOUT = 120_000;
+
+  app.post('/api/containers/:id/git/fetch', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; exec git -C "$t" fetch --all --prune',
+        'sh', path,
+      ],
+      User: '1000:1000', Tty: false, timeoutMs: GIT_NET_TIMEOUT,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    const err = mapGitExit(res, 'fetch');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  app.post('/api/containers/:id/git/pull', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; exec git -C "$t" pull --ff-only',
+        'sh', path,
+      ],
+      User: '1000:1000', Tty: false, timeoutMs: GIT_NET_TIMEOUT,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    const err = mapGitExit(res, 'pull');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  app.post('/api/containers/:id/git/push', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'p="$1"',
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          // 有上游直推；无上游且恰好一个远端时 -u 建跟踪推（HEAD 携带当前分支名），
+          // 多远端/裸仓库不猜，exit 10 由路由层转成人话
+          'if git -C "$t" rev-parse --abbrev-ref --symbolic-full-name \'@{u}\' >/dev/null 2>&1; then exec git -C "$t" push; fi',
+          'n=$(git -C "$t" remote | wc -l); [ "$n" = 1 ] || exit 10',
+          'r=$(git -C "$t" remote); exec git -C "$t" push -u "$r" HEAD',
+        ].join('\n'),
+        'sh', path,
+      ],
+      User: '1000:1000', Tty: false, timeoutMs: GIT_NET_TIMEOUT,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    if (res.exitCode === 10) throw badRequest('当前分支没有上游且远端不止一个，请在终端手动推送');
+    const err = mapGitExit(res, 'push');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  app.post('/api/containers/:id/git/branch-delete', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown; name?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const name = assertBranchName(body.name);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'p="$1"; n="$2"',
+          "case \"$n\" in ''|-*) exit 9 ;; esac",
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          // -d 安全删：未合并的分支 git 自行拒绝，报 stderr 原话
+          'exec git -C "$t" branch -d "$n"',
+        ].join('\n'),
+        'sh', path, name,
+      ],
+      User: '1000:1000', Tty: false, timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    if (res.exitCode === 9) throw badRequest('分支名不合法');
+    const err = mapGitExit(res, '删除分支');
     if (err) throw err;
     return { ok: true };
   });
