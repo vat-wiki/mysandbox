@@ -80,7 +80,9 @@ async function afterAuth() {
   if (back && primary) {
     try {
       const u = new URL(back)
-      if (u.protocol === 'http:' && (u.hostname === primary || u.hostname.endsWith(`.${primary}`))) {
+      // scheme 跟当前页面走（listen.tls 开着时控制台只会是 https，http:// 打不开——
+      // TLS-only 端口对明文 HTTP 直接断连，照写死的 http:// 走只会撞 ERR_EMPTY_RESPONSE）。
+      if (u.protocol === location.protocol && (u.hostname === primary || u.hostname.endsWith(`.${primary}`))) {
         location.replace(back)
         return
       }
@@ -91,7 +93,7 @@ async function afterAuth() {
   if (mode === 'vhost' && primary && location.hostname !== primary && !location.hostname.endsWith(`.${primary}`)) {
     const portPart = location.port ? `:${location.port}` : ''
     toast.info(`端口代理经 ${primary} 域名访问`, {
-      description: `用 http://${primary}${portPart} 打开控制台，端口免登录直达。`,
+      description: `用 ${location.protocol}//${primary}${portPart} 打开控制台，端口免登录直达。`,
     })
   }
 }
