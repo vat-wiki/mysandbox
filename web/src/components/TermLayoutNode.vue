@@ -83,6 +83,10 @@ function onDividerStart(idx: number, parentSize: number) {
 // 5s 节奏与旧整行信息条一致；会话未建/已收（404）显示占位而非报错。组切走
 // （active=false）继续轮——切回来立即是新鲜值，代价是后台组也每 5s 一个轻请求。
 const cwd = ref('')
+// pane 动态标题（OSC 链路，ContainerList 内存态）：跑命令/CC·opencode 任务时替代
+// cwd 显示位（每 pane 各自可见，分屏时逐 pane 有标题；tab 标签恒为容器名做身份定位）。
+// 空闲标题（用户@主机:路径）与 cwd 语义重合但更紧凑（~ 缩写），同样适用。
+const paneTitle = computed(() => (leaf.value ? ops.titleOf(leaf.value.termId) : ''))
 let cwdSeq = 0
 let cwdTimer: ReturnType<typeof setInterval> | null = null
 async function pollCwd() {
@@ -115,7 +119,8 @@ if (leaf.value) {
 <template>
   <!-- 叶子：一个终端 pane -->
   <div v-if="leaf" class="flex min-h-[80px] min-w-[120px] flex-col">
-    <!-- pane 头部：标题「容器名 #序号」+ 会话 cwd（tmux 活跃 pane 当前目录，5s 轮询）。
+    <!-- pane 头部：标题「容器名 #序号」+ 动态标题（跑命令/CC 任务/空闲路径，OSC 链路）
+         或会话 cwd（tmux 活跃 pane 当前目录，5s 轮询）。
          termId 是内部标识对人无意义，hover 才可见。 -->
     <div class="flex items-center gap-2 border-b border-border bg-muted/20 px-2 py-1 text-[10px]">
       <span
@@ -125,8 +130,12 @@ if (leaf.value) {
       <span class="shrink-0 text-muted-foreground" :title="leaf.termId">
         {{ ops.groupLabel(group) }}<span v-if="total > 1"> #{{ ordinal + 1 }}</span>
       </span>
-      <span class="min-w-0 flex-1 truncate font-mono text-muted-foreground/80" :title="cwd">
-        {{ cwd ? '· ' + cwd : '· …' }}
+      <span
+        class="min-w-0 flex-1 truncate font-mono"
+        :class="paneTitle ? 'text-foreground/75' : 'text-muted-foreground/80'"
+        :title="paneTitle || cwd"
+      >
+        {{ paneTitle || (cwd ? '· ' + cwd : '· …') }}
       </span>
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
         <!-- 左右分屏在手机隐藏（max-md:）：竖屏宽度放不下并排 pane；上下分屏保留。

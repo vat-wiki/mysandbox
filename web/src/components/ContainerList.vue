@@ -28,10 +28,13 @@ import { trackServiceJobs } from '@/lib/serviceJobs'
 import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
   lastTermNotableOutput,
+  termRunSpanMs,
   snapTermBaseline,
   termContentChanged,
   forgetTerm,
   termActiveIds,
+  QUIET_CONFIRM_MS,
+  SUSTAIN_MS,
 } from '@/lib/terminalActivity'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
@@ -343,6 +346,9 @@ provide(TERM_OPS, {
     const t = title.trim()
     if (!t) return
     termTitles.value[termId] = { text: t, at: Date.now() }
+  },
+  titleOf(termId) {
+    return termTitles.value[termId]?.text ?? ''
   },
   onOscOpen,
   onLinkOpen,
@@ -957,6 +963,9 @@ function groupLabel(g: TermGroup): string {
 }
 // 组动态标题：组内 pane 最近更新的非空标题（无 → ''）。多 pane 时「谁在动显示谁」
 // （跑 CC 的 pane 会把标题推给整个 tab），静默组不覆盖。
+// 注意主区 tab 标签**不用**它：tab 的职责是身份定位，容器名·序号恒定才认得出哪个 tab
+// 是哪个容器（动态标题全是「claude "…"」「dev@dev:~」，多容器多 tab 时无归属可言）。
+// 动态标题的正确展示位是 pane 头部（TermLayoutNode，逐 pane 可见）+ popout 窗口标题。
 function groupDynamicLabel(g: TermGroup): string {
   let best = ''
   let at = 0
@@ -968,11 +977,6 @@ function groupDynamicLabel(g: TermGroup): string {
     }
   }
   return best
-}
-// tab 标签：动态标题优先（命令行 / 用户@主机:路径 / CC·opencode 任务标题），
-// 无（首连且无 title 帧）回落 groupLabel 默认名。
-function tabLabel(g: TermGroup): string {
-  return groupDynamicLabel(g) || groupLabel(g)
 }
 // 手动新开一组（tab 右键菜单「新开一组终端」）：为该 tab 的容器/宿主再开一组全新终端。
 // 侧栏点容器是「聚焦已有组」，这里是「再开一组」——单组分屏满 MAX_GROUP_PANES
@@ -1029,11 +1033,13 @@ watch(
   },
   { immediate: true },
 )
-// popout 无 header，窗口标题是唯一身份标识：跟随当前组的标签（动态标题优先，
-// 与 tab 同源；跑命令/CC 时浏览器窗口标题实时变化）。
-const activeTabLabel = computed(() => (activeGroup.value ? tabLabel(activeGroup.value) : ''))
+// popout 无 header，窗口标题是唯一身份标识：跟随当前组动态标题（popout 是单容器窗口，
+// 动态标题不产生归属混淆——跑命令/CC 时浏览器 tab 实时变化），无动态标题回落组名。
+const activeTitle = computed(() =>
+  activeGroup.value ? groupDynamicLabel(activeGroup.value) || groupLabel(activeGroup.value) : '',
+)
 watch(
-  () => activeTabLabel.value,
+  () => activeTitle.value,
   (name) => {
     if (props.popout && name) document.title = `${name} · mysandbox`
   },
@@ -1440,19 +1446,23 @@ const svcSummary = computed(() => {
 // —— 终端无输出提醒（agent 干完活/等输入）——
 // 服务端（server/activity.ts）已在周期扫 tmux 输出，这里 5s 拉一次快照做提醒决策。
 // 「在不在看」前端自判：可见 tab 是 v-show 常驻（WS 恒 attach），tmux 的 attached 完全
-// 不代表用户在看——只有「当前激活 tab + 终端区」才算看。可见叶子的提醒资格 = 三道门槛
+// 不代表用户在看——只有「当前激活 tab + 终端区」才算看。可见叶子的提醒资格 = 四道门槛
 // 同时过（宁缺勿滥——误标比漏标烦人）：
 //   - 在看：leftAt=WATCHING（正看着）永不命中；看过结果再走的人不被打扰（否则「看着
 //     它跑完→切走」每次都误报）；
-//   - 时刻：安静超阈值 && 最后一次 prime 窗口后的输出发生在离开之后——prime 窗口
-//     （首帧后 3s，见 lib/terminalActivity）内的帧是打开动作自带的画面（attach 整屏
-//     重绘/新会话 prompt/页面加载批量 attach），不算新内容；
+//   - 时刻：最后一次 prime 窗口后的输出发生在离开之后——prime 窗口（首帧后 3s，见
+//     lib/terminalActivity）内的帧是打开动作自带的画面（attach 整屏重绘/新会话 prompt/
+//     页面加载批量 attach），不算新内容；
+//   - 活动段：agent 干活的形态特征是「连续输出持续分钟级」——活动段跨度 ≥ SUSTAIN_MS
+//     （3min，帧间隙 <3min 链同段）才算干过活；敲个 ls、dev server 吐两行日志这类秒级
+//     输出不配打扰；
 //   - 内容：当前视口画面 ≠ 离开时快照（markLeft 时 screenHash()）——重连还原、resize
 //     重排这类「有帧但内容没变」的输出不配标。
+// 「停了」要静默确认满 max(服务端阈值, QUIET_CONFIRM_MS=1min)——思考停顿 30s 不闪标。
 // 命中不弹 toast（弹窗抢视线，已废），改 tab 身份点右上角常驻琥珀标：标在那儿等你
 // 看，切回组即消——tmux bell 的专业形态。
-// 隐藏组收不到流，用服务端 quiet + 反推的输出时刻对齐 leftAt（留扫描周期余量）。
-// 开关 per 组（tab 右键「无输出时提醒」），随组进 localStorage。
+// 隐藏组收不到流，用服务端 quiet + 反推的输出时刻对齐 leftAt（留扫描周期余量；无活动段
+// 数据，门槛照旧）。开关 per 组（tab 右键「无输出时提醒」），随组进 localStorage。
 const WATCHING = Number.POSITIVE_INFINITY
 const leftAtByTerm = new Map<string, number>()
 // 无输出提醒标（tab 身份点右上角琥珀点，tmux bell 形态）：groupId -> 最长安静时长
@@ -1541,6 +1551,8 @@ async function refreshActivity() {
     return // 轮询失败静默（服务重启窗口期常见），下拍再试
   }
   const rowByKey = new Map(rows.map((r) => [termSessionKey(r.kind, r.containerId, r.termId), r]))
+  // 「停了」的确认窗：服务端阈值（15s）只是下限，实际 ≥1min 静默才算收尾（思考停顿不闪标）。
+  const quietGate = Math.max(threshold * 1000, QUIET_CONFIRM_MS)
   // 状态制（非跳变制）：每拍整体重算「哪组该挂提醒标」。正看着的组 WATCHING 不命中；
   // 切回即 markWatch 清标，之后重新快照基线、内容没变就不再资格。
   const nextAttention = new Map<string, number>()
@@ -1558,8 +1570,9 @@ async function refreshActivity() {
         if (notable !== undefined && leftAt !== WATCHING) {
           quietMs = Date.now() - notable
           quiet =
-            quietMs >= threshold * 1000 &&
+            quietMs >= quietGate &&
             notable > leftAt &&
+            termRunSpanMs(t) >= SUSTAIN_MS &&
             termContentChanged(t, termRefs.get(t)?.screenHash?.())
         }
       } else {
@@ -2140,7 +2153,7 @@ onUnmounted(() => {
                   :title="attentionTitle(g.id)"
                 />
               </span>
-              <span class="min-w-0 truncate">{{ tabLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
+              <span class="min-w-0 truncate">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
               <button
                 @click.stop="closeGroupById(g.id)"
                 class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
