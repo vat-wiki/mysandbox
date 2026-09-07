@@ -58,7 +58,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ExternalLink, ListChecks, Container, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1904,7 +1904,7 @@ onUnmounted(() => {
                     :title="`直连打开 ${directPortUrl(c, r.port)}`"
                     @click.stop="openUrl(directPortUrl(c, r.port))"
                   >
-                    <Network class="size-3" />
+                    <ExternalLink class="size-3" />
                   </button>
                 </div>
               </div>
