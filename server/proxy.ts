@@ -132,8 +132,11 @@ async function resolveTargetFresh(cfg: Config, kind: 'c' | 's', name: string): P
 
 export interface ProxyBase {
   base: string;
-  kind: 'custom' | 'lan' | 'tailscale';
+  kind: 'custom' | 'local' | 'lan' | 'tailscale';
 }
+
+// auto 模式的固定本地域（产品默认的好记域名）。解析前提见 proxyBases 内注释。
+const LOCAL_BASE = 'mysandbox.local';
 
 // 默认路由接口的 IPv4（镜像 cli.ts resolveAutoHost 的读法；拿不到返回 null）。
 async function defaultRouteIp(): Promise<string | null> {
@@ -164,12 +167,17 @@ function inCgnat(ip: string): boolean {
   return a === 100 && b >= 64 && b <= 127;
 }
 
-// vhost 域名候选：自有域名 > LAN sslip > tailscale sslip。前端拿 bases[0] 拼代理 URL。
+// vhost 域名候选：固定本地域 > LAN sslip > tailscale sslip。前端拿 bases 逐个探测
+// （DNS 可解析 + 控制台端口可达）择优，全败降级子路径门面——见 web/src/lib/proxy.ts。
 export async function proxyBases(cfg: Config): Promise<ProxyBase[]> {
   const v = cfg.proxy.vhost;
   if (v === 'off') return [];
   if (v !== 'auto') return [{ base: v.replace(/^\*\./, ''), kind: 'custom' }];
-  const bases: ProxyBase[] = [];
+  const bases: ProxyBase[] = [
+    // 固定好记的本地域：URL 不随 IP 漂。⚠️ .local 无公共 DNS，需要宿主侧有应答
+    // （mihomo hosts / dnsmasq / 路由器）；没人应答时前端探测自动跳过它。
+    { base: LOCAL_BASE, kind: 'local' },
+  ];
   const ip = cfg.proxy.ip !== 'auto' ? cfg.proxy.ip : await defaultRouteIp();
   if (ip) bases.push({ base: ipToSslip(ip), kind: 'lan' });
   for (const list of Object.values(networkInterfaces())) {

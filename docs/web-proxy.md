@@ -35,10 +35,18 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
 
 ### vhost 基域名（config.proxy.vhost）
 
-- `auto`（默认）：按默认路由 IPv4 生成 `<ip-连字符>.sslip.io`（如 `10-12-135-150.sslip.io`）。
-  sslip.io 是公共 DNS：该域名恒等该 IP，任何设备可解析，**零配置**；可达性仍由
-  tailscale/LAN 决定。宿主若有 tailscale 地址（100.64/10 段），`GET /api/proxy/config`
-  会一并列为候选——远程设备选 tailscale 那个基（LAN IP 基在网外不可达）。
+- `auto`（默认）：候选序 **`mysandbox.local`（固定好记）→ LAN sslip（`10-12-135-150.sslip.io`）→
+  tailscale sslip**。前端加载时逐个探测（`msbprobe.<base>/api/health`，no-cors 下任何
+  HTTP 应答即「DNS 可解析 + 控制台端口可达」），命中哪个用哪个，全败降级子路径门面
+  ——所以候选解析不了也不会坏，只是 URL 丑一点。
+  - `mysandbox.local`：URL 不随 IP 漂，但 `.local` **没有公共 DNS**，需要宿主侧有东西
+    应答 `*.mysandbox.local`（mihomo `hosts` + `dns.use-hosts`、dnsmasq、路由器均可；
+    本机 clash 已如此配置）。`.local` 被 RFC 6762 划给 mDNS——macOS/iOS/Android 设备
+    对 `.local` 走组播解析、单播 DNS 不查，**别的设备上大概率不通**；跨设备场景用
+    sslip 候选或自有域名。
+  - sslip：公共 DNS 恒等该 IP，任何设备可解析，零配置；可达性仍由 tailscale/LAN 决定。
+    tailscale 地址（100.64/10 段）会一并列为候选——远程设备选 tailscale 候选（LAN IP
+    基在网外不可达）。
 - `off`：关闭 vhost，前端退回子路径门面。
 - 其他值：自有域名，需泛解析 `*.<域名> → 宿主 IP`。**有域名优先用自有**：sslip.io 不在
   Public Suffix List（实测 publicsuffix.org，cookie/same-site 都成立），代价是全体
@@ -101,9 +109,10 @@ proxy:
 ## 已知限制
 
 - 只代理 HTTP/WS；非 HTTP 的 TCP 服务浏览器无解（tailscale 直连）。
-- vhost 门面要求设备能解析基域名（sslip 自动满足；自有域名需配泛解析）。
+- vhost 门面要求设备能解析基域名（`mysandbox.local` 仅宿主/走宿主 DNS 的设备；sslip
+  自动满足；自有域名需配泛解析）。控制台前端会探测择优，全败自动落子路径门面。
 - 控制台必须经「域名口径」访问，Domain cookie 才设得进（裸 IP 访问时宿主级 cookie
-  仍够子路径门面用；面板会展示基域名候选）。
+  仍够子路径门面用；App 会 toast 提示经基域名打开控制台；401 引导页也给直达链接）。
 - LAN IP 是 DHCP 时 sslip 基跟着漂：路由器静态租约或 `proxy.ip` 钉死。
 - HTTPS 缺席：http + tailscale（wireguard 加密）够用；要真证书就自有域名 + 泛证书
   （可后挂 Caddy，forward_auth 回 mysandbox 鉴权）。

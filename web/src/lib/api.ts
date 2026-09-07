@@ -111,7 +111,8 @@ export const listContainers = () => api('/api/containers') as Promise<{ items: C
 // vhost 门面基域名信息 + 会话 cookie 下发。URL 拼装在 lib/proxy.ts（单例）。
 export interface ProxyBaseInfo {
   base: string
-  kind: 'custom' | 'lan' | 'tailscale' // tailscale 候选给远程设备（LAN IP 出网段不可达）
+  // local = 固定本地域 mysandbox.local（需宿主侧 DNS 应答）；lan/tailscale = sslip 兜底
+  kind: 'custom' | 'local' | 'lan' | 'tailscale'
 }
 export interface ProxyConfigInfo {
   mode: 'vhost' | 'subpath'

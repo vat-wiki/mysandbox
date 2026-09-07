@@ -128,7 +128,7 @@ docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在
 - **白名单是精确集合不放网段**（受管容器 IP ∪ 服务 IP；网段含 `.1` 宿主副 IP，放网段=SSRF 跳板指回宿主）。缓存 TTL 3s，rewriteUrl 同步只读、过期后台刷（去重于 inflight），启动预热。
 - **cookie 鉴权 Path 限 `/proxy`**：`/api/auth/session` 下发两份（宿主级 + `Domain=<基域名>`），被代理页面的 JS 拿 cookie 打不进 `/api/*`。转发上游前剥 cookie 与 `x-sandbox-token`。SameSite=Strict。
 - **reply-from 的坑**：body 靠封装作用域内 catch-all content-type parser 透传原始流（在 scope 内注册，别污染全实例）；undici `bodyTimeout: 0` 保长 SSE；Host 默认被改成上游、要 rewriteRequestHeaders 改回来；错误包成 `FST_REPLY_FROM_*`、原始 code 在 `error.cause`；query 不用自己拼（source 不带时自动取原 req.url）。Set-Cookie 的 Path 要收编进代理前缀，否则多应用同名 cookie 在 `/` 互相覆盖。
-- WS 是同路由全声明式 `handler` + `wsHandler` 双挂（wsHandler 类型只在 RouteOptions 上）；基域名 auto = 默认路由 IPv4 的 sslip.io（sslip.io 不在 Public Suffix List，实测；有自有域名优先自有），tailscale 地址一并列为候选给远程设备。
+- WS 是同路由全声明式 `handler` + `wsHandler` 双挂（wsHandler 类型只在 RouteOptions 上）；基域名 auto = 候选序 `mysandbox.local`（固定好记，**需宿主侧 DNS 应答**——本机 mihomo hosts 已配；`.local` 无公共 DNS 且 mDNS 不做泛解析，跨设备不通）→ LAN sslip → tailscale sslip，**前端逐个探测择优、全败降级子路径**（lib/proxy.ts probeBase，no-cors 打 `msbprobe.<base>/api/health`）；有自有域名优先自有。
 - 前端 URL 拼装在 `lib/proxy.ts` 单例（`serviceUrl`），ContainerList 端口点击与 ServicesPanel 自定义服务「打开」都走它；服务预设（postgres 等）端口非 HTTP 不给「打开」。
 
 ### 宿主终端

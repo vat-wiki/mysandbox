@@ -2,12 +2,13 @@
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, startAuthSession, Unauthorized } from '@/lib/api'
 import { setEngineInfo } from '@/lib/caps'
-import { loadProxyConfig } from '@/lib/proxy'
+import { loadProxyConfig, proxyPrimary } from '@/lib/proxy'
 import { isPhone } from '@/composables/useDevice'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
+import { toast } from 'vue-sonner'
 import { Toaster } from '@/components/ui/sonner'
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
 
@@ -67,10 +68,19 @@ function logout() {
 }
 
 // 登录完成后的一次性环境装载：代理会话 cookie（浏览器导航到代理 URL 的鉴权凭证，
-// Path 限 /proxy，见 server/proxy.ts）+ 代理 vhost 基域名（端口点击的 URL 拼装）。
-function afterAuth() {
+// Path 限 /proxy，见 server/proxy.ts）+ 代理基域名探测（端口点击的 URL 拼装）。
+// 控制台没经基域名访问时提示一次：会话 cookie 是 Domain=<基域名> 的，IP 口径下
+// 端口点击会先撞 401 引导页（自愈路径是经基域名打开一次控制台）。
+async function afterAuth() {
   void startAuthSession().catch(() => {})
-  void loadProxyConfig()
+  const mode = await loadProxyConfig()
+  const primary = proxyPrimary()
+  if (mode === 'vhost' && primary && !location.hostname.endsWith(`.${primary}`)) {
+    const portPart = location.port ? `:${location.port}` : ''
+    toast.info(`端口代理经 ${primary} 域名访问`, {
+      description: `用 http://${primary}${portPart} 打开控制台，端口免登录直达。`,
+    })
+  }
 }
 
 const ready = computed(() => !!token.value)

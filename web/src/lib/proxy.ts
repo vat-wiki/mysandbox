@@ -1,12 +1,10 @@
 // Web 代理 URL 单例（服务端见 server/proxy.ts）。App 挂载/登录成功后 loadProxyConfig()
-// 拉一次 /api/proxy/config，各处 serviceUrl() 只读。默认 subpath：配置没回来（或代理
-// 关闭）时也拼得出可用的同源 URL。
+// 拉一次 /api/proxy/config 并对候选基域名**逐个探测择优**，各处 serviceUrl() 只读。
+// 全部候选不可达时降级 subpath（同源 /proxy/... 永远可用）。
 //
-// 两条门面：
-// - vhost（主）：http://<name>-<port>.<基域名>:<控制台端口>/ ——Host 首标签承载目标，
-//   应用看到自己是根路径，无子路径改写问题；跨子域与控制台 same-site（cookie 走得通）。
-// - subpath（兜底）：<同源>/proxy/<c|s>/<name>/<port>/ ——DNS 不可用/dev 模式时用；
-//   注意对绝对路径加载资源的 SPA 会破（应用需支持 base path）。
+// 为什么要探测：auto 模式的首选 mysandbox.local 需要宿主侧 DNS 应答（mihomo hosts /
+// dnsmasq），并非每台机器都配了——解析失败/端口不通的候选直接跳过，别让端口点击落到
+// 打不开的域名上。探测请求本身免鉴权（health），no-cors 下任何 HTTP 应答都算走通。
 import { ref } from 'vue'
 import type { ProxyConfigInfo } from './api'
 import { getProxyConfig } from './api'
@@ -14,14 +12,48 @@ import { getProxyConfig } from './api'
 const info = ref<ProxyConfigInfo>({ mode: 'subpath', bases: [], primary: null })
 let loaded = false
 
-export async function loadProxyConfig(): Promise<void> {
-  if (loaded) return
+// 返回最终生效的门面（vhost = 探测命中某候选；subpath = 代理关/全败）。App 用它给提示。
+export async function loadProxyConfig(): Promise<'vhost' | 'subpath'> {
+  if (loaded) return info.value.mode
   loaded = true
+  let cfg: ProxyConfigInfo
   try {
-    info.value = await getProxyConfig()
+    cfg = await getProxyConfig()
   } catch {
-    /* 服务不可用：维持 subpath 兜底 */
+    return 'subpath' // 服务不可用：维持 subpath 兜底
   }
+  if (cfg.mode === 'vhost') {
+    for (const b of cfg.bases) {
+      if (await probeBase(b.base)) {
+        info.value = { mode: 'vhost', bases: cfg.bases, primary: b.base }
+        return 'vhost'
+      }
+    }
+  }
+  info.value = { mode: 'subpath', bases: cfg.bases, primary: null }
+  return 'subpath'
+}
+
+// 探测基域名在当前浏览器能否走通：DNS 可解析 + 控制台端口可达。
+// no-cors 拿不到响应体也不需要——opaque 应答即证明链路通；DNS 失败/拒连都会 reject。
+// 首标签 msbprobe 无连字符数字，不会误入代理路由（直落控制台的 /api/health）。
+async function probeBase(base: string): Promise<boolean> {
+  const portPart = location.port ? `:${location.port}` : ''
+  try {
+    await fetch(`http://msbprobe.${base}${portPart}/api/health`, {
+      mode: 'no-cors',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(2500),
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// 探测命中的基域名（subpath 模式为 null）——App 的提示条用。
+export function proxyPrimary(): string | null {
+  return info.value.mode === 'vhost' ? info.value.primary : null
 }
 
 // 容器（kind 'c'）或 docker 服务（kind 's'）的代理 URL。
