@@ -9,6 +9,7 @@ import { runBaseCommand } from './base.js';
 import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
+import { proxyBases } from './proxy.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
 import { startServicesEventSync } from './services.js';
@@ -176,6 +177,14 @@ async function main(): Promise<void> {
     `>> mysandbox ${getVersion()}  ${engine.name} ${d.version ?? '?'}${d.apiVersion ? ` (api ${d.apiVersion})` : ''}\n`,
   );
   process.stdout.write(`>> web UI:  http://${config.listen.host}:${config.listen.port}\n`);
+  // 「都走域名」：vhost 开启时页面访问走基域名（服务端会把 IP 口径的导航 302 过去，
+  // 见 proxy.ts 的 redirect hook），IP 行留给 API/脚本口径。
+  if (config.proxy.vhost !== 'off') {
+    const bases = await proxyBases(config);
+    if (bases[0]) {
+      process.stdout.write(`>> web UI(域名): http://${bases[0].base}:${config.listen.port}\n`);
+    }
+  }
   if (firstRun || tokenGenerated) {
     process.stdout.write(`>> first run — config written: ${CONFIG_FILE}\n`);
     process.stdout.write(`>> token:   ${config.token}\n`);

@@ -58,8 +58,9 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
 
 - 浏览器直接导航/新开 tab 到代理 URL 带不上 `X-Sandbox-Token` header →
   `POST /api/auth/session`（登录后 App.vue 自动调）下发 `mysandbox_token` cookie，
-  **Path 限 `/proxy`**。两份：宿主级（子路径门面）+ `Domain=<基域名>`（vhost 门面，
-  sibling 子域共享）；从裸 IP/localhost 访问控制台时浏览器拒收 Domain cookie，无害。
+  **Path 限 `/proxy`**。每个候选基域各发一份 Domain cookie（浏览器拒收 domain-match
+  不成立的）：本机走 `mysandbox.local`，远程设备经 tailscale 域名开控制台也能种上；
+  宿主级那份兜子路径门面。
 - Path 限 `/proxy` 是刻意的：被代理页面里的 JS 拿着 cookie 打不进 `/api/*`（维持
   header-only），爆炸半径不扩。
 - SameSite=Strict：控制台内 window.open（同站）与地址栏直贴都带 cookie；从其他应用
@@ -67,6 +68,14 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
   `?proxyBack=` 回跳参数——App 种完 cookie 校验目标 host 在基域名内后自动送回
   （防开放重定向），免掉「先开控制台再点端口」两步。
 - 未授权的浏览器导航（GET + Accept html）回 HTML 引导页而非 JSON；其余回 JSON 401。
+
+## 「都走域名」重定向
+
+registerProxy 里挂的 onRequest hook：**IP/localhost 口径的页面导航（GET/HEAD）302
+到首选基域名**（`http://mysandbox.local:<port>` 原路径原 query，hash 由浏览器保留）。
+豁免三类：`/api/*`、`/ws/*`、`/proxy/*`（CLI 深链/脚本/curl 探活不受影响）；其他
+域名口径也不拦——tailscale sslip 等远程入口的设备未必解析得了 `mysandbox.local`，
+拦了会把远程用户挡在 DNS 错误页上。`proxy.vhost: off` 时整个重定向与 vhost 一起关闭。
 
 ## 白名单（SSRF 边界）
 

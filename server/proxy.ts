@@ -383,25 +383,48 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   // 预热白名单缓存：服务起来 vhost 门面立即可用（否则前 3s 的 vhost 请求会漏进控制台路由）。
   void refreshTargets(cfg);
 
+  const bases = await proxyBases(cfg);
+  const primary = bases[0] ?? null;
+
+  // —— 「都走域名」：IP/localhost 口径的页面导航 302 到基域名 ——
+  // 只拦 GET/HEAD（导航）；/api、/ws、/proxy 豁免——CLI 深链、脚本、curl 探活都
+  // 走这些路径，不能跟着跳。非 IP 的其他域名口径不拦：tailscale sslip 等远程入口
+  // 的设备未必解析得了 mysandbox.local，拦了会把远程用户挡在 DNS 错误页上。
+  if (primary) {
+    const portPart = cfg.listen.port === 80 ? '' : `:${cfg.listen.port}`;
+    app.addHook('onRequest', async (req, reply) => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return;
+      const u = req.url;
+      if (u.startsWith('/api/') || u.startsWith('/ws/') || u.startsWith('/proxy/')) return;
+      const hostname = String(req.headers.host ?? '').split(':')[0].toLowerCase();
+      if (!hostname) return;
+      const ipish =
+        hostname === 'localhost' ||
+        hostname.startsWith('[') ||
+        /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
+      if (!ipish) return;
+      if (hostname === primary.base || hostname.endsWith(`.${primary.base}`)) return;
+      return reply.redirect(`http://${primary.base}${portPart}${u}`, 302);
+    });
+  }
+
   // —— cookie 会话：/proxy 导航的鉴权凭证（Path 限 /proxy，见文件头安全面）——
+  // 每个候选基域各发一份 Domain cookie（浏览器拒收 domain-match 不成立的那份）：
+  // 本机走 mysandbox.local，远程设备经 tailscale 域名开控制台也能种上。
   app.post('/api/auth/session', async (_req, reply) => {
-    const bases = await proxyBases(cfg);
     const attrs = `Path=/proxy; HttpOnly; SameSite=Strict; Max-Age=${60 * 60 * 24 * 365}`;
-    const cookies = [`${COOKIE_NAME}=${cfg.token}; ${attrs}`];
-    // Domain 版给 vhost 门面（sibling 子域）；控制台经裸 IP/localhost 访问时浏览器
-    // 拒收 Domain cookie（domain-match 不成立），宿主级那份兜子路径门面，二者并存无害。
-    if (bases[0]) cookies.push(`${COOKIE_NAME}=${cfg.token}; Domain=${bases[0].base}; ${attrs}`);
-    reply.header('set-cookie', cookies);
+    const cookies = new Set<string>([`${COOKIE_NAME}=${cfg.token}; ${attrs}`]);
+    for (const b of bases) cookies.add(`${COOKIE_NAME}=${cfg.token}; Domain=${b.base}; ${attrs}`);
+    reply.header('set-cookie', [...cookies]);
     return { ok: true };
   });
 
-  // —— vhost 信息（前端拼代理 URL 用；次选候选给远程设备：tailscale 基走它才可达）——
+  // —— vhost 信息（前端拼代理 URL 与探测择优用；次选候选给远程设备）——
   app.get('/api/proxy/config', async () => {
-    const bases = await proxyBases(cfg);
     return {
       mode: cfg.proxy.vhost === 'off' ? 'subpath' : 'vhost',
       bases,
-      primary: bases[0]?.base ?? null,
+      primary: primary?.base ?? null,
     };
   });
 
