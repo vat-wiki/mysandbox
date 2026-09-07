@@ -648,7 +648,7 @@ export interface GitBranchesView {
   toplevel?: string
   current?: string | null // detached HEAD / 空仓库为 null
   branches?: string[] // 本地分支（当前分支排最前）
-  remotes?: string[] // 远端分支短名（origin/<name>，剔除 origin/HEAD 与已有本地对应者）
+  remotes?: string[] // 远端分支短名原始列表（剔 origin/HEAD；本地已有对应者的由前端过滤展示）
 }
 export const getGitStatus = (id: string, path: string) =>
   api(`${filesBase(id)}/git/status?path=${encodeURIComponent(path)}`) as Promise<GitStatusView>

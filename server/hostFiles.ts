@@ -416,7 +416,7 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     const localOut = await gitExec(['--no-optional-locks', '-C', top, 'branch', '--list', '--format=%(HEAD)%(refname:short)']);
     const local = parseBranchList(localOut);
     const remoteOut = await gitExec(['--no-optional-locks', '-C', top, 'branch', '-r', '--list', '--format=%(refname:short)']);
-    return { repo: true, toplevel: top, ...local, remotes: parseRemoteBranches(remoteOut, local.branches) };
+    return { repo: true, toplevel: top, ...local, remotes: parseRemoteBranches(remoteOut) };
   });
 
   app.post('/api/host-terminal/git/checkout', async (req): Promise<{ ok: true }> => {

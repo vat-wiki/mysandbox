@@ -51,7 +51,8 @@ export interface GitBranchesView {
   toplevel?: string;
   current?: string | null; // 当前分支；detached HEAD 或空仓库（无提交）为 null
   branches?: string[]; // 本地分支名（当前分支排最前，其余按 git 自身的字母序）
-  remotes?: string[]; // 远端分支短名（origin/<name>）：剔除 origin/HEAD 与已有本地对应者的
+  remotes?: string[]; // 远端分支短名原始列表（仅剔 origin/HEAD）；「本地已有对应者不重复
+  // 展示」的过滤在前端做——远端段即使没有待检出条目也要渲染（fetch 入口挂在段标题上）
 }
 export const MAX_CHANGES = 1000;
 
@@ -159,16 +160,15 @@ export function parseBranchList(out: string): { current: string | null; branches
   return { current, branches };
 }
 
-// 解析 `git branch -r --list --format='%(refname:short)'` 输出为远端分支列表：
-// 剔除 origin/HEAD（git 维护的符号引用不是真分支）、不含 '/' 的残段（远程的 detached
-// 态行），以及已有本地对应者的（本地列表已可直达，remote 段只留「待检出」的）。
-// 其余空行跳过。短名形如 origin/feat-x（分支名可含 '/'，取第一段之后的整体为本地名）。
-export function parseRemoteBranches(out: string, local: string[]): string[] {
-  const have = new Set(local);
+// 解析 `git branch -r --list --format='%(refname:short)'` 输出为远端分支原始列表：
+// 剔除 origin/HEAD（git 维护的符号引用不是真分支）与不含 '/' 的残段（远程的 detached
+// 态行），其余空行跳过。短名形如 origin/feat-x（分支名可含 '/'，取第一段之后的整体为
+// 本地名）；「本地已有对应者」的展示过滤在前端做（见 GitBranchesView.remotes 注释）。
+export function parseRemoteBranches(out: string): string[] {
   return out
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l.includes('/') && !l.endsWith('/HEAD') && !have.has(l.slice(l.indexOf('/') + 1)));
+    .filter((l) => l.includes('/') && !l.endsWith('/HEAD'));
 }
 
 // 分支名入库前校验（容器侧脚本与宿主侧 execFile 共用的第一道防线；git 自身还会做

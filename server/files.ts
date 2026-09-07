@@ -727,7 +727,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const lines = res.stdout.slice(nl + 1).split('\n');
     const sep = lines.findIndex((l) => l !== '' && l[0] !== '*' && l[0] !== ' ');
     const local = parseBranchList((sep < 0 ? lines : lines.slice(0, sep)).join('\n'));
-    const remotes = sep < 0 ? [] : parseRemoteBranches(lines.slice(sep + 1).join('\n'), local.branches);
+    const remotes = sep < 0 ? [] : parseRemoteBranches(lines.slice(sep + 1).join('\n'));
     return { repo: true, toplevel, ...local, remotes };
   });
 

@@ -22,7 +22,7 @@ import {
   type GitChange,
   type GitBranchesView,
 } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2 } from 'lucide-vue-next'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -163,22 +163,25 @@ function openChange(c: GitChange) {
 }
 
 // —— 分支菜单（低频操作刻意收进 popover，平时不占面板注意力）——
-// 点头部分支名弹出（同 VSCode 状态栏分支入口的心智模型）：本地分支切换/新建/删除
-//（-d 安全删，未合并的 git 拒绝）、远端分支检出（switch -c --track 检出为本地跟踪
-// 分支）、底部获取/拉取/推送三件套（作用于当前分支；fetch --all --prune 顺带清掉
-// 已删的远端条目）。打开才拉分支列表（不随 8s 轮询预取）；切换/检出成功即关窗并
-// refresh() 立即刷新头部与变更列表，fetch 原地刷列表，pull/push 刷状态（ahead/behind）；
-// 失败把 git stderr 原话留在窗内提示，窗不关。
+// 点头部分支名弹出（同 VSCode 状态栏分支入口的心智模型）。为压心智负担，浮层只围绕
+// 「找到分支 → 切过去」一件事组织：顶部输入框搜索过滤、输不中现有名字即变新建入口
+//（quick pick 模式，无独立创建按钮行）；删除挂在本行 hover 上（默认不占视觉）；fetch
+// 收进「远端」段标题的刷新钮（作用点即展示点，仓库没配远端时整段不渲染）；底部只留
+// 拉取/推送一对当前分支操作（pull 恒 --ff-only 分叉即拒；push 无上游且恰一个远端时
+// 自动 -u 建跟踪）。切换/检出成功关窗并 refresh()；fetch 原地刷列表；pull/push 刷状态
+//（ahead/behind）；失败把 git stderr 原话留在窗内，窗不关。
 const branchOpen = ref(false)
 const branches = ref<GitBranchesView | null>(null)
 const branchLoading = ref(false)
 const branchErr = ref('')
-const newBranch = ref('')
+const branchFilter = ref('')
 const busy = ref(false) // 全部分支动作共用一个忙碌位（同一菜单互斥足够）
+const fetching = ref(false) // 仅刷新钮的转圈反馈（fetch 可能要等网络几秒）
 
 watch(branchOpen, (open) => {
   if (open) {
     branchErr.value = ''
+    branchFilter.value = ''
     branches.value = null // 清上次打开的残留（path 可能已变）
     void fetchBranches()
   }
@@ -207,7 +210,7 @@ async function runBranchAction(act: () => Promise<unknown>, after: 'close' | 'li
     await act()
     if (after === 'close') {
       branchOpen.value = false
-      newBranch.value = ''
+      branchFilter.value = ''
       refresh()
     } else if (after === 'list') {
       void fetchBranches()
@@ -222,15 +225,47 @@ async function runBranchAction(act: () => Promise<unknown>, after: 'close' | 'li
   }
 }
 
+// —— 列表派生：搜索过滤 + 远端「待检出」过滤（本地已有对应者的不重复展示）——
+const localNames = computed(() => branches.value?.branches ?? [])
+const remoteAll = computed(() => branches.value?.remotes ?? [])
+function filterHit(s: string): boolean {
+  const f = branchFilter.value.trim().toLowerCase()
+  return !f || s.toLowerCase().includes(f)
+}
+const filteredLocals = computed(() => localNames.value.filter(filterHit))
+const filteredRemotes = computed(() =>
+  remoteAll.value.filter((r) => !localNames.value.includes(r.slice(r.indexOf('/') + 1)) && filterHit(r)),
+)
+// 新建候选：输入非空且不与任何本地分支/远端短名精确重名（重名时列表里已能点到）
+const createCandidate = computed(() => {
+  const f = branchFilter.value.trim()
+  return f && !localNames.value.includes(f) && !remoteAll.value.includes(f) ? f : ''
+})
+
+// 输入框回车：精确命中本地分支 = 切过去；命中远端短名 = 检出；否则按新建处理
+function onFilterEnter() {
+  const f = branchFilter.value.trim()
+  if (!f) return
+  if (localNames.value.includes(f)) switchTo(f)
+  else if (remoteAll.value.includes(f)) checkoutRemote(f)
+  else createBranch()
+}
 function createBranch() {
-  const name = newBranch.value.trim()
+  const name = branchFilter.value.trim()
   if (name) void runBranchAction(() => gitCheckout(props.containerId, props.path, name, { create: true }), 'close')
 }
 const switchTo = (b: string) => runBranchAction(() => gitCheckout(props.containerId, props.path, b), 'close')
 const checkoutRemote = (r: string) =>
   runBranchAction(() => gitCheckout(props.containerId, props.path, r, { remote: true }), 'close')
 const deleteBranch = (b: string) => runBranchAction(() => gitBranchDelete(props.containerId, props.path, b), 'list')
-const fetchRemotes = () => runBranchAction(() => gitFetch(props.containerId, props.path), 'list')
+const fetchRemotes = async () => {
+  fetching.value = true
+  try {
+    await runBranchAction(() => gitFetch(props.containerId, props.path), 'list')
+  } finally {
+    fetching.value = false
+  }
+}
 const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, props.path), 'status')
 const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, props.path), 'status')
 
@@ -392,33 +427,35 @@ watch(view, (v) => {
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" :side-offset="6" class="w-64 p-2">
-          <!-- 新建分支：回车 / ＋提交，创建并切换 -->
-          <form class="mb-1.5 flex items-center gap-1.5" @submit.prevent="createBranch">
-            <Input
-              v-model="newBranch"
-              class="h-7 flex-1 bg-muted/50 px-2 text-xs md:text-xs"
-              placeholder="新建分支名，回车创建并切换"
-              spellcheck="false"
-              autocomplete="off"
-            />
-            <button
-              type="submit"
-              class="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted/50 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-              :disabled="busy || !newBranch.trim()"
-              title="创建并切换"
-            >
-              <Plus class="size-3.5" />
-            </button>
-          </form>
+          <!-- 单输入双职：搜索过滤分支；输不中现有名字即成新建入口（无独立创建按钮行） -->
+          <Input
+            v-model="branchFilter"
+            class="mb-1.5 h-7 bg-muted/50 px-2 text-xs md:text-xs"
+            placeholder="搜索或新建分支…"
+            spellcheck="false"
+            autocomplete="off"
+            @keydown.enter.prevent="onFilterEnter"
+          />
           <p v-if="branchLoading && !branches" class="px-1 py-1 text-[11px] text-muted-foreground">加载中…</p>
           <p
-            v-else-if="branches && !branches.branches?.length && !branches.remotes?.length"
+            v-else-if="branches && !localNames.length && !remoteAll.length"
             class="px-1 py-1 text-[11px] text-muted-foreground"
           >
-            没有分支（空仓库），上面输入名字创建第一个
+            没有分支（空仓库），输入名字创建第一个
           </p>
           <div v-else class="scroll-thin max-h-56 overflow-y-auto">
-            <template v-for="b in branches?.branches ?? []" :key="b">
+            <!-- 新建入口：只在输入了不重名的名字时出现 -->
+            <button
+              v-if="createCandidate"
+              class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              :disabled="busy"
+              title="创建并切换"
+              @click="createBranch()"
+            >
+              <Plus class="size-3 shrink-0" />
+              <span class="min-w-0 flex-1 truncate">创建并切换到「{{ createCandidate }}」</span>
+            </button>
+            <template v-for="b in filteredLocals" :key="b">
               <!-- 当前分支：纯展示（不可切到自己），Check 占位对齐其余行名字 -->
               <div
                 v-if="b === branches?.current"
@@ -447,11 +484,21 @@ watch(view, (v) => {
                 </button>
               </div>
             </template>
-            <!-- 远端：点击检出为本地跟踪分支（switch -c --track） -->
-            <template v-if="branches?.remotes?.length">
-              <p class="mt-1 mb-0.5 px-1.5 text-[10px] text-muted-foreground/70">远端（点击检出为本地）</p>
+            <!-- 远端：段标题即 fetch 作用点（刷新钮），条目点击检出为本地跟踪分支 -->
+            <template v-if="remoteAll.length">
+              <p class="mt-1 flex items-center gap-1 px-1.5 text-[10px] text-muted-foreground/70">
+                <span>远端</span>
+                <button
+                  class="ml-auto rounded p-0.5 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                  :disabled="busy"
+                  title="获取远端更新（fetch --all --prune）"
+                  @click="fetchRemotes()"
+                >
+                  <RefreshCw class="size-3" :class="{ 'animate-spin': fetching }" />
+                </button>
+              </p>
               <button
-                v-for="r in branches.remotes"
+                v-for="r in filteredRemotes"
                 :key="r"
                 class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-xs text-muted-foreground/80 hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
                 :disabled="busy"
@@ -461,19 +508,13 @@ watch(view, (v) => {
                 <Check class="size-3 shrink-0 opacity-0" />
                 <span class="min-w-0 flex-1 truncate">{{ r }}</span>
               </button>
+              <p v-if="!filteredRemotes.length" class="px-1.5 py-1 text-[10px] text-muted-foreground/50">
+                没有待检出的远端分支
+              </p>
             </template>
           </div>
-          <!-- 底部三件套：获取（fetch --all --prune）/ 拉取（pull --ff-only）/ 推送，
-               都作用于当前分支；推送无上游且恰一个远端时自动建立跟踪 -->
-          <div class="mt-1.5 flex items-center gap-1 border-t border-border pt-1.5">
-            <button
-              class="flex-1 rounded bg-muted/50 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-              :disabled="busy"
-              title="获取远端更新（fetch --all --prune）"
-              @click="fetchRemotes()"
-            >
-              获取
-            </button>
+          <!-- 底部只留当前分支的拉取/推送（仓库没配远端时整行隐藏；fetch 在远端段标题） -->
+          <div v-if="remoteAll.length" class="mt-1.5 flex items-center gap-1 border-t border-border pt-1.5">
             <button
               class="flex-1 rounded bg-muted/50 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
               :disabled="busy"
