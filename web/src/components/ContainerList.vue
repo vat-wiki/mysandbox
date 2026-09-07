@@ -27,7 +27,9 @@ import {
 import { trackServiceJobs } from '@/lib/serviceJobs'
 import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
-  lastTermOutput,
+  lastTermNotableOutput,
+  snapTermBaseline,
+  termContentChanged,
   forgetTerm,
   trackTerminalActivity,
   termActiveIds,
@@ -231,9 +233,10 @@ const savedTabs = loadTabs()
 const groups = ref<TermGroup[]>(savedTabs.groups)
 const activeIdx = ref(savedTabs.activeIdx)
 const hiddenGroups = ref<TermGroup[]>(loadHidden())
-// termId -> Terminal 实例（close 时调 kill() 发 kill 帧真杀会话）。函数式 ref 挂/卸自动进出表；
-// key 是稳定的 termId，布局重排/塌缩不会错杀别的会话。
-const termRefs = new Map<string, { kill(): void }>()
+// termId -> Terminal 实例（close 时调 kill() 发 kill 帧真杀会话；无输出提醒的内容
+// 基线调 screenHash() 取视口快照）。函数式 ref 挂/卸自动进出表；key 是稳定的 termId，
+// 布局重排/塌缩不会错杀别的会话。
+const termRefs = new Map<string, { kill(): void; screenHash?(): string | undefined }>()
 function saveTabs(): void {
   try {
     localStorage.setItem(TABS_KEY, JSON.stringify({ groups: groups.value, activeIdx: activeIdx.value }))
@@ -324,7 +327,7 @@ provide(TERM_OPS, {
     else closeGroupById(group.id)
   },
   setRef(termId, el) {
-    if (el) termRefs.set(termId, el as { kill(): void })
+    if (el) termRefs.set(termId, el as { kill(): void; screenHash?(): string | undefined })
     else termRefs.delete(termId)
   },
   cwdSourceOf(termId) {
@@ -1405,12 +1408,15 @@ const svcSummary = computed(() => {
 // —— 终端无输出提醒（agent 干完活/等输入）——
 // 服务端（server/activity.ts）已在周期扫 tmux 输出，这里 5s 拉一次快照做提醒决策。
 // 「在不在看」前端自判：可见 tab 是 v-show 常驻（WS 恒 attach），tmux 的 attached 完全
-// 不代表用户在看——只有「当前激活 tab + 终端区」才算看。每叶子两份时刻：
-//   - lastOutput（lib/terminalActivity，Terminal.vue 每个数据帧登记）：可见叶子用它，
-//     比服务端 5s 扫描精确；
-//   - leftAt（离开时刻）：从「正在看」切走/切去编辑器/隐藏的时刻；WATCHING = 正在看。
-//     提醒资格 = 安静超过阈值 && 最后一次输出发生在离开之后——看过结果再走的人不再被
-//     打扰（否则「看着它跑完→切走」每次都误报），而中途离开后 agent 才收尾的能收到。
+// 不代表用户在看——只有「当前激活 tab + 终端区」才算看。可见叶子的提醒资格 = 三道门槛
+// 同时过（缺一不弹，宁缺勿滥——误弹比漏弹烦人）：
+//   - 在看：leftAt=WATCHING（正看着）永不命中；看过结果再走的人不被打扰（否则「看着
+//     它跑完→切走」每次都误报）；
+//   - 时刻：安静超阈值 && 最后一次 prime 窗口后的输出发生在离开之后——prime 窗口
+//     （首帧后 3s，见 lib/terminalActivity）内的帧是打开动作自带的画面（attach 整屏
+//     重绘/新会话 prompt/页面加载批量 attach），不算新内容；
+//   - 内容：当前视口画面 ≠ 离开时快照（markLeft 时 screenHash()）——重连还原、resize
+//     重排这类「有帧但内容没变」的输出不配弹。
 // 隐藏组收不到流，用服务端 quiet + 反推的输出时刻对齐 leftAt（留扫描周期余量）。
 // 开关 per 组（tab 右键「无输出时提醒」），随组进 localStorage。
 const WATCHING = Number.POSITIVE_INFINITY
@@ -1420,7 +1426,11 @@ function markWatch(g: TermGroup) {
 }
 function markLeft(g: TermGroup) {
   const now = Date.now()
-  for (const t of leafIds(g.root)) leftAtByTerm.set(t, now)
+  for (const t of leafIds(g.root)) {
+    leftAtByTerm.set(t, now)
+    // 离开时快照视口画面作内容基线；Terminal 没挂上（拿不到）就不设，内容门槛放行。
+    snapTermBaseline(t, termRefs.get(t)?.screenHash?.())
+  }
 }
 // 激活组 / 主区形态变化 = 「在看」关系变化。首跑（页面加载恢复的 tabs）统一落基线：
 // 激活组在看，其余组从加载起就没看过（它们常驻挂载、此后有输出就能积资格）。
@@ -1505,10 +1515,13 @@ async function refreshActivity() {
       let quiet = false
       let quietMs = 0
       if (visible) {
-        const last = lastTermOutput(t)
-        if (last !== undefined) {
-          quietMs = Date.now() - last
-          quiet = quietMs >= threshold * 1000 && last > leftAt
+        const notable = lastTermNotableOutput(t)
+        if (notable !== undefined && leftAt !== WATCHING) {
+          quietMs = Date.now() - notable
+          quiet =
+            quietMs >= threshold * 1000 &&
+            notable > leftAt &&
+            termContentChanged(t, termRefs.get(t)?.screenHash?.())
         }
       } else {
         const r = rowByKey.get(key)

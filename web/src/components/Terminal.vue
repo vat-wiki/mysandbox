@@ -63,6 +63,18 @@ function kill() {
     // 连接失败（onerror 后 open 永不来）：随组件卸载一并丢弃，无需额外清理
   }
 }
+
+// 当前视口内容快照（逐行文本拼接）：「无输出提醒」的内容基线用——离开时快照 vs
+// 安静判定时快照，相同 = 只是重绘（attach 整屏还原/重连/resize），不算新内容。
+// 只取可见视口不取 scrollback：tmux 重绘还原的就是这层，而断线提示行（writeln）
+// 会滚进 scrollback、纯噪音。文本行不含颜色/光标属性，重绘前后天然逐字节稳定。
+function screenHash(): string | undefined {
+  if (!term) return undefined
+  const buf = term.buffer.active
+  const lines: string[] = []
+  for (let y = 0; y < term.rows; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? '')
+  return lines.join('\n')
+}
 // 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）与首连共用。
 // termId 不变 -> 后端 attach 回同一 tmux 会话（无限期保留，直到显式 ✕ 或 shell 退出）。
 function connectWs() {
@@ -103,6 +115,7 @@ function connectWs() {
     }
     // 终端数据帧 = 有输出：登记最后输出时刻（「无输出提醒」用，见 lib/terminalActivity）。
     // 常驻 tab（v-show 非激活）也在收流，登记对所有可见组生效；历史回填（文本帧）不算。
+    // prime 窗口内的帧只点亮光晕、不进提醒资格（attach 重绘/初始 prompt 是打开自带画面）。
     noteTermOutput(props.termId)
     term?.write(new Uint8Array(ev.data as ArrayBuffer))
   }
@@ -151,7 +164,7 @@ function reconnect() {
   connectWs()
   term?.focus()
 }
-defineExpose({ kill, reconnect })
+defineExpose({ kill, reconnect, screenHash })
 
 const el = ref<HTMLDivElement | null>(null)
 let term: XTerm | null = null

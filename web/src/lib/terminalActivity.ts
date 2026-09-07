@@ -4,12 +4,17 @@
 // 一份 ContainerList 轮询、各自维护自己的跳变表，命中同一次跳变各自只发一条；页面
 // 刷新/首拉不补发历史提醒（首拍基线不产生跳变）。
 //
-// 「在不在看」的关联（谁该被提醒）由 ContainerList 决定，这里只负责三件事：
+// 「在不在看」的关联（谁该被提醒）由 ContainerList 决定，这里只负责四件事：
 //   1) noteTermOutput：Terminal.vue 每收到一个数据帧就登记该终端的最后输出时刻——
-//      可见 tab 是 v-show 常驻（WS 恒 attach），这比服务端 5s 扫描精确得多；
-//   2) trackTerminalActivity：喂入调用方算好的每叶子 quiet 布尔，只在 false→true
+//      可见 tab 是 v-show 常驻（WS 恒 attach），这比服务端 5s 扫描精确得多。输出分
+//      两本账：lastOutput 全量登记（呼吸光晕用），lastNotable 只记 prime 窗口（首帧
+//      后 PRIME_MS）之后的帧——attach 整屏重绘/新会话 prompt/页面加载批量 attach 都
+//      落在窗口内，属于「打开动作自带的画面」而非新内容，不进提醒资格；
+//   2) snapTermBaseline / termContentChanged：离开时刻的画面快照 vs 当前画面，纯重绘
+//      （重连还原、resize 重排）内容不变就不提醒——「内容有过变化」才配弹；
+//   3) trackTerminalActivity：喂入调用方算好的每叶子 quiet 布尔，只在 false→true
 //      跳变时返回该叶子，调用方按组归并弹 toast；
-//   3) termActiveIds：把帧级 lastOutput 低频投影成响应式的「正在输出」集合，供
+//   4) termActiveIds：把帧级 lastOutput 低频投影成响应式的「正在输出」集合，供
 //      tab 身份点的呼吸光晕用。
 import { ref } from 'vue'
 
@@ -17,16 +22,46 @@ import { ref } from 'vue'
 const lastOutput = new Map<string, number>()
 
 export function noteTermOutput(termId: string): void {
-  lastOutput.set(termId, Date.now())
+  const now = Date.now()
+  lastOutput.set(termId, now)
+  if (!firstSeen.has(termId)) firstSeen.set(termId, now)
+  if (now - (firstSeen.get(termId) as number) >= PRIME_MS) lastNotable.set(termId, now)
   ensureSampler()
 }
 
 export function forgetTerm(termId: string): void {
   lastOutput.delete(termId)
+  firstSeen.delete(termId)
+  lastNotable.delete(termId)
+  baselineHash.delete(termId)
 }
 
-export function lastTermOutput(termId: string): number | undefined {
-  return lastOutput.get(termId)
+// —— 提醒资格的「时刻」门槛：prime 窗口 ——
+// 首帧起 PRIME_MS 内的帧不算「新输出」。锚在首帧而非 WS open：慢启动的 zsh（omz +
+// 插件）可能几秒不吐一个字节，锚 open 会把窗口耗在静默里。重连不重置 prime——重连
+// 的整屏重绘由内容基线挡（画面还原 = 内容没变），而其首帧时刻早已过去、本就该算新帧。
+export const PRIME_MS = 3000
+const firstSeen = new Map<string, number>()
+const lastNotable = new Map<string, number>()
+
+export function lastTermNotableOutput(termId: string): number | undefined {
+  return lastNotable.get(termId)
+}
+
+// —— 提醒资格的「内容」门槛：离开时刻的画面基线 ——
+// markLeft 时 Terminal.screenHash() 快照当前视口；安静判定时再取一次对比。
+const baselineHash = new Map<string, string>()
+
+export function snapTermBaseline(termId: string, hash: string | undefined): void {
+  if (hash !== undefined) baselineHash.set(termId, hash)
+}
+
+// 基线缺失（从没看过/拿不到快照）或当前快照缺失时不设门放行——还有 prime/时刻门槛
+// 兜底，宁可少弹不可误弹的反面在这里让位：缺快照时按原时刻逻辑走。
+export function termContentChanged(termId: string, currentHash: string | undefined): boolean {
+  const base = baselineHash.get(termId)
+  if (base === undefined || currentHash === undefined) return true
+  return base !== currentHash
 }
 
 // —— 「正在输出」投影 ——
