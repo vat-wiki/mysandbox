@@ -170,7 +170,9 @@ async function hydrateMdMermaid() {
   const seq = ++mdMmdSeq
   if (!mermaidApi) {
     const m = await import('mermaid')
-    m.default.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' }) // 应用恒暗色
+    // suppressErrorRendering：渲染期失败（含 diagram 懒加载 chunk 网络失败）不画 mermaid
+    // 的「Syntax error in text」弹图（语义误导），元素保持源码，由下方统一标 mermaid-bad
+    m.default.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark', suppressErrorRendering: true }) // 应用恒暗色
     if (seq !== mdMmdSeq) return
     mermaidApi = m.default
   }
@@ -182,6 +184,8 @@ async function hydrateMdMermaid() {
   const good = nodes.filter((n) => !n.classList.contains('mermaid-bad'))
   if (!good.length) return
   await mermaidApi.run({ nodes: good, suppressErrors: true }).catch(() => {})
+  // run 内部失败的块（suppressErrorRendering 下保持源码）补标错误样式
+  for (const n of good) if (!n.querySelector('svg')) n.classList.add('mermaid-bad')
 }
 watch(
   mdHtml,
