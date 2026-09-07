@@ -21,6 +21,7 @@ import {
   type ServiceJobView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
+import { serviceUrl } from '@/lib/proxy'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -203,6 +204,11 @@ async function refreshOpenLogs() {
 
 function toggleInfo(s: ServiceView) {
   expandedInfo.value = expandedInfo.value === s.name ? '' : s.name
+}
+
+// 经面板 Web 代理打开服务端口（HTTP/WS 服务；见 lib/proxy.ts 与 server/proxy.ts）。
+function openServicePort(name: string, port: number) {
+  window.open(serviceUrl('s', name, port), '_blank', 'noopener')
 }
 
 // 首选连接命令（每预设至多一条）；空串 = 无现成命令（自定义镜像）。
@@ -401,6 +407,17 @@ function stateCls(s: ServiceView): string {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem @click="toggleInfo(s)">{{ expandedInfo === s.name ? '收起详情' : '详情' }}</DropdownMenuItem>
+                      <!-- 打开（Web 代理）：只对自定义预设给出——postgres/redis/mysql 的端口
+                           不是 HTTP，浏览器代理进不去；自定义镜像跑管理 UI 是常态。 -->
+                      <template v-if="s.running && s.preset === 'custom' && s.ports.length">
+                        <DropdownMenuItem
+                          v-for="p in s.ports"
+                          :key="'port' + p"
+                          @click="openServicePort(s.name, p)"
+                        >
+                          打开 {{ p }}（经代理）
+                        </DropdownMenuItem>
+                      </template>
                       <DropdownMenuItem v-if="!s.running" @click="op(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                       <DropdownMenuItem v-if="s.running" @click="op(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
                       <DropdownMenuItem @click="op(s.name, () => restartService(s.name))">重启</DropdownMenuItem>

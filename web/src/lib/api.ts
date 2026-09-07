@@ -107,6 +107,22 @@ export interface Health {
 export const health = () => api('/api/health') as Promise<Health>
 export const listContainers = () => api('/api/containers') as Promise<{ items: ContainerView[] }>
 
+// —— Web 代理（server/proxy.ts）——
+// vhost 门面基域名信息 + 会话 cookie 下发。URL 拼装在 lib/proxy.ts（单例）。
+export interface ProxyBaseInfo {
+  base: string
+  kind: 'custom' | 'lan' | 'tailscale' // tailscale 候选给远程设备（LAN IP 出网段不可达）
+}
+export interface ProxyConfigInfo {
+  mode: 'vhost' | 'subpath'
+  bases: ProxyBaseInfo[]
+  primary: string | null
+}
+export const getProxyConfig = () => api('/api/proxy/config') as Promise<ProxyConfigInfo>
+// 登录后种会话 cookie（Path 限 /proxy）：浏览器直接导航到代理 URL 带不上
+// X-Sandbox-Token header，cookie 是 vhost/子路径两条门面的鉴权凭证。
+export const startAuthSession = () => postJson('/api/auth/session')
+
 // POST 空 body 时不能带 content-type: application/json——Fastify 对「声明 JSON 却无 body」
 // 的请求直接 400（FST_ERR_CTP_EMPTY_JSON_BODY），无参的 start/stop 会被挡掉。
 async function postJson(path: string, body?: unknown): Promise<any> {

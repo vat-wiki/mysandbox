@@ -83,3 +83,14 @@ terminal:
 #       comment: hotspot -> mysandbox 7321
 firewall:
   allow: []
+
+# Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
+# 容器行/服务行的端口点击会开 <name>-<port>.<基域名>:<listen.port>，与控制台同端口同
+# token（cookie 会话，Path 限 /proxy）。远程访问的前提仍是宿主可达（LAN 或 tailscale）。
+proxy:
+  # vhost 基域名：auto = 按默认路由 IPv4 生成 <ip-连字符>.sslip.io（零配置；tailscale
+  # 地址会一并列为候选，远程设备选它）。off = 关闭（退回同源子路径门面）。
+  # 其他值 = 自有域名：泛解析 *.<域名> → 宿主 IP 即可（更稳，无第三方 DNS 依赖）。
+  vhost: auto
+  # 钉死基 IP（多网卡/动态 IP 环境想让域名稳定时设）；auto = 默认路由接口 IPv4。
+  ip: auto

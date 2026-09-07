@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
-import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, Unauthorized } from '@/lib/api'
+import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, startAuthSession, Unauthorized } from '@/lib/api'
 import { setEngineInfo } from '@/lib/caps'
+import { loadProxyConfig } from '@/lib/proxy'
 import { isPhone } from '@/composables/useDevice'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
@@ -45,6 +46,7 @@ async function verify(t: string): Promise<boolean> {
     // caps 写进全局单例：删除/改名/端口映射的 UI 分支都读它（见 lib/caps.ts）
     setEngineInfo(h.engine, h.caps)
     token.value = t
+    afterAuth()
     refreshBaseStatus()
     return true
   } catch (e) {
@@ -62,6 +64,13 @@ function logout() {
   clearToken()
   token.value = null
   baseReady.value = null
+}
+
+// 登录完成后的一次性环境装载：代理会话 cookie（浏览器导航到代理 URL 的鉴权凭证，
+// Path 限 /proxy，见 server/proxy.ts）+ 代理 vhost 基域名（端口点击的 URL 拼装）。
+function afterAuth() {
+  void startAuthSession().catch(() => {})
+  void loadProxyConfig()
 }
 
 const ready = computed(() => !!token.value)
@@ -104,6 +113,9 @@ const popoutTarget = ref('')
 onMounted(() => {
   popoutTarget.value = new URLSearchParams(location.search).get('popout') ?? ''
   pendingOpen.value = parseOpenHash()
+  // token 在 localStorage 里直接进主界面的场景（TokenGate 只在无 token/校验失败时出现）
+  // 也要补 cookie 会话与代理配置。
+  if (token.value) afterAuth()
   refreshBaseStatus()
   baseTimer = setInterval(refreshBaseStatus, 15000)
 })

@@ -37,7 +37,7 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 所以约束不变：
 
 - 只监听 `127.0.0.1`（默认）；非 localhost 监听时 CLI 必须打印警告。
-- 所有 `/api/*` 与 `/ws/*`（除 `/api/health`）经 `server/auth.ts` 的 token 鉴权 hook；新路由注册在 `routes.ts` / `base.ts` / `terminal.ts` / `hostTerminal.ts` 即自动被覆盖，不要绕过。
+- 所有 `/api/*` 与 `/ws/*`（除 `/api/health`）经 `server/auth.ts` 的 token 鉴权 hook；新路由注册在 `routes.ts` / `base.ts` / `terminal.ts` / `hostTerminal.ts` 即自动被覆盖，不要绕过。`/proxy/*`（Web 代理）也在 hook 内，且额外收 cookie（header/query/cookie 三路，见 `auth.ts` extractToken）。
 - sidecar 文件（state.json、config.yaml）权限 `0600`。
 - `/api/health` 免鉴权，所以它只暴露版本/引擎连通性/`caps`——**不要往里加容器名、路径、配置值**。
 
@@ -45,7 +45,7 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 
 ### server/（NodeNext ESM，import 要带 `.js` 后缀）
 
-请求流：`cli.ts`（入口/参数/config 加载）→ `index.ts buildServer()`（websocket + static + 鉴权 hook + 错误处理）→ 路由六块：`routes.ts`（REST）、`base.ts`（`/api/base*`，模板操作 + `mysandbox base` CLI）、`services.ts`（`/api/services*`，docker 配套服务）、`terminal.ts`（`/ws/terminal`，容器 PTY）、`hostTerminal.ts`（`/ws/host-terminal` + `/api/host-terminal/cwd`，宿主 PTY）、`desktop.ts`（`/ws/desktop` + `/ws/desktop-vnc`，容器图形桌面）。SSE 进度流的公共实现在 `sse.ts`。
+请求流：`cli.ts`（入口/参数/config 加载）→ `index.ts buildServer()`（websocket + static + 鉴权 hook + 错误处理）→ 路由七块：`routes.ts`（REST）、`base.ts`（`/api/base*`，模板操作 + `mysandbox base` CLI）、`services.ts`（`/api/services*`，docker 配套服务）、`terminal.ts`（`/ws/terminal`，容器 PTY）、`hostTerminal.ts`（`/ws/host-terminal` + `/api/host-terminal/cwd`，宿主 PTY）、`desktop.ts`（`/ws/desktop` + `/ws/desktop-vnc`，容器图形桌面）、`proxy.ts`（`/proxy/*`，Web 代理）。SSE 进度流的公共实现在 `sse.ts`。
 
 关键设计：
 
@@ -119,6 +119,17 @@ docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在
 - **服务发现 = hosts 尾部服务块**：`hosts.ts` 的 `composeHostsContent(base, serviceBlockLines(...))` 是唯一组合点，`hosts-sync.ts` 的 `applyServicesBlock`（读-改-写，幂等无需 hash 记账）覆盖事件/启动/services 全部触发点；`docker events`（start/die/destroy，label 过滤）+ 2s trailing debounce 驱动外部启停追平。容器内验证：`getent hosts <服务名>` → `+PONG`。
 - **坑**：docker 29 对本地已有 tag 的 pull 仍要联网验 manifest（离线直接失败）——`imageExistsLocal()` 先查再跳过 pull；本机 daemon.json 无 registry-mirrors 且宿主在 fake-ip 网络下，Docker Hub 直连常 EOF（apt 同理换过 aliyun 源）——所以有上面的 mirror 检测提示；docker daemon 挂 → health 仍 200（`dockerStatus` 1.5s 快败）、面板 reachable:false 降级、hosts 应用静默跳过。
 - **前端**：`ServicesPanel`（状态行（含 mirrors 提示）+ 任务区（3s 轮询：进度行/日志/取消）+ 服务表 + DropdownMenu 操作（含「连接信息」凭据对话框）+ 行内日志）→ `ServiceCreateDialog`（预设表单/自定义镜像；shadcn-vue Select（reka-ui portal）——**别用原生 `<select>`**，强制 dark 下 OS 自绘弹层白底违和；提交拿 jobId 即关窗）。完成通知：`lib/serviceJobs.ts` 的 `trackServiceJobs`（模块级 Map 记上次 state，只有「见过 running 落到终态」才 toast——两个轮询器喂它天然去重，首拉不误报）+ 全局 `<Toaster>`（vue-sonner，`ui/sonner/Sonner.vue` 硬编码 dark，无 next-themes）。侧栏服务摘要条自适应轮询（闲时 15s / 有任务 3s），任务进行中显示「N 个服务任务进行中…」。SSE（`streamOp`）现在只有 base 在用。
+
+### Web 代理——「面板外访问容器/服务的端口」
+
+`server/proxy.ts`：容器/服务在自管私网里，外部设备只能摸到宿主——把出口收进面板（同一监听端口、同一 token）。**两条门面一套核心**：vhost 门面（`Host: <name>-<port>.<基域名>`，由 fastify `rewriteUrl` 改写成规范子路径）+ 子路径门面（`/proxy/<c|s>/<name>/<port>/…` 兜底）。详版设计/实测记录在 `docs/web-proxy.md`——碰代理先读它。要点：
+
+- **rewriteUrl 同时覆盖 HTTP 与 WS upgrade**：@fastify/websocket 的 upgrade 经 `fastify.routing` 分发，而 `fastify.routing` 就是包了 rewriteUrl 的 handler（fastify.js `wrapRouting`）——不要自己挂 upgrade 监听。白名单未命中原样放行（基域名裸访问 = 控制台，靠这点天然兜住）。
+- **白名单是精确集合不放网段**（受管容器 IP ∪ 服务 IP；网段含 `.1` 宿主副 IP，放网段=SSRF 跳板指回宿主）。缓存 TTL 3s，rewriteUrl 同步只读、过期后台刷（去重于 inflight），启动预热。
+- **cookie 鉴权 Path 限 `/proxy`**：`/api/auth/session` 下发两份（宿主级 + `Domain=<基域名>`），被代理页面的 JS 拿 cookie 打不进 `/api/*`。转发上游前剥 cookie 与 `x-sandbox-token`。SameSite=Strict。
+- **reply-from 的坑**：body 靠封装作用域内 catch-all content-type parser 透传原始流（在 scope 内注册，别污染全实例）；undici `bodyTimeout: 0` 保长 SSE；Host 默认被改成上游、要 rewriteRequestHeaders 改回来；错误包成 `FST_REPLY_FROM_*`、原始 code 在 `error.cause`；query 不用自己拼（source 不带时自动取原 req.url）。Set-Cookie 的 Path 要收编进代理前缀，否则多应用同名 cookie 在 `/` 互相覆盖。
+- WS 是同路由全声明式 `handler` + `wsHandler` 双挂（wsHandler 类型只在 RouteOptions 上）；基域名 auto = 默认路由 IPv4 的 sslip.io（sslip.io 不在 Public Suffix List，实测；有自有域名优先自有），tailscale 地址一并列为候选给远程设备。
+- 前端 URL 拼装在 `lib/proxy.ts` 单例（`serviceUrl`），ContainerList 端口点击与 ServicesPanel 自定义服务「打开」都走它；服务预设（postgres 等）端口非 HTTP 不给「打开」。
 
 ### 宿主终端
 

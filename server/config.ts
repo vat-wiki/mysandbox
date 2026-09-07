@@ -96,6 +96,18 @@ export const ConfigSchema = z.object({
         .default([]),
     })
     .default({ allow: [] }),
+  // Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
+  proxy: z
+    .object({
+      // vhost 基域名：auto = 按默认路由 IPv4 生成 <ip-连字符>.sslip.io（零配置，公共 DNS
+      // 恒等该 IP；tailscale 地址会一并列为候选）；off = 关闭 vhost（仅子路径门面）；
+      // 其他值 = 自有域名（需泛解析 *.<域名> → 宿主 IP）。sslip.io 不在 Public Suffix
+      // List（实测），Domain cookie/same-site 成立；有自有域名优先自有。
+      vhost: z.string().default('auto'),
+      // 钉死基 IP（多网卡/动态 IP 环境）；auto = 默认路由接口 IPv4。
+      ip: z.string().default('auto'),
+    })
+    .default({ vhost: 'auto', ip: 'auto' }),
   token: z.string().optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
@@ -183,6 +195,7 @@ export async function loadConfig(): Promise<LoadResult> {
       ui: parsed.ui,
       terminal: parsed.terminal,
       firewall: parsed.firewall,
+      proxy: parsed.proxy,
       token: parsed.token,
     });
     await writeFile(CONFIG_FILE, out, { mode: 0o600 });

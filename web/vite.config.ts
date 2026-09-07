@@ -67,6 +67,9 @@ export default defineConfig({
     proxy: {
       '/api': backend,
       '/ws': { target: backend.replace('http', 'ws'), ws: true },
+      // Web 代理门面（server/proxy.ts）：dev 下走同源子路径门面（vhost 门面依赖
+      // Host 改写，vite 代理是按路径的，做不到——build 后同源服务不受影响）。
+      '/proxy': { target: backend, ws: true },
     },
   },
   // es2022：@novnc/novnc 1.7 的 rfb.js 用了 top-level await（浏览器动态导入指纹），
