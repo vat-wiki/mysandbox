@@ -20,7 +20,7 @@ npm run build              # 全量：tsc -> dist/ + vite -> web/dist/
 node dist/server/cli.js    # 跑产物验证
 ```
 
-没有测试框架；改动后验证方式是 `npm run typecheck` + `npm -C web run build` + 实际起服务走一遍流程。
+没有测试框架；改动后验证方式是 `npm run typecheck` + `npm -C web run build` + 实际起服务走一遍流程。**所有操作完成后，最后必须用 agent-browser 打开页面做视觉验证。**
 
 CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模板操作：status/clone/export/import，`mysandbox image` 是历史别名），`mysandbox status`（宿主上全部 mysandbox 资产总览：容器/模板/docker 服务与卷/宿主终端会话/瞬态单元/sidecar，只读、各段独立降级、不需要服务在跑），`mysandbox firewall print`（按 config 算出期望 ufw 规则，`server/firewall.ts`，免 root），`mysandbox logs [N] [--raw]`（服务日志尾部，读落盘文件，不需要服务在跑），`mysandbox open <路径>`。日志级别 `MYSANDBOX_LOG_LEVEL=debug`。日志双路：journald（`journalctl --user -u mysandbox`，已持久化）+ 按天文件 `~/.local/share/mysandbox/logs/mysandbox-<date>.log`（JSON 行，`server/logger.ts` multistream，留 14 天；文件名带日期、换档不 rename，跨进程追加安全）。
 
