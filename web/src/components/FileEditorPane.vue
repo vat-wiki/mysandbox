@@ -99,6 +99,16 @@ const svgUrl = computed(() => {
 // 相对路径的 <img> 换成 fetchFileBlob 的 objectURL：相对段相对 md 所在目录、`/` 开头
 // 按容器路径原样，`..` 逐段归一化；同图只取一次流。
 marked.setOptions({ gfm: true, breaks: true })
+// mermaid 代码块 → pre.mermaid 占位（hydrateMdMermaid 懒加载渲染成 SVG）；其余语言
+// return false 落回 marked 默认渲染。源码做 HTML 转义进 text，pre/class 都在 DOMPurify 白名单内
+marked.use({
+  renderer: {
+    code({ text, lang }) {
+      if ((lang ?? '').trim().toLowerCase() !== 'mermaid') return false
+      return `<pre class="mermaid">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`
+    },
+  },
+})
 const mdHtml = computed(() => {
   if (!isMd.value || !textPreview.value) return ''
   return DOMPurify.sanitize(marked.parse(content.value, { async: false }))
@@ -145,7 +155,42 @@ async function hydrateMdImages() {
     })
   }
 }
-watch(mdHtml, () => void nextTick(hydrateMdImages))
+// —— mermaid 图表渲染 ——
+// 占位 pre.mermaid → 懒 import mermaid（依赖体积大，只有 md 里真出现图表块才进 chunk）
+// → run() 原地替换成 SVG。mdHtml 每次重渲染 v-html 都整树换新，旧任务的渲染目标自然作废，
+// seq 只挡「动态 import 返回时内容已换代」的空转。解析失败的块保留源码并标 mermaid-bad
+//（mermaid 默认把坏图画成错误弹窗 SVG，编辑场景里裸源码更好改）；渲染层失败吞掉不致命。
+let mermaidApi: typeof import('mermaid')['default'] | null = null
+let mdMmdSeq = 0
+async function hydrateMdMermaid() {
+  const root = mdBody.value
+  if (!root) return
+  const nodes = Array.from(root.querySelectorAll<HTMLElement>('pre.mermaid:not([data-processed])'))
+  if (!nodes.length) return
+  const seq = ++mdMmdSeq
+  if (!mermaidApi) {
+    const m = await import('mermaid')
+    m.default.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' }) // 应用恒暗色
+    if (seq !== mdMmdSeq) return
+    mermaidApi = m.default
+  }
+  for (const node of nodes) {
+    if (seq !== mdMmdSeq) return
+    const bad = (await mermaidApi.parse(node.textContent ?? '', { suppressErrors: true })) === false
+    node.classList.toggle('mermaid-bad', bad)
+  }
+  const good = nodes.filter((n) => !n.classList.contains('mermaid-bad'))
+  if (!good.length) return
+  await mermaidApi.run({ nodes: good, suppressErrors: true }).catch(() => {})
+}
+watch(
+  mdHtml,
+  () =>
+    void nextTick(() => {
+      hydrateMdImages()
+      void hydrateMdMermaid()
+    }),
+)
 onBeforeUnmount(() => {
   if (autosaveTimer) clearTimeout(autosaveTimer)
   clearPreview()
@@ -522,7 +567,8 @@ function fmtSize(n: number): string {
           />
         </div>
         <!-- md 预览：marked + DOMPurify 渲染当前编辑内容；走主题变量排版（长文阅读，
-             不用 svg 那种白底卡），相对图片在 hydrateMdImages 里换 objectURL -->
+             不用 svg 那种白底卡），相对图片在 hydrateMdImages 里换 objectURL，
+             mermaid 代码块由 hydrateMdMermaid 懒加载渲染成 SVG -->
         <div
           v-else-if="isMd && textPreview"
           ref="mdBody"
@@ -668,6 +714,23 @@ function fmtSize(n: number): string {
   background: none;
   font-size: 12px;
   line-height: 1.6;
+}
+/* mermaid 占位块：渲染成功后原地换成 SVG（居中铺放），剥掉代码块的 muted 底；
+   解析失败保留源码便于就地改，红框示意 */
+.md-body :deep(pre.mermaid) {
+  display: flex;
+  justify-content: center;
+  background: transparent;
+  padding: 1em 0.5em;
+}
+.md-body :deep(pre.mermaid svg) {
+  max-width: 100%;
+  height: auto;
+}
+.md-body :deep(pre.mermaid.mermaid-bad) {
+  justify-content: flex-start;
+  border-style: dashed;
+  border-color: var(--color-destructive);
 }
 .md-body :deep(img) {
   max-width: 100%;
