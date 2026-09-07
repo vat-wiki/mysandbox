@@ -480,6 +480,10 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   //     -t 是 target-pane，无冒号的 =名字 按 window 名解析（会话 window 名是 sh/zsh 等
   //     前台命令，实测报 no such session）；带冒号 = 精确会话 + 当前窗口（capture-pane
   //     教训同源）。
+  //      set -t "=$1:" status off：tmux 状态栏自带分钟时钟，整点跳分钟重绘状态栏一格 =
+  //     attach 客户端每 60s 必收一帧——「无输出提醒」的静默确认（60s）永远凑不满、
+  //     提醒恒不触发（实测 lastNotable 每整 60s 重置）。web 终端有自己的 tab 栏，状态栏
+  //     纯噪声；session 级不影响用户自己的会话。hostTerminal.ts 同款。
   //   3) exec tmux attach：替换进程为 attach 客户端。
   //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>、
   //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）。
@@ -489,7 +493,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   const cmd = useTmux
     ? [
         'sh', '-c',
-        'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; exec tmux attach -t "$1"',
+        'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; tmux set -t "=$1:" status off 2>/dev/null; exec tmux attach -t "$1"',
         'sh', session, shell, pidfile, oldSession, splitCwd,
       ]
     : [shell];

@@ -29,6 +29,7 @@ import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
   lastTermNotableOutput,
   termRunSpanMs,
+  resetTermRun,
   snapTermBaseline,
   termContentChanged,
   forgetTerm,
@@ -1475,7 +1476,11 @@ function attentionTitle(gId: string): string {
 }
 function markWatch(g: TermGroup) {
   for (const t of leafIds(g.root)) leftAtByTerm.set(t, WATCHING)
-  quietAttention.value.delete(g.id) // 提醒标即时消，不等下一拍重算
+  // 消费提醒：标即时清（不等下一拍重算），旧活动段一并作废——否则链式跨度会让
+  // 看过之后的小输出（敲个 ls）继承旧段凑满 sustain、误挂标。
+  if (quietAttention.value.delete(g.id)) {
+    for (const t of leafIds(g.root)) resetTermRun(t)
+  }
 }
 function markLeft(g: TermGroup) {
   const now = Date.now()

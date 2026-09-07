@@ -83,6 +83,13 @@ export function termRunSpanMs(termId: string): number {
   return Math.max(0, last - start)
 }
 
+// 作废活动段（切回组消费提醒时调）：链式跨度的间隙阈值是分钟级，若不清，提醒消费后
+// 很快来的小输出（敲个 ls）会继承旧段跨度凑满 sustain、误挂标——看过即作废，新资格
+// 必须来自新段。
+export function resetTermRun(termId: string): void {
+  runStart.delete(termId)
+}
+
 // —— 「正在输出」投影 ——
 // 帧登记走普通 Map（不走响应式）：TUI 全速重绘时每秒上百帧，直连响应式会拖着 tab
 // 栏跟着重渲染。这里 1s 采样一次投影成 Set，且成员没变就不替换引用——UI 每秒最多

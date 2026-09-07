@@ -361,6 +361,11 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         // no such session），terminal.ts 同款教训。
         await hostTmux(['set', '-t', `=${session}:`, 'set-titles', 'on']);
         await hostTmux(['set', '-t', `=${session}:`, 'set-titles-string', '#T']);
+        // 状态栏 off：tmux 状态栏自带分钟时钟，整点跳分钟 = 整屏底部重绘一格，附着客户端
+        // 每 60s 必收一帧——「无输出提醒」的静默确认（60s）永远凑不满，提醒恒不触发
+        // （实测 lastNotable 每整 60s 重置一次）。web 终端有自己的 tab 栏，状态栏纯噪声；
+        // session 级不影响用户自己开的 tmux 会话。每次 attach 都设（server 重启后重连即生效）。
+        await hostTmux(['set', '-t', `=${session}:`, 'status', 'off']);
         // ---- 历史回填 ----
         // tmux attach 只重绘当前屏不回放历史：重连/刷新后 xterm scrollback 从空开始。
         // attach 前 capture 历史（-E -1 不含当前屏）作 {type:'history'} 控制帧先发，

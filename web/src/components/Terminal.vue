@@ -69,13 +69,15 @@ function kill() {
 
 // 当前视口内容快照（逐行文本拼接）：「无输出提醒」的内容基线用——离开时快照 vs
 // 安静判定时快照，相同 = 只是重绘（attach 整屏还原/重连/resize），不算新内容。
-// 只取可见视口不取 scrollback：tmux 重绘还原的就是这层，而断线提示行（writeln）
-// 会滚进 scrollback、纯噪音。文本行不含颜色/光标属性，重绘前后天然逐字节稳定。
+// 只取底部 rows 行（用户看到的画面）：⚠️ buffer.getLine(y) 的 y 是**全缓冲区绝对行号**，
+// 0 = scrollback 顶——从 0 读会把「最老的 24 行」当视口（输出一超屏哈希就永远冻结，
+// 基线恒等于当前，内容门槛全废，实测踩过）；文本行不含颜色/光标属性，重绘前后逐字节稳定。
 function screenHash(): string | undefined {
   if (!term) return undefined
   const buf = term.buffer.active
+  const from = Math.max(0, buf.length - term.rows)
   const lines: string[] = []
-  for (let y = 0; y < term.rows; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? '')
+  for (let y = from; y < buf.length; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? '')
   return lines.join('\n')
 }
 // 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）与首连共用。
