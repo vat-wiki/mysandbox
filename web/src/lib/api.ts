@@ -240,7 +240,8 @@ export const batchAiConfig = (ids: string[], input: AiGatewayInput) =>
   postJson('/api/batch/ai-config', { ids, ...input }) as Promise<BatchResult>
 
 // —— 终端会话（跨窗口/浏览器找回 tmux 会话）——
-// 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）。
+// 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）；
+// title = pane 动态标题（命令行/空闲路径/CC·opencode 任务标题，比 cwd 更好认）。
 export interface TermSessionView {
   kind: 'host' | 'container'
   containerId?: string
@@ -248,6 +249,7 @@ export interface TermSessionView {
   attached: number
   created: number
   cwd?: string
+  title?: string
 }
 // 会话去重 key：ContainerList 算「本窗口已占用」（可见 + 隐藏组的全部叶子）、
 // TermSessionsDialog 过滤远端列表，两处必须同构，收拢在这里。

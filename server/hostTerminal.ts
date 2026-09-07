@@ -196,16 +196,22 @@ export async function listHostSessions(): Promise<TermSessionView[]> {
   if (!r.ok) return []; // server 不在（无任何会话）等：按 0 会话
   const rows: TermSessionView[] = [];
   const re = /^(?:mysandbox-host|h)-([A-Za-z0-9_-]{4,64})\|/;
-  for (const line of r.stdout.split('\n')) {
-    const m = re.exec(line);
+  const lines = r.stdout.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = re.exec(lines[i]);
     if (!m) continue;
-    const [att, created, ...path] = line.slice(m[0].length).split('|');
+    const [att, created, ...path] = lines[i].slice(m[0].length).split('|');
+    // title 行 = 主行的下一行（两行格式，LIST_FMT 注释）；缺失/为空 → 无 title。
+    const next = lines[i + 1];
+    const title = next && !re.exec(next) ? next : undefined;
+    if (title !== undefined) i++;
     rows.push({
       kind: 'host',
       termId: m[1],
       attached: Number(att) || 0,
       created: (Number(created) || 0) * 1000,
       cwd: path.join('|') || undefined,
+      title: title || undefined,
     });
   }
   return rows;

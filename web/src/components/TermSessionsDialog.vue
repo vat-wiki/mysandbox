@@ -201,9 +201,10 @@ async function doKill() {
             class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
           >
             <span
-              class="min-w-0 flex-1 truncate pl-4 font-mono text-xs text-muted-foreground"
-              :title="s.cwd"
-            >{{ s.cwd || '…' }}</span>
+              class="min-w-0 flex-1 truncate pl-4 font-mono text-xs"
+              :class="s.title ? 'text-foreground/75' : 'text-muted-foreground'"
+              :title="s.title || s.cwd"
+            >{{ s.title || s.cwd || '…' }}</span>
             <Badge
               v-if="occupied.has(termSessionKey(s.kind, s.containerId, s.termId))"
               variant="outline"

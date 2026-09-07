@@ -203,11 +203,16 @@ export interface TermSessionView {
   attached: number; // 正在 attach 的客户端数（>0 = 有窗口正在用）
   created: number; // epoch ms
   cwd?: string;
+  title?: string; // pane 动态标题（shell 钩子的命令行/空闲路径、CC·opencode 任务标题）
 }
 
-// 行格式 name|attached|created|path。用 | 而非空格分隔：路径可含空格；路径本身也可能
-// 含 |（文件名 a|b 合法），所以拆前 3 段后剩余整体回拼。宿主侧扫描复用同一条格式。
-export const LIST_FMT = '#{session_name}|#{session_attached}|#{session_created}|#{pane_current_path}';
+// 行格式：每会话**两行**——主行 `name|attached|created|path`（| 分隔：路径可含空格；
+// 路径本身也可能含 |（文件名 a|b 合法），所以拆前 3 段后剩余整体回拼）+ 第二行 pane
+// title。title 不并用 | 分隔的原因：title 来自命令行（preexec 标题含管道符 | 很常见）
+// 与 TUI 应用标题，加段必有歧义；控制字符（\x1f 试过）会被 tmux format 转义成 \037
+// 字面串也切不开。换行分块最稳（title 含换行的情形实际不存在：钩子已剔、tmux pane
+// title 不含换行），解析按「主行命中 re、其后一行即 title」消费。
+export const LIST_FMT = '#{session_name}|#{session_attached}|#{session_created}|#{pane_current_path}\n#{pane_title}';
 
 export async function listContainerSessions(cfg: Config, id: string): Promise<TermSessionView[]> {
   const short = id.slice(0, 8);
@@ -228,10 +233,15 @@ export async function listContainerSessions(cfg: Config, id: string): Promise<Te
     return []; // 容器刚停/exec 失败：按 0 会话
   }
   const rows: TermSessionView[] = [];
-  for (const line of out.split('\n')) {
-    const m = re.exec(line);
+  const lines = out.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = re.exec(lines[i]);
     if (!m) continue;
-    const [att, created, ...path] = line.slice(m[0].length).split('|');
+    const [att, created, ...path] = lines[i].slice(m[0].length).split('|');
+    // title 行 = 主行的下一行（不命中主行 re 即消费；缺失/为空 → 无 title）。
+    const next = lines[i + 1];
+    const title = next && !re.exec(next) ? next : undefined;
+    if (title !== undefined) i++;
     rows.push({
       kind: 'container',
       containerId: id,
@@ -239,6 +249,7 @@ export async function listContainerSessions(cfg: Config, id: string): Promise<Te
       attached: Number(att) || 0,
       created: (Number(created) || 0) * 1000,
       cwd: path.join('|') || undefined,
+      title: title || undefined,
     });
   }
   return rows;
