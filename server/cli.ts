@@ -9,7 +9,9 @@ import { runBaseCommand } from './base.js';
 import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
+import { runLogsCommand } from './logs.js';
 import { proxyBases } from './proxy.js';
+import { log, LOG_DIR } from './logger.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
 import { startServicesEventSync } from './services.js';
@@ -88,6 +90,10 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
       (computed from config; applied by mysandbox-firewall.service).
       Read-only; does not need the server or root.
 
+  mysandbox logs [N] [--raw]
+      Tail the server's on-disk log (latest daily file, default 100 lines).
+      --raw prints JSON lines. Full history: journalctl --user -u mysandbox.
+
 Options:
   --port <n>     listen port (default 7321)
   --host <addr|auto>
@@ -102,6 +108,12 @@ Token:  stored in config (mode 0600), printed on first run.
 `;
 
 async function main(): Promise<void> {
+  // 一次性子命令：mysandbox logs [N] [--raw]（读落盘日志文件尾部，不需要服务在跑）。
+  if (process.argv[2] === 'logs') {
+    await runLogsCommand(process.argv.slice(3));
+    return;
+  }
+
   // 一次性子命令：mysandbox open <path>（走 HTTP 调运行中的服务，不启动 server）。
   if (process.argv[2] === 'open') {
     const { config } = await loadConfig();
@@ -172,6 +184,7 @@ async function main(): Promise<void> {
   // docker 服务事件 → hosts 服务行追平（debounce + 断线重连，见 services.ts）。
   startServicesEventSync(config);
   await app.listen({ host: config.listen.host, port: config.listen.port });
+  log.info({ logFile: LOG_DIR }, 'file logging active (daily rotate, 14d retention; also on journald)');
 
   process.stdout.write(
     `>> mysandbox ${getVersion()}  ${engine.name} ${d.version ?? '?'}${d.apiVersion ? ` (api ${d.apiVersion})` : ''}\n`,
