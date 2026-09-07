@@ -314,6 +314,13 @@ function dividerDrag(delta: number) {
 // cwd 只在「新会话首次创建」那一刻有意义（后端 new-session -c 源 pane 当前目录），
 // 刷新后会话必已存在（attach 回去），映射随页面消亡正好不再传 from。
 const splitCwdFrom = new Map<string, string>()
+// —— 终端动态标题（tab 标签）——
+// 来源：shell 钩子（scripts/zshrc / 宿主 ~/.zshrc 的 preexec/precmd 发 OSC 2：执行中=
+// 命令行、空闲=用户@主机:路径）与 TUI 应用（CC/opencode 自己发的任务标题）——服务端
+// tmux set-titles on 转发 pane title → Terminal.vue onTitleChange / {type:'title'} 帧
+// → 这里。纯内存态：重连时服务端补发 title 帧恢复，恢复不了（首连）回落默认组名。
+// 值带更新时刻：多 pane 组取「最近更新」的那块当组标题（谁在动显示谁）。
+const termTitles = ref<Record<string, { text: string; at: number }>>({})
 provide(TERM_OPS, {
   split(group, termId, dir) {
     const fresh = newTermId()
@@ -322,6 +329,7 @@ provide(TERM_OPS, {
   },
   close(group, termId) {
     termRefs.get(termId)?.kill()
+    delete termTitles.value[termId]
     const root = removeLeaf(group.root, termId)
     if (root) group.root = root
     else closeGroupById(group.id)
@@ -332,6 +340,11 @@ provide(TERM_OPS, {
   },
   cwdSourceOf(termId) {
     return splitCwdFrom.get(termId)
+  },
+  onTitle(_group, termId, title) {
+    const t = title.trim()
+    if (!t) return
+    termTitles.value[termId] = { text: t, at: Date.now() }
   },
   onOscOpen,
   onLinkOpen,
@@ -944,6 +957,25 @@ function groupLabel(g: TermGroup): string {
   if (peers.length <= 1) return g.name
   return `${g.name}·${g.seq ?? peers.indexOf(g) + 1}`
 }
+// 组动态标题：组内 pane 最近更新的非空标题（无 → ''）。多 pane 时「谁在动显示谁」
+// （跑 CC 的 pane 会把标题推给整个 tab），静默组不覆盖。
+function groupDynamicLabel(g: TermGroup): string {
+  let best = ''
+  let at = 0
+  for (const id of leafIds(g.root)) {
+    const t = termTitles.value[id]
+    if (t && t.at > at) {
+      at = t.at
+      best = t.text
+    }
+  }
+  return best
+}
+// tab 标签：动态标题优先（命令行 / 用户@主机:路径 / CC·opencode 任务标题），
+// 无（首连且无 title 帧）回落 groupLabel 默认名。
+function tabLabel(g: TermGroup): string {
+  return groupDynamicLabel(g) || groupLabel(g)
+}
 // 手动新开一组（tab 右键菜单「新开一组终端」）：为该 tab 的容器/宿主再开一组全新终端。
 // 侧栏点容器是「聚焦已有组」，这里是「再开一组」——单组分屏满 MAX_GROUP_PANES
 // 块后想要更多终端，走这个显式动作。触屏长按 tab 同样能弹菜单。
@@ -999,9 +1031,11 @@ watch(
   },
   { immediate: true },
 )
-// popout 无 header，窗口标题是唯一身份标识：跟随当前组名。
+// popout 无 header，窗口标题是唯一身份标识：跟随当前组的标签（动态标题优先，
+// 与 tab 同源；跑命令/CC 时浏览器窗口标题实时变化）。
+const activeTabLabel = computed(() => (activeGroup.value ? tabLabel(activeGroup.value) : ''))
 watch(
-  () => activeGroup.value?.name,
+  () => activeTabLabel.value,
   (name) => {
     if (props.popout && name) document.title = `${name} · mysandbox`
   },
@@ -2103,7 +2137,7 @@ onUnmounted(() => {
                   :style="{ backgroundColor: tabDotColor(g), '--dot': tabDotColor(g) }"
                 />
               </span>
-              <span class="min-w-0 truncate">{{ groupLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
+              <span class="min-w-0 truncate">{{ tabLabel(g) }}<span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span></span>
               <button
                 @click.stop="closeGroupById(g.id)"
                 class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"

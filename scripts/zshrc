@@ -24,6 +24,29 @@ fi
 alias ll='ls -lah'
 alias la='ls -A'
 
+# —— 动态终端标题：执行中 = 命令行、空闲 = 用户@主机:路径（OSC 2）——
+# web 终端 tab 标签依赖它：tmux 侧 set-titles on（terminal.ts/hostTerminal.ts 每次
+# attach 设置）把 pane title 转发给前端 xterm 的 onTitleChange。omz 自带的 termsupport
+# 在 tmux 内（TERM=tmux*）走 \ek 分支——实测 tmux 3.4 对该序列 pane title 与 window
+# name 都不改（window name 还会被 automatic-rename 盖回前台命令名），等于什么都没设；
+# 这里用 add-zsh-hook 独立注册（不覆盖 omz 钩子），恒发 OSC 2。CC/opencode 等 TUI
+# 自己发的 OSC 2 会在运行中自然覆盖本钩子的标题，无需特判。普通终端（SSH 直连等）
+# 收到 OSC 2 显示同样的标题，标准行为无副作用。
+autoload -Uz add-zsh-hook
+_msb_title() {
+  local t=$1
+  t=${t//$'\e'/}                    # 剔 ESC：命令名夹带序列也无法伪造 OSC
+  t=${t//$'\a'/}                    # 剔 BEL：OSC 终结符
+  t=${t//$'\r'/}
+  t=${t//$'\n'/ }
+  (( ${#t} > 60 )) && t="${t[1,57]}…"
+  printf '\e]2;%s\a' "$t"
+}
+_msb_preexec() { _msb_title "$1" }                       # $1 = 完整命令行
+_msb_precmd() { _msb_title "${(%):-%n@%m:%~}" }          # ${(%)...}：零 fork 的 prompt 展开
+add-zsh-hook preexec _msb_preexec
+add-zsh-hook precmd _msb_precmd
+
 # 幽灵建议（输入时灰色提示历史命令）+ 命令语法高亮：apt 预装的两个小包，omz 不含。
 # 缺失则静默跳过（老容器不报错）。
 # Tab 补全与 ghost 叠渲染修复：Tab 的 widget(expand-or-complete)不在插件任何名单里，

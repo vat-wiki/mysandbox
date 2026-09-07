@@ -163,6 +163,10 @@ export interface TermPaneOps {
   // Ctrl+点击路径链接（Terminal 的 link provider）：path 为原始 token（可相对/带 ~），
   // line/col 来自栈跟踪式 `:行:列` 后缀。
   onLinkOpen(group: TermGroup, termId: string, path: string, line?: number, col?: number): void
+  // pane 动态标题（Terminal.vue 的 OSC 0/2 onTitleChange 与服务端 {type:'title'} 控制帧）：
+  // shell 钩子（执行命令/空闲路径）与 TUI 应用（CC/opencode）经 tmux set-titles 转发。
+  // 实现侧存内存 map，tab 标签优先显示动态标题（空标题忽略，回落默认组名）。
+  onTitle(group: TermGroup, termId: string, title: string): void
   // idx = 分隔条之后的 child 序号（调 children[idx-1] 与 [idx]）；minPx 为该轴最小像素。
   dividerStart(node: SplitNode, idx: number, parentSize: number, minPx: number): void
   dividerDrag(delta: number): void

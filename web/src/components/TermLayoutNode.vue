@@ -65,6 +65,12 @@ function onLinkOpen(path: string, line?: number, col?: number) {
   if (props.node.kind !== 'leaf') return
   ops.onLinkOpen(props.group, props.node.termId, path, line, col)
 }
+// pane 动态标题（OSC onTitleChange / 服务端 title 帧）上抛：ContainerList 存内存
+// map，tab 标签/popout 窗口标题优先显示它。
+function onTitle(title: string) {
+  if (props.node.kind !== 'leaf') return
+  ops.onTitle(props.group, props.node.termId, title)
+}
 // 分叉动作：分隔条 dragstart 换算该轴最小像素后上抛（idx = 分隔条之后的 child 序号）。
 function onDividerStart(idx: number, parentSize: number) {
   const s = split.value
@@ -163,6 +169,7 @@ if (leaf.value) {
       :from-term-id="ops.cwdSourceOf(leaf.termId)"
       @osc-open="onOsc"
       @link-open="onLinkOpen"
+      @title="onTitle"
     />
   </div>
 

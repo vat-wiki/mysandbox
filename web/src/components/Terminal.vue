@@ -31,10 +31,13 @@ const props = withDefaults(
 )
 // 容器内 mysandbox 命令的联动事件：OSC 7677 payload 解析出的容器内路径；
 // link-open 是终端 buffer 里 Ctrl+点击路径链接（path 为原始 token，可相对/带 ~，
-// 行列来自栈跟踪式 `:行:列` 后缀）。
+// 行列来自栈跟踪式 `:行:列` 后缀）；title 是窗口标题变化（OSC 0/2：shell 钩子的
+// 执行命令/空闲路径、CC·opencode 的任务标题——经 tmux set-titles 转发到这里，
+// ContainerList 拿去更新 tab 标签）。
 const emit = defineEmits<{
   (e: 'osc-open', path: string): void
   (e: 'link-open', path: string, line?: number, col?: number): void
+  (e: 'title', title: string): void
 }>()
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
@@ -107,6 +110,10 @@ function connectWs() {
           // N 行历史 + rows 个 CRLF = N+rows-1 个换行：恰好全部推进 scrollback、零空行
           // 缝隙、光标落底行（数学上精确成立，与 N 无关）；重绘的绝对定位画在空视口上。
           term?.write(m.text.split('\n').join('\r\n') + '\r\n'.repeat(term?.rows ?? 24))
+        } else if (m.type === 'title' && typeof m.text === 'string') {
+          // 重连/刷新后的标题恢复：pane title 留在 tmux 里不会随 attach 重发（历史回填
+          // 只有可见文本），服务端 attach 前读 #T 补发此帧（terminal.ts / hostTerminal.ts）。
+          emit('title', m.text)
         }
       } catch {
         /* 非法控制帧忽略 */
@@ -489,6 +496,11 @@ onMounted(async () => {
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon())
   term.open(el.value)
+  // OSC 0/2（窗口标题）：shell 钩子（scripts/zshrc / 宿主 ~/.zshrc 的 preexec/precmd）
+  // 与 TUI 应用（CC/opencode）发的标题，经 tmux set-titles on（session 级选项）转发到
+  // 这里——ContainerList 拿去更新 tab 标签/popout 窗口标题。plain shell 降级（无 tmux）
+  // 时序列直达，同样走这里，链路两种模式天然覆盖。
+  term.onTitleChange((t) => emit('title', t.trim()))
   // 容器内 mysandbox 命令：捕获 OSC 7677（tmux 下走 DCS passthrough，到这里已还原为裸 OSC）。
   // payload 形如 "open;<path>"：action 取首个 ; 之前，路径取其后全部（路径可含 ;）。
   // 返回 true = 已消费，不落入默认处理。

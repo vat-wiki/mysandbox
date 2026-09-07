@@ -347,6 +347,14 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         await hostTmux(['set', '-g', 'set-clipboard', 'on']);
         // pane 历史默认 2000 行，与容器侧对齐放大（前端 scrollback 10000）。
         await hostTmux(['set', '-g', 'history-limit', '50000']);
+        // tab 标题链路 tmux 侧：pane 内程序发的 OSC 0/2（shell 钩子/CC·opencode）被截获
+        // 存成 pane title，set-titles on 把它转发到外层终端（xterm.js onTitleChange →
+        // tab 标签）。session 级选项（不带 -g），只影响本会话；每次 attach 都设（同上）。
+        // 用 #T 不用 #W 的实测依据见 terminal.ts 的 set 串注释；⚠️ -t 必须 "=会话:"
+        // （带冒号）：set-option 的 -t 是 target-pane，无冒号按 window 名解析（实测报
+        // no such session），terminal.ts 同款教训。
+        await hostTmux(['set', '-t', `=${session}:`, 'set-titles', 'on']);
+        await hostTmux(['set', '-t', `=${session}:`, 'set-titles-string', '#T']);
         // ---- 历史回填 ----
         // tmux attach 只重绘当前屏不回放历史：重连/刷新后 xterm scrollback 从空开始。
         // attach 前 capture 历史（-E -1 不含当前屏）作 {type:'history'} 控制帧先发，
@@ -364,6 +372,23 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
           }
         } catch {
           /* 会话未建好等：无历史可回填 */
+        }
+        // ---- tab 标题恢复（terminal.ts 同款）----
+        // 重连/刷新后 pane title 不会随 attach 重发，读 #T 补发 {type:'title'} 控制帧；
+        // 失败静默（首连/会话未建好），tab 落默认名。
+        try {
+          const t = await hostTmux(['list-panes', '-t', `=${session}:`, '-F', '#{pane_active} #{pane_title}']);
+          const title = t.stdout
+            .split('\n')
+            .map((l) => l.trim())
+            .find((l) => l.startsWith('1 '))
+            ?.slice(2)
+            .trim() ?? '';
+          if (t.ok && title) {
+            socket.send(JSON.stringify({ type: 'title', text: title }));
+          }
+        } catch {
+          /* 无会话：静默 */
         }
       }
 

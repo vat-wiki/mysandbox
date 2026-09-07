@@ -425,52 +425,63 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
           /* 源会话不在/容器抖动：落默认 home */
         }
       }
-      // tmux 持久会话。一次 attach、用 sh -c 串四步（无额外往返）：
-      //   0) echo $$ > pidfile：sh 把自己的 PID（容器内 PID，exec tmux 后同 PID）写进唯一 pidfile，
-      //      关闭时 killExecClient 据此找到并杀掉对应 tmux 客户端（exec.inspect().Pid 恒为 0，用不了）；
-      //   1) has-session || new-session -d：有会话则复用、没有则 detached 新建（server+shell 起来但不 attach）；
-      //   2) set -g mouse off + terminal-overrides smcup@:rmcup@：tmux 仅做会话守护，交互交给 xterm.js。
-      //      mouse off：选择/复制交给 xterm.js（tmux 不劫持鼠标）。
-      //      禁 smcup/rmcup：让 tmux 客户端 attach 时【不进 alt screen】。否则 tmux 发 ?1049h 进 alt buffer，
-      //      xterm 在 alt buffer 下 hasScrollback=false，会把滚轮转成 ↑/↓ 方向键发给 shell（=翻命令历史，
-      //      而非滚 scrollback）并隐藏滚动条--这正是「滚轮切命令、无滚动条」的根因。禁后 tmux 在 normal screen
-      //      绘制，滚轮走 xterm scrollback、有滚动条（与 VSCode 集成终端一致）。实测：无反复 2J 重绘、不污染
-      //      scrollback、status bar 正常。每次 attach 都重设，扛得住 tmux server 重启；
-      //      set-environment -g MYSANDBOX_WEB 1 + set -s allow-passthrough on：给容器内 mysandbox
-      //      命令铺路——前者标记 web 环境（exec 的 Env 到不了 tmux server 起的 shell，故挂 server
-      //      全局环境，脚本用 show-environment -g 运行时探测）；后者放行 DCS passthrough，否则
-      //      tmux 吞掉脚本打的 OSC 7677（tmux 只转发认识的 OSC）。
-      //      set-environment -g LANG C.UTF-8：tmux server 是守护进程、全局环境在首次启动时冻结
-      //     （update-environment 默认不含 LANG），之后 exec 带的 LANG 传不进已运行的 server——
-      //     修复前起的 server 其新 pane 仍会落在 C locale（提示符 » 显示成 _、编辑残留幽灵字符，
-      //     见 engine/lxc.ts attachArgs 的 locale 注释），每次 attach 钉一次补漏。
-      //      set -as terminal-overrides Ms + set -g set-clipboard on：打通 OSC 52（剪贴板）转发。
-      //     TUI 应用（opencode 等）在容器内没有 X/Wayland，xclip/wl-copy 全失败，唯一的复制通道
-      //     是「请终端代写剪贴板」的 OSC 52——但 tmux 默认不转发它（terminfo 无 Ms 能力时直接
-      //     丢弃），应用还照样提示「已复制」（发序列是火后不管的）。Ms override 让 tmux 相信
-      //     外层终端支持剪贴板；set-clipboard 必须 on（external 只转发 tmux 自己的 buffer 操作、
-      //     忽略 pane 内应用发的序列——实测对照过）；前端 Terminal.vue 的 registerOscHandler(52)
-      //     接住转发来的序列写 navigator.clipboard，三方接通。
-      //      set -g history-limit 50000：pane 历史默认仅 2000 行，长输出（claude -h 等）很快被
-      //     截断；前端 scrollback 10000，历史上限给足余量（回填见下方 capture）。
-      //      set -sg escape-time 10：默认 500ms——tmux 收到裸 ESC 后等这么久判断「是 ESC 键
-      //     还是序列开头」，按 ESC 打断 opencode/vim 要迟 0.5s 才生效、快速连按还会在等待
-      //     窗口内互相吞并，表现为「ESC 没反应」（实测容器 server 恒为默认 500，代码从未设过）。
-      //     web 链路上 xterm.js 每次按键独立成帧、序列字节原子到达，10ms 合并窗口绰绰有余
-      //     且人不可感。
-      //   3) exec tmux attach：替换进程为 attach 客户端。
-      //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>、
-      //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）。
-      //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
-      //   后续 has-session 命中新名。注意 set 必须在 attach 之前 detached 跑--attach 后
-      //   客户端接管 tty，命令行里 ';' 接的后续 tmux 命令不再执行（实测 attach 路径下 set 不生效）。
-      const cmd = useTmux
-        ? [
-            'sh', '-c',
-            'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; exec tmux attach -t "$1"',
-            'sh', session, shell, pidfile, oldSession, splitCwd,
-          ]
-        : [shell];
+  // tmux 持久会话。一次 attach、用 sh -c 串四步（无额外往返）：
+  //   0) echo $$ > pidfile：sh 把自己的 PID（容器内 PID，exec tmux 后同 PID）写进唯一 pidfile，
+  //      关闭时 killExecClient 据此找到并杀掉对应 tmux 客户端（exec.inspect().Pid 恒为 0，用不了）；
+  //   1) has-session || new-session -d：有会话则复用、没有则 detached 新建（server+shell 起来但不 attach）；
+  //   2) set -g mouse off + terminal-overrides smcup@:rmcup@：tmux 仅做会话守护，交互交给 xterm.js。
+  //      mouse off：选择/复制交给 xterm.js（tmux 不劫持鼠标）。
+  //      禁 smcup/rmcup：让 tmux 客户端 attach 时【不进 alt screen】。否则 tmux 发 ?1049h 进 alt buffer，
+  //      xterm 在 alt buffer 下 hasScrollback=false，会把滚轮转成 ↑/↓ 方向键发给 shell（=翻命令历史，
+  //      而非滚 scrollback）并隐藏滚动条--这正是「滚轮切命令、无滚动条」的根因。禁后 tmux 在 normal screen
+  //      绘制，滚轮走 xterm scrollback、有滚动条（与 VSCode 集成终端一致）。实测：无反复 2J 重绘、不污染
+  //      scrollback、status bar 正常。每次 attach 都重设，扛得住 tmux server 重启；
+  //      set-environment -g MYSANDBOX_WEB 1 + set -s allow-passthrough on：给容器内 mysandbox
+  //      命令铺路——前者标记 web 环境（exec 的 Env 到不了 tmux server 起的 shell，故挂 server
+  //      全局环境，脚本用 show-environment -g 运行时探测）；后者放行 DCS passthrough，否则
+  //      tmux 吞掉脚本打的 OSC 7677（tmux 只转发认识的 OSC）。
+  //      set-environment -g LANG C.UTF-8：tmux server 是守护进程、全局环境在首次启动时冻结
+  //     （update-environment 默认不含 LANG），之后 exec 带的 LANG 传不进已运行的 server——
+  //     修复前起的 server 其新 pane 仍会落在 C locale（提示符 » 显示成 _、编辑残留幽灵字符，
+  //     见 engine/lxc.ts attachArgs 的 locale 注释），每次 attach 钉一次补漏。
+  //      set -as terminal-overrides Ms + set -g set-clipboard on：打通 OSC 52（剪贴板）转发。
+  //     TUI 应用（opencode 等）在容器内没有 X/Wayland，xclip/wl-copy 全失败，唯一的复制通道
+  //     是「请终端代写剪贴板」的 OSC 52——但 tmux 默认不转发它（terminfo 无 Ms 能力时直接
+  //     丢弃），应用还照样提示「已复制」（发序列是火后不管的）。Ms override 让 tmux 相信
+  //     外层终端支持剪贴板；set-clipboard 必须 on（external 只转发 tmux 自己的 buffer 操作、
+  //     忽略 pane 内应用发的序列——实测对照过）；前端 Terminal.vue 的 registerOscHandler(52)
+  //     接住转发来的序列写 navigator.clipboard，三方接通。
+  //      set -g history-limit 50000：pane 历史默认仅 2000 行，长输出（claude -h 等）很快被
+  //     截断；前端 scrollback 10000，历史上限给足余量（回填见下方 capture）。
+  //      set -sg escape-time 10：默认 500ms——tmux 收到裸 ESC 后等这么久判断「是 ESC 键
+  //     还是序列开头」，按 ESC 打断 opencode/vim 要迟 0.5s 才生效、快速连按还会在等待
+  //     窗口内互相吞并，表现为「ESC 没反应」（实测容器 server 恒为默认 500，代码从未设过）。
+  //     web 链路上 xterm.js 每次按键独立成帧、序列字节原子到达，10ms 合并窗口绰绰有余
+  //     且人不可感。
+  //      set -t "=$1" set-titles on + set-titles-string '#T'：**tab 标题链路的 tmux 侧**。
+  //     pane 内程序发的 OSC 0/2（shell 钩子的执行命令/空闲路径、CC/opencode 的任务标题）
+  //     被 tmux 截获存成 pane title（#T），默认 set-titles off 不往外层转发——web 终端
+  //     tab 一直显示固定容器名、CC 标题到不了前端的根因在这。转发格式用 #T（实测 tmux
+  //     3.4：OSC 0/2 只更新 pane title 不动 window name；omz 的 termsupport 在 TERM=tmux*
+  //     分支发的 \ek 序列两者都不改，标题由 zshrc 钩子补发 OSC 2，见 scripts/zshrc）。
+  //     session 级选项（不带 -g、-t 指定会话）：不污染用户自己开的 tmux 会话；每次 attach
+  //     都设（同上面其他 set 的理由）。⚠️ target 必须 "=$1:"（带冒号）：set-option 的
+  //     -t 是 target-pane，无冒号的 =名字 按 window 名解析（会话 window 名是 sh/zsh 等
+  //     前台命令，实测报 no such session）；带冒号 = 精确会话 + 当前窗口（capture-pane
+  //     教训同源）。
+  //   3) exec tmux attach：替换进程为 attach 客户端。
+  //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>、
+  //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）。
+  //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
+  //   后续 has-session 命中新名。注意 set 必须在 attach 之前 detached 跑--attach 后
+  //   客户端接管 tty，命令行里 ';' 接的后续 tmux 命令不再执行（实测 attach 路径下 set 不生效）。
+  const cmd = useTmux
+    ? [
+        'sh', '-c',
+        'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; exec tmux attach -t "$1"',
+        'sh', session, shell, pidfile, oldSession, splitCwd,
+      ]
+    : [shell];
 
       // ---- 历史回填 ----
       // tmux attach 只重绘当前可见屏、不回放 pane 历史：刷新页面/重连后 xterm scrollback 从空
@@ -499,6 +510,31 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
           }
         } catch {
           /* 会话不在（首连）：无历史可回填 */
+        }
+        // —— tab 标题恢复 ——
+        // xterm 的 onTitleChange 只在流里出现 OSC 时触发；重连/刷新后 pane title 留在
+        // tmux 里不会重发（capture-pane 回填的是可见文本，OSC 已被剥离）。attach 前读
+        // pane_title 补发 {type:'title'} 控制帧，前端更新 tab（失败静默 = 首连/会话不在，
+        // tab 落默认名）。pane title 来源：shell 钩子与 TUI 应用的 OSC 0/2（见上方 set 串
+        // 的 set-titles 注释）。list-panes 而非 display-message：后者对无 attach client
+        // 的会话返回空串（files.ts 同款结论）；target 带「=会话名:」（capture-pane 教训）。
+        try {
+          const r = await execRun(cfg, id, {
+            Cmd: [
+              'sh', '-c',
+              'tmux list-panes -t "=$1:" -F "#{pane_active} #{pane_title}" 2>/dev/null | sed -n "s/^1 //p"',
+              'sh', session,
+            ],
+            User: '1000:1000',
+            Tty: false,
+            timeoutMs: 8_000,
+          });
+          const title = r.stdout.trim();
+          if (title) {
+            socket.send(JSON.stringify({ type: 'title', text: title }));
+          }
+        } catch {
+          /* 会话不在/容器抖动：tab 落默认名 */
         }
       }
 
