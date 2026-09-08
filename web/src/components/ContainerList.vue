@@ -119,8 +119,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'unauthorized'): void
   (e: 'open-base'): void
-  // 打开服务管理面板；create=true 表示来自摘要条 ＋（面板打开时直接弹新建对话框）
-  (e: 'open-services', create?: boolean): void
+  // 打开服务管理抽屉；create=true 表示来自 ＋（带新建意图）；select=服务名表示来自
+  // 卡片点击（抽屉打开即定位到该服务详情）
+  (e: 'open-services', create?: boolean, select?: string): void
   (e: 'open-handled'): void
 }>()
 
@@ -1394,13 +1395,14 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
   await act(c.id, () => deleteContainer(c.id, { deleteData: payload.deleteData, confirmName: payload.deleteData ? payload.confirmName : undefined }))
 }
 
-  // —— 侧栏 docker 服务分区（卡片 + 可收起）——
-  // 服务同样以卡片进侧栏（与系统容器同形态：色条 + 名称 + IP + 描述），但作为低频
-  // 配套收在底部环境区、可整体收起：分区头聚合状态（状态点 + 收起时的摘要文案），
-  // 展开/收起记 localStorage。管理动作仍以服务面板为主场——卡片点击开面板，⋯ 只收
-  // 启停/重启这类快捷操作。轮询自适应：闲时 15s（服务启停低频），有创建任务进行中时
-  // 3s（任务进度/完成 toast 的及时性；任务 tail=0，payload 极小）。
-  // 完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，天然只发一次）。
+      // —— 侧栏 docker 服务分区（卡片 + 可收起）——
+      // 服务同样以卡片进侧栏（与系统容器同形态：色条 + 名称 + IP + 描述），但作为低频
+      // 配套收在底部环境区、可整体收起：分区头聚合状态（状态点 + 收起时的摘要文案），
+      // 展开/收起记 localStorage。管理动作以服务抽屉为主场——卡片点击开抽屉并定位，
+      // ⋯ 收复制连接/打开端口/启停重启这类就地快捷。轮询自适应：闲时 15s（服务启停
+      // 低频），有创建任务进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，
+      // payload 极小）。完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询
+      // 也喂它，天然只发一次）。
   const svcItems = ref<ServiceView[]>([])
   // 分区展开态：默认展开（首次见到的就是卡片形态），用户收起后随 localStorage 记忆。
   const svcExpanded = ref(
@@ -1419,24 +1421,38 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
       /* localStorage 不可用就跳过 */
     }
   })
-  // 卡片快捷操作（启停/重启）：与面板同 API；错误走 toast——侧栏错误条是容器列表的领地。
-  const svcBusy = ref('')
-  async function svcOp(name: string, fn: () => Promise<unknown>) {
-    if (svcBusy.value) return
-    svcBusy.value = name
-    try {
-      await fn()
-      await refreshServices()
-    } catch (e) {
-      if (e instanceof Unauthorized) {
-        emit('unauthorized')
-        return
+      // 卡片快捷操作（启停/重启）：与面板同 API；错误走 toast——侧栏错误条是容器列表的领地。
+      const svcBusy = ref('')
+      async function svcOp(name: string, fn: () => Promise<unknown>) {
+        if (svcBusy.value) return
+        svcBusy.value = name
+        try {
+          await fn()
+          await refreshServices()
+        } catch (e) {
+          if (e instanceof Unauthorized) {
+            emit('unauthorized')
+            return
+          }
+          toast.error(e instanceof Error ? e.message : String(e))
+        } finally {
+          svcBusy.value = ''
+        }
       }
-      toast.error(e instanceof Error ? e.message : String(e))
-    } finally {
-      svcBusy.value = ''
-    }
-  }
+      // 高频动作不进抽屉就地给：连接命令是服务的「第一用法」（容器内 psql -h pg 直连）。
+      function copySvcConnect(s: ServiceView) {
+        void copyTabText(s.connect[0] ?? '', '已复制连接命令')
+      }
+      // 打开服务端口：口径跟随控制台（IP 直连 / 基域名代理，lib/proxy.ts）。仅自定义
+      // 预设有网页型端口——postgres/redis/mysql 的端口不是 HTTP，浏览器代理进不去。
+      function openServicePort(s: ServiceView, port: number) {
+        window.open(serviceUrl('s', s.name, port, s.ip), '_blank', 'noopener')
+      }
+      // 点卡片开服务抽屉并定位；手机上先收侧栏抽屉（与 openTerm 同款，避免两层抽屉叠着）。
+      function onServiceCard(s: ServiceView) {
+        if (isPhone.value) drawerOpen.value = false
+        emit('open-services', false, s.name)
+      }
 // null=未知（首拉前），false=docker 不可达
 const svcReachable = ref<boolean | null>(null)
 const svcJobsRunning = ref(0)
@@ -2066,8 +2082,9 @@ onUnmounted(() => {
            默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数 + 聚合状态点，整行点击
            展开/收起；收起时补一行摘要文案（不可达/任务进行中时尤其要紧，展开后让位给
            卡片本体）。卡片色条用状态语义色（服务是基础设施，不像容器那样用身份色）：
-           running=绿 / restarting=琥珀 / 其余灰。点击卡片开服务面板（管理主场），IP 点击
-           复制，⋯ 收启停/重启快捷操作。列表 max-h 托底滚动，服务多也不挤占容器区。 -->
+           running=绿 / restarting=琥珀 / 其余灰。点击卡片开服务抽屉并定位到该服务（管理
+           主场），IP 点击复制，⋯ 收连接命令/打开端口/启停重启。列表 max-h 托底滚动，
+           服务多也不挤占容器区。 -->
       <div class="shrink-0 border-t border-border">
         <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
           <button
@@ -2108,7 +2125,7 @@ onUnmounted(() => {
               v-for="s in svcItems"
               :key="s.name"
               class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
-              @click="emit('open-services')"
+              @click="onServiceCard(s)"
             >
               <!-- 左缘状态色条：running=绿（hover 恢复饱和），restarting=琥珀，其余灰；
                    非 running 卡片整体降亮度——与容器卡片同一套明度语言。 -->
@@ -2151,7 +2168,7 @@ onUnmounted(() => {
                   s.description || s.image
                 }}</span>
               </div>
-              <!-- ⋯ 菜单：快捷启停/重启 + 面板入口。触屏常显（与容器卡片同款）。 -->
+              <!-- ⋯ 菜单：复制连接命令 / 打开端口 / 启停重启 + 面板入口。触屏常显（与容器卡片同款）。 -->
               <DropdownMenu>
                 <DropdownMenuTrigger as-child>
                   <Button
@@ -2167,6 +2184,15 @@ onUnmounted(() => {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem @click="emit('open-services')">服务管理</DropdownMenuItem>
+                  <DropdownMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</DropdownMenuItem>
+                  <template v-if="s.running && s.preset === 'custom' && s.ports.length">
+                    <DropdownMenuItem
+                      v-for="p in s.ports"
+                      :key="'svcopen' + p"
+                      @click="openServicePort(s, p)"
+                      >打开 {{ p }}</DropdownMenuItem
+                    >
+                  </template>
                   <DropdownMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                   <DropdownMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
                   <DropdownMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</DropdownMenuItem>

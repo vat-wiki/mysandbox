@@ -21,8 +21,10 @@ const checkErr = ref('')
 const baseReady = ref<boolean | null>(null)
 const showBasePanel = ref(false)
 const showServicesPanel = ref(false)
-// 服务摘要条上的 ＋ 带「新建」意图：面板打开时直接弹新建对话框（普通打开则不弹）。
+// 服务分区 ＋ 带「新建」意图：抽屉打开时直接弹创建对话框（普通打开则不弹）。
+// 卡片点击带服务名：抽屉打开即定位到该服务详情。
 const svcCreateIntent = ref(false)
+const svcSelect = ref('')
 let baseTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshBaseStatus() {
@@ -93,14 +95,16 @@ async function afterAuth() {
 const ready = computed(() => !!token.value)
 
 // —— 面板打开入口（全部来自侧栏，见 ContainerList）——
-// 服务摘要条：普通点击开管理面板；＋ 点击带新建意图（面板内直接弹新建对话框）。
-function openServices(create = false) {
+// 服务分区头/菜单：普通点击开抽屉；＋ 点击带新建意图；卡片点击带服务名定位。
+function openServices(create = false, select?: string) {
   svcCreateIntent.value = create
+  svcSelect.value = select ?? ''
   showServicesPanel.value = true
 }
 function closeServices() {
   showServicesPanel.value = false
   svcCreateIntent.value = false
+  svcSelect.value = ''
 }
 
 // —— CLI `mysandbox open` 深链 ——
@@ -172,6 +176,7 @@ onUnmounted(() => {
       <ServicesPanel
         v-if="showServicesPanel"
         :initial-create="svcCreateIntent"
+        :initial-select="svcSelect"
         @close="closeServices"
       />
     </main>
