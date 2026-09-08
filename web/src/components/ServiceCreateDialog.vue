@@ -44,6 +44,7 @@ const description = ref('')
 const ipMode = ref<'auto' | 'manual' | string>('auto')
 const manualIp = ref('')
 const customImage = ref('')
+const customVolume = ref('')
 const customEnv = ref('')
 const customCommand = ref('')
 const envValues = ref<Record<string, string>>({})
@@ -104,13 +105,16 @@ const customEnvOk = computed(() =>
     .every((l) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l)),
 )
 
+// custom 数据卷路径：可选，填了须为绝对路径（留空 = 不建卷，数据在容器可写层）。
+const customVolumeOk = computed(() => !customVolume.value.trim() || customVolume.value.trim().startsWith('/'))
+
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/
 const nameOk = computed(() => NAME_RE.test(name.value.trim()))
 
 const formOk = computed(() => {
   if (!nameOk.value || busy.value) return false
   if (isCustom.value) {
-    if (!customImage.value.trim() || !customEnvOk.value) return false
+    if (!customImage.value.trim() || !customEnvOk.value || !customVolumeOk.value) return false
   } else {
     // required env 必须非空
     for (const u of current.value?.userEnv ?? []) {
@@ -143,6 +147,7 @@ async function submit() {
       name: name.value.trim(),
       preset: presetKey.value,
       image: isCustom.value ? customImage.value.trim() : undefined,
+      volumePath: isCustom.value ? customVolume.value.trim() || undefined : undefined,
       env,
       command: isCustom.value ? customCommand.value.trim() || undefined : undefined,
       description: description.value || undefined,
@@ -224,6 +229,12 @@ async function submit() {
                 </SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div class="space-y-1.5">
+            <Label for="s-volume">数据卷挂载路径</Label>
+            <Input id="s-volume" v-model="customVolume" placeholder="（可选）如 /data——填了建 mysandbox-svc-<名> 卷" />
+            <p v-if="customVolume && !customVolumeOk" class="text-xs text-destructive">须为绝对路径（/ 开头）</p>
+            <p v-else class="text-xs text-muted-foreground">留空不建卷，数据写在容器可写层（重启不丢，删容器即丢）</p>
           </div>
           <div class="space-y-1.5">
             <Label for="s-env">环境变量</Label>

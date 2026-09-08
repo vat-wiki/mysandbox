@@ -187,6 +187,7 @@ export interface CreateServiceInput {
   name: string;
   preset: string; // 'postgres' | 'redis' | 'mysql' | 'custom'
   image?: string; // custom 必填
+  volumePath?: string; // custom 可选：数据卷挂载路径（留空不建卷）；预设由 preset 表定
   env?: Record<string, string>; // 预设的 userEnv 值 / custom 的全量 env
   command?: string; // custom 可选，空格分词（无 shell）
   ip?: string; // 手动指定；缺省自动分配
@@ -386,6 +387,12 @@ export async function prepareServiceCreate(cfg: Config, input: CreateServiceInpu
   const image = (preset?.image ?? input.image ?? '').trim();
   if (!image) throw badRequest('custom 服务必须提供镜像名');
 
+  // 数据卷：预设由 preset 表定；custom 可选给挂载路径（留空 = 不建卷，数据在容器可写层）。
+  const volumePath = preset?.volumePath ?? (input.preset === 'custom' ? input.volumePath?.trim() || null : null);
+  if (volumePath && !volumePath.startsWith('/')) {
+    throw badRequest('数据卷挂载路径须为绝对路径（如 /data）');
+  }
+
   // env：预设 = fixedEnv + 用户填的 userEnv（required 校验）；custom = 用户全量给。
   const env: Record<string, string> = {};
   const command: string[] | undefined = preset?.command ?? (input.command?.trim() ? input.command.trim().split(/\s+/) : undefined);
@@ -413,7 +420,7 @@ export async function prepareServiceCreate(cfg: Config, input: CreateServiceInpu
     env,
     command,
     ip,
-    volume: preset?.volumePath ? { source: serviceVolumeName(name), target: preset.volumePath } : null,
+    volume: volumePath ? { source: serviceVolumeName(name), target: volumePath } : null,
     description: input.description,
   };
 }

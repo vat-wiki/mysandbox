@@ -443,6 +443,7 @@ export interface CreateServiceInput {
   name: string
   preset: string
   image?: string
+  volumePath?: string // custom 可选：数据卷挂载路径（留空不建卷）
   env?: Record<string, string>
   command?: string
   ip?: string
