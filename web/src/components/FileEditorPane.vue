@@ -28,7 +28,7 @@ import {
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
-import { Music, Pencil, Check } from 'lucide-vue-next'
+import { Music, Pencil } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
@@ -328,35 +328,19 @@ function onEditorMount(ed: unknown) {
 }
 watch(() => [props.line, props.col], revealTarget)
 
-// —— 只读默认 + 浮动铅笔切换 ——
+// —— 只读默认 + 浮动铅笔 ——
 // 使用画像是预览/复制为主、编辑偶发：打开默认 readOnly（Monaco 只读仍可选中/复制/
-// 双击选词，高频路径零成本，且不点铅笔永远不会写盘），右下角浮动铅笔进入编辑；
-// 编辑态点对勾 = 冲刷防抖窗口内改动落盘后锁回只读，保存失败/冲突留在编辑态裁决
-// （不静默丢）。新建态（文件不存在，打开意图必然是写）直接落在编辑态。
-// diff/预览渲染/二进制形态无编辑语义，铅笔只随 Monaco 分支出现。
+// 双击选词，高频路径零成本，且不点铅笔永远不会写盘），右下角浮动铅笔进入编辑。
+// 只进不出：进编辑后按钮消失，回只读走关 tab 重开（自动保存下无「保存」动作，
+// 专门的锁定回程是伪需求——用户实测后砍掉对勾态）。新建态（文件不存在，打开意图
+// 必然是写）直接落在编辑态。diff/预览渲染/二进制形态无编辑语义，铅笔只随 Monaco
+// 分支出现。
 const editing = ref(false)
 watch([editing, editorRef], ([v, ed]) => {
   if (!ed) return
   ed.updateOptions({ readOnly: !v })
   if (v) ed.focus()
 })
-async function toggleEdit() {
-  if (!editing.value) {
-    editing.value = true
-    return
-  }
-  // 编辑 → 只读：先把防抖窗口内的改动冲一遍，失败/冲突留在编辑态
-  if (autosaveTimer) {
-    clearTimeout(autosaveTimer)
-    autosaveTimer = null
-  }
-  if (!dirty.value) {
-    editing.value = false
-    return
-  }
-  await save()
-  if (!err.value && !conflict.value) editing.value = false
-}
 // 注意：不要在 active 变化时手动 editor.layout()——面板以 visibility:hidden 隐藏（布局盒
 // 恒定，父级 ContainerList 有说明），automaticLayout 自会跟进真实尺寸变化；在 0×0/
 // 刚恢复可见的容器上同步 layout 曾实测触发 monaco 渲染死循环（整页冻结）。
@@ -605,17 +589,17 @@ function fmtSize(n: number): string {
               @mount="onEditorMount"
               @save="() => save()"
             />
-            <!-- 只读⇄编辑浮动切换：默认只读（预览/复制为主的使用画像），铅笔进编辑、
-                 对勾冲刷保存后锁回只读。悬浮于编辑器右下角，不占布局 -->
+            <!-- 只读态浮动铅笔：进编辑即消失（只进不出，见 script 说明）。
+                 悬浮于编辑器右下角，不占布局 -->
             <Button
+              v-if="!editing"
               variant="outline"
               size="icon"
               class="absolute right-3 bottom-3 z-10 size-8 rounded-md bg-background/80 shadow-sm backdrop-blur"
-              :title="editing ? '完成（保存并锁回只读）' : '编辑'"
-              @click="toggleEdit"
+              title="编辑"
+              @click="editing = true"
             >
-              <Check v-if="editing" class="size-4" />
-              <Pencil v-else class="size-4" />
+              <Pencil class="size-4" />
             </Button>
           </div>
         </template>
