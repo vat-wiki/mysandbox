@@ -59,6 +59,18 @@ export function desiredFirewallRules(config: Config): FirewallRule[] {
     });
   }
 
+  // peer API（cfg.peer，server/peer.ts）：LXC 网段 → 网关 IP 的容器间 exec 转发枢纽。
+  // 凭据是独立 peerToken（不是控制台主 token），端点只有 targets/exec；来源钉死 LXC
+  // 网段——services 网段的应用容器只是被执行目标，不需要调别人，不给。
+  if (config.peer?.enabled && lxcSubnet) {
+    rules.push({
+      kind: 'input',
+      spec: `${config.peer.port}/tcp`,
+      from: lxcSubnet,
+      comment: 'mysandbox: LXC containers -> peer exec API',
+    });
+  }
+
   // 非 localhost 监听时才放行容器 → console 端口：localhost（安全默认）下容器反正连不上，
   // 规则不该存在（与 CLI 对非 localhost 监听的警告同一立场）。
   const remote = config.listen.host !== '127.0.0.1' && config.listen.host !== 'localhost';

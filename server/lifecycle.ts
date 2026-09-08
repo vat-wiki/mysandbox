@@ -19,6 +19,7 @@ import { conflict, notFound } from './errors.js';
 import { readHostHosts } from './hosts.js';
 import { applyServicesBlock, overwriteHosts } from './hosts-sync.js';
 import { seedContainerCli } from './container-cli.js';
+import { peerSeedInfo } from './peer.js';
 import { log } from './logger.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
@@ -89,7 +90,7 @@ export async function createContainer(
 
   // home 在 rootfs 内，克隆完才存在 —— 种子必须 在 create 之后。
   const home = engine.hostHomePath(cfg, name);
-  if (home && existsSync(home)) seedContainerCli(home);
+  if (home && existsSync(home)) seedContainerCli(home, peerSeedInfo(cfg));
 
   if (input.hosts === 'host') {
     const base = await readHostHosts();

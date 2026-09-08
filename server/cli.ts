@@ -10,6 +10,7 @@ import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
+import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
 import { sweepContainerCli } from './container-cli.js';
@@ -81,6 +82,15 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
       Open a container file (editor) or directory (file panel) in the browser
       (one-shot; requires the server to be running).
 
+  mysandbox exec [--cwd <dir>] [--timeout <sec>] [--user <u>] <target> -- <cmd...>
+      Run a command on another target: host | c:<container> | s:<service> |
+      <container>. Same command works inside any managed container (there it
+      goes through the peer API); from the host it runs directly (no server
+      needed). Container targets default to the dev user (root: --user root).
+
+  mysandbox targets
+      List peer exec targets (host, system containers, docker services).
+
   mysandbox status
       Scan and list every mysandbox-managed object on this host (containers,
       template, docker services/volumes, host-terminal sessions, transient
@@ -112,6 +122,18 @@ async function main(): Promise<void> {
   // 一次性子命令：mysandbox logs [N] [--raw]（读落盘日志文件尾部，不需要服务在跑）。
   if (process.argv[2] === 'logs') {
     await runLogsCommand(process.argv.slice(3));
+    return;
+  }
+
+  // 一次性子命令：mysandbox exec/targets（peer exec 进程内直调，不需要服务在跑）。
+  if (process.argv[2] === 'exec') {
+    const { config } = await loadConfig();
+    await runExecCommand(process.argv.slice(3), config);
+    return;
+  }
+  if (process.argv[2] === 'targets') {
+    const { config } = await loadConfig();
+    await runTargetsCommand(config);
     return;
   }
 
@@ -187,6 +209,9 @@ async function main(): Promise<void> {
   // 宿主 docker API 桥（dockerApi.enabled）：容器内 docker CLI → 宿主 dockerd 的
   // TCP 透传（server/dockerApi.ts，绑网关 IP:2375，失败非致命）。
   startDockerApiBridge(config);
+  // peer API（peer.enabled）：容器间命令互通的转发枢纽（server/peer.ts，绑网关
+  // IP:peer.port，失败非致命）——容器内 `mysandbox exec <目标> -- 命令` 打到这里。
+  startPeerApi(config);
   await app.listen({ host: config.listen.host, port: config.listen.port });
   log.info({ logFile: LOG_DIR }, 'file logging active (daily rotate, 14d retention; also on journald)');
 

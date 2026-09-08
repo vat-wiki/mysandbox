@@ -123,7 +123,20 @@ export const ConfigSchema = z.object({
       ip: z.string().default('auto'),
     })
     .default({ vhost: 'auto', ip: 'auto' }),
+  // peer API（server/peer.ts）：容器间命令互通的转发枢纽。绑网关 IP 的迷你 HTTP
+  // 服务（POST /exec 由宿主代为 lxc-attach / docker exec / 直接 spawn），容器内
+  // `mysandbox exec <目标> -- 命令` 走它，免 SSH。端口可配（peer.json 随种子刷新，
+  // 不像 DOCKER_API_PORT 有模板静态文本的陈旧分叉）。
+  peer: z
+    .object({
+      enabled: z.boolean().default(true),
+      port: z.number().int().default(7331),
+    })
+    .default({ enabled: true, port: 7331 }),
   token: z.string().optional(),
+  // peer API 凭据（与主 token 分离：peer 端点只有 targets/exec，控制台全量 API 不在内）。
+  // 首启随 token 一起生成；宿主自动种进每个受管容器的 ~/.config/mysandbox/peer.json。
+  peerToken: z.string().optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -191,6 +204,11 @@ export async function loadConfig(): Promise<LoadResult> {
     userCfg.token = randomBytes(24).toString('hex');
     tokenGenerated = true;
   }
+  // peerToken 缺失就补生成（存量 config 升级路径）：与主 token 同等随机度，落盘 0600。
+  if (!userCfg.peerToken) {
+    userCfg.peerToken = randomBytes(24).toString('hex');
+    tokenGenerated = true;
+  }
 
   const merged = deepMerge(defaults, userCfg);
   const parsed = ConfigSchema.parse(merged);
@@ -212,7 +230,9 @@ export async function loadConfig(): Promise<LoadResult> {
       firewall: parsed.firewall,
       dockerApi: parsed.dockerApi,
       proxy: parsed.proxy,
+      peer: parsed.peer,
       token: parsed.token,
+      peerToken: parsed.peerToken,
     });
     await writeFile(CONFIG_FILE, out, { mode: 0o600 });
     await chmod(CONFIG_FILE, 0o600);

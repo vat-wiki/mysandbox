@@ -101,6 +101,18 @@ dockerApi:
   enabled: false
   socket: /var/run/docker.sock
 
+# peer API（server/peer.ts）——容器间命令互通的转发枢纽：在系统容器里
+# `mysandbox exec <目标> -- 命令` 可在宿主 / 其他系统容器 / 应用容器上执行命令
+# （宿主代为 lxc-attach / docker exec），目标: host | c:<容器名> | s:<服务名>，
+# 免 SSH。宿主 CLI 同款（mysandbox exec / targets，进程内直调不需要服务在跑）。
+# 监听绑网关 IP（<ipPool 前缀>.1，LAN 无路由可达），ufw 只放 LXC 网段（firewall.ts
+# 推导；改过端口记 sudo systemctl restart mysandbox-firewall）。凭据是独立
+# peerToken（首启随 config 生成、0600，不是控制台主 token），宿主自动种进每个
+# 受管容器的 ~/.config/mysandbox/peer.json（启动扫描/建容器时刷新）。
+peer:
+  enabled: true
+  port: 7331
+
 # Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
 # 端口点击跟随控制台访问口径：IP:端口 打开控制台 → 直连容器/服务 IP:端口；经基域名
 # 打开 → 走 <name>-<port>.<基域名>:<listen.port> 代理（cookie 会话，Path 限 /proxy）。
