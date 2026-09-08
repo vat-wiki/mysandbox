@@ -121,8 +121,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'unauthorized'): void
   (e: 'open-base'): void
-  // 打开服务管理抽屉；create=true 表示来自 ＋（带新建意图）；select=服务名表示来自
-  // 卡片点击（抽屉打开即定位到该服务详情）
+  // 打开服务抽屉；create=true 表示来自 ＋（App 直开创建对话框，不拉抽屉）；
+  // select=服务名表示来自卡片点击（抽屉打开即定位到该服务详情）
   (e: 'open-services', create?: boolean, select?: string): void
   (e: 'open-handled'): void
 }>()

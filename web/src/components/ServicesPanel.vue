@@ -42,9 +42,8 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
 import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight } from 'lucide-vue-next'
 
-// initialCreate=true：侧栏 ＋ 带新建意图——打开/已打开都弹创建表单。
 // initialSelect：侧栏卡片点击带来的服务名——打开或已打开时定位到该服务。
-const props = defineProps<{ initialCreate?: boolean; initialSelect?: string }>()
+const props = defineProps<{ initialSelect?: string }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
 const items = ref<ServiceView[]>([])
@@ -52,13 +51,8 @@ const status = ref<ServicesStatus | null>(null)
 const busyName = ref('')
 const err = ref('')
 const copied = ref('')
-const showCreate = ref(!!props.initialCreate)
-watch(
-  () => props.initialCreate,
-  (v) => {
-    if (v) showCreate.value = true
-  },
-)
+// 创建表单：抽屉头部 ＋ 与空态按钮触发（侧栏 ＋ 由 App 直开表单，不经抽屉）。
+const showCreate = ref(false)
 const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
 
 // —— 选中服务（单一；侧栏卡片是切换器，props 变化即跟随）——
