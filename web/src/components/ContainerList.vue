@@ -65,9 +65,12 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ExternalLink, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -799,8 +802,9 @@ async function refreshAllPorts() {
 function onVisChange() {
   if (!document.hidden) void refreshAllPorts()
 }
-// 卡片端口浮层的行：web（实测返回 HTML）/ other（其余监听）/ map（docker 宿主映射）
-// 三态合一，渲染与点击行为按 kind 分支——与 tab 栏网络下拉同信息结构，纵向更紧凑。
+// 卡片右键菜单「监听端口」二级菜单的行：web（实测返回 HTML）/ other（其余监听）/
+// map（docker 宿主映射）三态合一，渲染与点击行为按 kind 分支——与 tab 栏网络下拉
+// 同信息结构（原卡片端口浮层已收编进菜单）。
 type PortRow = { kind: 'web' | 'other' | 'map'; port: number; priv?: number }
 function cardPortRows(id: string): PortRow[] {
   const v = portsById.value[id]
@@ -834,10 +838,6 @@ function portRowTitle(c: ContainerView, r: PortRow): string {
   if (r.kind === 'map') return `宿主端口 ${r.port} → 容器 ${r.priv}，点击打开`
   return `容器内监听 ${r.port}（未返回 HTML），点击打开 ${t}`
 }
-// 浮层显隐：mouseenter/leave 挂在图标+浮层共用的 wrapper（移进浮层不算离开）；
-// 触屏无 hover——点按图标切换 pinned，再点收起。
-const portsHover = ref<string | null>(null)
-const portsPinned = ref<string | null>(null)
 
 // ---- CLI open 深链消费 ----
 // 双条件：openReq 存在 + 容器列表已就绪（openReq 可能早于首次 listContainers 到达）。
@@ -1240,6 +1240,47 @@ function onTabClick(idx: number) {
   areaMode.value = 'terminal' // 点终端 tab = 主区切回终端（同区切换）
 }
 
+// —— 卡片长按（触屏）= 右键 ——
+// 与 tab 栏同一套合成机制（tabPointerDown 见上）：触屏没有 contextmenu 可依赖（iOS
+// 完全没有），500ms 长按后合成 contextmenu，reka 的 ContextMenuTrigger 响应——桌面
+// 右键与触屏长按汇成同一条路径。卡片右键菜单是全部管理动作的唯一入口（原 ⋯ 按钮
+// 已退役），触屏可达性靠这里兜住。IP 复制键上不触发（closest('button')）；移动超
+// 阈值（滑动列表）取消；合成后吞掉紧随的 click（长按松手不该顺手进终端）。
+let cardLpTimer: ReturnType<typeof setTimeout> | null = null
+let cardLpFired = false
+let cardLpX = 0
+let cardLpY = 0
+function cardPointerDown(e: PointerEvent) {
+  if (e.pointerType !== 'touch') return
+  if ((e.target as HTMLElement).closest('button')) return
+  cardPointerCancel()
+  cardLpFired = false
+  cardLpX = e.clientX
+  cardLpY = e.clientY
+  const el = e.currentTarget as HTMLElement
+  cardLpTimer = setTimeout(() => {
+    cardLpTimer = null
+    cardLpFired = true
+    el.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: cardLpX, clientY: cardLpY }),
+    )
+  }, 500)
+}
+function cardPointerMove(e: PointerEvent) {
+  if (cardLpTimer && Math.hypot(e.clientX - cardLpX, e.clientY - cardLpY) > 10) cardPointerCancel()
+}
+function cardPointerCancel() {
+  if (cardLpTimer) {
+    clearTimeout(cardLpTimer)
+    cardLpTimer = null
+  }
+}
+function cardClickSwallowed(): boolean {
+  if (!cardLpFired) return false
+  cardLpFired = false
+  return true
+}
+
 // ---- tab 拖拽排序 ----
 // 原生 HTML5 DnD + live-reorder：dragover 越过相邻 tab 中点即实时交换 groups 顺序
 // （Vue 按 key 移动节点，终端实例不重建）。焦点跟随被拖 tab，拖完落在哪就激活哪。
@@ -1442,11 +1483,11 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
       // 服务与系统容器同一套卡片状态语言（色条身份色 + 明度即活性，无圆点），但作为
       // 低频配套收在底部环境区、可整体收起：分区头不带状态点（容器分区头同款），
       // 收起时的状态交给摘要文案（不可达红字、任务进行中有数）。展开/收起记
-      // localStorage。管理动作以服务抽屉为主场——卡片点击开抽屉并定位，⋯ 收复制
-      // 连接/打开端口/启停重启这类就地快捷。轮询自适应：闲时 5s（外部启停也能较快
-      // 跟上），有创建任务进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，
-      // payload 极小）。完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询
-      // 也喂它，天然只发一次）。
+      // localStorage。管理动作以服务抽屉为主场——卡片右键（触屏长按）菜单收详情/
+      // 复制连接/监听端口二级菜单/更新/启停重启这类就地快捷，与容器卡片同款交互。
+      // 轮询自适应：闲时 5s（外部启停也能较快跟上），有任务进行中时 3s（任务进度/
+      // 完成 toast 的及时性；任务 tail=0，payload 极小）。完成通知去重在
+      // lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，天然只发一次）。
   const svcItems = ref<ServiceView[]>([])
 // 抽屉里的操作（启停/删除/创建完成）经 App 计数回传：即时刷侧栏，不等下一拍轮询。
 watch(
@@ -1493,12 +1534,6 @@ watch(
       // 高频动作不进抽屉就地给：连接命令是服务的「第一用法」（容器内 psql -h pg 直连）。
       function copySvcConnect(s: ServiceView) {
         void copyTabText(s.connect[0] ?? '', '已复制连接命令')
-      }
-      // 打开服务端口：口径跟随控制台（IP 直连 / 基域名代理，lib/proxy.ts）。端口表
-      // 来自实测监听扫描（卡片浮层/菜单同源）；postgres/redis 这类非 HTTP 端口浏览器
-      // 打不开无妨——「打开」对 them 只是尽力而为，web 端口才可靠。
-      function openServicePort(s: ServiceView, port: number) {
-        window.open(serviceUrl('s', s.name, port, s.ip), '_blank', 'noopener')
       }
 // null=未知（首拉前），false=docker 不可达
 const svcReachable = ref<boolean | null>(null)
@@ -1557,7 +1592,7 @@ const svcSummary = computed(() => {
   return names.length > 3 ? `${shown} 等 ${names.length} 个` : shown
 })
 
-// —— 服务卡片端口图标（与容器卡片同款交互）——
+// —— 服务卡片右键菜单的「监听端口」——
 // 应用容器监听端口走独立端点（宿主 /proc/<pid>/net 读容器网络命名空间，免 exec 的
 // 镜像内依赖），15s 慢轮询覆盖全部 running 服务；refreshServices 发现 running 集
 // 变化（启停/新建/更新完成）时立即补刷。web 端口（实测返回 HTML）标绿可点开，其余
@@ -1582,11 +1617,15 @@ async function refreshSvcPorts() {
   })
   svcPortsById.value = next
 }
-// 服务端口浮层的行：只有 web / other 两态（服务不发布端口到宿主，无 map 行）。
+// 服务端口菜单行：只有 web / other 两态（服务不发布端口到宿主，无 map 行）。实测
+// 监听优先（全预设通用）；扫描未回（刚启动等）回退手工登记的声明端口（custom 在
+// state.json 手填 ports 的旧路径），声明端口没有 web 实测，一律按 other 展示。
 type SvcPortRow = { kind: 'web' | 'other'; port: number }
-function svcPortRows(name: string): SvcPortRow[] {
-  const v = svcPortsById.value[name]
-  if (!v) return []
+function svcPortRows(s: ServiceView): SvcPortRow[] {
+  const v = svcPortsById.value[s.name]
+  if (!v || !v.ports.length) {
+    return s.preset === 'custom' ? s.ports.map((p) => ({ kind: 'other' as const, port: p })) : []
+  }
   const rows: SvcPortRow[] = v.web.map((p) => ({ kind: 'web' as const, port: p }))
   for (const p of v.ports) {
     if (!v.web.includes(p)) rows.push({ kind: 'other' as const, port: p })
@@ -1599,16 +1638,6 @@ function svcPortRowTarget(s: ServiceView, r: SvcPortRow): string {
 function svcPortRowTitle(s: ServiceView, r: SvcPortRow): string {
   const t = svcPortRowTarget(s, r)
   return r.kind === 'web' ? `已验证返回网页，点击打开 ${t}` : `容器内监听 ${r.port}（未返回 HTML），点击打开 ${t}`
-}
-function svcDirectPortUrl(s: ServiceView, port: number): string {
-  return s.ip ? directUrl(s.ip, port) : ''
-}
-// ⋯ 菜单的「打开」端口表：实测监听优先（全预设通用）；扫描未回（刚启动等）回退
-// 手工登记的声明端口（custom 在 state.json 手填 ports 的旧路径）。
-function svcMenuPorts(s: ServiceView): number[] {
-  const detected = svcPortsById.value[s.name]?.ports ?? []
-  if (detected.length) return detected
-  return s.preset === 'custom' ? s.ports : []
 }
 
 // —— 终端无输出提醒（agent 干完活/等输入）——
@@ -2018,170 +2047,122 @@ onUnmounted(() => {
         <template v-if="loading && !items.length">
           <Skeleton v-for="i in 3" :key="i" class="h-12 w-full rounded-lg" />
         </template>
-        <div
-          v-for="c in items"
-          :key="c.id"
-          class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
-          :class="
-            activeGroup?.containerId === c.id
-              ? 'border-border/60 bg-accent'
-              : 'border-transparent hover:bg-accent/40'
-          "
-          @click="openTerm(c)"
-        >
-          <!-- 左缘色条：卡片唯一的色彩元素——容器身份色（与 tab 呼应），兼作状态指示：
-               running = 容器色；非 running = 灰条，右侧两行整体降亮度（整卡置灰 =
-               已停/失效，不再另设状态点）。选中加粗全高；平时短一截，hover 恢复饱和。
-               悬停色条看精确状态文案（title）。 -->
-          <span
-            class="absolute left-0 w-[3px] rounded-full transition-all"
-            :class="[
-              activeGroup?.containerId === c.id ? 'inset-y-1' : 'inset-y-2.5',
-              c.state === 'running'
-                ? activeGroup?.containerId === c.id
-                  ? 'opacity-100'
-                  : 'opacity-40 group-hover:opacity-90'
-                : 'bg-muted-foreground/30',
-            ]"
-            :style="c.state === 'running' ? { backgroundColor: containerColor(c.id) } : undefined"
-            :title="stateLabel(c.state)"
-          />
-          <!-- 第一行：身份行。非 running 整行降亮度——明度即活性。 -->
-          <div
-            class="flex min-w-0 items-center gap-1.5 pr-6"
-            :class="c.state !== 'running' ? 'opacity-60' : ''"
-          >
-            <span
-              class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground"
-              :title="c.displayName || c.name"
-              >{{ c.displayName || c.name }}</span
-            >
-          </div>
-          <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/外部徽章。
-               非 running 整行再降一档，灰色条是「还活着」的唯一信号。 -->
-          <div
-            class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground"
-            :class="c.state !== 'running' ? 'opacity-50' : ''"
-          >
-            <button
-              v-if="c.ip"
-              type="button"
-              class="shrink-0 font-mono tabular-nums transition-colors hover:text-foreground"
-              :class="copiedIp === c.ip ? 'text-emerald-500' : ''"
-              :title="copiedIp === c.ip ? '已复制' : '点击复制 IP'"
-              @click.stop="copyIpOf(c.ip)"
-              >{{ c.ip }}</button
-            >
-            <span v-else class="shrink-0 opacity-50">无 IP</span>
-            <span class="min-w-0 flex-1 truncate" :title="c.description || c.name">{{
-              c.description || c.name
-            }}</span>
-            <Badge
-              v-if="!c.managed && !c.adopted"
-              variant="outline"
-              class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
-              >外部</Badge
-            >
-            <!-- 右下角端口图标：running 且扫到监听端口才出现（全部容器 15s 慢轮询，
-                 active 容器随 tab 下拉 5s 精刷）。hover 浮出端口面板（触屏点按切换，
-                 再点收起）；面板向上弹（列表底部卡片不出屏），行点击打开浏览器。 -->
+        <ContextMenu v-for="c in items" :key="c.id">
+          <ContextMenuTrigger as-child>
             <div
-              v-if="c.state === 'running' && (portsById[c.id]?.ports.length ?? 0) > 0"
-              class="relative shrink-0"
-              @mouseenter="portsHover = c.id"
-              @mouseleave="portsHover = null"
+              class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
+              :class="
+                activeGroup?.containerId === c.id
+                  ? 'border-border/60 bg-accent'
+                  : 'border-transparent hover:bg-accent/40'
+              "
+              @pointerdown="cardPointerDown"
+              @pointermove="cardPointerMove"
+              @pointercancel="cardPointerCancel"
+              @pointerup="cardPointerCancel"
+              @click="cardClickSwallowed() || openTerm(c)"
             >
-              <button
-                type="button"
-                class="flex rounded transition-colors"
-                :class="portsHover === c.id || portsPinned === c.id ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'"
-                title="监听端口"
-                @click.stop="portsPinned = portsPinned === c.id ? null : c.id"
-              >
-                <Network class="size-3" />
-              </button>
-              <div
-                v-if="portsHover === c.id || portsPinned === c.id"
-                class="absolute bottom-full right-0 z-30 mb-1 w-44 rounded-md border border-border bg-popover p-1 shadow-md"
-              >
-                <div
-                  v-for="r in cardPortRows(c.id)"
-                  :key="r.kind + r.port"
-                  class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left font-mono text-[11px] transition-colors hover:bg-accent"
+              <!-- 左缘色条：卡片唯一的色彩元素——容器身份色（与 tab 呼应），兼作状态指示：
+                   running = 容器色；非 running = 灰条，右侧两行整体降亮度（整卡置灰 =
+                   已停/失效，不再另设状态点）。选中加粗全高；平时短一截，hover 恢复饱和。
+                   悬停色条看精确状态文案（title）。 -->
+              <span
+                class="absolute left-0 w-[3px] rounded-full transition-all"
+                :class="[
+                  activeGroup?.containerId === c.id ? 'inset-y-1' : 'inset-y-2.5',
+                  c.state === 'running'
+                    ? activeGroup?.containerId === c.id
+                      ? 'opacity-100'
+                      : 'opacity-40 group-hover:opacity-90'
+                    : 'bg-muted-foreground/30',
+                ]"
+                :style="c.state === 'running' ? { backgroundColor: containerColor(c.id) } : undefined"
+                :title="stateLabel(c.state)"
+              />
+              <!-- 第一行：身份行。非 running 整行降亮度——明度即活性。 -->
+              <div class="flex min-w-0 items-center gap-1.5" :class="c.state !== 'running' ? 'opacity-60' : ''">
+                <span
+                  class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground"
+                  :title="c.displayName || c.name"
+                  >{{ c.displayName || c.name }}</span
                 >
-                  <button
-                    type="button"
-                    class="flex min-w-0 flex-1 items-center gap-1.5"
+              </div>
+              <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/外部徽章。
+                   非 running 整行再降一档，灰色条是「还活着」的唯一信号。 -->
+              <div
+                class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground"
+                :class="c.state !== 'running' ? 'opacity-50' : ''"
+              >
+                <button
+                  v-if="c.ip"
+                  type="button"
+                  class="shrink-0 font-mono tabular-nums transition-colors hover:text-foreground"
+                  :class="copiedIp === c.ip ? 'text-emerald-500' : ''"
+                  :title="copiedIp === c.ip ? '已复制' : '点击复制 IP'"
+                  @click.stop="copyIpOf(c.ip)"
+                  >{{ c.ip }}</button
+                >
+                <span v-else class="shrink-0 opacity-50">无 IP</span>
+                <span class="min-w-0 flex-1 truncate" :title="c.description || c.name">{{
+                  c.description || c.name
+                }}</span>
+                <Badge
+                  v-if="!c.managed && !c.adopted"
+                  variant="outline"
+                  class="hidden shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground group-hover:inline-flex pointer-coarse:inline-flex"
+                  >外部</Badge
+                >
+              </div>
+            </div>
+          </ContextMenuTrigger>
+          <!-- 右键菜单（触屏长按同款）：低频操作收进来（外部的容器只有「纳入管理」），
+               running 时末尾追加「监听端口」二级菜单。原 ⋯ 按钮退役——卡片右下角不再
+               常驻控件，端口也不再有 hover 浮层，全部收编进这份菜单。 -->
+          <ContextMenuContent>
+            <template v-if="!c.managed && !c.adopted">
+              <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
+            </template>
+            <template v-else>
+              <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
+              <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
+              <ContextMenuItem
+                v-if="c.state === 'running'"
+                @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
+                >桌面</ContextMenuItem
+              >
+              <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
+              <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
+              <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
+              <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
+            </template>
+            <!-- 监听端口（二级菜单）：running 且扫到/有映射才出现。web（实测返回 HTML）
+                 标绿点开；其余监听平铺；docker 宿主映射（历史形态）标「宿主」恒指本机。
+                 行点击目标跟随控制台口径（IP 直连 / 基域名代理，portRowTarget）。 -->
+            <template v-if="c.state === 'running' && cardPortRows(c.id).length">
+              <ContextMenuSeparator />
+              <ContextMenuSub>
+                <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                <ContextMenuSubContent class="w-44">
+                  <ContextMenuItem
+                    v-for="r in cardPortRows(c.id)"
+                    :key="r.kind + r.port"
                     :title="portRowTitle(c, r)"
-                    @click.stop="openUrl(portRowTarget(c, r))"
+                    @click="openUrl(portRowTarget(c, r))"
                   >
                     <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                     <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
                     <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
-                    <span class="flex-1 tabular-nums">{{ r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port }}</span>
-                    <span v-if="r.kind === 'web'" class="text-[10px] text-emerald-500">网页</span>
-                    <span v-else-if="r.kind === 'map'" class="text-[10px] text-muted-foreground">宿主</span>
-                  </button>
-                  <!-- 直连容器 IP:端口（第二打开方式）：仅域名口径下出现——IP 口径主点击
-                       已是直连；map 行是宿主侧映射，无直连一说。 -->
-                  <button
-                    v-if="directOpenExtra && r.kind !== 'map' && directPortUrl(c, r.port)"
-                    type="button"
-                    class="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                    :title="`直连打开 ${directPortUrl(c, r.port)}`"
-                    @click.stop="openUrl(directPortUrl(c, r.port))"
-                  >
-                    <ExternalLink class="size-3" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <!-- ⋯ 菜单：低频操作收进来（外部的容器只有「纳入管理」）。触屏常显。 -->
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                class="absolute right-1 top-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-                :disabled="busy[c.id]"
-                :title="busy[c.id] ? '处理中…' : '更多操作'"
-                @click.stop
-              >
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <template v-if="!c.managed && !c.adopted">
-                <DropdownMenuItem @click="onAdopt(c)">纳入管理</DropdownMenuItem>
-              </template>
-              <template v-else>
-                <DropdownMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')"
-                  >停止</DropdownMenuItem
-                >
-                <DropdownMenuItem v-else @click="act(c.id, () => startContainer(c.id))"
-                  >启动</DropdownMenuItem
-                >
-                <DropdownMenuItem v-if="c.state === 'running'" @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
-                  >桌面</DropdownMenuItem
-                >
-                <DropdownMenuItem @click="onPower(c, 'restart')">重启</DropdownMenuItem>
-                <DropdownMenuItem @click="onRename(c)">重命名</DropdownMenuItem>
-                <DropdownMenuItem
-                  v-if="hasBaseAction('export')"
-                  @click="exportTarget = c"
-                  >导出为包</DropdownMenuItem
-                >
-                <DropdownMenuItem
-                  v-if="c.managed"
-                  class="text-destructive"
-                  @click="onDelete(c)"
-                  >删除</DropdownMenuItem
-                >
-              </template>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+                    <span class="min-w-0 flex-1 font-mono tabular-nums">{{
+                      r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port
+                    }}</span>
+                    <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                    <span v-else-if="r.kind === 'map'" class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
+                  </ContextMenuItem>
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            </template>
+          </ContextMenuContent>
+        </ContextMenu>
         <!-- 空态：轻引导，与标题行的 ＋/⋯ 呼应 -->
         <div
           v-if="!items.length && !loading"
@@ -2189,7 +2170,7 @@ onUnmounted(() => {
         >
           <Container class="size-5 text-muted-foreground/40" />
           <p class="text-xs text-muted-foreground">暂无容器</p>
-          <p class="text-[11px] text-muted-foreground/60">点上方 ＋ 新建，⋯ 里可纳入已有容器</p>
+          <p class="text-[11px] text-muted-foreground/60">点上方 ＋ 新建，右键卡片可纳入已有容器</p>
         </div>
       </div>
 
@@ -2198,8 +2179,8 @@ onUnmounted(() => {
            配套，默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数（容器分区头同款，
            无状态点），整行点击展开/收起；收起时补一行摘要文案（任务进行中/不可达时
            要紧，不可达红字）。点击卡片进服务终端（与容器「点击即进」同语义），IP 点击
-           复制，⋯ 收详情（服务抽屉）/连接命令/打开端口/启停重启。列表 max-h 托底滚动，
-           服务多也不挤占容器区。 -->
+           复制，右键菜单收详情（服务抽屉）/连接命令/监听端口二级菜单/更新/启停重启。
+           列表 max-h 托底滚动，服务多也不挤占容器区。 -->
       <div class="shrink-0 border-t border-border">
         <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
           <button
@@ -2236,131 +2217,88 @@ onUnmounted(() => {
             运行时不可达
           </p>
           <template v-else>
-            <div
-              v-for="s in svcItems"
-              :key="s.name"
-              class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
-              @click="openServiceTerm(s)"
-            >
-              <!-- 左缘色条：与容器卡片同一套状态语言——运行=按服务名 hash 的稳定身份色
-                   （containerColor 同一机制，hover 恢复饱和），非 running=灰条；
-                   非 running 卡片整体降亮度。明度即活性，精确状态悬停色条看。 -->
-              <span
-                class="absolute inset-y-2.5 left-0 w-[3px] rounded-full transition-all"
-                :class="s.running ? 'opacity-40 group-hover:opacity-90' : 'bg-muted-foreground/30'"
-                :style="s.running ? { backgroundColor: containerColor(s.name) } : undefined"
-                :title="stateLabel(s.state)"
-              />
-              <!-- 第一行：名称。非 running 整行降亮度。 -->
-              <div class="flex min-w-0 items-center gap-1.5 pr-6" :class="s.running ? '' : 'opacity-60'">
-                <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground" :title="s.name">{{
-                  s.name
-                }}</span>
-                <span
-                  v-if="s.metaMissing"
-                  class="shrink-0 text-amber-600"
-                  title="sidecar 元数据缺失（state.json 被清过？），重建可恢复"
-                  >⚠</span
-                >
-              </div>
-              <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/镜像 + 端口图标。 -->
-              <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground" :class="s.running ? '' : 'opacity-50'">
-                <button
-                  v-if="s.ip"
-                  type="button"
-                  class="shrink-0 font-mono tabular-nums transition-colors hover:text-foreground"
-                  :class="copiedIp === s.ip ? 'text-emerald-500' : ''"
-                  :title="copiedIp === s.ip ? '已复制' : '点击复制 IP'"
-                  @click.stop="copyIpOf(s.ip)"
-                  >{{ s.ip }}</button
-                >
-                <span v-else class="shrink-0 opacity-50">无 IP</span>
-                <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
-                  s.description || s.image
-                }}</span>
-                <!-- 端口图标：与容器卡片同款（running 且扫到监听端口才出现，hover 浮层
-                     向上弹、触屏点按切换）。服务无宿主映射端口，行只有 web/other 两态。 -->
+            <ContextMenu v-for="s in svcItems" :key="s.name">
+              <ContextMenuTrigger as-child>
                 <div
-                  v-if="s.running && (svcPortsById[s.name]?.ports.length ?? 0) > 0"
-                  class="relative shrink-0"
-                  @mouseenter="portsHover = 's:' + s.name"
-                  @mouseleave="portsHover = null"
+                  class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
+                  @pointerdown="cardPointerDown"
+                  @pointermove="cardPointerMove"
+                  @pointercancel="cardPointerCancel"
+                  @pointerup="cardPointerCancel"
+                  @click="cardClickSwallowed() || openServiceTerm(s)"
                 >
-                  <button
-                    type="button"
-                    class="flex rounded transition-colors"
-                    :class="portsHover === 's:' + s.name || portsPinned === 's:' + s.name ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'"
-                    title="监听端口"
-                    @click.stop="portsPinned = portsPinned === 's:' + s.name ? null : 's:' + s.name"
-                  >
-                    <Network class="size-3" />
-                  </button>
-                  <div
-                    v-if="portsHover === 's:' + s.name || portsPinned === 's:' + s.name"
-                    class="absolute bottom-full right-0 z-30 mb-1 w-44 rounded-md border border-border bg-popover p-1 shadow-md"
-                  >
-                    <div
-                      v-for="r in svcPortRows(s.name)"
-                      :key="r.kind + r.port"
-                      class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left font-mono text-[11px] transition-colors hover:bg-accent"
+                  <!-- 左缘色条：与容器卡片同一套状态语言——运行=按服务名 hash 的稳定身份色
+                       （containerColor 同一机制，hover 恢复饱和），非 running=灰条；
+                       非 running 卡片整体降亮度。明度即活性，精确状态悬停色条看。 -->
+                  <span
+                    class="absolute inset-y-2.5 left-0 w-[3px] rounded-full transition-all"
+                    :class="s.running ? 'opacity-40 group-hover:opacity-90' : 'bg-muted-foreground/30'"
+                    :style="s.running ? { backgroundColor: containerColor(s.name) } : undefined"
+                    :title="stateLabel(s.state)"
+                  />
+                  <!-- 第一行：名称。非 running 整行降亮度。 -->
+                  <div class="flex min-w-0 items-center gap-1.5" :class="s.running ? '' : 'opacity-60'">
+                    <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground" :title="s.name">{{
+                      s.name
+                    }}</span>
+                    <span
+                      v-if="s.metaMissing"
+                      class="shrink-0 text-amber-600"
+                      title="sidecar 元数据缺失（state.json 被清过？），重建可恢复"
+                      >⚠</span
                     >
-                      <button
-                        type="button"
-                        class="flex min-w-0 flex-1 items-center gap-1.5"
+                  </div>
+                  <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/镜像。 -->
+                  <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground" :class="s.running ? '' : 'opacity-50'">
+                    <button
+                      v-if="s.ip"
+                      type="button"
+                      class="shrink-0 font-mono tabular-nums transition-colors hover:text-foreground"
+                      :class="copiedIp === s.ip ? 'text-emerald-500' : ''"
+                      :title="copiedIp === s.ip ? '已复制' : '点击复制 IP'"
+                      @click.stop="copyIpOf(s.ip)"
+                      >{{ s.ip }}</button
+                    >
+                    <span v-else class="shrink-0 opacity-50">无 IP</span>
+                    <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
+                      s.description || s.image
+                    }}</span>
+                  </div>
+                </div>
+              </ContextMenuTrigger>
+              <!-- 右键菜单（触屏长按同款，与容器卡片同款交互）：详情 / 复制连接命令 /
+                   监听端口二级菜单 / 更新 / 启停重启。原 ⋯ 按钮退役。 -->
+              <ContextMenuContent>
+                <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
+                <ContextMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</ContextMenuItem>
+                <!-- 监听端口（二级菜单）：实测监听扫描（15s 慢轮询 + running 集变化即时
+                     补刷），web 标绿可点开、其余平铺；扫描未回回退 custom 手工登记端口。 -->
+                <template v-if="s.running && svcPortRows(s).length">
+                  <ContextMenuSeparator />
+                  <ContextMenuSub>
+                    <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                    <ContextMenuSubContent class="w-44">
+                      <ContextMenuItem
+                        v-for="r in svcPortRows(s)"
+                        :key="r.kind + r.port"
                         :title="svcPortRowTitle(s, r)"
-                        @click.stop="openUrl(svcPortRowTarget(s, r))"
+                        @click="openUrl(svcPortRowTarget(s, r))"
                       >
                         <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                         <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
-                        <span class="flex-1 tabular-nums">{{ r.port }}</span>
-                        <span v-if="r.kind === 'web'" class="text-[10px] text-emerald-500">网页</span>
-                      </button>
-                      <!-- 直连 IP:端口（第二打开方式）：仅域名口径下出现，同容器卡片。 -->
-                      <button
-                        v-if="directOpenExtra && svcDirectPortUrl(s, r.port)"
-                        type="button"
-                        class="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                        :title="`直连打开 ${svcDirectPortUrl(s, r.port)}`"
-                        @click.stop="openUrl(svcDirectPortUrl(s, r.port))"
-                      >
-                        <ExternalLink class="size-3" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <!-- ⋯ 菜单：复制连接命令 / 打开端口 / 启停重启 + 面板入口。触屏常显（与容器卡片同款）。 -->
-              <DropdownMenu>
-                <DropdownMenuTrigger as-child>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    class="absolute right-1 top-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-                    :disabled="svcBusy === s.name"
-                    :title="svcBusy === s.name ? '处理中…' : '更多操作'"
-                    @click.stop
-                  >
-                    <MoreHorizontal />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem @click="emit('open-services', false, s.name)">详情</DropdownMenuItem>
-                  <DropdownMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</DropdownMenuItem>
-                  <template v-if="s.running && svcMenuPorts(s).length">
-                    <DropdownMenuItem
-                      v-for="p in svcMenuPorts(s)"
-                      :key="'svcopen' + p"
-                      @click="openServicePort(s, p)"
-                      >打开 {{ p }}</DropdownMenuItem
-                    >
-                  </template>
-                  <DropdownMenuItem @click="requestServiceUpdate(s)">更新</DropdownMenuItem>
-                  <DropdownMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</DropdownMenuItem>
-                  <DropdownMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
-                  <DropdownMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                        <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                        <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                      </ContextMenuItem>
+                    </ContextMenuSubContent>
+                  </ContextMenuSub>
+                </template>
+                <ContextMenuSeparator />
+                <ContextMenuItem @click="requestServiceUpdate(s)">更新</ContextMenuItem>
+                <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
+                <ContextMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</ContextMenuItem>
+                <ContextMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
             <p v-if="!svcItems.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
               暂无应用容器，点 ＋ 新建
             </p>
