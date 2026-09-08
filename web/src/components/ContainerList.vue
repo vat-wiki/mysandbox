@@ -70,7 +70,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ExternalLink, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1639,6 +1639,11 @@ function svcPortRowTitle(s: ServiceView, r: SvcPortRow): string {
   const t = svcPortRowTarget(s, r)
   return r.kind === 'web' ? `已验证返回网页，点击打开 ${t}` : `容器内监听 ${r.port}（未返回 HTML），点击打开 ${t}`
 }
+// 直连 IP:端口（「直连打开」子菜单用）：仅域名口径下作为并列第二方式给出——IP 口径
+// 主点击本就是直连，不重复给（directOpenExtra 为 false）；ip 未知同样无从直连。
+function svcDirectPortUrl(s: ServiceView, port: number): string {
+  return s.ip ? directUrl(s.ip, port) : ''
+}
 
 // —— 终端无输出提醒（agent 干完活/等输入）——
 // 服务端（server/activity.ts）已在周期扫 tmux 输出，这里 5s 拉一次快照做提醒决策。
@@ -1946,6 +1951,24 @@ onUnmounted(() => {
                     </ContextMenuItem>
                   </ContextMenuSubContent>
                 </ContextMenuSub>
+                <!-- 直连打开：同展开态卡片（仅域名口径、map 不参与）。 -->
+                <ContextMenuSub
+                  v-if="directOpenExtra && cardPortRows(c.id).some((r) => r.kind !== 'map' && directPortUrl(c, r.port))"
+                >
+                  <ContextMenuSubTrigger>直连 IP:端口</ContextMenuSubTrigger>
+                  <ContextMenuSubContent class="w-44">
+                    <template v-for="r in cardPortRows(c.id)" :key="'d' + r.kind + r.port">
+                      <ContextMenuItem
+                        v-if="r.kind !== 'map' && directPortUrl(c, r.port)"
+                        :title="`直连打开 ${directPortUrl(c, r.port)}`"
+                        @click="openUrl(directPortUrl(c, r.port))"
+                      >
+                        <ExternalLink class="size-3 shrink-0" />
+                        <span class="min-w-0 flex-1 truncate font-mono tabular-nums">{{ c.ip }}:{{ r.port }}</span>
+                      </ContextMenuItem>
+                    </template>
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
               </template>
             </ContextMenuContent>
           </ContextMenu>
@@ -2205,6 +2228,25 @@ onUnmounted(() => {
                   </ContextMenuItem>
                 </ContextMenuSubContent>
               </ContextMenuSub>
+              <!-- 直连打开（第二方式）：仅域名口径给出——IP 口径主点击已是直连；
+                   map 行本身是宿主直连形态，不参与。 -->
+              <ContextMenuSub
+                v-if="directOpenExtra && cardPortRows(c.id).some((r) => r.kind !== 'map' && directPortUrl(c, r.port))"
+              >
+                <ContextMenuSubTrigger>直连 IP:端口</ContextMenuSubTrigger>
+                <ContextMenuSubContent class="w-44">
+                  <template v-for="r in cardPortRows(c.id)" :key="'d' + r.kind + r.port">
+                    <ContextMenuItem
+                      v-if="r.kind !== 'map' && directPortUrl(c, r.port)"
+                      :title="`直连打开 ${directPortUrl(c, r.port)}`"
+                      @click="openUrl(directPortUrl(c, r.port))"
+                    >
+                      <ExternalLink class="size-3 shrink-0" />
+                      <span class="min-w-0 flex-1 truncate font-mono tabular-nums">{{ c.ip }}:{{ r.port }}</span>
+                    </ContextMenuItem>
+                  </template>
+                </ContextMenuSubContent>
+              </ContextMenuSub>
             </template>
           </ContextMenuContent>
         </ContextMenu>
@@ -2334,6 +2376,22 @@ onUnmounted(() => {
                         <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
                         <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
                       </ContextMenuItem>
+                    </ContextMenuSubContent>
+                  </ContextMenuSub>
+                  <!-- 直连打开（第二方式）：仅域名口径给出，同容器卡片。 -->
+                  <ContextMenuSub v-if="directOpenExtra && svcPortRows(s).some((r) => svcDirectPortUrl(s, r.port))">
+                    <ContextMenuSubTrigger>直连 IP:端口</ContextMenuSubTrigger>
+                    <ContextMenuSubContent class="w-44">
+                      <template v-for="r in svcPortRows(s)" :key="'sd' + r.kind + r.port">
+                        <ContextMenuItem
+                          v-if="svcDirectPortUrl(s, r.port)"
+                          :title="`直连打开 ${svcDirectPortUrl(s, r.port)}`"
+                          @click="openUrl(svcDirectPortUrl(s, r.port))"
+                        >
+                          <ExternalLink class="size-3 shrink-0" />
+                          <span class="min-w-0 flex-1 truncate font-mono tabular-nums">{{ s.ip }}:{{ r.port }}</span>
+                        </ContextMenuItem>
+                      </template>
                     </ContextMenuSubContent>
                   </ContextMenuSub>
                 </template>
