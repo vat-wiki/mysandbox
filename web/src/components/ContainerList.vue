@@ -14,6 +14,9 @@ import {
   resolveTermPath,
   listServices,
   listServiceJobs,
+  startService,
+  stopService,
+  restartService,
   listTermActivity,
   termSessionKey,
   HOST_ID,
@@ -62,7 +65,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ExternalLink, ListChecks, Container, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ExternalLink, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1391,13 +1394,49 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
   await act(c.id, () => deleteContainer(c.id, { deleteData: payload.deleteData, confirmName: payload.deleteData ? payload.confirmName : undefined }))
 }
 
-// —— 底部服务摘要条 ——
-// docker 配套服务在侧栏只占一行：聚合状态点 + 名称串，点击开管理面板。
-// 服务是配套设施，刻意不以行的形态进侧栏——避免和容器列表形成第二个并列清单，
-// 冲淡「容器是唯一主体」的层级。轮询自适应：闲时 15s（服务启停低频），有创建任务
-// 进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，payload 极小）。
-// 完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，天然只发一次）。
-const svcItems = ref<ServiceView[]>([])
+  // —— 侧栏 docker 服务分区（卡片 + 可收起）——
+  // 服务同样以卡片进侧栏（与系统容器同形态：色条 + 名称 + IP + 描述），但作为低频
+  // 配套收在底部环境区、可整体收起：分区头聚合状态（状态点 + 收起时的摘要文案），
+  // 展开/收起记 localStorage。管理动作仍以服务面板为主场——卡片点击开面板，⋯ 只收
+  // 启停/重启这类快捷操作。轮询自适应：闲时 15s（服务启停低频），有创建任务进行中时
+  // 3s（任务进度/完成 toast 的及时性；任务 tail=0，payload 极小）。
+  // 完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，天然只发一次）。
+  const svcItems = ref<ServiceView[]>([])
+  // 分区展开态：默认展开（首次见到的就是卡片形态），用户收起后随 localStorage 记忆。
+  const svcExpanded = ref(
+    (() => {
+      try {
+        return localStorage.getItem('mysandbox:svc-cards-open') !== '0'
+      } catch {
+        return true
+      }
+    })(),
+  )
+  watch(svcExpanded, (v) => {
+    try {
+      localStorage.setItem('mysandbox:svc-cards-open', v ? '1' : '0')
+    } catch {
+      /* localStorage 不可用就跳过 */
+    }
+  })
+  // 卡片快捷操作（启停/重启）：与面板同 API；错误走 toast——侧栏错误条是容器列表的领地。
+  const svcBusy = ref('')
+  async function svcOp(name: string, fn: () => Promise<unknown>) {
+    if (svcBusy.value) return
+    svcBusy.value = name
+    try {
+      await fn()
+      await refreshServices()
+    } catch (e) {
+      if (e instanceof Unauthorized) {
+        emit('unauthorized')
+        return
+      }
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      svcBusy.value = ''
+    }
+  }
 // null=未知（首拉前），false=docker 不可达
 const svcReachable = ref<boolean | null>(null)
 const svcJobsRunning = ref(0)
@@ -1634,9 +1673,10 @@ onUnmounted(() => {
 <template>
   <div class="relative flex h-full min-h-0 gap-0">
     <!-- 左侧窄栏的信息架构：一个主体 + 底部环境区。
-         「容器」是全侧栏唯一的列表（弱化小标签作分组头）；宿主终端与 docker 服务摘要
-         是钉在底部的两行环境入口（容器之外的东西，不以行的形态混进容器清单）。
-         模板/全局 hosts 等容器作用域的低频配置收进容器标题的 ⋯ 菜单。popout 独立窗口不渲染。
+         「系统容器」是主列表（弱化小标签作分组头）；docker 服务是与容器同形态的卡片组，
+         但作为低频配套收在底部环境区、可整体收起（分区头即摘要，状态点常显）。
+         宿主终端是环境区里的单行入口。模板/全局 hosts 等容器作用域的低频配置收进
+         容器标题的 ⋯ 菜单。popout 独立窗口不渲染。
          手机（<768px）：侧栏转 overlay 抽屉（max-md:absolute + 遮罩），默认收起，
          汉堡入口在 tab 栏最左；桌面（≥768）恒为静态侧栏，抽屉相关类全部不命中。 -->
     <div
@@ -2022,8 +2062,126 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 宿主终端快捷行：钉在底部，与 docker 服务摘要同属「容器之外的环境」区，
-           样式对齐（平底 footer 行）。点击开/切宿主 tab；独立窗口入口收进 tab 右键菜单。 -->
+      <!-- docker 服务分区：与系统容器同形态的卡片组，收在环境区、可整体收起（低频配套，
+           默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数 + 聚合状态点，整行点击
+           展开/收起；收起时补一行摘要文案（不可达/任务进行中时尤其要紧，展开后让位给
+           卡片本体）。卡片色条用状态语义色（服务是基础设施，不像容器那样用身份色）：
+           running=绿 / restarting=琥珀 / 其余灰。点击卡片开服务面板（管理主场），IP 点击
+           复制，⋯ 收启停/重启快捷操作。列表 max-h 托底滚动，服务多也不挤占容器区。 -->
+      <div class="shrink-0 border-t border-border">
+        <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-2 text-left"
+            :title="svcExpanded ? '收起服务列表' : '展开服务列表'"
+            @click="svcExpanded = !svcExpanded"
+          >
+            <img src="/docker.svg" alt="" class="size-3.5 shrink-0" />
+            <span class="text-xs font-medium text-muted-foreground">docker 服务</span>
+            <span class="text-[10px] text-muted-foreground/70">{{ svcItems.length }}</span>
+            <span :class="['h-2 w-2 shrink-0 rounded-full', svcDotClass]" />
+            <span
+              v-if="!svcExpanded"
+              class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70"
+              >{{ svcSummary }}</span
+            >
+            <ChevronDown
+              class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
+              :class="svcExpanded ? 'rotate-180' : ''"
+            />
+          </button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            title="新建服务"
+            @click="emit('open-services', true)"
+          >
+            <Plus />
+          </Button>
+        </div>
+        <div v-if="svcExpanded" class="flex max-h-44 flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2">
+          <p v-if="svcReachable === false" class="px-1.5 py-2 text-[11px] text-muted-foreground">
+            docker 不可达——服务面板暂不可用，容器管理不受影响。
+          </p>
+          <template v-else>
+            <div
+              v-for="s in svcItems"
+              :key="s.name"
+              class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
+              @click="emit('open-services')"
+            >
+              <!-- 左缘状态色条：running=绿（hover 恢复饱和），restarting=琥珀，其余灰；
+                   非 running 卡片整体降亮度——与容器卡片同一套明度语言。 -->
+              <span
+                class="absolute inset-y-2.5 left-0 w-[3px] rounded-full transition-all"
+                :class="
+                  s.running
+                    ? 'bg-emerald-500 opacity-40 group-hover:opacity-90'
+                    : s.state === 'restarting'
+                      ? 'bg-amber-500 opacity-40 group-hover:opacity-90'
+                      : 'bg-muted-foreground/30'
+                "
+                :title="stateLabel(s.state)"
+              />
+              <!-- 第一行：名称。非 running 整行降亮度。 -->
+              <div class="flex min-w-0 items-center gap-1.5 pr-6" :class="s.running ? '' : 'opacity-60'">
+                <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground" :title="s.name">{{
+                  s.name
+                }}</span>
+                <span
+                  v-if="s.metaMissing"
+                  class="shrink-0 text-amber-600"
+                  title="sidecar 元数据缺失（state.json 被清过？），重建可恢复"
+                  >⚠</span
+                >
+              </div>
+              <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/镜像。 -->
+              <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground" :class="s.running ? '' : 'opacity-50'">
+                <button
+                  v-if="s.ip"
+                  type="button"
+                  class="shrink-0 font-mono tabular-nums transition-colors hover:text-foreground"
+                  :class="copiedIp === s.ip ? 'text-emerald-500' : ''"
+                  :title="copiedIp === s.ip ? '已复制' : '点击复制 IP'"
+                  @click.stop="copyIpOf(s.ip)"
+                  >{{ s.ip }}</button
+                >
+                <span v-else class="shrink-0 opacity-50">无 IP</span>
+                <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
+                  s.description || s.image
+                }}</span>
+              </div>
+              <!-- ⋯ 菜单：快捷启停/重启 + 面板入口。触屏常显（与容器卡片同款）。 -->
+              <DropdownMenu>
+                <DropdownMenuTrigger as-child>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    class="absolute right-1 top-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+                    :disabled="svcBusy === s.name"
+                    :title="svcBusy === s.name ? '处理中…' : '更多操作'"
+                    @click.stop
+                  >
+                    <MoreHorizontal />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem @click="emit('open-services')">服务管理</DropdownMenuItem>
+                  <DropdownMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</DropdownMenuItem>
+                  <DropdownMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
+                  <DropdownMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <p v-if="!svcItems.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
+              暂无配套服务——点上方 ＋ 新建，容器内即可按服务名直连。
+            </p>
+          </template>
+        </div>
+      </div>
+
+      <!-- 宿主终端快捷行：钉在底部，与 docker 服务分区同属「容器之外的环境」区，
+           点击开/切宿主 tab；独立窗口入口收进 tab 右键菜单。 -->
       <button
         type="button"
         class="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left hover:bg-accent/50"
@@ -2035,29 +2193,7 @@ onUnmounted(() => {
         <span class="min-w-0 flex-1 truncate text-sm">宿主终端</span>
       </button>
 
-      <!-- 服务摘要条：一行聚合（状态点 + 名称串），点击开管理面板、＋ 带新建意图。
-           全部运行=绿 / 有停机=黄 / docker 不可达=红 / 无服务=灰。 -->
-      <button
-        type="button"
-        class="group flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left hover:bg-accent/50"
-        title="docker 配套服务（postgres/redis…，容器内按服务名访问）——点击管理"
-        @click="emit('open-services')"
-      >
-        <img src="/docker.svg" alt="" class="size-3.5 shrink-0" />
-        <span :class="['h-2 w-2 shrink-0 rounded-full', svcDotClass]" />
-        <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">{{ svcSummary }}</span>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          class="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
-          title="新建服务"
-          @click.stop="emit('open-services', true)"
-        >
-          <Plus />
-        </Button>
-      </button>
-
-      <!-- 侧栏收起行：环境区最底（服务摘要之下）——收/展动作统一钉在这个位置，
+      <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
            与收缩态 rail 底部的展开键互为镜像。 -->
       <button
         type="button"

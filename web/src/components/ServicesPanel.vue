@@ -49,7 +49,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
 import { LoaderCircle, Check, X, Ban } from 'lucide-vue-next'
 
-// initialCreate=true：来自侧栏服务摘要条的 ＋ ——面板一打开就弹新建对话框（普通入口只展示管理面板）。
+// initialCreate=true：来自侧栏 docker 服务分区头的 ＋ ——面板一打开就弹新建对话框（普通入口只展示管理面板）。
 const props = defineProps<{ initialCreate?: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
