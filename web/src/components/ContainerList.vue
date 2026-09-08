@@ -1932,7 +1932,7 @@ onUnmounted(() => {
               <template v-if="c.state === 'running' && cardPortRows(c.id).length">
                 <ContextMenuSeparator />
                 <ContextMenuSub>
-                  <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                  <ContextMenuSubTrigger>{{ directOpenExtra ? '代理地址' : 'IP 直连' }}</ContextMenuSubTrigger>
                   <ContextMenuSubContent class="w-44">
                     <ContextMenuItem
                       v-for="r in cardPortRows(c.id)"
@@ -1955,7 +1955,7 @@ onUnmounted(() => {
                 <ContextMenuSub
                   v-if="directOpenExtra && cardPortRows(c.id).some((r) => r.kind !== 'map' && directPortUrl(c, r.port))"
                 >
-                  <ContextMenuSubTrigger>直连 IP:端口</ContextMenuSubTrigger>
+                  <ContextMenuSubTrigger>IP 直连</ContextMenuSubTrigger>
                   <ContextMenuSubContent class="w-44">
                     <template v-for="r in cardPortRows(c.id)" :key="'d' + r.kind + r.port">
                       <ContextMenuItem
@@ -2184,7 +2184,7 @@ onUnmounted(() => {
             </div>
           </ContextMenuTrigger>
           <!-- 右键菜单（触屏长按同款）：低频操作收进来（外部的容器只有「纳入管理」），
-               running 时末尾追加「监听端口」二级菜单。原 ⋯ 按钮退役——卡片右下角不再
+               running 时末尾追加「代理地址」二级菜单。原 ⋯ 按钮退役——卡片右下角不再
                常驻控件，端口也不再有 hover 浮层，全部收编进这份菜单。 -->
           <ContextMenuContent>
             <template v-if="!c.managed && !c.adopted">
@@ -2203,13 +2203,13 @@ onUnmounted(() => {
               <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
               <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
             </template>
-            <!-- 监听端口（二级菜单）：running 且扫到/有映射才出现。web（实测返回 HTML）
-                 标绿点开；其余监听平铺；docker 宿主映射（历史形态）标「宿主」恒指本机。
-                 行点击目标跟随控制台口径（IP 直连 / 基域名代理，portRowTarget）。 -->
+            <!-- 代理地址（二级菜单，IP 口径下即直连）：running 且扫到/有映射才出现。
+                 web（实测返回 HTML）标绿点开；其余监听平铺；docker 宿主映射（历史形态）
+                 标「宿主」恒指本机。行点击目标跟随控制台口径（portRowTarget）。 -->
             <template v-if="c.state === 'running' && cardPortRows(c.id).length">
               <ContextMenuSeparator />
               <ContextMenuSub>
-                <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                <ContextMenuSubTrigger>{{ directOpenExtra ? '代理地址' : 'IP 直连' }}</ContextMenuSubTrigger>
                 <ContextMenuSubContent class="w-44">
                   <ContextMenuItem
                     v-for="r in cardPortRows(c.id)"
@@ -2228,12 +2228,12 @@ onUnmounted(() => {
                   </ContextMenuItem>
                 </ContextMenuSubContent>
               </ContextMenuSub>
-              <!-- 直连打开（第二方式）：仅域名口径给出——IP 口径主点击已是直连；
+              <!-- IP 直连（第二方式）：仅域名口径给出——IP 口径主点击已是直连；
                    map 行本身是宿主直连形态，不参与。 -->
               <ContextMenuSub
                 v-if="directOpenExtra && cardPortRows(c.id).some((r) => r.kind !== 'map' && directPortUrl(c, r.port))"
               >
-                <ContextMenuSubTrigger>直连 IP:端口</ContextMenuSubTrigger>
+                <ContextMenuSubTrigger>IP 直连</ContextMenuSubTrigger>
                 <ContextMenuSubContent class="w-44">
                   <template v-for="r in cardPortRows(c.id)" :key="'d' + r.kind + r.port">
                     <ContextMenuItem
@@ -2266,7 +2266,7 @@ onUnmounted(() => {
            配套，默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数（容器分区头同款，
            无状态点），整行点击展开/收起；收起时补一行摘要文案（任务进行中/不可达时
            要紧，不可达红字）。点击卡片进服务终端（与容器「点击即进」同语义），IP 点击
-           复制，右键菜单收详情（服务抽屉）/连接命令/监听端口二级菜单/更新/启停重启。
+           复制，右键菜单收详情（服务抽屉）/连接命令/代理地址二级菜单/更新/启停重启。
            列表 max-h 托底滚动，服务多也不挤占容器区。 -->
       <div class="shrink-0 border-t border-border">
         <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
@@ -2354,16 +2354,17 @@ onUnmounted(() => {
                 </div>
               </ContextMenuTrigger>
               <!-- 右键菜单（触屏长按同款，与容器卡片同款交互）：详情 / 复制连接命令 /
-                   监听端口二级菜单 / 更新 / 启停重启。原 ⋯ 按钮退役。 -->
+                   代理地址二级菜单 / 更新 / 启停重启。原 ⋯ 按钮退役。 -->
               <ContextMenuContent>
                 <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                 <ContextMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</ContextMenuItem>
-                <!-- 监听端口（二级菜单）：实测监听扫描（15s 慢轮询 + running 集变化即时
-                     补刷），web 标绿可点开、其余平铺；扫描未回回退 custom 手工登记端口。 -->
+                <!-- 代理地址（二级菜单，IP 口径下即直连）：实测监听扫描（15s 慢轮询 +
+                     running 集变化即时补刷），web 标绿可点开、其余平铺；扫描未回回退
+                     custom 手工登记端口。 -->
                 <template v-if="s.running && svcPortRows(s).length">
                   <ContextMenuSeparator />
                   <ContextMenuSub>
-                    <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                    <ContextMenuSubTrigger>{{ directOpenExtra ? '代理地址' : 'IP 直连' }}</ContextMenuSubTrigger>
                     <ContextMenuSubContent class="w-44">
                       <ContextMenuItem
                         v-for="r in svcPortRows(s)"
@@ -2378,9 +2379,9 @@ onUnmounted(() => {
                       </ContextMenuItem>
                     </ContextMenuSubContent>
                   </ContextMenuSub>
-                  <!-- 直连打开（第二方式）：仅域名口径给出，同容器卡片。 -->
+                  <!-- IP 直连（第二方式）：仅域名口径给出，同容器卡片。 -->
                   <ContextMenuSub v-if="directOpenExtra && svcPortRows(s).some((r) => svcDirectPortUrl(s, r.port))">
-                    <ContextMenuSubTrigger>直连 IP:端口</ContextMenuSubTrigger>
+                    <ContextMenuSubTrigger>IP 直连</ContextMenuSubTrigger>
                     <ContextMenuSubContent class="w-44">
                       <template v-for="r in svcPortRows(s)" :key="'sd' + r.kind + r.port">
                         <ContextMenuItem
