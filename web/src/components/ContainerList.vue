@@ -1520,10 +1520,10 @@ async function refreshServices() {
   }
 }
 const svcSummary = computed(() => {
-  if (svcReachable.value === false) return 'docker 不可达'
-  if (svcJobsRunning.value > 0) return `${svcJobsRunning.value} 个服务任务进行中…`
+  if (svcReachable.value === false) return '运行时不可达'
+  if (svcJobsRunning.value > 0) return `${svcJobsRunning.value} 个创建任务进行中…`
   const names = svcItems.value.map((s) => s.name)
-  if (!names.length) return '暂无配套服务'
+  if (!names.length) return '暂无应用容器'
   const shown = names.slice(0, 3).join(' · ')
   return names.length > 3 ? `${shown} 等 ${names.length} 个` : shown
 })
@@ -1824,7 +1824,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
-            :title="`docker 配套服务（${svcSummary}）——点击管理`"
+            :title="`应用容器（${svcSummary}）——点击管理`"
             @click="emit('open-services')"
           >
             <img src="/docker.svg" alt="" class="size-4" />
@@ -2123,7 +2123,7 @@ onUnmounted(() => {
             @click="svcExpanded = !svcExpanded"
           >
             <img src="/docker.svg" alt="" class="size-3.5 shrink-0" />
-            <span class="text-xs font-medium text-muted-foreground">docker 服务</span>
+            <span class="text-xs font-medium text-muted-foreground">应用容器</span>
             <span class="text-[10px] text-muted-foreground/70">{{ svcItems.length }}</span>
             <span
               v-if="!svcExpanded"
@@ -2147,7 +2147,7 @@ onUnmounted(() => {
         </div>
         <div v-if="svcExpanded" class="flex max-h-44 flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2">
           <p v-if="svcReachable === false" class="px-1.5 py-2 text-[11px] text-muted-foreground">
-            docker 不可达
+            运行时不可达
           </p>
           <template v-else>
             <div
@@ -2225,7 +2225,7 @@ onUnmounted(() => {
               </DropdownMenu>
             </div>
             <p v-if="!svcItems.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
-              暂无配套服务，点 ＋ 新建
+              暂无应用容器，点 ＋ 新建
             </p>
           </template>
         </div>

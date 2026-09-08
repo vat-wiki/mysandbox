@@ -287,7 +287,7 @@ onUnmounted(() => {
         <!-- 头：标识 + 新建 + 关闭 -->
         <div class="flex shrink-0 items-center gap-2.5 border-b px-4 py-3">
           <img src="/docker.svg" alt="" class="size-4 shrink-0" />
-          <DialogTitle class="min-w-0 flex-1 text-sm leading-tight font-semibold">docker 服务</DialogTitle>
+          <DialogTitle class="min-w-0 flex-1 text-sm leading-tight font-semibold">应用容器</DialogTitle>
           <Button variant="ghost" size="icon-xs" title="新建服务" @click="showCreate = true"><Plus /></Button>
           <DialogClose as-child>
             <Button variant="ghost" size="icon-xs" title="关闭"><X /></Button>
@@ -337,14 +337,14 @@ onUnmounted(() => {
             v-if="status && !status.reachable"
             class="flex h-full flex-col items-center justify-center gap-3 p-8 text-center"
           >
-            <p class="text-sm text-muted-foreground">docker 不可达，暂无法管理服务。</p>
+            <p class="text-sm text-muted-foreground">运行时不可达，暂无法管理。</p>
             <Button variant="outline" size="sm" @click="refresh">重试</Button>
           </div>
 
           <!-- 空态 -->
           <div v-else-if="!sel" class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
             <img src="/docker.svg" alt="" class="size-8 opacity-30" />
-            <p class="text-sm text-muted-foreground">暂无配套服务</p>
+            <p class="text-sm text-muted-foreground">暂无应用容器</p>
             <p class="text-xs text-muted-foreground/60">起个 postgres，容器里 psql -h pg 即通</p>
             <Button size="sm" class="mt-2" @click="showCreate = true">新建服务</Button>
           </div>
@@ -516,7 +516,7 @@ onUnmounted(() => {
         <div class="shrink-0 space-y-0.5 border-t px-4 py-2 text-[11px] text-muted-foreground">
           <p>
             <template v-if="status">
-              docker {{ status.reachable ? (status.version ?? '可达') : '不可达' }}
+              运行时 {{ status.reachable ? (status.version ?? '可达') : '不可达' }}
               <template v-if="status.reachable">
                 · {{ status.network.name }} {{ status.network.subnet ?? '' }}
                 · 池 {{ status.pool.from }}–{{ status.pool.to }} · 已用 {{ status.pool.assigned.length }}
@@ -533,7 +533,7 @@ onUnmounted(() => {
 
         <ConfirmDialog
           v-if="pendingDelete"
-          :title="pendingDelete.deleteData ? `删除服务 ${pendingDelete.name}（连数据）` : `删除服务 ${pendingDelete.name}`"
+          :title="pendingDelete.deleteData ? `删除应用容器 ${pendingDelete.name}（连数据）` : `删除应用容器 ${pendingDelete.name}`"
           :description="
             pendingDelete.deleteData
               ? `将停止并删除容器与数据卷 ${pendingDelete.name}，数据不可恢复。`

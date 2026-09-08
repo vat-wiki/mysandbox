@@ -819,7 +819,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                 class="rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
               >
                 以 root 覆写这 {{ ids.length }} 个容器的 /etc/hosts，写入即持久。mysandbox
-                只维护文件尾部的服务发现块（docker 服务变化会自动重建该块），其余内容不再被动。
+                只维护文件尾部的服务发现块（应用容器变化会自动重建该块），其余内容不再被动。
                 想改新容器的默认 hosts？去改模板容器。
               </div>
             </TabsContent>

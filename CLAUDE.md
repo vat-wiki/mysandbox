@@ -109,7 +109,7 @@ caps 经 `/api/health` 下发，前端存在 `web/src/lib/caps.ts` 单例（默�
 
 ### docker 服务层——「容器旁边的数据库们」
 
-docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在宿主 docker 上起单容器服务（postgres/redis/mysql/自定义），挂在与 LXC 互通的 docker 网络（`cfg.services.network`，默认 `mysandbox-lan`，桥钉 `br-mysandbox`），固定 IP + 命名卷；LXC 容器按服务名直连（hosts 自动注入，跨桥互通见上面 LXC 网络段）。**服务网络自持**：`ensureServiceNetwork` 在缺失时按服务池隐含的 /24 自动重建（status 自愈 + 创建兜底），别手工建网络——手工建会落到 docker 默认池，与 LXC 网段不通。
+docker 引擎移除后 docker 的新角色：**配套服务层**（界面名词：**应用容器**——与「系统容器」对仗，运行时迁移方案见 `docs/podman-migration.md`）。mysandbox 在宿主 docker 上起单容器服务（postgres/redis/mysql/自定义），挂在与 LXC 互通的 docker 网络（`cfg.services.network`，默认 `mysandbox-lan`，桥钉 `br-mysandbox`），固定 IP + 命名卷；LXC 容器按服务名直连（hosts 自动注入，跨桥互通见上面 LXC 网络段）。**服务网络自持**：`ensureServiceNetwork` 在缺失时按服务池隐含的 /24 自动重建（status 自愈 + 创建兜底），别手工建网络——手工建会落到 docker 默认池，与 LXC 网段不通。
 
 - **模块归属**：`server/docker.ts`（docker CLI 客户端：execFile/spawn 数组参数、`--format '{{json .}}'` 解析、label 过滤、卷操作、`docker events` NDJSON 订阅）+ `server/services.ts`（预设/编排/路由，对标 `base.ts`）+ `server/jobs.ts`（服务创建的后台任务注册表）。**不经过 engine 抽象**——`Engine` 接口是容器生命周期形状，服务是另一种生命周期；上面「业务层只 import engine/index.js」的约定限于容器引擎。
 - **创建是后台任务**（不是 SSE）：`POST /api/services` 快校验（`prepareServiceCreate`：校验/查重/IP 分配，失败回 4xx 内联显示）+ **同步预占名称与 IP**（`serviceNameExists` 查不到「还没建容器」的进行中任务，不锁名会双双通过查重）→ 立即返回 `{jobId}`；拉镜像/建容器在 `jobs.ts` 的进程内任务里跑（`runServiceCreate`）。任务 = 内存 Map + 环形日志（400 行）+ 终态保留 20 个，**刻意不持久化**（进程重启即丢，daemon 层缓存让重试近乎免费）。路由：`GET /api/services/jobs?tail=`（tail=0 极小 payload，侧栏轮询用）、`GET .../jobs/:id`（全量日志）、`POST .../jobs/:id/cancel`。**取消只对 pull 阶段生效**（`cancellable` 标志；docker create/start 是 execFile 杀不掉，其余阶段 409）。jobs.ts 不运行时 import services.ts（编排以 thunk 传入，防循环依赖）。

@@ -149,7 +149,7 @@ async function submit() {
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
     <DialogContent class="max-w-2xl">
       <DialogHeader>
-        <DialogTitle>新建服务</DialogTitle>
+        <DialogTitle>新建应用容器</DialogTitle>
         <DialogDescription>
           单容器 + 固定 IP + 数据卷，不发布端口——容器内按服务名直连（hosts 自动注入）。
         </DialogDescription>

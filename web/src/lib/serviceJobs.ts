@@ -22,11 +22,11 @@ export function trackServiceJobs(jobs: ServiceJobView[]): number {
     }
     if (prev === 'running') {
       if (j.state === 'done') {
-        toast.success(`服务 ${j.name} 就绪（${j.ip}）`, {
+        toast.success(`应用容器 ${j.name} 就绪（${j.ip}）`, {
           description: '容器内可直接按服务名连接（hosts 已注入）。',
         })
       } else if (j.state === 'error') {
-        toast.error(`服务 ${j.name} 创建失败`, {
+        toast.error(`应用容器 ${j.name} 创建失败`, {
           description: j.error || j.statusText,
           duration: 15_000,
         })
