@@ -28,7 +28,7 @@ import {
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
-import { Music } from 'lucide-vue-next'
+import { Music, Pencil, Check } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
@@ -263,6 +263,7 @@ async function load() {
     const v = await readFile(props.containerId, props.path)
     meta.value = v
     isNew.value = false
+    editing.value = false
     if (!v.binary) {
       content.value = v.content ?? ''
       savedContent.value = v.content ?? ''
@@ -276,6 +277,7 @@ async function load() {
     if (e instanceof ApiError && e.status === 404 && !previewKindV.value) {
       // 不存在 = 新建：空编辑器，无 mtime（不带乐观锁，保存即创建）。
       isNew.value = true
+      editing.value = true // 打开不存在的文件意图必然是写，直接落编辑态
       meta.value = { path: props.path, name: name.value, size: 0, mtime: 0, binary: false }
       content.value = ''
       savedContent.value = ''
@@ -325,6 +327,36 @@ function onEditorMount(ed: unknown) {
   revealTarget()
 }
 watch(() => [props.line, props.col], revealTarget)
+
+// —— 只读默认 + 浮动铅笔切换 ——
+// 使用画像是预览/复制为主、编辑偶发：打开默认 readOnly（Monaco 只读仍可选中/复制/
+// 双击选词，高频路径零成本，且不点铅笔永远不会写盘），右下角浮动铅笔进入编辑；
+// 编辑态点对勾 = 冲刷防抖窗口内改动落盘后锁回只读，保存失败/冲突留在编辑态裁决
+// （不静默丢）。新建态（文件不存在，打开意图必然是写）直接落在编辑态。
+// diff/预览渲染/二进制形态无编辑语义，铅笔只随 Monaco 分支出现。
+const editing = ref(false)
+watch([editing, editorRef], ([v, ed]) => {
+  if (!ed) return
+  ed.updateOptions({ readOnly: !v })
+  if (v) ed.focus()
+})
+async function toggleEdit() {
+  if (!editing.value) {
+    editing.value = true
+    return
+  }
+  // 编辑 → 只读：先把防抖窗口内的改动冲一遍，失败/冲突留在编辑态
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = null
+  }
+  if (!dirty.value) {
+    editing.value = false
+    return
+  }
+  await save()
+  if (!err.value && !conflict.value) editing.value = false
+}
 // 注意：不要在 active 变化时手动 editor.layout()——面板以 visibility:hidden 隐藏（布局盒
 // 恒定，父级 ContainerList 有说明），automaticLayout 自会跟进真实尺寸变化；在 0×0/
 // 刚恢复可见的容器上同步 layout 曾实测触发 monaco 渲染死循环（整页冻结）。
@@ -564,13 +596,28 @@ function fmtSize(n: number): string {
         />
         <template v-else>
           <p v-if="err" class="px-5 py-2 text-xs text-destructive">{{ err }}</p>
-          <CodeEditor
-            v-model="content"
-            :language="language"
-            class="min-h-0 flex-1"
-            @mount="onEditorMount"
-            @save="() => save()"
-          />
+          <div class="relative flex min-h-0 flex-1">
+            <CodeEditor
+              v-model="content"
+              :language="language"
+              :options="{ readOnly: !editing }"
+              class="min-h-0 flex-1"
+              @mount="onEditorMount"
+              @save="() => save()"
+            />
+            <!-- 只读⇄编辑浮动切换：默认只读（预览/复制为主的使用画像），铅笔进编辑、
+                 对勾冲刷保存后锁回只读。悬浮于编辑器右下角，不占布局 -->
+            <Button
+              variant="outline"
+              size="icon"
+              class="absolute right-3 bottom-3 z-10 size-8 rounded-md bg-background/80 shadow-sm backdrop-blur"
+              :title="editing ? '完成（保存并锁回只读）' : '编辑'"
+              @click="toggleEdit"
+            >
+              <Check v-if="editing" class="size-4" />
+              <Pencil v-else class="size-4" />
+            </Button>
+          </div>
         </template>
       </template>
     </div>
