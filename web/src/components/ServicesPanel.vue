@@ -1,12 +1,13 @@
 <script setup lang="ts">
-// docker 服务抽屉：右侧滑入的 master-detail「服务工作台」，与侧栏服务卡片分区配套。
-// 分工：侧栏卡片 = 每日一眼（状态/IP/描述 + 启停重启快捷）；本抽屉 = 中频深度操作——
-// 拿连接命令与 env 凭据、看日志、启停重启、创建（ServiceCreateDialog 表单）、删除。
-// 形态取抽屉而非居中 modal：服务是配角，工作台要能「探进来瞄一眼连接串就回去」，
-// 不值得每次打断整个界面；也取代旧版「桌面 9 列表格 + 手机卡片」双渲染。
-// 左栏清单：进行中的创建任务置顶（点开看日志/取消），服务项一行一态；右侧选中项
-// 详情（连接/凭据/元信息/日志常驻，不再藏进行内展开行）。任务完成自动选中产出的
-// 服务；失败/取消的任务留在左栏供查错。完成 toast 由 lib/serviceJobs.ts 全局去重。
+// docker 服务抽屉：右侧滑入的单服务详情（inspector），与侧栏服务卡片分区配套。
+// 分工：侧栏卡片 = 服务清单 + 切换器（抽屉开着时点别的卡片，内容直接跟着换——
+// initialSelect 变化即跟随，抽屉内部不再放列表，"抽屉里还有个列表"与侧栏重复且怪）。
+// 信息分层展示（一口气全铺开心智负担太重）：
+//   一层（常看）= 名称/状态/操作 + 连接命令 + IP，直接给；
+//   二层（偶看）= 环境变量凭据 + 元信息，折叠默认收；
+//   三层（排障）= 日志，折叠默认收，点开才拉取、开着才跟刷（顺带省轮询）。
+// 创建任务以顶部横幅出现（仅进行中/失败/取消可见，点开看日志/取消），完成自动选中
+// 产出的服务。创建表单仍是 ServiceCreateDialog；完成 toast 由 lib/serviceJobs.ts 去重。
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   listServices,
@@ -36,13 +37,13 @@ import {
 } from '@/components/ui/dropdown-menu'
 // 裸用 reka 原语而非 ui/dialog 的 DialogContent：抽屉形态（右侧全高）与居中定位类
 // 全面相悖，反覆盖不如直接自绘；焦点陷阱/Esc/遮罩点击关等 a11y 行为由原语自带。
-import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription, DialogClose } from 'reka-ui'
+import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogClose } from 'reka-ui'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
-import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe } from 'lucide-vue-next'
+import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight } from 'lucide-vue-next'
 
-// initialCreate=true：侧栏 ＋ 带新建意图——抽屉一打开就弹创建表单（普通入口不弹）。
-// initialSelect：侧栏卡片点击带来的服务名——打开即定位到该服务详情。
+// initialCreate=true：侧栏 ＋ 带新建意图——打开/已打开都弹创建表单。
+// initialSelect：侧栏卡片点击带来的服务名——打开或已打开时定位到该服务。
 const props = defineProps<{ initialCreate?: boolean; initialSelect?: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
@@ -52,45 +53,48 @@ const busyName = ref('')
 const err = ref('')
 const copied = ref('')
 const showCreate = ref(!!props.initialCreate)
+watch(
+  () => props.initialCreate,
+  (v) => {
+    if (v) showCreate.value = true
+  },
+)
 const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
 
-// —— 选中态（互斥）：服务名 或 创建任务 id ——
+// —— 选中服务（单一；侧栏卡片是切换器，props 变化即跟随）——
 const selService = ref(props.initialSelect ?? '')
-const selJob = ref('')
 const sel = computed(() => items.value.find((s) => s.name === selService.value) ?? null)
-const job = computed(() => jobs.value.find((j) => j.id === selJob.value) ?? null)
-// 「打开」端口列表：仅自定义预设且在跑（postgres/redis/mysql 的端口不是 HTTP）。
-// 提成 computed：模板插槽里对 sel 的窄化会失效（vue-tsc 限制），表达式内引用它最稳。
-const openPorts = computed<number[]>(() =>
-  sel.value?.running && sel.value.preset === 'custom' ? sel.value.ports : [],
+watch(
+  () => props.initialSelect,
+  (v) => {
+    if (v && v !== selService.value) selService.value = v
+  },
 )
-// 删除入口（详情操作行收进下拉）：script 内取 sel 免模板窄化问题。
-function askDelete(deleteData: boolean) {
-  const s = sel.value
-  if (!s) return
-  pendingDelete.value = { name: s.name, deleteData }
-}
-// 启停/重启统一入口（模板内联箭头拿不到 sel 的非空窄化，收进 script 最稳）。
-function svcAction(kind: 'start' | 'stop' | 'restart') {
-  const s = sel.value
-  if (!s) return
-  const name = s.name
-  const fn =
-    kind === 'start' ? () => startService(name) : kind === 'stop' ? () => stopService(name) : () => restartService(name)
-  void op(name, fn)
-}
+// 换服务：折叠层归位（日志懒加载随之失效，不预取）。
+watch(selService, () => {
+  openInfo.value = false
+  openLog.value = false
+})
 
-// —— 日志：服务名 -> 内容（选中即拉，3s 跟刷；切换选中不清缓存，回来即显）——
+// —— 分层折叠态 ——
+const openInfo = ref(false)
+const openLog = ref(false)
+const envCount = computed(() => (sel.value ? Object.keys(sel.value.env).length : 0))
+
+// —— 日志：懒加载（点开才拉）+ 开着才 3s 跟刷；缓存按服务名留着，重开免拉 ——
 const logs = ref<Record<string, string>>({})
 watch(
-  selService,
-  (n) => {
-    if (n) void ensureLog(n)
+  [selService, openLog],
+  ([name, open]) => {
+    if (open && name) void ensureLog(name)
   },
   { immediate: true },
 )
 async function ensureLog(name: string) {
   if (logs.value[name] != null) return
+  await fetchLog(name)
+}
+async function fetchLog(name: string) {
   try {
     const v = await getServiceLogs(name)
     logs.value[name] = v.logs || '（无输出）'
@@ -98,52 +102,11 @@ async function ensureLog(name: string) {
     logs.value[name] = `（拉取失败：${e instanceof Error ? e.message : String(e)}）`
   }
 }
-// 手动立即刷新当前选中服务的日志。
-async function reloadSelLog() {
+// 立即刷新当前展开的日志（手动按钮）。
+async function refreshSelLog() {
   const n = selService.value
   if (!n) return
-  try {
-    const v = await getServiceLogs(n)
-    logs.value[n] = v.logs || '（无输出）'
-  } catch {
-    /* 下轮再试 */
-  }
-}
-// 已加载过的日志每轮轮询跟刷一次（单个失败静默）。
-async function refreshOpenLogs() {
-  const names = Object.keys(logs.value)
-  if (!names.length) return
-  await Promise.all(
-    names.map(async (n) => {
-      try {
-        const v = await getServiceLogs(n)
-        logs.value[n] = v.logs || '（无输出）'
-      } catch {
-        /* 下轮再试 */
-      }
-    }),
-  )
-}
-
-function selectService(name: string) {
-  selJob.value = ''
-  selService.value = name
-}
-function selectJob(j: ServiceJobView) {
-  selService.value = ''
-  selJob.value = j.id
-}
-watch(selJob, (id) => {
-  if (id) void pullJobLog()
-})
-const fullLog = ref<string[]>([])
-async function pullJobLog() {
-  if (!selJob.value) return
-  try {
-    fullLog.value = (await getServiceJob(selJob.value)).log
-  } catch {
-    /* 拉取失败保留旧内容 */
-  }
+  await fetchLog(n)
 }
 
 // —— 服务表 / 状态 ——
@@ -155,7 +118,7 @@ async function refresh() {
     // 选中校正：目标服务没了（删除/外部清理）回落到第一个；泛入口打开时默认选第一个。
     if (!v.items.some((s) => s.name === selService.value)) {
       selService.value = v.items[0]?.name ?? ''
-    } else if (!selService.value && !selJob.value) {
+    } else if (!selService.value) {
       selService.value = v.items[0]?.name ?? ''
     }
   } catch (e) {
@@ -167,14 +130,13 @@ async function refresh() {
   }
 }
 
-// —— 创建任务 ——
-// 3s 轮询（侧栏另有独立轮询；两者喂同一 trackServiceJobs 去重通知）。
-// seenDoneIds：上轮已见终态集合——出现新终态时刷服务表；done 且有产出 → 自动选中
-// 该服务（创建场景的期待动线），error/canceled 留在左栏任务段供点开查错。
+// —— 创建任务横幅：进行中/失败/取消才出现（done 由自动选中承接）——
 const jobs = ref<ServiceJobView[]>([])
-const railJobs = computed(() =>
+const activeJobs = computed(() =>
   jobs.value.filter((j) => j.state === 'running' || j.state === 'error' || j.state === 'canceled').slice(0, 3),
 )
+const expandedJob = ref('')
+const fullLog = ref<string[]>([])
 let jobsTimer: ReturnType<typeof setInterval> | null = null
 let seenDoneIds = new Set<string>()
 async function refreshJobs() {
@@ -188,17 +150,29 @@ async function refreshJobs() {
       await refresh()
       for (const id of fresh) {
         const j = v.jobs.find((x) => x.id === id)
-        if (j?.state === 'done' && j.result) selectService(j.result.name)
+        if (j?.state === 'done' && j.result) selService.value = j.result.name
       }
     }
     seenDoneIds = doneIds
-    if (selJob.value) void pullJobLog() // 展开中的任务日志跟刷
+    if (expandedJob.value) void pullJobLog()
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('close')
       return
     }
     /* 任务列表拉取失败不打扰主流程（docker 抖动），下轮再试 */
+  }
+}
+function toggleJobLog(j: ServiceJobView) {
+  expandedJob.value = expandedJob.value === j.id ? '' : j.id
+  if (expandedJob.value) void pullJobLog()
+}
+async function pullJobLog() {
+  if (!expandedJob.value) return
+  try {
+    fullLog.value = (await getServiceJob(expandedJob.value)).log
+  } catch {
+    /* 拉取失败保留旧内容 */
   }
 }
 
@@ -234,6 +208,32 @@ async function op(name: string, fn: () => Promise<unknown>) {
   }
 }
 
+// 启停/重启统一入口（模板内联箭头拿不到 sel 的非空窄化，收进 script 最稳）。
+function svcAction(kind: 'start' | 'stop' | 'restart') {
+  const s = sel.value
+  if (!s) return
+  const name = s.name
+  const fn =
+    kind === 'start' ? () => startService(name) : kind === 'stop' ? () => stopService(name) : () => restartService(name)
+  void op(name, fn)
+}
+
+// 删除入口（操作行收进下拉）：script 内取 sel 免模板窄化问题。
+function askDelete(deleteData: boolean) {
+  const s = sel.value
+  if (!s) return
+  pendingDelete.value = { name: s.name, deleteData }
+}
+
+async function confirmDelete() {
+  const p = pendingDelete.value
+  if (!p) return
+  pendingDelete.value = null
+  await op(p.name, () =>
+    deleteService(p.name, { deleteData: p.deleteData, confirmName: p.deleteData ? p.name : undefined }),
+  )
+}
+
 // 打开服务端口：跟随控制台口径——IP/localhost 口径直连服务 IP，基域名口径经面板
 // Web 代理（见 lib/proxy.ts 与 server/proxy.ts）。仅 HTTP/WS 服务适用。
 function openServicePort(s: ServiceView, port: number) {
@@ -255,15 +255,6 @@ async function copyVal(v: string) {
   }
 }
 
-async function confirmDelete() {
-  const p = pendingDelete.value
-  if (!p) return
-  pendingDelete.value = null
-  await op(p.name, () =>
-    deleteService(p.name, { deleteData: p.deleteData, confirmName: p.deleteData ? p.name : undefined }),
-  )
-}
-
 function stateCls(s: ServiceView): string {
   if (s.running) return 'text-emerald-600'
   if (s.state === 'restarting') return 'text-amber-600'
@@ -275,7 +266,8 @@ onMounted(() => {
   refreshJobs()
   jobsTimer = setInterval(() => {
     void refreshJobs()
-    void refreshOpenLogs()
+    // 日志只在「日志层展开」时跟刷；展开中的任务日志跟着拉。
+    if (openLog.value && selService.value) void fetchLog(selService.value)
   }, 3000)
 })
 onUnmounted(() => {
@@ -289,224 +281,138 @@ onUnmounted(() => {
       <DialogOverlay
         class="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
       />
-      <!-- 右侧滑入抽屉：全高、xl 上限宽度，手机全宽 -->
+      <!-- 右侧滑入抽屉：单服务详情，宽度收窄到 md（信息分层后不需要 xl） -->
       <DialogContent
-        class="fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-full flex-col overflow-hidden border-l bg-background shadow-lg outline-none duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right sm:max-w-xl"
+        class="fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-full flex-col overflow-hidden border-l bg-background shadow-lg outline-none duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right sm:max-w-md"
       >
-        <!-- 头：标题 + 关闭 -->
+        <!-- 头：标识 + 新建 + 关闭 -->
         <div class="flex shrink-0 items-center gap-2.5 border-b px-4 py-3">
           <img src="/docker.svg" alt="" class="size-4 shrink-0" />
-          <div class="min-w-0 flex-1">
-            <DialogTitle class="text-sm leading-tight font-semibold">docker 服务</DialogTitle>
-            <DialogDescription class="text-xs text-muted-foreground">
-              配套服务（postgres/redis…）：固定 IP 直连，容器内按服务名访问（hosts 自动注入）
-            </DialogDescription>
-          </div>
+          <DialogTitle class="min-w-0 flex-1 text-sm leading-tight font-semibold">docker 服务</DialogTitle>
+          <Button variant="ghost" size="icon-xs" title="新建服务" @click="showCreate = true"><Plus /></Button>
           <DialogClose as-child>
             <Button variant="ghost" size="icon-xs" title="关闭"><X /></Button>
           </DialogClose>
         </div>
 
-        <!-- 状态行：docker/网络/服务池 + 环境告警（不可达/网络/镜像源） -->
-        <div class="shrink-0 space-y-1 border-b px-4 py-2 text-xs text-muted-foreground">
-          <p>
-            <template v-if="status">
-              docker {{ status.reachable ? `可达（${status.version ?? '?'}）` : '不可达' }}
-              <template v-if="status.reachable">
-                · 网络 {{ status.network.name }}（{{ status.network.subnet ?? '?' }}<template v-if="status.network.bridgeOk">，就绪</template>）
-                · 服务池 {{ status.pool.from }}–{{ status.pool.to }}（已用 {{ status.pool.assigned.length }}）
-              </template>
-            </template>
-            <template v-else>加载中…</template>
-          </p>
-          <p v-if="status?.error" class="text-destructive">{{ status.error }}</p>
-          <p v-if="status?.network.detail" class="text-amber-600">{{ status.network.detail }}</p>
-          <p v-if="status?.registryMirrors?.length === 0" class="text-amber-600">
-            daemon 未配置 registry-mirrors——Docker Hub 直连在受限网络下常缓慢/失败；可在 /etc/docker/daemon.json
-            配置后重启 docker（私有 registry 不受影响）。
-          </p>
+        <!-- 创建任务横幅：仅进行中/失败/取消出现，不占常驻版面 -->
+        <div v-if="activeJobs.length" class="shrink-0 space-y-1.5 border-b bg-muted/40 px-4 py-2">
+          <div v-for="j in activeJobs" :key="j.id" class="space-y-1">
+            <div class="flex items-center gap-2 text-xs">
+              <LoaderCircle v-if="j.state === 'running'" class="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+              <Check v-else-if="j.state === 'done'" class="size-3.5 shrink-0 text-emerald-600" />
+              <X v-else-if="j.state === 'error'" class="size-3.5 shrink-0 text-destructive" />
+              <Ban v-else class="size-3.5 shrink-0 text-muted-foreground" />
+              <span class="shrink-0 font-medium">创建 {{ j.name }}</span>
+              <span
+                class="min-w-0 flex-1 truncate text-muted-foreground"
+                :class="j.state === 'error' ? 'text-destructive' : ''"
+                :title="j.state === 'error' ? (j.error || j.statusText) : j.statusText"
+              >
+                {{ j.state === 'running' ? j.statusText : j.state === 'error' ? `创建失败：${j.error || j.statusText}` : '已取消' }}
+              </span>
+              <Button variant="ghost" size="xs" class="shrink-0" @click="toggleJobLog(j)">
+                {{ expandedJob === j.id ? '收起日志' : '日志' }}
+              </Button>
+              <Button
+                v-if="j.state === 'running' && j.cancellable"
+                variant="ghost"
+                size="xs"
+                class="shrink-0"
+                @click="cancelJob(j)"
+                >取消</Button
+              >
+            </div>
+            <pre
+              v-if="expandedJob === j.id"
+              class="max-h-40 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs break-all whitespace-pre-wrap"
+            >{{ j.state === 'running' ? (j.logTail ?? []).join('\n') || '准备中…' : fullLog.join('\n') || '（无输出）' }}</pre>
+          </div>
         </div>
         <p v-if="err" class="shrink-0 border-b px-4 py-1.5 text-xs text-destructive">{{ err }}</p>
 
-        <!-- docker 不可达：整区降级 -->
-        <div
-          v-if="status && !status.reachable"
-          class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
-        >
-          <p class="text-sm text-muted-foreground">docker 不可达——服务面板暂不可用，容器管理不受影响。</p>
-          <Button variant="outline" size="sm" @click="refresh">重试</Button>
-        </div>
-
-        <!-- 主体：左栏清单（手机变横滚 chips）+ 右侧详情 -->
-        <div v-else class="flex min-h-0 flex-1 max-md:flex-col">
+        <!-- 主体 -->
+        <div class="scroll-thin min-w-0 flex-1 overflow-y-auto">
+          <!-- docker 不可达：整区降级 -->
           <div
-            class="scroll-thin flex w-44 shrink-0 flex-col overflow-y-auto border-r max-md:w-full max-md:flex-row max-md:items-center max-md:gap-1.5 max-md:overflow-x-auto max-md:overflow-y-hidden max-md:border-r-0 max-md:border-b max-md:px-2 max-md:py-2"
+            v-if="status && !status.reachable"
+            class="flex h-full flex-col items-center justify-center gap-3 p-8 text-center"
           >
-            <!-- 创建任务段：running + 失败/取消（done 由自动选中承接，不占清单） -->
-            <div v-if="railJobs.length" class="shrink-0 max-md:contents">
-              <p class="px-1 pt-2 pb-1 text-[10px] font-medium text-muted-foreground/70 max-md:hidden">创建任务</p>
-              <button
-                v-for="j in railJobs"
-                :key="j.id"
-                type="button"
-                class="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent max-md:shrink-0 max-md:rounded-full max-md:border max-md:px-2.5 max-md:py-1"
-                :class="selJob === j.id ? 'bg-accent' : ''"
-                :title="j.state === 'error' ? (j.error || j.statusText) : j.statusText"
-                @click="selectJob(j)"
-              >
-                <LoaderCircle v-if="j.state === 'running'" class="size-3 shrink-0 animate-spin text-muted-foreground" />
-                <X v-else-if="j.state === 'error'" class="size-3 shrink-0 text-destructive" />
-                <Ban v-else class="size-3 shrink-0 text-muted-foreground" />
-                <span class="min-w-0">
-                  <span class="block truncate text-xs font-medium">{{ j.name }}</span>
-                  <span class="block truncate text-[10px] text-muted-foreground max-md:hidden">{{
-                    j.state === 'running' ? j.statusText : j.state === 'error' ? '创建失败' : '已取消'
-                  }}</span>
-                </span>
-              </button>
-            </div>
-
-            <!-- 服务段 -->
-            <div class="flex min-w-0 flex-1 flex-col max-md:contents">
-              <p class="px-1 pt-2 pb-1 text-[10px] font-medium text-muted-foreground/70 max-md:hidden">服务</p>
-              <button
-                v-for="s in items"
-                :key="s.name"
-                type="button"
-                class="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent max-md:shrink-0 max-md:rounded-full max-md:border max-md:px-2.5 max-md:py-1"
-                :class="selService === s.name ? 'bg-accent' : ''"
-                @click="selectService(s.name)"
-              >
-                <span
-                  :class="[
-                    'size-1.5 shrink-0 rounded-full',
-                    s.running ? 'bg-emerald-500' : s.state === 'restarting' ? 'bg-amber-500' : 'bg-muted-foreground/40',
-                  ]"
-                  :title="stateLabel(s.state)"
-                />
-                <span class="min-w-0">
-                  <span class="block truncate text-xs font-medium" :title="s.name">{{ s.name }}</span>
-                  <span class="block truncate text-[10px] text-muted-foreground max-md:hidden"
-                    >{{ s.preset }} · {{ stateLabel(s.state) }}</span
-                  >
-                </span>
-                <span v-if="s.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复">⚠</span>
-              </button>
-              <p v-if="!items.length" class="px-2 py-2 text-[11px] text-muted-foreground max-md:hidden">还没有服务</p>
-            </div>
-
-            <!-- 手机：新建 chip（桌面入口在底部动作行） -->
-            <button
-              type="button"
-              class="hidden shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground max-md:flex"
-              @click="showCreate = true"
-            >
-              <Plus class="size-3" /> 新建
-            </button>
-
-            <!-- 底部动作：刷新 + 新建 -->
-            <div class="shrink-0 border-t p-2 max-md:hidden">
-              <div class="flex gap-1.5">
-                <Button variant="outline" size="sm" class="flex-1" title="刷新服务与任务" @click="refresh()">
-                  <RefreshCw />
-                </Button>
-                <Button variant="outline" size="sm" class="flex-1" @click="showCreate = true">
-                  <Plus /> 新建服务
-                </Button>
-              </div>
-            </div>
+            <p class="text-sm text-muted-foreground">docker 不可达，暂无法管理服务。</p>
+            <Button variant="outline" size="sm" @click="refresh">重试</Button>
           </div>
 
-          <!-- 详情：选中的创建任务 / 选中的服务 / 空态 -->
-          <div class="scroll-thin min-w-0 flex-1 overflow-y-auto">
-            <!-- 任务详情：状态 + 进度 + 日志 + 取消 -->
-            <div v-if="job" class="space-y-3 p-4">
+          <!-- 空态 -->
+          <div v-else-if="!sel" class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+            <img src="/docker.svg" alt="" class="size-8 opacity-30" />
+            <p class="text-sm text-muted-foreground">暂无配套服务</p>
+            <p class="text-xs text-muted-foreground/60">起个 postgres，容器里 psql -h pg 即通</p>
+            <Button size="sm" class="mt-2" @click="showCreate = true">新建服务</Button>
+          </div>
+
+          <!-- 服务详情（分层） -->
+          <div v-else class="space-y-3 p-4">
+            <!-- 一层：身份 + 操作（状态由彩色文字承担，不加点——颜色重复编码） -->
+            <div class="space-y-2">
               <div class="flex min-w-0 flex-wrap items-center gap-2">
-                <LoaderCircle v-if="job.state === 'running'" class="size-4 shrink-0 animate-spin text-muted-foreground" />
-                <Check v-else-if="job.state === 'done'" class="size-4 shrink-0 text-emerald-600" />
-                <X v-else-if="job.state === 'error'" class="size-4 shrink-0 text-destructive" />
-                <Ban v-else class="size-4 shrink-0 text-muted-foreground" />
-                <h3 class="min-w-0 truncate text-base font-semibold">创建 {{ job.name }}</h3>
-                <Badge variant="outline" class="shrink-0 font-normal">{{ job.image }}</Badge>
+                <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.name }}</h3>
+                <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset }}</Badge>
+                <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复">⚠</span>
+                <span class="shrink-0 text-xs" :class="stateCls(sel)" :title="sel.status">{{ stateLabel(sel.state) }}</span>
               </div>
-              <p class="text-xs" :class="job.state === 'error' ? 'text-destructive' : 'text-muted-foreground'">
-                {{ job.state === 'error' ? (job.error || job.statusText) : job.statusText }}
-              </p>
-              <div v-if="job.state === 'running' && job.cancellable">
-                <Button variant="outline" size="sm" @click="cancelJob(job)">取消任务</Button>
+              <p v-if="sel.description" class="text-xs text-muted-foreground">{{ sel.description }}</p>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <Button
+                  v-if="!sel.running"
+                  variant="outline"
+                  size="sm"
+                  :disabled="!!busyName"
+                  :title="busyName === sel.name ? '处理中…' : ''"
+                  @click="svcAction('start')"
+                  >启动</Button
+                >
+                <Button
+                  v-else
+                  variant="outline"
+                  size="sm"
+                  :disabled="!!busyName"
+                  :title="busyName === sel.name ? '处理中…' : ''"
+                  @click="svcAction('stop')"
+                  >停止</Button
+                >
+                <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
+                <!-- 打开：只对自定义预设给出——postgres/redis/mysql 的端口不是 HTTP，浏览器代理进不去 -->
+                <Button
+                  v-for="p in sel.running && sel.preset === 'custom' ? sel.ports : []"
+                  :key="'open' + p"
+                  variant="outline"
+                  size="sm"
+                  @click="sel && openServicePort(sel, p)"
+                >
+                  <Globe class="size-3.5" /> 打开 {{ p }}
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger as-child>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="ml-auto text-destructive hover:text-destructive"
+                      :disabled="!!busyName"
+                      >删除</Button
+                    >
+                  </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem @click="askDelete(false)">删除（留数据卷）</DropdownMenuItem>
+                      <DropdownMenuItem class="text-destructive" @click="askDelete(true)">删除（连数据）</DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
               </div>
-              <pre class="max-h-[50dvh] overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed">{{
-                job.state === 'running' ? (job.logTail ?? []).join('\n') || '准备中…' : fullLog.join('\n') || '（无输出）'
-              }}</pre>
             </div>
 
-            <!-- 服务详情 -->
-            <div v-else-if="sel" class="space-y-4 p-4">
-              <div class="space-y-2">
-                <div class="flex min-w-0 flex-wrap items-center gap-2">
-                  <span
-                    :class="[
-                      'h-2 w-2 shrink-0 rounded-full',
-                      sel.running ? 'bg-emerald-500' : sel.state === 'restarting' ? 'bg-amber-500' : 'bg-muted-foreground/40',
-                    ]"
-                    :title="stateLabel(sel.state)"
-                  />
-                  <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.name }}</h3>
-                  <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset }}</Badge>
-                  <span class="shrink-0 text-xs" :class="stateCls(sel)" :title="sel.status">{{ stateLabel(sel.state) }}</span>
-                </div>
-                <p v-if="sel.description" class="text-xs text-muted-foreground">{{ sel.description }}</p>
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <Button
-                    v-if="!sel.running"
-                    variant="outline"
-                    size="sm"
-                    :disabled="!!busyName"
-                    :title="busyName === sel.name ? '处理中…' : ''"
-                    @click="svcAction('start')"
-                    >启动</Button
-                  >
-                  <Button
-                    v-else
-                    variant="outline"
-                    size="sm"
-                    :disabled="!!busyName"
-                    :title="busyName === sel.name ? '处理中…' : ''"
-                    @click="svcAction('stop')"
-                    >停止</Button
-                  >
-                  <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
-                  <!-- 打开：只对自定义预设给出——postgres/redis/mysql 的端口不是 HTTP，浏览器代理进不去 -->
-                  <Button
-                    v-for="p in openPorts"
-                    :key="'open' + p"
-                    variant="outline"
-                    size="sm"
-                    @click="sel && openServicePort(sel, p)"
-                  >
-                    <Globe class="size-3.5" /> 打开 {{ p }}
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger as-child>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        class="ml-auto text-destructive hover:text-destructive"
-                        :disabled="!!busyName"
-                        >删除</Button
-                      >
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem @click="askDelete(false)">删除服务（数据卷保留）</DropdownMenuItem>
-                      <DropdownMenuItem class="text-destructive" @click="askDelete(true)">删除服务（连数据）</DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-
-              <!-- 连接命令：一级信息，点复制 -->
-              <div v-if="sel.connect.length" class="space-y-1.5">
-                <p class="text-[11px] font-medium text-muted-foreground">连接命令（容器内执行，点击复制）</p>
+            <!-- 一层：连接（服务的第一用法，直接给） -->
+            <div class="space-y-1.5">
+              <p class="text-[11px] font-medium text-muted-foreground">连接</p>
+              <div v-if="sel.connect.length" class="space-y-1">
                 <button
                   v-for="c in sel.connect"
                   :key="c"
@@ -518,77 +424,112 @@ onUnmounted(() => {
                   {{ copied === c ? '已复制 ✓' : c }}
                 </button>
               </div>
-              <p v-else class="text-xs text-muted-foreground">无现成连接命令——自定义镜像参考下方环境变量。</p>
-
-              <!-- env 全量凭据：token = 宿主完整权限，鉴权边界在 token 上，UI 直接展示 -->
-              <div v-if="Object.keys(sel.env).length" class="space-y-1.5">
-                <p class="text-[11px] font-medium text-muted-foreground">环境变量（凭据，点击值复制）</p>
-                <div class="divide-y rounded-md border">
-                  <div
-                    v-for="(v, k) in sel.env"
-                    :key="k"
-                    class="flex flex-col gap-0.5 px-3 py-1.5 font-mono text-xs sm:flex-row sm:gap-3"
-                  >
-                    <span class="shrink-0 truncate text-muted-foreground sm:w-44">{{ k }}</span>
-                    <button
-                      type="button"
-                      class="min-w-0 cursor-pointer text-left break-all hover:underline"
-                      :title="copied === String(v) ? '已复制' : '点击复制'"
-                      @click="copyVal(String(v))"
-                    >
-                      {{ copied === String(v) ? '已复制' : v }}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- 元信息 -->
-              <div class="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1 text-xs">
-                <span class="text-muted-foreground">IP</span>
+              <p v-else class="text-xs text-muted-foreground">无现成连接命令</p>
+              <div class="flex items-center gap-2 text-xs text-muted-foreground">
+                <span class="shrink-0">IP</span>
                 <button
                   v-if="sel.ip"
                   type="button"
-                  class="min-w-0 cursor-pointer text-left font-mono tabular-nums hover:underline"
+                  class="cursor-pointer font-mono tabular-nums transition-colors hover:text-foreground hover:underline"
                   :title="copied === sel.ip ? '已复制' : '点击复制'"
                   @click="copyVal(sel.ip)"
                 >
                   {{ copied === sel.ip ? '已复制' : sel.ip }}
                 </button>
-                <span v-else class="text-muted-foreground">—</span>
-                <span class="text-muted-foreground">镜像</span>
-                <span class="min-w-0 truncate font-mono" :title="sel.image">{{ sel.image }}</span>
-                <span class="text-muted-foreground">数据卷</span>
-                <span class="min-w-0 truncate font-mono" :title="sel.volume ?? '无数据卷'">{{ sel.volume ?? '—' }}</span>
-                <template v-if="sel.createdAt">
-                  <span class="text-muted-foreground">创建于</span>
-                  <span>{{ fmtDate(sel.createdAt) }}</span>
-                </template>
-                <template v-if="sel.command?.length">
-                  <span class="text-muted-foreground">命令</span>
-                  <span class="min-w-0 truncate font-mono" :title="sel.command.join(' ')">{{ sel.command.join(' ') }}</span>
-                </template>
-              </div>
-
-              <!-- 日志：常驻块（选中即拉、3s 跟刷），不再藏进行内展开行 -->
-              <div class="space-y-1.5">
-                <div class="flex items-center gap-2">
-                  <p class="text-[11px] font-medium text-muted-foreground">日志（3s 自动跟随）</p>
-                  <Button variant="ghost" size="icon-xs" class="ml-auto" title="立即刷新" @click="reloadSelLog">
-                    <RefreshCw class="size-3.5" />
-                  </Button>
-                </div>
-                <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed">{{ logs[sel.name] ?? '加载中…' }}</pre>
+                <span v-else>—</span>
               </div>
             </div>
 
-            <!-- 空态 -->
-            <div v-else class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-              <img src="/docker.svg" alt="" class="size-8 opacity-30" />
-              <p class="text-sm text-muted-foreground">{{ items.length ? '选择左侧服务查看详情' : '还没有配套服务' }}</p>
-              <p class="text-xs text-muted-foreground/60">起一个 postgres，容器里就能 psql -h pg 直连</p>
-              <Button size="sm" class="mt-2" @click="showCreate = true">新建服务</Button>
+            <!-- 二层：环境变量凭据 + 元信息（默认收） -->
+            <div class="border-t pt-2">
+              <button
+                type="button"
+                class="flex w-full items-center gap-1.5 py-1 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                @click="openInfo = !openInfo"
+              >
+                <ChevronRight class="size-3.5 shrink-0 transition-transform" :class="openInfo ? 'rotate-90' : ''" />
+                凭据与详情
+                <span v-if="envCount" class="font-normal text-muted-foreground/60">{{ envCount }} 项</span>
+              </button>
+              <div v-if="openInfo" class="space-y-3 pt-1.5">
+                <div v-if="Object.keys(sel.env).length" class="space-y-1.5">
+                  <p class="text-[11px] text-muted-foreground">环境变量</p>
+                  <div class="divide-y rounded-md border">
+                    <div
+                      v-for="(v, k) in sel.env"
+                      :key="k"
+                      class="flex flex-col gap-0.5 px-3 py-1.5 font-mono text-xs sm:flex-row sm:gap-3"
+                    >
+                      <span class="shrink-0 truncate text-muted-foreground sm:w-40">{{ k }}</span>
+                      <button
+                        type="button"
+                        class="min-w-0 cursor-pointer text-left break-all hover:underline"
+                        :title="copied === String(v) ? '已复制' : '点击复制'"
+                        @click="copyVal(String(v))"
+                      >
+                        {{ copied === String(v) ? '已复制' : v }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1 text-xs">
+                  <span class="text-muted-foreground">镜像</span>
+                  <span class="min-w-0 truncate font-mono" :title="sel.image">{{ sel.image }}</span>
+                  <span class="text-muted-foreground">数据卷</span>
+                  <span class="min-w-0 truncate font-mono" :title="sel.volume ?? '无数据卷'">{{ sel.volume ?? '—' }}</span>
+                  <template v-if="sel.createdAt">
+                    <span class="text-muted-foreground">创建于</span>
+                    <span>{{ fmtDate(sel.createdAt) }}</span>
+                  </template>
+                  <template v-if="sel.command?.length">
+                    <span class="text-muted-foreground">命令</span>
+                    <span class="min-w-0 truncate font-mono" :title="sel.command.join(' ')">{{ sel.command.join(' ') }}</span>
+                  </template>
+                </div>
+              </div>
+            </div>
+
+            <!-- 三层：日志（默认收，点开才拉、开着才跟刷） -->
+            <div class="border-t pt-2">
+              <div class="flex items-center">
+                <button
+                  type="button"
+                  class="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  @click="openLog = !openLog"
+                >
+                  <ChevronRight class="size-3.5 shrink-0 transition-transform" :class="openLog ? 'rotate-90' : ''" />
+                  日志
+                  <span v-if="openLog" class="font-normal text-muted-foreground/60">自动跟随</span>
+                </button>
+                <Button v-if="openLog" variant="ghost" size="icon-xs" title="立即刷新" @click="refreshSelLog">
+                  <RefreshCw class="size-3.5" />
+                </Button>
+              </div>
+              <pre
+                v-if="openLog"
+                class="mt-1.5 max-h-64 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap"
+              >{{ logs[sel.name] ?? '加载中…' }}</pre>
             </div>
           </div>
+        </div>
+
+        <!-- 底部状态行：docker 环境信息沉底（不属于任何一个服务） -->
+        <div class="shrink-0 space-y-0.5 border-t px-4 py-2 text-[11px] text-muted-foreground">
+          <p>
+            <template v-if="status">
+              docker {{ status.reachable ? (status.version ?? '可达') : '不可达' }}
+              <template v-if="status.reachable">
+                · {{ status.network.name }} {{ status.network.subnet ?? '' }}
+                · 池 {{ status.pool.from }}–{{ status.pool.to }} · 已用 {{ status.pool.assigned.length }}
+              </template>
+            </template>
+            <template v-else>加载中…</template>
+          </p>
+          <p v-if="status?.error" class="text-destructive">{{ status.error }}</p>
+          <p v-if="status?.network.detail" class="text-amber-600">{{ status.network.detail }}</p>
+          <p v-if="status?.registryMirrors?.length === 0" class="text-amber-600">
+            未配置 registry-mirrors：受限网络下 Docker Hub 直连常失败，可在 /etc/docker/daemon.json 配置后重启 docker（私有 registry 不受影响）。
+          </p>
         </div>
 
         <ConfirmDialog

@@ -2118,7 +2118,7 @@ onUnmounted(() => {
         </div>
         <div v-if="svcExpanded" class="flex max-h-44 flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2">
           <p v-if="svcReachable === false" class="px-1.5 py-2 text-[11px] text-muted-foreground">
-            docker 不可达——服务面板暂不可用，容器管理不受影响。
+            docker 不可达
           </p>
           <template v-else>
             <div
@@ -2200,7 +2200,7 @@ onUnmounted(() => {
               </DropdownMenu>
             </div>
             <p v-if="!svcItems.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
-              暂无配套服务——点上方 ＋ 新建，容器内即可按服务名直连。
+              暂无配套服务，点 ＋ 新建
             </p>
           </template>
         </div>
