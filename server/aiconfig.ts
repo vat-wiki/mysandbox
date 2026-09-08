@@ -357,27 +357,30 @@ export const WRITERS: Record<keyof AiGatewayInput['tools'], Writer> = {
   pi: configPi,
 };
 
-// —— 容器内可达性探测：curl 打 <baseUrl>/models（anthropic 路打 its own），只看连通——
-// （HTTP 码本身不代表鉴权通过）。仅对 running 容器做，失败不影响配置写入的成败。
+// —— 容器内可达性探测：curl 打各自的模型列表端点，只看连通——（HTTP 码本身不代表
+// 鉴权通过）。两侧 baseUrl 约定不同，探测路径跟着约定走：anthropic 侧按 Claude Code
+// 的 ANTHROPIC_BASE_URL 约定不含 /v1（客户端自己拼 /v1/messages），列表在 <base>/v1/models；
+// openai 侧 baseUrl 含 /v1，直接拼 /models。仅对 running 容器做，失败不影响配置写入。
 async function probeOne(
   cfg: Config,
   id: string,
   kind: 'OpenAI 兼容' | 'Anthropic 兼容',
   baseUrl: string,
 ): Promise<string> {
+  const probePath = kind === 'Anthropic 兼容' ? '/v1/models' : '/models';
   try {
     const r = await execRun(cfg, id, {
-      Cmd: ['sh', '-c', `curl -m 5 -s -o /dev/null -w '%{http_code}' ${shq(baseUrl.replace(/\/$/, '') + '/models')}`],
+      Cmd: ['sh', '-c', `curl -m 5 -s -o /dev/null -w '%{http_code}' ${shq(baseUrl.replace(/\/$/, '') + probePath)}`],
       Tty: false,
       timeoutMs: 8_000,
     });
     const code = r.stdout.trim();
     if (!code || code === '000')
       return `探测: ${kind}网关不可达（容器内连不上，检查防火墙/地址）`;
-    // 404/405 = 网络与 HTTP 服务都通，只是网关没开 /models 这条路由（anthropic 中转
-    // 常只暴露调用端点）——连通性目的已达成，不算故障，单独说明免得被误读成出错
+    // 404/405 = 网络与 HTTP 服务都通，只是网关没开模型列表这条路由（有的中转只实现
+    // 调用端点）——连通性目的已达成，不算故障，单独说明免得被误读成出错
     if (code === '404' || code === '405')
-      return `探测: ${kind}网关可达 (HTTP ${code}，/models 探测路径未开放，不影响实际调用)`;
+      return `探测: ${kind}网关可达 (HTTP ${code}，${probePath} 探测路径未开放，不影响实际调用)`;
     return `探测: ${kind}网关可达 (HTTP ${code})`;
   } catch {
     return `探测: ${kind}失败（curl 缺失或超时），不影响配置`;
