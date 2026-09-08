@@ -440,6 +440,16 @@ export const listServices = () =>
   api('/api/services') as Promise<{ items: ServiceView[]; status: ServicesStatus }>
 export const getServicePresets = () =>
   api('/api/services/presets') as Promise<{ presets: ServicePresetView[] }>
+// 宿主已有镜像（创建对话框「自定义镜像」的候选下拉）；失败/daemon 不可达 = 空列表。
+export interface DockerImageRef {
+  ref: string
+  repository: string
+  tag: string
+  size: string
+  createdSince: string
+}
+export const listDockerImages = () =>
+  api('/api/services/images') as Promise<{ images: DockerImageRef[] }>
 export const startService = (name: string) => postJson(`/api/services/${name}/start`)
 export const stopService = (name: string) => postJson(`/api/services/${name}/stop`)
 export const restartService = (name: string) => postJson(`/api/services/${name}/restart`)

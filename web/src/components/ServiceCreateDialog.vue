@@ -7,8 +7,10 @@ import {
   getServicePresets,
   createService,
   listContainers,
+  listDockerImages,
   Unauthorized,
   type ServicePresetView,
+  type DockerImageRef,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -53,6 +55,9 @@ const err = ref('')
 const lxcNames = ref<Set<string>>(new Set())
 const nameClash = computed(() => name.value.trim() !== '' && lxcNames.value.has(name.value.trim()))
 
+// 宿主已有镜像：自定义镜像的候选（选中即填输入框，仍可手改）；也为预设标注「已在本地」。
+const localImages = ref<DockerImageRef[]>([])
+
 onMounted(() => {
   getServicePresets()
     .then((v) => {
@@ -69,10 +74,21 @@ onMounted(() => {
     .catch(() => {
       /* 提示功能，失败静默 */
     })
+  listDockerImages()
+    .then((v) => {
+      localImages.value = v.images
+    })
+    .catch(() => {
+      /* 候选提示，失败静默（选择器整块隐藏） */
+    })
 })
 
 const isCustom = computed(() => presetKey.value === 'custom')
 const current = computed(() => presets.value.find((p) => p.key === presetKey.value))
+// 预设镜像恰为宿主已有 → 创建时跳过拉取（后端 imageExistsLocal 判定），标注出来。
+const currentImageLocal = computed(
+  () => !!current.value && localImages.value.some((i) => i.ref === current.value!.image),
+)
 
 // 预设切换清掉上一预设的 env 值（不同预设的 required 集不同，残留值会误提交）。
 watch(presetKey, () => {
@@ -180,6 +196,7 @@ async function submit() {
             <p>{{ current.description }}</p>
             <p class="font-mono">
               镜像 {{ current.image }}
+              <span v-if="currentImageLocal" class="text-emerald-500">· 已在本地，跳过拉取</span>
               <template v-if="current.ports.length"> · 端口 {{ current.ports.join('/') }}</template>
               <template v-if="current.volumePath"> · 数据卷 {{ current.volumePath }}</template>
             </p>
@@ -191,6 +208,22 @@ async function submit() {
           <div class="space-y-1.5">
             <Label for="s-image">镜像 *</Label>
             <Input id="s-image" v-model="customImage" placeholder="postgres:15 / 10.12.135.233/xx/yy:tag" />
+            <!-- 宿主已有镜像直接选：受控 Select，选中即填上面的输入框（输入框是权威值，
+                 手改成列表外的引用时回退 placeholder）。daemon 不可达时整块隐藏。 -->
+            <Select
+              v-if="localImages.length"
+              :model-value="localImages.some((i) => i.ref === customImage) ? customImage : ''"
+              @update:model-value="(v: unknown) => (customImage = String(v))"
+            >
+              <SelectTrigger class="h-8 w-full text-xs">
+                <SelectValue placeholder="从宿主已有镜像选择…" />
+              </SelectTrigger>
+              <SelectContent class="max-h-64">
+                <SelectItem v-for="img in localImages" :key="img.ref" :value="img.ref">
+                  {{ img.ref }}（{{ img.size }}，{{ img.createdSince }}）
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div class="space-y-1.5">
             <Label for="s-env">环境变量</Label>

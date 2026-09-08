@@ -29,6 +29,7 @@ import {
   removeContainer,
   containerLogs,
   imageExistsLocal,
+  listImages,
   pullImageStream,
   registryMirrors,
   createNetwork,
@@ -591,6 +592,23 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
   app.get('/api/services/presets', async () => {
     // 前端建表单用：预设元数据，不含 fixedEnv 的值（无所谓，但保持「不回环境变量值」的一致性）。
     return { presets: SERVICE_PRESETS.map((p) => ({ ...p, fixedEnv: {} })) };
+  });
+
+  // 宿主已有镜像（自定义镜像的候选下拉）。<none> 悬空行/纯 digest 行过滤掉——
+  // 没法当 ref 用；失败（daemon 挂）降级为空列表，前端选择器整块隐藏不报错。
+  app.get('/api/services/images', async () => {
+    const rows = await listImages().catch(() => []);
+    const images = rows
+      .filter((r) => r.Repository && r.Repository !== '<none>' && r.Tag && r.Tag !== '<none>')
+      .map((r) => ({
+        ref: `${r.Repository}:${r.Tag}`,
+        repository: r.Repository,
+        tag: r.Tag,
+        size: r.Size,
+        createdSince: r.CreatedSince,
+      }))
+      .sort((a, b) => a.ref.localeCompare(b.ref));
+    return { images };
   });
 
   // 创建：快校验 + 预占通过即返回 jobId，拉镜像/建容器在后台 job 跑（jobs.ts）。

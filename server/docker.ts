@@ -262,6 +262,19 @@ export async function containerLogs(name: string, tail = 200): Promise<string> {
   return `${r.stdout}${r.stderr}`;
 }
 
+// —— 镜像 ——
+export interface DockerImageRow {
+  Repository: string;
+  Tag: string;
+  Size: string; // 人话大小（"431MB"）
+  CreatedSince: string; // 人话时间（"2 days ago"）
+}
+
+// 本地镜像全集（同一 image ID 多 tag 自然多行；<none> 悬空行由业务层按需过滤）。
+export async function listImages(): Promise<DockerImageRow[]> {
+  return dockerJsonLines<DockerImageRow>(['images']);
+}
+
 // 镜像是否已在本地（按引用名查，tag 或 digest 均可）。
 export async function imageExistsLocal(image: string): Promise<boolean> {
   const r = await dockerExec(['image', 'inspect', image], 5_000);
