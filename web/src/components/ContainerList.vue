@@ -115,6 +115,8 @@ const props = defineProps<{
   // 布局持久化到独立 key，不与主窗口互相污染。popoutTarget=容器 id 或 HOST_ID 哨兵。
   popout?: boolean
   popoutTarget?: string
+  // 服务抽屉操作回传计数（App 透传）：抽屉里启停/删除/创建完成后 +1，侧栏即时跟刷。
+  svcVersion?: number
 }>()
 const emit = defineEmits<{
   (e: 'unauthorized'): void
@@ -1400,11 +1402,18 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
       // 低频配套收在底部环境区、可整体收起：分区头不带状态点（容器分区头同款），
       // 收起时的状态交给摘要文案（不可达红字、任务进行中有数）。展开/收起记
       // localStorage。管理动作以服务抽屉为主场——卡片点击开抽屉并定位，⋯ 收复制
-      // 连接/打开端口/启停重启这类就地快捷。轮询自适应：闲时 15s（服务启停低频），
-      // 有创建任务进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，payload
-      // 极小）。完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，
-      // 天然只发一次）。
+      // 连接/打开端口/启停重启这类就地快捷。轮询自适应：闲时 5s（外部启停也能较快
+      // 跟上），有创建任务进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，
+      // payload 极小）。完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询
+      // 也喂它，天然只发一次）。
   const svcItems = ref<ServiceView[]>([])
+// 抽屉里的操作（启停/删除/创建完成）经 App 计数回传：即时刷侧栏，不等下一拍轮询。
+watch(
+  () => props.svcVersion,
+  () => {
+    void refreshServices()
+  },
+)
   // 分区展开态：默认展开（首次见到的就是卡片形态），用户收起后随 localStorage 记忆。
   const svcExpanded = ref(
     (() => {
@@ -1458,7 +1467,7 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
 const svcReachable = ref<boolean | null>(null)
 const svcJobsRunning = ref(0)
 let svcTimer: ReturnType<typeof setInterval> | null = null
-const SVC_IDLE_MS = 15000
+const SVC_IDLE_MS = 5000
 const SVC_ACTIVE_MS = 3000
 let svcIntervalMs = SVC_IDLE_MS
 function armSvcTimer() {
@@ -2173,7 +2182,7 @@ onUnmounted(() => {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem @click="emit('open-services')">服务管理</DropdownMenuItem>
+                  <DropdownMenuItem @click="emit('open-services', false, s.name)">详情</DropdownMenuItem>
                   <DropdownMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</DropdownMenuItem>
                   <template v-if="s.running && s.preset === 'custom' && s.ports.length">
                     <DropdownMenuItem

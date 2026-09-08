@@ -45,7 +45,7 @@ import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight } fro
 // initialCreate=true：侧栏 ＋ 带新建意图——打开/已打开都弹创建表单。
 // initialSelect：侧栏卡片点击带来的服务名——打开或已打开时定位到该服务。
 const props = defineProps<{ initialCreate?: boolean; initialSelect?: string }>()
-const emit = defineEmits<{ (e: 'close'): void }>()
+const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
 
 const items = ref<ServiceView[]>([])
 const status = ref<ServicesStatus | null>(null)
@@ -150,7 +150,10 @@ async function refreshJobs() {
       await refresh()
       for (const id of fresh) {
         const j = v.jobs.find((x) => x.id === id)
-        if (j?.state === 'done' && j.result) selService.value = j.result.name
+        if (j?.state === 'done' && j.result) {
+          selService.value = j.result.name
+          emit('changed') // 新服务落定，侧栏即时跟上
+        }
       }
     }
     seenDoneIds = doneIds
@@ -197,6 +200,7 @@ async function op(name: string, fn: () => Promise<unknown>) {
   try {
     await fn()
     await refresh()
+    emit('changed') // 通知 App 让侧栏即时跟刷，不等下一拍轮询
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('close')
@@ -266,6 +270,7 @@ onMounted(() => {
   refreshJobs()
   jobsTimer = setInterval(() => {
     void refreshJobs()
+    void refresh() // 服务状态跟着轮询：抽屉开着时外部启停（docker CLI 等）也即时反映
     // 日志只在「日志层展开」时跟刷；展开中的任务日志跟着拉。
     if (openLog.value && selService.value) void fetchLog(selService.value)
   }, 3000)

@@ -25,6 +25,8 @@ const showServicesPanel = ref(false)
 // 卡片点击带服务名：抽屉打开即定位到该服务详情。
 const svcCreateIntent = ref(false)
 const svcSelect = ref('')
+// 服务抽屉操作回传计数：抽屉里启停/删除/创建完成后 +1，ContainerList 据此即时刷侧栏。
+const svcVersion = ref(0)
 let baseTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshBaseStatus() {
@@ -167,6 +169,7 @@ onUnmounted(() => {
         class="h-full"
         :base-ready="baseReady"
         :open-req="pendingOpen"
+        :svc-version="svcVersion"
         @unauthorized="logout"
         @open-base="showBasePanel = true"
         @open-services="openServices"
@@ -178,6 +181,7 @@ onUnmounted(() => {
         :initial-create="svcCreateIntent"
         :initial-select="svcSelect"
         @close="closeServices"
+        @changed="svcVersion++"
       />
     </main>
     <!-- 全局通知（服务创建任务完成/失败等）。桌面右下角——终端主体在左上，避开视觉焦点；
