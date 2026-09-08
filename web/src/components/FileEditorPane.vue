@@ -16,6 +16,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { langForFilename } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
 import { previewKind, previewMime, extOf } from '@/lib/preview'
+import { hydrateMermaid } from '@/lib/mermaid'
 import {
   readFile,
   writeFile,
@@ -156,11 +157,10 @@ async function hydrateMdImages() {
   }
 }
 // —— mermaid 图表渲染 ——
-// 占位 pre.mermaid → 懒 import mermaid（依赖体积大，只有 md 里真出现图表块才进 chunk）
-// → run() 原地替换成 SVG。mdHtml 每次重渲染 v-html 都整树换新，旧任务的渲染目标自然作废，
-// seq 只挡「动态 import 返回时内容已换代」的空转。解析失败的块保留源码并标 mermaid-bad
-//（mermaid 默认把坏图画成错误弹窗 SVG，编辑场景里裸源码更好改）；渲染层失败吞掉不致命。
-let mermaidApi: typeof import('mermaid')['default'] | null = null
+// 占位 pre.mermaid → hydrateMermaid（lib/mermaid.ts，跨面板实例共享：懒 import、
+// 串行队列、失败退避重试、mermaid-bad 判定都在那边）→ run() 原地替换成 SVG。
+// mdHtml 每次重渲染 v-html 都整树换新，旧任务的渲染目标自然作废——seq 只用来在
+// 作废后通知 lib 让位（cancelled 钩子），别让死树的工作占着串行队列。
 let mdMmdSeq = 0
 async function hydrateMdMermaid() {
   const root = mdBody.value
@@ -168,24 +168,7 @@ async function hydrateMdMermaid() {
   const nodes = Array.from(root.querySelectorAll<HTMLElement>('pre.mermaid:not([data-processed])'))
   if (!nodes.length) return
   const seq = ++mdMmdSeq
-  if (!mermaidApi) {
-    const m = await import('mermaid')
-    // suppressErrorRendering：渲染期失败（含 diagram 懒加载 chunk 网络失败）不画 mermaid
-    // 的「Syntax error in text」弹图（语义误导），元素保持源码，由下方统一标 mermaid-bad
-    m.default.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark', suppressErrorRendering: true }) // 应用恒暗色
-    if (seq !== mdMmdSeq) return
-    mermaidApi = m.default
-  }
-  for (const node of nodes) {
-    if (seq !== mdMmdSeq) return
-    const bad = (await mermaidApi.parse(node.textContent ?? '', { suppressErrors: true })) === false
-    node.classList.toggle('mermaid-bad', bad)
-  }
-  const good = nodes.filter((n) => !n.classList.contains('mermaid-bad'))
-  if (!good.length) return
-  await mermaidApi.run({ nodes: good, suppressErrors: true }).catch(() => {})
-  // run 内部失败的块（suppressErrorRendering 下保持源码）补标错误样式
-  for (const n of good) if (!n.querySelector('svg')) n.classList.add('mermaid-bad')
+  await hydrateMermaid(nodes, () => seq !== mdMmdSeq)
 }
 watch(
   mdHtml,
