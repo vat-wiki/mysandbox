@@ -1,10 +1,12 @@
-// 服务创建任务的状态跟踪 + 完成通知（模块级单例）。
+// 服务任务的状态跟踪 + 完成通知 + 更新入口（模块级单例）。
 // ServicesPanel（3s）与侧栏（15s/3s 自适应）两个轮询器都把最新任务表喂进来：
 // - 按 jobId 记住上一次 state，只有「见过 running 且落到终态」的跳变才发 toast——
 //   两个轮询器命中同一次跳变天然只发一条，页面刷新/首拉不会对已完成任务补发通知；
-// - canceled 是用户自己点的，不通知。
+// - canceled 是用户自己点的，不通知；
+// - create / update 两种任务的文案分支（update = 拉新镜像重建，详见 services.ts）。
 import { toast } from 'vue-sonner'
-import type { ServiceJobView } from '@/lib/api'
+import type { ServiceJobView, ServiceView } from '@/lib/api'
+import { updateService } from './api'
 
 const lastStates = new Map<string, string>()
 
@@ -22,11 +24,16 @@ export function trackServiceJobs(jobs: ServiceJobView[]): number {
     }
     if (prev === 'running') {
       if (j.state === 'done') {
-        toast.success(`应用容器 ${j.name} 就绪（${j.ip}）`, {
-          description: '容器内可直接按服务名连接（hosts 已注入）。',
-        })
+        if (j.kind === 'update') {
+          // statusText 携带收尾叙事：「镜像已是最新，无需重建」/「服务 xx 已更新」
+          toast.success(`应用容器 ${j.name} 更新完成`, { description: j.statusText })
+        } else {
+          toast.success(`应用容器 ${j.name} 就绪（${j.ip}）`, {
+            description: '容器内可直接按服务名连接（hosts 已注入）。',
+          })
+        }
       } else if (j.state === 'error') {
-        toast.error(`应用容器 ${j.name} 创建失败`, {
+        toast.error(`应用容器 ${j.name} ${j.kind === 'update' ? '更新' : '创建'}失败`, {
           description: j.error || j.statusText,
           duration: 15_000,
         })
@@ -36,4 +43,23 @@ export function trackServiceJobs(jobs: ServiceJobView[]): number {
   // 服务端裁剪（KEEP_FINISHED）后同步清理，防 Map 无界增长
   for (const id of [...lastStates.keys()]) if (!seen.has(id)) lastStates.delete(id)
   return running
+}
+
+// 更新入口（侧栏卡片 ⋯ 菜单 / 服务面板按钮共用）。无数据卷的服务更新 = 重建容器，
+// 可写层数据（容器内非挂载路径）会丢——先给可行动的警告，确认才动手；其余直接开。
+// 启动失败（同名任务进行中 / meta 缺失）toast 展示，不弹窗打断。
+export function requestServiceUpdate(s: ServiceView): void {
+  const go = (): void => {
+    updateService(s.name)
+      .then(() => toast.info(`已开始更新 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
+      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
+  }
+  if (s.preset === 'custom' && !s.volume) {
+    toast.warning(`「${s.name}」没有数据卷，更新会重建容器——可写层里的数据将丢失`, {
+      action: { label: '仍要更新', onClick: go },
+      duration: 10_000,
+    })
+    return
+  }
+  go()
 }

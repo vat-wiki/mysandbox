@@ -16,6 +16,7 @@ import {
   restartService,
   deleteService,
   getServiceLogs,
+  getServiceListenPorts,
   listServiceJobs,
   getServiceJob,
   cancelServiceJob,
@@ -24,7 +25,7 @@ import {
   type ServicesStatus,
   type ServiceJobView,
 } from '@/lib/api'
-import { trackServiceJobs } from '@/lib/serviceJobs'
+import { trackServiceJobs, requestServiceUpdate } from '@/lib/serviceJobs'
 import { serviceUrl } from '@/lib/proxy'
 import { stateLabel } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -64,10 +65,11 @@ watch(
     if (v && v !== selService.value) selService.value = v
   },
 )
-// 换服务：折叠层归位（日志懒加载随之失效，不预取）。
+// 换服务：折叠层归位（日志懒加载随之失效，不预取）；监听端口立即重扫。
 watch(selService, () => {
   openInfo.value = false
   openLog.value = false
+  void refreshListen()
 })
 
 // —— 分层折叠态 ——
@@ -233,10 +235,37 @@ async function confirmDelete() {
 }
 
 // 打开服务端口：跟随控制台口径——IP/localhost 口径直连服务 IP，基域名口径经面板
-// Web 代理（见 lib/proxy.ts 与 server/proxy.ts）。仅 HTTP/WS 服务适用。
+// Web 代理（见 lib/proxy.ts 与 server/proxy.ts）。
 function openServicePort(s: ServiceView, port: number) {
   window.open(serviceUrl('s', s.name, port, s.ip), '_blank', 'noopener')
 }
+
+// —— 监听端口（实测）：随 3s 轮询跟刷，只刷选中的 running 服务 ——
+// 「打开」按钮的端口表以此为主：实测监听优先（全预设通用），未扫到时回退手工登记
+// 的声明端口（custom 手填 state.json ports 的旧路径）。
+const listen = ref<{ ports: number[]; web: number[] } | null>(null)
+let listenSeq = 0
+async function refreshListen() {
+  const s = items.value.find((x) => x.name === selService.value)
+  const seq = ++listenSeq
+  if (!s || !s.running) {
+    listen.value = null
+    return
+  }
+  try {
+    const r = await getServiceListenPorts(s.name)
+    if (seq === listenSeq) listen.value = r
+  } catch {
+    if (seq === listenSeq) listen.value = null // 刚停/扫描失败：置空，下轮再试
+  }
+}
+const openPorts = computed(() => {
+  const s = sel.value
+  if (!s || !s.running) return []
+  const detected = listen.value?.ports ?? []
+  if (detected.length) return detected
+  return s.preset === 'custom' ? s.ports : []
+})
 
 function fmtDate(v: string): string {
   const d = new Date(v)
@@ -262,9 +291,11 @@ function stateCls(s: ServiceView): string {
 onMounted(() => {
   refresh()
   refreshJobs()
+  void refreshListen()
   jobsTimer = setInterval(() => {
     void refreshJobs()
     void refresh() // 服务状态跟着轮询：抽屉开着时外部启停（docker CLI 等）也即时反映
+    void refreshListen() // 监听端口跟着轮询：容器内新起的应用端口自动出现
     // 日志只在「日志层展开」时跟刷；展开中的任务日志跟着拉。
     if (openLog.value && selService.value) void fetchLog(selService.value)
   }, 3000)
@@ -302,7 +333,7 @@ onUnmounted(() => {
               <Check v-else-if="j.state === 'done'" class="size-3.5 shrink-0 text-emerald-600" />
               <X v-else-if="j.state === 'error'" class="size-3.5 shrink-0 text-destructive" />
               <Ban v-else class="size-3.5 shrink-0 text-muted-foreground" />
-              <span class="shrink-0 font-medium">创建 {{ j.name }}</span>
+              <span class="shrink-0 font-medium">{{ j.kind === 'update' ? '更新' : '创建' }} {{ j.name }}</span>
               <span
                 class="min-w-0 flex-1 truncate text-muted-foreground"
                 :class="j.state === 'error' ? 'text-destructive' : ''"
@@ -380,9 +411,13 @@ onUnmounted(() => {
                   >停止</Button
                 >
                 <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
-                <!-- 打开：只对自定义预设给出——postgres/redis/mysql 的端口不是 HTTP，浏览器代理进不去 -->
+                <!-- 更新：拉新镜像，ID 变了才按原配置重建（latest 标签追新）；无数据卷的
+                     custom 由 requestServiceUpdate 先给可行动的警告。任务进顶部横幅。 -->
+                <Button variant="outline" size="sm" :disabled="!!busyName" @click="sel && requestServiceUpdate(sel)">更新</Button>
+                <!-- 打开：端口表来自实测监听扫描（3s 跟刷，全预设通用），未扫到时回退
+                     custom 手工登记端口。非 HTTP 端口浏览器打不开无妨（尽力而为）。 -->
                 <Button
-                  v-for="p in sel.running && sel.preset === 'custom' ? sel.ports : []"
+                  v-for="p in openPorts"
                   :key="'open' + p"
                   variant="outline"
                   size="sm"

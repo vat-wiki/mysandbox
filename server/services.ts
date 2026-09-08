@@ -8,11 +8,13 @@
 //
 // docker 原语在 docker.ts（CLI 客户端）；这里只有业务编排。对标 base.ts 的「路由薄 + 实现厚」。
 import type { FastifyInstance } from 'fastify';
+import { readFile } from 'node:fs/promises';
 import type { Config } from './config.js';
 import type { NetworkInfo } from './docker.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { applyServicesBlock } from './hosts-sync.js';
 import { log } from './logger.js';
+import { parseProcNetListeners, probeHtmlPort } from './portprobe.js';
 import {
   MANAGED_LABEL,
   KIND_LABEL,
@@ -23,6 +25,9 @@ import {
   serviceNameExists,
   createServiceContainer,
   containerIpamIp,
+  containerPid,
+  imageId,
+  inspectServiceSnapshot,
   startContainer,
   stopContainer,
   restartContainer,
@@ -541,6 +546,118 @@ export async function runServiceCreate(cfg: Config, plan: CreateServicePlan, ctx
   };
 }
 
+// —— 更新（latest 标签追新）——
+// 拉新镜像 → 镜像 ID 没变就是「已是最新」（不动容器）；变了才按创建时的形状重建：
+// env/command 取 meta（创建时登记），IP/labels/卷挂载点取现容器 inspect 快照（meta
+// 没记卷 target，容器身上的是权威）。停机更新保持停机，不顺手开机。
+// 取消只对 pull 阶段生效；rm 之后失败不自动回滚（数据在卷里无损，再点一次更新即可）。
+// 无数据卷的服务重建会丢可写层数据——风险提示在前端（requestServiceUpdate）。
+export async function runServiceUpdate(cfg: Config, name: string, ctx: JobCtx): Promise<ServiceView> {
+  const m = await getServiceMeta(name);
+  if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法更新——删除后重新创建一次即可`);
+  const snap = await inspectServiceSnapshot(name);
+  if (!snap) throw notFound(`service "${name}" not found`);
+  const ip = (await containerIpamIp(name)) ?? m.ip;
+  const wasRunning = snap.running;
+  const volume = m.volume && snap.volumeTarget ? { source: m.volume, target: snap.volumeTarget } : null;
+
+  const bailIfCanceled = (): void => {
+    if (ctx.signal.aborted) {
+      const e = new Error(`已取消更新 ${name}`) as Error & { canceled?: boolean };
+      e.canceled = true;
+      throw e;
+    }
+  };
+
+  const before = await imageId(m.image);
+  ctx.status(`拉取镜像 ${m.image}（检查更新）`);
+  ctx.setCancellable(true);
+  try {
+    await pullImageStream(m.image, (line) => ctx.log(line), {
+      timeoutMs: cfg.services.pullTimeoutMs,
+      signal: ctx.signal,
+    });
+  } catch (e) {
+    // 同创建路径：registry 类失败且 daemon 没配 mirror 时给人话提示。
+    if (!(e as { canceled?: boolean })?.canceled) {
+      const mirrors = await cachedRegistryMirrors();
+      if (mirrors !== null && mirrors.length === 0) {
+        throw new Error(
+          `${e instanceof Error ? e.message : String(e)}（未配置 registry-mirrors，Docker Hub 直连常失败；` +
+            '可在 /etc/docker/daemon.json 配置 registry-mirrors 后重启 docker）',
+        );
+      }
+    }
+    throw e;
+  } finally {
+    ctx.setCancellable(false);
+  }
+  bailIfCanceled(); // 取消必须落在 rm 之前——半途放弃不能把老容器删了
+
+  const after = await imageId(m.image);
+  if (before && after && before === after) {
+    ctx.status(`镜像已是最新（${m.image}），无需重建`);
+    const { items } = await listServices(cfg);
+    return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
+  }
+
+  ctx.status(`镜像有更新，重建 ${name}（${ip}）`);
+  if (wasRunning) await stopContainer(name);
+  await removeContainer(name);
+  try {
+    await createServiceContainer({
+      name,
+      image: m.image,
+      ip,
+      network: cfg.services.network,
+      labels: snap.labels, // 原样复刻（含 service-preset / created-at——创建时间不因更新而重置）
+      env: m.env,
+      volume,
+      command: m.command,
+    });
+  } catch (e) {
+    throw new Error(`重建失败（旧容器已移除，数据卷无损，可重试更新）：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (wasRunning) {
+    ctx.status(`启动 ${name}`);
+    await startContainer(name);
+  }
+
+  ctx.status('追平容器 hosts（服务名解析）');
+  await applyServicesBlock(cfg);
+
+  ctx.status(wasRunning ? `服务 ${name} 已更新（${ip}）` : `镜像已更新（${name} 保持停机）`);
+  const { items } = await listServices(cfg);
+  return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
+}
+
+// listServices 没找到（极端竞态）时的兜底视图：用 meta 拼一个，不让任务死在收尾。
+async function currentServiceView(
+  _cfg: Config,
+  name: string,
+  m: ServiceMeta,
+  ip: string,
+  running: boolean,
+): Promise<ServiceView> {
+  return {
+    name,
+    preset: m.preset,
+    image: m.image,
+    ip,
+    state: running ? 'running' : 'exited',
+    status: 'updated',
+    running,
+    volume: m.volume,
+    ports: m.ports ?? [],
+    envKeys: Object.keys(m.env),
+    env: m.env,
+    connect: composeConnect(m.preset, name, m.env, m.ports ?? []),
+    description: m.description,
+    createdAt: m.createdAt,
+    command: m.command,
+  };
+}
+
 // 路由层已确保 name 在 label 过滤集里（requireService）。
 export async function deleteService(
   cfg: Config,
@@ -692,6 +809,55 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     const q = (req.query as Record<string, string | undefined>) || {};
     const tail = Math.min(Math.max(Number(q.tail) || 200, 1), 2000);
     return { logs: await containerLogs(req.params.name, tail) };
+  });
+
+  // —— 服务内监听端口（应用端口直达，对齐 /api/containers/:id/listen）——
+  // 不走 docker exec：镜像里未必有 shell/awk（distroless 等）。docker inspect 拿容器
+  // 主进程的宿主 PID，宿主侧直读 /proc/<pid>/net/tcp{,6}——/proc/<pid>/net 反映该进程
+  // 的网络命名空间，正是容器内的监听表；文件全局可读、零镜像依赖。回环监听（含
+  // docker 内嵌 DNS 127.0.0.11 的随机端口）在 parseProcNetListeners 里剔除。
+  // web 实测同容器路径：宿主直连服务 IP 发最小 HTTP 请求。
+  app.get<{ Params: { name: string } }>('/api/services/:name/listen', async (req): Promise<{ ports: number[]; web: number[] }> => {
+    const name = req.params.name;
+    await requireService(name);
+    const pid = await containerPid(name);
+    if (!pid) throw conflict('service not running');
+    const texts = await Promise.allSettled([
+      readFile(`/proc/${pid}/net/tcp`, 'utf8'),
+      readFile(`/proc/${pid}/net/tcp6`, 'utf8'), // ipv6 关闭的系统没有该文件，缺席即跳过
+    ]);
+    const ports = [...new Set(texts.flatMap((t) => (t.status === 'fulfilled' ? parseProcNetListeners(t.value) : [])))].sort(
+      (a, b) => a - b,
+    );
+    if (!ports.length) return { ports, web: [] };
+    const ip = (await containerIpamIp(name)) ?? null;
+    if (!ip) return { ports, web: [] };
+    const marks = await Promise.all(ports.map((p) => probeHtmlPort(ip, p)));
+    const web = ports.filter((_, i) => marks[i]);
+    return { ports, web };
+  });
+
+  // —— 更新（latest 标签追新）：快校验 + 预占名/IP 后进后台任务，拉镜像可取消。
+  // 预占复用创建任务的机制（同名任务互斥、池视图把预占算占用）；IP 已被现容器持有，
+  // 但重建窗口期网络端点会消失，预占兜住并发创建的二次分配。
+  app.post<{ Params: { name: string } }>('/api/services/:name/update', async (req) => {
+    const name = req.params.name;
+    await requireService(name);
+    const m = await getServiceMeta(name);
+    if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法更新——删除后重新创建一次即可`);
+    if (!tryReserveJobName(name)) throw conflict(`「${name}」已有任务进行中`);
+    const ip = (await containerIpamIp(name)) ?? m.ip;
+    reserveJobIp(ip);
+    try {
+      const job = startServiceJob({ name, image: m.image, ip, kind: 'update' }, (ctx) =>
+        runServiceUpdate(cfg, name, ctx),
+      );
+      return { jobId: job.id };
+    } catch (e) {
+      releaseJobName(name);
+      releaseJobIp(ip);
+      throw e;
+    }
   });
 }
 

@@ -471,6 +471,13 @@ export const deleteService = (name: string, opts: { deleteData?: boolean; confir
   api(`/api/services/${name}`, { method: 'DELETE', body: JSON.stringify(opts) })
 export const getServiceLogs = (name: string, tail = 200) =>
   api(`/api/services/${name}/logs?tail=${tail}`) as Promise<{ logs: string }>
+// 监听端口（实测）：对齐容器的 /api/containers/:id/listen。ports = 容器内 LISTEN
+// 端口（回环监听已剔除），web = 其中实测返回 HTML 的（可点开）。
+export const getServiceListenPorts = (name: string) =>
+  api(`/api/services/${name}/listen`) as Promise<{ ports: number[]; web: number[] }>
+// 更新（latest 追新）：后台任务——拉新镜像，ID 变了才按原配置重建容器。
+export const updateService = (name: string) =>
+  postJson(`/api/services/${name}/update`) as Promise<{ jobId: string }>
 // 创建走后台任务：POST 只做快校验 + 预占，成功返回 jobId（进度看 jobs 轮询），
 // 失败（重名/池尽/缺必填）4xx 内联显示在对话框。
 export const createService = (input: CreateServiceInput) =>
@@ -479,6 +486,7 @@ export const createService = (input: CreateServiceInput) =>
 // —— 服务创建任务 ——
 export interface ServiceJobView {
   id: string
+  kind: 'create' | 'update'
   name: string
   image: string
   ip: string

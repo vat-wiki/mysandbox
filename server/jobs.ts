@@ -14,6 +14,7 @@ import { log } from './logger.js';
 import type { ServiceView } from './services.js';
 
 export type JobState = 'running' | 'done' | 'error' | 'canceled';
+export type JobKind = 'create' | 'update';
 
 // 任务对 run thunk 暴露的全部控制面。log/status 追加进环形缓冲（status 同时更新
 // statusText——列表未展开时前端只显示这一行）；setCancellable 标记当前阶段可否取消
@@ -32,12 +33,14 @@ export interface ServicePlan {
   name: string;
   image: string;
   ip: string;
+  kind?: JobKind; // 缺省 'create'
 }
 
 // API 视图：logTail 仅列表请求带（tail 参数可控，侧栏轮询用 tail=0 拿极小 payload），
 // 全量日志走 GET /jobs/:id 按需拉。
 export interface ServiceJobView {
   id: string;
+  kind: JobKind; // create = 新建服务；update = 更新（拉新镜像重建容器）——前端横幅/toast 文案据此区分
   name: string;
   image: string;
   ip: string;
@@ -106,6 +109,7 @@ export function startServiceJob(
   const rec: JobRec = {
     view: {
       id: randomUUID(),
+      kind: plan.kind ?? 'create',
       name: plan.name,
       image: plan.image,
       ip: plan.ip,

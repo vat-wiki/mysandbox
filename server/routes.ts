@@ -1,6 +1,5 @@
 // REST 路由。/api/health 免鉴权；其余 /api/* + /ws/* 需 token（见 index.ts onRequest）。
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { connect as netConnect, type Socket } from 'node:net';
 import type { Config } from './config.js';
 import { dockerStatus } from './docker.js';
 import {
@@ -29,6 +28,7 @@ import { getAiGateway, setAiGateway } from './state.js';
 import { getVersion } from './version.js';
 import { readHostHosts } from './hosts.js';
 import { overwriteHosts, type ApplyHostsResult } from './hosts-sync.js';
+import { probeHtmlPort } from './portprobe.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
 
@@ -78,47 +78,7 @@ function requireOwned(r: Resolved): void {
   }
 }
 
-// —— 端口 HTML 探测（区分「真 web 页面」与其他监听端口）——
-// 宿主直连容器 IP 发最小 HTTP 请求：状态行是 HTTP 且（Content-Type text/html 或 body 以 '<' 开头）
-// 才算 web。ssh/redis/postgres 这类要么先发 banner（非 HTTP 状态行）、要么等输入超时、
-// 要么回 JSON/二进制——都判 false。HTTP/1.0 + Connection: close 让服务端回完即断，不留半开连接。
-const PROBE_IDLE_MS = 800; // 连接后/发出请求后等待对端说话的上限（内网足够宽裕）
-const PROBE_TOTAL_MS = 2_000; // 单端口总兜底
-
-function probeHtmlPort(ip: string, port: number): Promise<boolean> {
-  return new Promise((settled) => {
-    const socket: Socket = netConnect({ host: ip, port });
-    let buf = '';
-    let done = false;
-    const finish = (v: boolean) => {
-      if (done) return;
-      done = true;
-      clearTimeout(totalTimer);
-      socket.destroy();
-      settled(v);
-    };
-    const totalTimer = setTimeout(() => finish(false), PROBE_TOTAL_MS);
-    socket.setTimeout(PROBE_IDLE_MS, () => finish(false)); // 对端不说话（等输入的协议）→ 非 HTTP
-    socket.on('connect', () => {
-      socket.write(
-        `GET / HTTP/1.0\r\nHost: ${ip}:${port}\r\nUser-Agent: mysandbox-probe\r\nConnection: close\r\n\r\n`,
-      );
-    });
-    socket.on('data', (d: Buffer) => {
-      buf += d.toString('latin1');
-      const idx = buf.indexOf('\r\n\r\n');
-      if (idx === -1 && buf.length < 16 * 1024) return; // 头部没完，继续收
-      const head = idx === -1 ? buf : buf.slice(0, idx);
-      if (!/^HTTP\/[\d.]+ \d{3}/.test(head)) return finish(false); // ssh banner 等：连了但不是 HTTP
-      const ct = /content-type:[^\r\n]*/i.exec(head)?.[0] ?? '';
-      const bodyStart = idx === -1 ? '' : buf.slice(idx + 4, idx + 64);
-      // text/html 或 body 直接以 <!doctype / <html 开头（个别 dev server 不带正确 content-type）
-      finish(/text\/html/i.test(ct) || /^\s*<(?:!doctype|html)/i.test(bodyStart));
-    });
-    socket.on('error', () => finish(false));
-    socket.on('close', () => finish(false)); // 头部没收全就断：不算（正常情况 data 里已 finish）
-  });
-}
+// —— 端口 HTML 探测在 portprobe.ts（LXC 容器与 docker 服务共用）——
 
 export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
   // engine + caps 暴露给前端：删除/改名/端口映射的 UI 差异由 caps 驱动，

@@ -21,6 +21,7 @@ import {
   termSessionKey,
   HOST_ID,
   serviceFileId,
+  getServiceListenPorts,
   Unauthorized,
   type ContainerView,
   type ResolveView,
@@ -28,7 +29,7 @@ import {
   type TermSessionView,
   type TermActivityView,
 } from '@/lib/api'
-import { trackServiceJobs } from '@/lib/serviceJobs'
+import { trackServiceJobs, requestServiceUpdate } from '@/lib/serviceJobs'
 import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
   lastTermNotableOutput,
@@ -1493,8 +1494,9 @@ watch(
       function copySvcConnect(s: ServiceView) {
         void copyTabText(s.connect[0] ?? '', '已复制连接命令')
       }
-      // 打开服务端口：口径跟随控制台（IP 直连 / 基域名代理，lib/proxy.ts）。仅自定义
-      // 预设有网页型端口——postgres/redis/mysql 的端口不是 HTTP，浏览器代理进不去。
+      // 打开服务端口：口径跟随控制台（IP 直连 / 基域名代理，lib/proxy.ts）。端口表
+      // 来自实测监听扫描（卡片浮层/菜单同源）；postgres/redis 这类非 HTTP 端口浏览器
+      // 打不开无妨——「打开」对 them 只是尽力而为，web 端口才可靠。
       function openServicePort(s: ServiceView, port: number) {
         window.open(serviceUrl('s', s.name, port, s.ip), '_blank', 'noopener')
       }
@@ -1515,6 +1517,12 @@ async function refreshServices() {
     svcItems.value = v.items
     svcReachable.value = v.status?.reachable ?? null
     svcJobsRunning.value = trackServiceJobs(jobsR.jobs)
+    // running 集变化（启停/新建/更新完成）→ 立即补刷端口表，不等 15s 慢轮询
+    const sig = v.items.filter((s) => s.running).map((s) => s.name).join(',')
+    if (sig !== svcRunningSig) {
+      svcRunningSig = sig
+      void refreshSvcPorts()
+    }
     // 服务已删的终端 group：会话随容器消亡，只从 UI 移除、不调 kill（容器侧同款语义）。
     // docker 不可达（false）时服务表是旧数据，不修组；首拉前（null）svcItems 不可信，同样跳过。
     if (
@@ -1542,12 +1550,66 @@ async function refreshServices() {
 }
 const svcSummary = computed(() => {
   if (svcReachable.value === false) return '运行时不可达'
-  if (svcJobsRunning.value > 0) return `${svcJobsRunning.value} 个创建任务进行中…`
+  if (svcJobsRunning.value > 0) return `${svcJobsRunning.value} 个服务任务进行中…`
   const names = svcItems.value.map((s) => s.name)
   if (!names.length) return '暂无应用容器'
   const shown = names.slice(0, 3).join(' · ')
   return names.length > 3 ? `${shown} 等 ${names.length} 个` : shown
 })
+
+// —— 服务卡片端口图标（与容器卡片同款交互）——
+// 应用容器监听端口走独立端点（宿主 /proc/<pid>/net 读容器网络命名空间，免 exec 的
+// 镜像内依赖），15s 慢轮询覆盖全部 running 服务；refreshServices 发现 running 集
+// 变化（启停/新建/更新完成）时立即补刷。web 端口（实测返回 HTML）标绿可点开，其余
+// 平铺——postgres/redis 的 5432/6379 照展示：端口的意义是「看得见」，浏览器打不开无妨。
+const svcPortsById = ref<Record<string, { ports: number[]; web: number[] }>>({})
+let svcPortsTimer: ReturnType<typeof setInterval> | null = null
+let svcPortsSeq = 0 // 竞态：慢轮询响应乱序时丢弃旧表
+let svcRunningSig = '' // running 集签名：变化才触发即时补刷
+async function refreshSvcPorts() {
+  if (document.hidden) return
+  const running = svcItems.value.filter((s) => s.running)
+  if (!running.length) {
+    svcPortsById.value = {}
+    return
+  }
+  const seq = ++svcPortsSeq
+  const rs = await Promise.allSettled(running.map((s) => getServiceListenPorts(s.name)))
+  if (seq !== svcPortsSeq) return
+  const next: Record<string, { ports: number[]; web: number[] }> = {}
+  running.forEach((s, i) => {
+    if (rs[i].status === 'fulfilled') next[s.name] = rs[i].value
+  })
+  svcPortsById.value = next
+}
+// 服务端口浮层的行：只有 web / other 两态（服务不发布端口到宿主，无 map 行）。
+type SvcPortRow = { kind: 'web' | 'other'; port: number }
+function svcPortRows(name: string): SvcPortRow[] {
+  const v = svcPortsById.value[name]
+  if (!v) return []
+  const rows: SvcPortRow[] = v.web.map((p) => ({ kind: 'web' as const, port: p }))
+  for (const p of v.ports) {
+    if (!v.web.includes(p)) rows.push({ kind: 'other' as const, port: p })
+  }
+  return rows
+}
+function svcPortRowTarget(s: ServiceView, r: SvcPortRow): string {
+  return serviceUrl('s', s.name, r.port, s.ip)
+}
+function svcPortRowTitle(s: ServiceView, r: SvcPortRow): string {
+  const t = svcPortRowTarget(s, r)
+  return r.kind === 'web' ? `已验证返回网页，点击打开 ${t}` : `容器内监听 ${r.port}（未返回 HTML），点击打开 ${t}`
+}
+function svcDirectPortUrl(s: ServiceView, port: number): string {
+  return s.ip ? directUrl(s.ip, port) : ''
+}
+// ⋯ 菜单的「打开」端口表：实测监听优先（全预设通用）；扫描未回（刚启动等）回退
+// 手工登记的声明端口（custom 在 state.json 手填 ports 的旧路径）。
+function svcMenuPorts(s: ServiceView): number[] {
+  const detected = svcPortsById.value[s.name]?.ports ?? []
+  if (detected.length) return detected
+  return s.preset === 'custom' ? s.ports : []
+}
 
 // —— 终端无输出提醒（agent 干完活/等输入）——
 // 服务端（server/activity.ts）已在周期扫 tmux 输出，这里 5s 拉一次快照做提醒决策。
@@ -1724,6 +1786,8 @@ onMounted(() => {
     armSvcTimer()
     void refreshAllPorts() // 首刷不等 15s：首屏卡片就有端口图标
     portsTimer = setInterval(() => void refreshAllPorts(), 15_000)
+    void refreshSvcPorts()
+    svcPortsTimer = setInterval(() => void refreshSvcPorts(), 15_000)
     document.addEventListener('visibilitychange', onVisChange)
   }
 })
@@ -1731,6 +1795,7 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (svcTimer) clearInterval(svcTimer)
   if (portsTimer) clearInterval(portsTimer)
+  if (svcPortsTimer) clearInterval(svcPortsTimer)
   if (actTimer) clearInterval(actTimer)
   document.removeEventListener('keydown', onEscCloseFile)
   document.removeEventListener('visibilitychange', onVisChange)
@@ -2198,7 +2263,7 @@ onUnmounted(() => {
                   >⚠</span
                 >
               </div>
-              <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/镜像。 -->
+              <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/镜像 + 端口图标。 -->
               <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground" :class="s.running ? '' : 'opacity-50'">
                 <button
                   v-if="s.ip"
@@ -2213,6 +2278,56 @@ onUnmounted(() => {
                 <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
                   s.description || s.image
                 }}</span>
+                <!-- 端口图标：与容器卡片同款（running 且扫到监听端口才出现，hover 浮层
+                     向上弹、触屏点按切换）。服务无宿主映射端口，行只有 web/other 两态。 -->
+                <div
+                  v-if="s.running && (svcPortsById[s.name]?.ports.length ?? 0) > 0"
+                  class="relative shrink-0"
+                  @mouseenter="portsHover = 's:' + s.name"
+                  @mouseleave="portsHover = null"
+                >
+                  <button
+                    type="button"
+                    class="flex rounded transition-colors"
+                    :class="portsHover === 's:' + s.name || portsPinned === 's:' + s.name ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'"
+                    title="监听端口"
+                    @click.stop="portsPinned = portsPinned === 's:' + s.name ? null : 's:' + s.name"
+                  >
+                    <Network class="size-3" />
+                  </button>
+                  <div
+                    v-if="portsHover === 's:' + s.name || portsPinned === 's:' + s.name"
+                    class="absolute bottom-full right-0 z-30 mb-1 w-44 rounded-md border border-border bg-popover p-1 shadow-md"
+                  >
+                    <div
+                      v-for="r in svcPortRows(s.name)"
+                      :key="r.kind + r.port"
+                      class="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left font-mono text-[11px] transition-colors hover:bg-accent"
+                    >
+                      <button
+                        type="button"
+                        class="flex min-w-0 flex-1 items-center gap-1.5"
+                        :title="svcPortRowTitle(s, r)"
+                        @click.stop="openUrl(svcPortRowTarget(s, r))"
+                      >
+                        <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                        <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
+                        <span class="flex-1 tabular-nums">{{ r.port }}</span>
+                        <span v-if="r.kind === 'web'" class="text-[10px] text-emerald-500">网页</span>
+                      </button>
+                      <!-- 直连 IP:端口（第二打开方式）：仅域名口径下出现，同容器卡片。 -->
+                      <button
+                        v-if="directOpenExtra && svcDirectPortUrl(s, r.port)"
+                        type="button"
+                        class="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                        :title="`直连打开 ${svcDirectPortUrl(s, r.port)}`"
+                        @click.stop="openUrl(svcDirectPortUrl(s, r.port))"
+                      >
+                        <ExternalLink class="size-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
               <!-- ⋯ 菜单：复制连接命令 / 打开端口 / 启停重启 + 面板入口。触屏常显（与容器卡片同款）。 -->
               <DropdownMenu>
@@ -2231,14 +2346,15 @@ onUnmounted(() => {
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem @click="emit('open-services', false, s.name)">详情</DropdownMenuItem>
                   <DropdownMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</DropdownMenuItem>
-                  <template v-if="s.running && s.preset === 'custom' && s.ports.length">
+                  <template v-if="s.running && svcMenuPorts(s).length">
                     <DropdownMenuItem
-                      v-for="p in s.ports"
+                      v-for="p in svcMenuPorts(s)"
                       :key="'svcopen' + p"
                       @click="openServicePort(s, p)"
                       >打开 {{ p }}</DropdownMenuItem
                     >
                   </template>
+                  <DropdownMenuItem @click="requestServiceUpdate(s)">更新</DropdownMenuItem>
                   <DropdownMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</DropdownMenuItem>
                   <DropdownMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</DropdownMenuItem>
                   <DropdownMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</DropdownMenuItem>

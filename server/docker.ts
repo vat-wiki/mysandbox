@@ -235,6 +235,52 @@ export async function containerIpamIp(name: string): Promise<string | null> {
   return null;
 }
 
+// 容器主进程的宿主 PID（非运行/查不到 = null）。服务监听端口扫描用：宿主侧
+// /proc/<pid>/net/tcp 就是该进程网络命名空间（= 容器）的监听表，免 docker exec
+// 的镜像内依赖（distroless 等无 shell/awk 的镜像也适用），见 services.ts listen 路由。
+export async function containerPid(name: string): Promise<number | null> {
+  const r = await dockerExec(['container', 'inspect', '--format', '{{.State.Pid}}', name], 5_000);
+  if (!r.ok) return null;
+  const pid = Number(r.stdout.trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+// 镜像的本地 ID（sha256:…；查不到 = null）。服务更新用它判断 pull 前后镜像是否变化
+// ——变了才值得重建容器，没变就是「已是最新」。
+export async function imageId(ref: string): Promise<string | null> {
+  const r = await dockerExec(['image', 'inspect', '--format', '{{.Id}}', ref], 5_000);
+  if (!r.ok) return null;
+  const id = r.stdout.trim();
+  return id || null;
+}
+
+// 重建前的现场快照：运行态 + labels + 命名卷的容器内挂载点。更新（拉新镜像后按原
+// 形状重建容器）要复刻创建时的全部形状——env/command 在 meta 里，卷挂载点 meta 没记
+// （只有卷名），labels（含 preset/created-at）也在容器身上，inspect 是权威。
+export interface ServiceSnapshot {
+  running: boolean;
+  labels: Record<string, string>;
+  volumeTarget: string | null; // 命名卷的容器内挂载路径（无卷 = null）
+}
+
+export async function inspectServiceSnapshot(name: string): Promise<ServiceSnapshot | null> {
+  try {
+    const raw = await dockerJson<{
+      State?: { Running?: boolean };
+      Config?: { Labels?: Record<string, string> };
+      Mounts?: { Type?: string; Name?: string; Destination?: string }[];
+    }>(['container', 'inspect', name]);
+    const vol = (raw.Mounts ?? []).find((m) => m.Type === 'volume' && m.Name);
+    return {
+      running: raw.State?.Running === true,
+      labels: raw.Config?.Labels ?? {},
+      volumeTarget: vol?.Destination ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function startContainer(name: string): Promise<void> {
   const r = await dockerExec(['start', name], 60_000);
   if (!r.ok) throw new Error(`docker start failed: ${r.stderr.trim() || 'no output'}`);
