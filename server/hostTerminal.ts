@@ -449,7 +449,11 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         if (mode === 'service') {
           await ensureTmuxSession(session, cols, rows, { command: ['docker', 'exec', '-it', svc, svcShell] });
           // 服务名进会话选项：listServiceSessions 直读（名字含 - 时与 termId 切不开）。
-          await hostTmux(['set-option', '-s', '-t', `=${session}`, '@svc', svc]);
+          // ⚠️ 不能带 -s：set-option 的 -s 是 SERVER 级选项、-t 被静默忽略（实测两个测试
+          // 会话都读到同一个值）——多服务时所有会话的 #{@svc} 全等于最后设的服务名，
+          // 会话对话框按服务分组/接入会 docker exec 进错的容器。-t 用 "=会话:"（裸 =名
+          // 实测报 no such session，同 set-titles 的 target 教训）。
+          await hostTmux(['set-option', '-t', `=${session}:`, '@svc', svc]);
         } else {
           await hostNewSession(session, cols, rows, cwd);
         }
