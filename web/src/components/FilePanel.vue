@@ -184,6 +184,8 @@ function pasteInto(dir: string) {
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let loadSeq = 0 // 竞态防护：慢响应回来时已被新请求取代则丢弃
+// 非静默加载在途数：>0 = 转圈。静默轮询不置位也不清理（见 loadDir finally 的注释）。
+let navOps = 0
 // 最近一次列表签名（path + 全部条目）。静默轮询据此判断「有没有变化」——没变化不赋值，
 // keyed v-for 零 DOM 变更，滚动条位置与行悬停状态都不受打扰；有变化也只 patch 增删行，
 // 滚动容器 DOM 节点不重建，scrollTop 原样保留。
@@ -198,10 +200,15 @@ function sigOf(v: FilesView): string {
 
 async function loadDir(p: string, opts: { silent?: boolean } = {}) {
   const seq = ++loadSeq
-  if (!opts.silent) loading.value = true
+  if (!opts.silent) {
+    navOps++
+    loading.value = true
+  }
   try {
     const v = await listFiles(targetId(), p)
     if (seq !== loadSeq) return // 过期响应
+    // 静默轮询发出后目标目录被导航换掉：丢弃，防止列表回跳旧目录
+    if (opts.silent && p !== path.value) return
     path.value = v.path
     hostPath.value = v.hostPath ?? null
     const sig = sigOf(v)
@@ -220,7 +227,13 @@ async function loadDir(p: string, opts: { silent?: boolean } = {}) {
     // 主动操作/导航的失败照常进错误条。
     if (!opts.silent) err.value = e instanceof Error ? e.message : String(e)
   } finally {
-    if (seq === loadSeq && !opts.silent) loading.value = false
+    // 转圈只由非静默请求置位，也只由非静默请求收尾——不能拿 seq 比较当清理条件：
+    // 并发的静默轮询抢先完成会推高 loadSeq，非静默响应（导航目标）回来时被当过期
+    // 跳过清理，转圈卡死且刷新按钮永久禁用（「点开文件夹一直 loading」就是这么来的）。
+    if (!opts.silent && --navOps <= 0) {
+      navOps = 0
+      loading.value = false
+    }
   }
 }
 
@@ -270,6 +283,8 @@ watch(
   () => props.containerId,
   () => {
     follow.value = true
+    path.value = '' // 连路径一起清：在途静默响应的 p 比对落空被丢弃，不把旧容器列表写进新容器
+    hostPath.value = null
     entries.value = []
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
     q.value = '' // 搜索是当前目录视图，切容器一并清掉
@@ -536,7 +551,9 @@ async function loadExpanded(p: string, silent: boolean) {
     // 静默失败保留旧内容下轮再试；手动展开的失败进行内错误行（点击重试）。
     if (!silent) st.err = e instanceof Error ? e.message : String(e)
   } finally {
-    if (seq === expandSeq.get(p) && !silent) st.loading = false
+    // 同 loadDir：清理不拿 seq 当条件——静默轮询抢先完成推高 expandSeq，手动展开的
+    // 响应被当过期后若跳过清理，行内转圈卡死（行上有独立 loading 态）。
+    if (!silent) st.loading = false
   }
 }
 

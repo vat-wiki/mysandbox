@@ -3,8 +3,10 @@
 // （api.ts filesBase 切到 /api/services/<name>/*，约定与 termSessionKey 的 s: 同源）。
 //
 // 实现全部走 docker exec：`execFile('docker', ['exec', name, 'sh', '-c', <脚本>, 'sh', <argv...>])`
-// 数组参数无 shell 注入面，脚本与 files.ts 同源复制、退出码约定逐条对齐
-// （2=不存在 3=非目录/非文件 4=stat 失败 5=超限 9=已存在）。
+// 数组参数无 shell 注入面。脚本大多与 files.ts 同源复制、退出码约定逐条对齐
+// （2=不存在 3=非目录/非文件 4=stat 失败 5=超限 9=已存在）；列目录/mtime 单源复用
+// files.ts 的 LIST_SCRIPT / MTIME_SNIPPET——服务镜像是 alpine 系时是 busybox，find 无
+// -printf、老版 date -r 语义不同（脚本内有探测兜底，实测 myapikey alpine 全通）。
 //
 // cwd 与容器侧的关键差异：服务终端的 tmux 在宿主（hostTerminal.ts 的 svc 会话），
 // pane 跑的是 docker exec **客户端**——pane_current_path 是宿主路径，不是容器内 cwd。
@@ -23,6 +25,8 @@ import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE } from './terminal.js';
 import {
   MAX_BYTES,
+  LIST_SCRIPT,
+  MTIME_SNIPPET,
   classifyContent,
   cleanPath,
   contentDisposition,
@@ -167,22 +171,15 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
     return { cwd };
   });
 
-  // —— 列目录 ——（脚本与 files.ts 列目录同源；hostPath 恒 null：docker 容器 fs 没有
-  // 稳定的宿主实址（overlayfs 挂载点随驱动/快照漂移），前端对 null 本就隐藏「复制实际路径」）
+  // —— 列目录 ——（脚本单源 files.ts LIST_SCRIPT（busybox 兜底，文件头有协议说明）；
+  // hostPath 恒 null：docker 容器 fs 没有稳定的宿主实址（overlayfs 挂载点随驱动/快照漂移），
+  // 前端对 null 本就隐藏「复制实际路径」）
   app.get('/api/services/:name/files', async (req) => {
     const name = (req.params as { name: string }).name;
     await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
-    const res = await svcExec(
-      name,
-      [
-        'sh', '-c',
-        'p="$1"; [ -e "$p" ] || exit 2; [ -d "$p" ] || exit 3; find -H "$p" -mindepth 1 -maxdepth 1 -printf "%y\\t%s\\t%T@\\t%f\\n"',
-        'sh', path,
-      ],
-      10_000,
-    );
+    const res = await svcExec(name, ['sh', '-c', LIST_SCRIPT, 'sh', path], 10_000);
     if (res.exitCode !== 0) throw mapListErr(res, path);
     const entries = [];
     for (const line of res.stdout.split('\n')) {
@@ -217,7 +214,7 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
       name,
       [
         'sh', '-c',
-        `f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; sz=$(stat -c %s "$f") || exit 4; [ "$sz" -le ${MAX_BYTES} ] || exit 5; printf "META %s " "$sz"; date -r "$f" +%s.%N; printf "\\n"; base64 "$f"`,
+        `f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; sz=$(stat -c %s "$f") || exit 4; [ "$sz" -le ${MAX_BYTES} ] || exit 5; printf "META %s " "$sz"; ${MTIME_SNIPPET}; printf "\\n"; base64 "$f"`,
         'sh', path,
       ],
       20_000,
@@ -261,7 +258,7 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
       if (baseMtime !== undefined) {
         const st = await svcExec(
           name,
-          ['sh', '-c', 'f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; date -r "$f" +%s.%N', 'sh', path],
+          ['sh', '-c', `f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; ${MTIME_SNIPPET}`, 'sh', path],
           8_000,
         );
         if (st.exitCode === 2 || st.exitCode === 3) {
@@ -291,7 +288,7 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
       }
       const st = await svcExec(
         name,
-        ['sh', '-c', 'f="$1"; date -r "$f" +%s.%N 2>/dev/null', 'sh', path],
+        ['sh', '-c', `f="$1"; ${MTIME_SNIPPET}`, 'sh', path],
         8_000,
       );
       const mtime = st.exitCode === 0 ? Number(st.stdout.trim()) || undefined : undefined;

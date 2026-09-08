@@ -82,6 +82,38 @@ export function parentOf(p: string): string | null {
   return i <= 0 ? '/' : p.slice(0, i);
 }
 
+// 列目录脚本（本文件与服务端点 serviceFiles.ts 共用单源）。输出协议：每行
+// type\tsize\tmtime\tname（%y 类型 / %s 字节 / mtime 秒 / 文件名最后字段，split 后
+// slice(3).join 兼容文件名含 tab；含换行的名字会撕裂行，解析侧丢弃残行降级）。
+// 双分支：GNU find -printf 单进程最快（Debian 基座容器/模板恒走这里）；busybox
+// （alpine 系服务镜像、adopt 的外来容器）find 无 -printf，先探测、失败落 shell 兜底——
+// find -print0 NUL 流 + read -d ''（busybox ash 支持）逐条 stat，%s/%Y busybox stat
+// 都有（对 symlink 是 lstat 语义，与 GNU printf 一致）；非 d/f/l 条目（fifo 等）跳过，
+// 与解析侧丢弃 %y=p/s/b/c 对齐。mtime：GNU %T@ 浮点秒、busybox %Y 整秒，Number() 通吃。
+export const LIST_SCRIPT = [
+  'p="$1"',
+  '[ -e "$p" ] || exit 2',
+  '[ -d "$p" ] || exit 3',
+  'if find -H "$p" -maxdepth 0 -printf "\\n" >/dev/null 2>&1; then',
+  '  exec find -H "$p" -mindepth 1 -maxdepth 1 -printf "%y\\t%s\\t%T@\\t%f\\n"',
+  'fi',
+  'find -H "$p" -mindepth 1 -maxdepth 1 -print0 | while IFS= read -r -d "" f; do',
+  '  if [ -L "$f" ]; then y=l',
+  '  elif [ -d "$f" ]; then y=d',
+  '  elif [ -f "$f" ]; then y=f',
+  '  else continue; fi',
+  '  sz=$(stat -c %s -- "$f" 2>/dev/null) || continue',
+  '  mt=$(stat -c %Y -- "$f" 2>/dev/null) || continue',
+  '  printf "%s\\t%s\\t%s\\t%s\\n" "$y" "$sz" "$mt" "${f##*/}"',
+  'done',
+].join('\n');
+
+// 取文件 mtime 的秒值（读/写两端乐观锁用）。GNU date -r FILE 支持纳秒（%N）；busybox
+// 1.37 的 date -r 能跑但 %N 出空（尾部悬点，Number() 不受影响），更老的 busybox -r 是
+// 「转换 epoch 秒」语义、对路径必败——统一 2>/dev/null || stat -c %Y 兜底（两家 stat
+// 都支持 %Y）。
+export const MTIME_SNIPPET = 'date -r "$f" +%s.%N 2>/dev/null || stat -c %Y "$f" 2>/dev/null';
+
 // 宿主面板哨兵：与 web/src/lib/api.ts 的 HOST_ID 一致（复制粘贴双端统一在此端点解析）。
 const HOST_ID = '__host__';
 
@@ -155,19 +187,14 @@ function mapListErr(r: { exitCode: number; stderr: string }, path: string): Http
 
 export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
   // —— 列目录 ——
-  // find -H：跟随起始点符号链接（默认不跟随会把链接目录列为空）。GNU findutils（Debian
-  // 基座）printf 格式：%y 类型 / %s 字节 / %T@ 浮点 mtime 秒 / %f 文件名（最后字段，
-  // split 后 slice(3).join 兼容文件名含 tab）。文件名含换行会撕裂行——解析侧丢弃坏行降级。
+  // find -H：跟随起始点符号链接（默认不跟随会把链接目录列为空）。脚本单源 LIST_SCRIPT
+  // （文件头有协议与 busybox 兜底说明），serviceFiles.ts 同用。
   app.get('/api/containers/:id/files', async (req): Promise<FilesView> => {
     const r = await resolveRunning(cfg, (req.params as { id: string }).id);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const res = await execRun(cfg, r.id, {
-      Cmd: [
-        'sh', '-c',
-        'p="$1"; [ -e "$p" ] || exit 2; [ -d "$p" ] || exit 3; find -H "$p" -mindepth 1 -maxdepth 1 -printf "%y\\t%s\\t%T@\\t%f\\n"',
-        'sh', path,
-      ],
+      Cmd: ['sh', '-c', LIST_SCRIPT, 'sh', path],
       Tty: false,
       timeoutMs: 10_000,
     });
@@ -197,9 +224,10 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
   });
 
   // —— 读文件 ——
-  // 首行 META <size> <mtime>（%s.%N 浮点秒），其后 base64（coreutils 76 列换行，Buffer
-  // 解码容忍空白）。binary 判定：含 \0 或非法 UTF-8（GBK 等）——非 UTF-8 文本若照常解码，
-  // 编辑保存会有损往返毁文件，故一律按二进制只读。
+  // 首行 META <size> <mtime>（mtime 经 MTIME_SNIPPET：GNU 浮点秒，busybox 退整秒），
+  // 其后 base64（coreutils 76 列换行，Buffer 解码容忍空白）。binary 判定：含 \0 或
+  // 非法 UTF-8（GBK 等）——非 UTF-8 文本若照常解码，编辑保存会有损往返毁文件，故一律
+  // 按二进制只读。
   app.get('/api/containers/:id/file', async (req): Promise<FileView> => {
     const r = await resolveRunning(cfg, (req.params as { id: string }).id);
     const q = (req.query as Record<string, string | undefined>) || {};
@@ -208,7 +236,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const res = await execRun(cfg, r.id, {
       Cmd: [
         'sh', '-c',
-        `f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; sz=$(stat -c %s "$f") || exit 4; [ "$sz" -le ${MAX_BYTES} ] || exit 5; printf "META %s " "$sz"; date -r "$f" +%s.%N; printf "\\n"; base64 "$f"`,
+        `f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; sz=$(stat -c %s "$f") || exit 4; [ "$sz" -le ${MAX_BYTES} ] || exit 5; printf "META %s " "$sz"; ${MTIME_SNIPPET}; printf "\\n"; base64 "$f"`,
         'sh', path,
       ],
       Tty: false,
@@ -305,7 +333,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
         const st = await execRun(cfg, r.id, {
           Cmd: [
             'sh', '-c',
-            'f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; date -r "$f" +%s.%N',
+            `f="$1"; [ -e "$f" ] || exit 2; [ -f "$f" ] || exit 3; ${MTIME_SNIPPET}`,
             'sh', path,
           ],
           Tty: false,
@@ -351,7 +379,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
 
       // 返回新 mtime（best-effort：失败不影响保存成功语义）。
       const st = await execRun(cfg, r.id, {
-        Cmd: ['sh', '-c', 'f="$1"; date -r "$f" +%s.%N 2>/dev/null', 'sh', path],
+        Cmd: ['sh', '-c', `f="$1"; ${MTIME_SNIPPET}`, 'sh', path],
         Tty: false,
         timeoutMs: 8_000,
       });

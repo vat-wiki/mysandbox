@@ -46,7 +46,7 @@ function submit() {
     <!-- 单区布局：标题行右侧直接放动作按钮，无 footer——弹框就一个输入框，上下两段
          各占一行太空。X 关闭钮关掉（与「取消」重复且会压住右侧按钮），Esc/取消仍可达。 -->
     <DialogContent class="max-w-sm" :show-close-button="false">
-      <DialogHeader class="flex-row items-center gap-2">
+      <DialogHeader class="min-w-0 flex-row items-center gap-2">
         <div class="min-w-0 flex-1">
           <DialogTitle>{{ title }}</DialogTitle>
           <DialogDescription v-if="desc" class="truncate">{{ desc }}</DialogDescription>
