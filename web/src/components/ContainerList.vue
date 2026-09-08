@@ -1852,8 +1852,8 @@ onUnmounted(() => {
     >
       <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：只留导航骨架——
             logo（点击展开，收缩后品牌仍在） / ＋ 新建 / 容器首字图标列（容器色淡染，
-            title 带全名·状态·IP）/ 底部环境区（配置菜单 · 宿主 · 服务 · 展开键）。
-            列表异常给一枚提示点，点击展开并重试。 -->
+            title 带全名·状态·IP，右键 = 展开态卡片同款菜单）/ 底部环境区（配置菜单 ·
+            宿主 · 服务 · 展开键）。列表异常给一枚提示点，点击展开并重试。 -->
       <template v-if="collapsed && !isPhone">
         <div class="flex h-10 shrink-0 items-center justify-center border-b border-border">
           <button
@@ -1886,24 +1886,69 @@ onUnmounted(() => {
           <span class="block size-2 rounded-full" :class="err ? 'bg-destructive' : 'bg-amber-500 animate-pulse'" />
         </button>
         <div class="scroll-thin flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-2">
-          <button
-            v-for="c in items"
-            :key="c.id"
-            type="button"
-            class="flex size-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-medium transition-colors"
-            :class="[
-              activeGroup?.containerId === c.id ? 'ring-1 ring-border' : 'hover:bg-accent/40',
-              c.state !== 'running' ? 'opacity-40' : '',
-            ]"
-            :style="{
-              backgroundColor: containerColorA(c.id, activeGroup?.containerId === c.id ? 0.22 : 0.1),
-              color: containerColor(c.id),
-            }"
-            :title="`${c.displayName || c.name} · ${stateLabel(c.state)}${c.ip ? ` · ${c.ip}` : ''}`"
-            @click="openTerm(c)"
-          >
-            {{ (c.displayName || c.name).trim().slice(0, 1).toUpperCase() }}
-          </button>
+          <ContextMenu v-for="c in items" :key="c.id">
+            <ContextMenuTrigger as-child>
+              <button
+                type="button"
+                class="flex size-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-medium transition-colors"
+                :class="[
+                  activeGroup?.containerId === c.id ? 'ring-1 ring-border' : 'hover:bg-accent/40',
+                  c.state !== 'running' ? 'opacity-40' : '',
+                ]"
+                :style="{
+                  backgroundColor: containerColorA(c.id, activeGroup?.containerId === c.id ? 0.22 : 0.1),
+                  color: containerColor(c.id),
+                }"
+                :title="`${c.displayName || c.name} · ${stateLabel(c.state)}${c.ip ? ` · ${c.ip}` : ''}`"
+                @click="openTerm(c)"
+              >
+                {{ (c.displayName || c.name).trim().slice(0, 1).toUpperCase() }}
+              </button>
+            </ContextMenuTrigger>
+            <!-- 右键菜单与展开态卡片完全同款（改动请两处同步）：收起后没有卡片可右键，
+                 这里的菜单是管理动作唯一入口。rail 仅桌面渲染，无需长按合成。 -->
+            <ContextMenuContent>
+              <template v-if="!c.managed && !c.adopted">
+                <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
+              </template>
+              <template v-else>
+                <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
+                <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
+                <ContextMenuItem
+                  v-if="c.state === 'running'"
+                  @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
+                  >桌面</ContextMenuItem
+                >
+                <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
+                <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
+                <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
+                <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
+              </template>
+              <template v-if="c.state === 'running' && cardPortRows(c.id).length">
+                <ContextMenuSeparator />
+                <ContextMenuSub>
+                  <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                  <ContextMenuSubContent class="w-44">
+                    <ContextMenuItem
+                      v-for="r in cardPortRows(c.id)"
+                      :key="r.kind + r.port"
+                      :title="portRowTitle(c, r)"
+                      @click="openUrl(portRowTarget(c, r))"
+                    >
+                      <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                      <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
+                      <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
+                      <span class="min-w-0 flex-1 font-mono tabular-nums">{{
+                        r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port
+                      }}</span>
+                      <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                      <span v-else-if="r.kind === 'map'" class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
+                    </ContextMenuItem>
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
+              </template>
+            </ContextMenuContent>
+          </ContextMenu>
           <Container v-if="!items.length && !loading" class="size-4 text-muted-foreground/40" />
         </div>
         <div class="flex shrink-0 flex-col items-center gap-0.5 border-t border-border py-1.5">
