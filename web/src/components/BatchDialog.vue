@@ -137,10 +137,13 @@ watch(
     aiToolsTouched.value = true
   },
 )
-// 场景切换的连带：anthropic-only 下 Codex 不可用（只会 openai responses）——
-// 场景切走时自动取消其勾选，别留一个置灰又打勾的矛盾态。
+// 场景切换的连带：anthropic-only 下 Codex 不可用（只会 openai responses）、
+// openai-only 下 Claude 不可用（只会 anthropic messages）——切进对应场景时自动
+// 取消其勾选，别留一个置灰又打勾的矛盾态（置灰只挡交互，值还在会照发 payload，
+// 后端按勾选校验端点需求就会拦下「明明置灰了」的工具，实测踩过）。
 watch(aiGwKind, (k) => {
   if (k === 'anthropic') aiTools.value.codex = false
+  if (k === 'openai') aiTools.value.claude = false
 })
 
 // wire 有效值（提交与推导共用，与后端 wiresOf 缺省一致）：
@@ -706,11 +709,10 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                 <Input id="b-ai-key" v-model="aiKey" type="password" placeholder="sk-…" />
               </div>
 
-              <!-- 工具勾选：Codex 在 anthropic-only 场景置灰（它只会 openai responses）。
-                   协议多选只在 dual 场景露出——单协议网关没有「选协议」这回事。 -->
+              <!-- 工具勾选：Codex/Claude 在单协议场景置灰（协议与网关不符）。 -->
               <div v-if="aiGwKind" class="space-y-2 rounded-md border p-3">
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <label class="flex w-32 items-center gap-1.5 text-sm max-md:w-24" :class="aiGwKind === 'openai' ? 'opacity-50' : ''">
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-2" :class="aiGwKind === 'openai' ? 'opacity-50' : ''">
+                  <label class="flex w-32 items-center gap-1.5 text-sm max-md:w-24">
                     <Checkbox
                       id="ai-claude"
                       :model-value="aiTools.claude"
@@ -719,7 +721,9 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                     />
                     Claude Code
                   </label>
-                  <span class="text-[11px] text-muted-foreground">anthropic 协议（固定）</span>
+                  <span class="text-[11px] text-muted-foreground">
+                    anthropic 协议（固定）{{ aiGwKind === 'openai' ? '· 只会说 anthropic，本场景不可用' : '' }}
+                  </span>
                 </div>
                 <div class="flex flex-wrap items-center gap-x-3 gap-y-2" :class="codexDisabled ? 'opacity-50' : ''">
                   <label class="flex w-32 items-center gap-1.5 text-sm max-md:w-24">

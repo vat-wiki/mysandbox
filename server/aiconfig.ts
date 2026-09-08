@@ -372,9 +372,13 @@ async function probeOne(
       timeoutMs: 8_000,
     });
     const code = r.stdout.trim();
-    return code && code !== '000'
-      ? `探测: ${kind}网关可达 (HTTP ${code})`
-      : `探测: ${kind}网关不可达（容器内连不上，检查防火墙/地址）`;
+    if (!code || code === '000')
+      return `探测: ${kind}网关不可达（容器内连不上，检查防火墙/地址）`;
+    // 404/405 = 网络与 HTTP 服务都通，只是网关没开 /models 这条路由（anthropic 中转
+    // 常只暴露调用端点）——连通性目的已达成，不算故障，单独说明免得被误读成出错
+    if (code === '404' || code === '405')
+      return `探测: ${kind}网关可达 (HTTP ${code}，/models 探测路径未开放，不影响实际调用)`;
+    return `探测: ${kind}网关可达 (HTTP ${code})`;
   } catch {
     return `探测: ${kind}失败（curl 缺失或超时），不影响配置`;
   }
