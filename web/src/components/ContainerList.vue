@@ -70,7 +70,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ExternalLink, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1942,7 +1942,6 @@ onUnmounted(() => {
                     >
                       <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                       <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
-                      <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
                       <span class="min-w-0 flex-1 font-mono tabular-nums">{{
                         r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port
                       }}</span>
@@ -1963,8 +1962,7 @@ onUnmounted(() => {
                         :title="`直连打开 ${directPortUrl(c, r.port)}`"
                         @click="openUrl(directPortUrl(c, r.port))"
                       >
-                        <ExternalLink class="size-3 shrink-0" />
-                        <span class="min-w-0 flex-1 truncate font-mono tabular-nums">{{ c.ip }}:{{ r.port }}</span>
+                        <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
                       </ContextMenuItem>
                     </template>
                   </ContextMenuSubContent>
@@ -2219,7 +2217,6 @@ onUnmounted(() => {
                   >
                     <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                     <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
-                    <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
                     <span class="min-w-0 flex-1 font-mono tabular-nums">{{
                       r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port
                     }}</span>
@@ -2241,8 +2238,7 @@ onUnmounted(() => {
                       :title="`直连打开 ${directPortUrl(c, r.port)}`"
                       @click="openUrl(directPortUrl(c, r.port))"
                     >
-                      <ExternalLink class="size-3 shrink-0" />
-                      <span class="min-w-0 flex-1 truncate font-mono tabular-nums">{{ c.ip }}:{{ r.port }}</span>
+                      <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
                     </ContextMenuItem>
                   </template>
                 </ContextMenuSubContent>
@@ -2373,7 +2369,6 @@ onUnmounted(() => {
                         @click="openUrl(svcPortRowTarget(s, r))"
                       >
                         <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                        <span v-else class="w-3 shrink-0 text-center text-muted-foreground">:</span>
                         <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
                         <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
                       </ContextMenuItem>
@@ -2389,8 +2384,7 @@ onUnmounted(() => {
                           :title="`直连打开 ${svcDirectPortUrl(s, r.port)}`"
                           @click="openUrl(svcDirectPortUrl(s, r.port))"
                         >
-                          <ExternalLink class="size-3 shrink-0" />
-                          <span class="min-w-0 flex-1 truncate font-mono tabular-nums">{{ s.ip }}:{{ r.port }}</span>
+                          <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
                         </ContextMenuItem>
                       </template>
                     </ContextMenuSubContent>
