@@ -20,7 +20,7 @@ npm run build              # 全量：tsc -> dist/ + vite -> web/dist/
 node dist/server/cli.js    # 跑产物验证
 ```
 
-没有测试框架；改动后验证方式是 `npm run typecheck` + `npm -C web run build` + 实际起服务走一遍流程。**所有操作完成后，最后必须用 agent-browser 打开页面做视觉验证。**
+没有测试框架；改动后验证方式是 `npm run typecheck` + `npm -C web run build` + 实际起服务走一遍流程。
 
 CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模板操作：status/clone/export/import，`mysandbox image` 是历史别名），`mysandbox status`（宿主上全部 mysandbox 资产总览：容器/模板/docker 服务与卷/宿主终端会话/瞬态单元/sidecar，只读、各段独立降级、不需要服务在跑），`mysandbox firewall print`（按 config 算出期望 ufw 规则，`server/firewall.ts`，免 root），`mysandbox logs [N] [--raw]`（服务日志尾部，读落盘文件，不需要服务在跑），`mysandbox open <路径>`。日志级别 `MYSANDBOX_LOG_LEVEL=debug`。日志双路：journald（`journalctl --user -u mysandbox`，已持久化）+ 按天文件 `~/.local/share/mysandbox/logs/mysandbox-<date>.log`（JSON 行，`server/logger.ts` multistream，留 14 天；文件名带日期、换档不 rename，跨进程追加安全）。
 
@@ -136,6 +136,7 @@ docker 引擎移除后 docker 的新角色：**配套服务层**。mysandbox 在
 ### 宿主终端
 
 - **宿主终端**（`hostTerminal.ts`）：与容器终端同协议同语义（**真 tmux 语义**：会话只被显式 kill 或 shell 退出终结，无任何定时清理——「只要服务还在，用户开的会话就活着」；kill 帧、activeCount 多窗口），但 PTY 由本进程管理：宿主 tmux 专用 socket `-L mysandbox-host`、会话 `mysandbox-host-<termId>`，`script(1)` 提供 PTY，`stty -F <pts>` 驱动 resize（tmux 3.4 的 `refresh-client` 不支持 -x/-y）。已知坑（都在注释里）：spawn script 必须 `SHELL=/bin/sh`（zsh 会把 `=mysandbox-host-xxx` 做 =word 展开）；node 退出时 `process.on('exit')` 同步 SIGKILL 全部 script 子进程（tsx 热重启每次触发）；**tmux server 必须经 `systemd-run --user --scope` 拉起在 mysandbox.service cgroup 之外**（service 单元形态会让毫秒级退出的 `new-session -d` client 完成单元 → systemd 清空 cgroup → 刚 fork 的 server 陪葬；scope 只要不监督进程、有活进程即保持）。会话 cwd = 宿主 home。前端 `ContainerList.vue` 侧栏顶部固定「宿主」条目，`TermGroup.kind='host'`（containerId 哨兵 `__host__`，修剪/OSC/FilePanel 均豁免）。
+- **服务终端**（同文件 `/ws/service-terminal`，handler 双模式共享 attach 机制）：docker 服务容器里没有 tmux，会话本体 = 同一宿主 socket 上的 tmux 窗口命令 `docker exec -it <name> <shell>`（连接前查运行态、容器内 bash→sh 解析；docker CLI 随 client tty SIGWINCH 自动 resize）。会话名 `mysandbox-svc-<termId>`，**服务名存会话选项 `@svc`**（名字可含 `-`，与 termId 拼接切不开，listServiceSessions 走格式串直读）。跨 mysandbox 重启存活同宿主终端；不参与无输出提醒扫描（activity 的 host 扫描前缀不含 svc）。前端 `TermGroup.kind='service'`（containerId=服务名，tab 色条沿用名字 hash 色），服务卡片点击即进终端（与容器同交互）、⋯ 详情开服务抽屉；无文件面板/OSC/路径解析联动（docker 容器 fs，相关 handler 早退），会话对话框可找回/接入（`/api/terminal-sessions/service/:termId`）。
 
 ### 终端会话隐藏与跨窗口找回
 
