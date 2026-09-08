@@ -17,6 +17,7 @@ import {
   startService,
   stopService,
   restartService,
+  deleteService,
   listTermActivity,
   termSessionKey,
   HOST_ID,
@@ -557,9 +558,11 @@ function closeFileTab(t: EditorTab) {
   paneRefs.get(tabId(t))?.requestClose()
 }
 // Esc 关闭当前文件 tab（与 tab X 同链路：pane 先冲刷未落改动，冲突/失败时 tab
-// 留在原处裁决，不丢数据）。只在「主区正显示编辑器且焦点不在编辑语境」时生效：
-// - Monaco 的 textarea / 文件面板搜索 / 各 Dialog 输入都是 input/textarea，Esc 的
-//   第一职责在输入框自身（清搜索 / Monaco 关自己的查找、建议 widget），不抢；
+// 留在原处裁决，不丢数据）。焦点在 Monaco 正文里也生效（编辑完直接 Esc 保存关闭）：
+// - Monaco 消费给自己的 Esc（关 find/建议框、内联补全隐藏、收选区/多光标——这些
+//   keybinding 命中后都 preventDefault）让给它，defaultPrevented 即退；
+// - Monaco 的 inputarea 是裸 textarea，其余 input（find widget 输入框等）/普通输入框/
+//   contentEditable 的 Esc 第一职责在输入框自身，不抢；
 // - Dialog/菜单/Select 弹层开着时 reka-ui 的 Esc 关弹层本身，不抢（弹层打开标记 =
 //   其 content 的 data-state=open）；
 // - 终端激活时 Esc 是普通键（vim/shell），整条不介入。
@@ -567,11 +570,15 @@ function onEscCloseFile(e: KeyboardEvent) {
   if (e.key !== 'Escape' || e.repeat) return
   if (areaMode.value !== 'editor' || !editorTabs.value.length) return
   const target = e.target
-  if (
-    target instanceof HTMLElement &&
-    (target.isContentEditable || target.closest('input, textarea, select, .monaco-editor'))
-  )
-    return
+  if (target instanceof HTMLElement) {
+    const inMonaco = !!target.closest('.monaco-editor')
+    const isEditorBody = inMonaco && target.classList.contains('inputarea')
+    if (isEditorBody) {
+      if (e.defaultPrevented) return
+    } else if (target.isContentEditable || target.closest('input, textarea, select, .monaco-editor')) {
+      return
+    }
+  }
   if (
     document.querySelector(
       '[role="dialog"][data-state="open"], [role="menu"][data-state="open"], [role="listbox"][data-state="open"]',
@@ -1535,6 +1542,18 @@ watch(
       function copySvcConnect(s: ServiceView) {
         void copyTabText(s.connect[0] ?? '', '已复制连接命令')
       }
+      // 删除（卡片右键菜单入口，确认框同服务抽屉语义）：留数据卷 = 仅删容器，同名
+      // 重建可恢复；连数据 = 删卷，数据不可恢复，后端强制输名确认（ConfirmDialog
+      // 的 confirmCue 解锁）。走 svcOp 复用 busy/刷新/错误处理。
+      const pendingSvcDelete = ref<{ name: string; deleteData: boolean } | null>(null)
+      async function doSvcDelete() {
+        const p = pendingSvcDelete.value
+        if (!p) return
+        pendingSvcDelete.value = null
+        await svcOp(p.name, () =>
+          deleteService(p.name, { deleteData: p.deleteData, confirmName: p.deleteData ? p.name : undefined }),
+        )
+      }
 // null=未知（首拉前），false=docker 不可达
 const svcReachable = ref<boolean | null>(null)
 const svcJobsRunning = ref(0)
@@ -2410,6 +2429,12 @@ onUnmounted(() => {
                 <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
                 <ContextMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</ContextMenuItem>
                 <ContextMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</ContextMenuItem>
+                <!-- 删除：留数据卷 / 连数据双入口，文案与确认语义同服务抽屉操作行 -->
+                <ContextMenuSeparator />
+                <ContextMenuItem @click="pendingSvcDelete = { name: s.name, deleteData: false }">删除（留数据卷）</ContextMenuItem>
+                <ContextMenuItem class="text-destructive" @click="pendingSvcDelete = { name: s.name, deleteData: true }"
+                  >删除（连数据）</ContextMenuItem
+                >
               </ContextMenuContent>
             </ContextMenu>
             <p v-if="!svcItems.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
@@ -2919,6 +2944,21 @@ onUnmounted(() => {
     :busy="delTarget ? busy[delTarget.id] : false"
     @delete="doDelete"
     @close="delTarget = null"
+  />
+
+  <!-- 应用容器删除（卡片右键菜单入口）：文案/输名确认与服务抽屉同款 -->
+  <ConfirmDialog
+    v-if="pendingSvcDelete"
+    :title="pendingSvcDelete.deleteData ? `删除应用容器 ${pendingSvcDelete.name}（连数据）` : `删除应用容器 ${pendingSvcDelete.name}`"
+    :description="
+      pendingSvcDelete.deleteData
+        ? `将停止并删除容器与数据卷 ${pendingSvcDelete.name}，数据不可恢复。`
+        : `将停止并删除容器 ${pendingSvcDelete.name}，数据卷保留（同名重建可恢复数据）。`
+    "
+    :destructive="true"
+    :input="pendingSvcDelete.deleteData ? { placeholder: '输入服务名确认', confirmCue: pendingSvcDelete.name } : undefined"
+    @confirm="doSvcDelete"
+    @close="pendingSvcDelete = null"
   />
 
   <BatchDialog
