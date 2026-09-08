@@ -1396,13 +1396,14 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
 }
 
       // —— 侧栏 docker 服务分区（卡片 + 可收起）——
-      // 服务同样以卡片进侧栏（与系统容器同形态：色条 + 名称 + IP + 描述），但作为低频
-      // 配套收在底部环境区、可整体收起：分区头聚合状态（状态点 + 收起时的摘要文案），
-      // 展开/收起记 localStorage。管理动作以服务抽屉为主场——卡片点击开抽屉并定位，
-      // ⋯ 收复制连接/打开端口/启停重启这类就地快捷。轮询自适应：闲时 15s（服务启停
-      // 低频），有创建任务进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，
-      // payload 极小）。完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询
-      // 也喂它，天然只发一次）。
+      // 服务与系统容器同一套卡片状态语言（色条身份色 + 明度即活性，无圆点），但作为
+      // 低频配套收在底部环境区、可整体收起：分区头不带状态点（容器分区头同款），
+      // 收起时的状态交给摘要文案（不可达红字、任务进行中有数）。展开/收起记
+      // localStorage。管理动作以服务抽屉为主场——卡片点击开抽屉并定位，⋯ 收复制
+      // 连接/打开端口/启停重启这类就地快捷。轮询自适应：闲时 15s（服务启停低频），
+      // 有创建任务进行中时 3s（任务进度/完成 toast 的及时性；任务 tail=0，payload
+      // 极小）。完成通知去重在 lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，
+      // 天然只发一次）。
   const svcItems = ref<ServiceView[]>([])
   // 分区展开态：默认展开（首次见到的就是卡片形态），用户收起后随 localStorage 记忆。
   const svcExpanded = ref(
@@ -1484,12 +1485,6 @@ async function refreshServices() {
     svcReachable.value = false // daemon 挂了等：降级显示「docker 不可达」，不打扰主流程
   }
 }
-const svcDotClass = computed(() => {
-  if (svcJobsRunning.value > 0) return 'animate-pulse bg-blue-500'
-  if (svcReachable.value === false) return 'bg-destructive'
-  if (!svcItems.value.length) return 'bg-zinc-400'
-  return svcItems.value.every((s) => s.running) ? 'bg-emerald-500' : 'bg-amber-500'
-})
 const svcSummary = computed(() => {
   if (svcReachable.value === false) return 'docker 不可达'
   if (svcJobsRunning.value > 0) return `${svcJobsRunning.value} 个服务任务进行中…`
@@ -1793,12 +1788,11 @@ onUnmounted(() => {
           </button>
           <button
             type="button"
-            class="relative flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
-            title="docker 配套服务（postgres/redis…，容器内按服务名访问）——点击管理"
+            class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
+            :title="`docker 配套服务（${svcSummary}）——点击管理`"
             @click="emit('open-services')"
           >
             <img src="/docker.svg" alt="" class="size-4" />
-            <span :class="['absolute bottom-1 right-1 h-2 w-2 rounded-full ring-1 ring-background', svcDotClass]" />
           </button>
           <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部 -->
           <button
@@ -2078,13 +2072,13 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- docker 服务分区：与系统容器同形态的卡片组，收在环境区、可整体收起（低频配套，
-           默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数 + 聚合状态点，整行点击
-           展开/收起；收起时补一行摘要文案（不可达/任务进行中时尤其要紧，展开后让位给
-           卡片本体）。卡片色条用状态语义色（服务是基础设施，不像容器那样用身份色）：
-           running=绿 / restarting=琥珀 / 其余灰。点击卡片开服务抽屉并定位到该服务（管理
-           主场），IP 点击复制，⋯ 收连接命令/打开端口/启停重启。列表 max-h 托底滚动，
-           服务多也不挤占容器区。 -->
+      <!-- docker 服务分区：与系统容器同形态、同一套状态语言的卡片组（色条=按服务名
+           hash 的身份色，非 running=灰条+整卡降亮度），收在环境区、可整体收起（低频
+           配套，默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数（容器分区头同款，
+           无状态点），整行点击展开/收起；收起时补一行摘要文案（任务进行中/不可达时
+           要紧，不可达红字）。点击卡片开服务抽屉并定位到该服务（管理主场），IP 点击
+           复制，⋯ 收连接命令/打开端口/启停重启。列表 max-h 托底滚动，服务多也不挤占
+           容器区。 -->
       <div class="shrink-0 border-t border-border">
         <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
           <button
@@ -2096,10 +2090,10 @@ onUnmounted(() => {
             <img src="/docker.svg" alt="" class="size-3.5 shrink-0" />
             <span class="text-xs font-medium text-muted-foreground">docker 服务</span>
             <span class="text-[10px] text-muted-foreground/70">{{ svcItems.length }}</span>
-            <span :class="['h-2 w-2 shrink-0 rounded-full', svcDotClass]" />
             <span
               v-if="!svcExpanded"
-              class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70"
+              class="min-w-0 flex-1 truncate text-[11px]"
+              :class="svcReachable === false ? 'text-destructive' : 'text-muted-foreground/70'"
               >{{ svcSummary }}</span
             >
             <ChevronDown
@@ -2127,17 +2121,13 @@ onUnmounted(() => {
               class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
               @click="onServiceCard(s)"
             >
-              <!-- 左缘状态色条：running=绿（hover 恢复饱和），restarting=琥珀，其余灰；
-                   非 running 卡片整体降亮度——与容器卡片同一套明度语言。 -->
+              <!-- 左缘色条：与容器卡片同一套状态语言——运行=按服务名 hash 的稳定身份色
+                   （containerColor 同一机制，hover 恢复饱和），非 running=灰条；
+                   非 running 卡片整体降亮度。明度即活性，精确状态悬停色条看。 -->
               <span
                 class="absolute inset-y-2.5 left-0 w-[3px] rounded-full transition-all"
-                :class="
-                  s.running
-                    ? 'bg-emerald-500 opacity-40 group-hover:opacity-90'
-                    : s.state === 'restarting'
-                      ? 'bg-amber-500 opacity-40 group-hover:opacity-90'
-                      : 'bg-muted-foreground/30'
-                "
+                :class="s.running ? 'opacity-40 group-hover:opacity-90' : 'bg-muted-foreground/30'"
+                :style="s.running ? { backgroundColor: containerColor(s.name) } : undefined"
                 :title="stateLabel(s.state)"
               />
               <!-- 第一行：名称。非 running 整行降亮度。 -->
