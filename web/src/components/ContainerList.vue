@@ -1929,40 +1929,47 @@ onUnmounted(() => {
                 <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
                 <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
               </template>
+              <!-- 监听端口（三级菜单）：与展开态卡片同构——端口列表 → 每个端口的
+                   打开方式（域名口径：代理打开 / IP 直连；IP 口径单层直点）。 -->
               <template v-if="c.state === 'running' && cardPortRows(c.id).length">
                 <ContextMenuSeparator />
                 <ContextMenuSub>
-                  <ContextMenuSubTrigger>{{ directOpenExtra ? '代理地址' : 'IP 直连' }}</ContextMenuSubTrigger>
-                  <ContextMenuSubContent class="w-44">
-                    <ContextMenuItem
-                      v-for="r in cardPortRows(c.id)"
-                      :key="r.kind + r.port"
-                      :title="portRowTitle(c, r)"
-                      @click="openUrl(portRowTarget(c, r))"
-                    >
-                      <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                      <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
-                      <span class="min-w-0 flex-1 font-mono tabular-nums">{{
-                        r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port
-                      }}</span>
-                      <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
-                      <span v-else-if="r.kind === 'map'" class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
-                    </ContextMenuItem>
-                  </ContextMenuSubContent>
-                </ContextMenuSub>
-                <!-- 直连打开：同展开态卡片（仅域名口径、map 不参与）。 -->
-                <ContextMenuSub
-                  v-if="directOpenExtra && cardPortRows(c.id).some((r) => r.kind !== 'map' && directPortUrl(c, r.port))"
-                >
-                  <ContextMenuSubTrigger>IP 直连</ContextMenuSubTrigger>
-                  <ContextMenuSubContent class="w-44">
-                    <template v-for="r in cardPortRows(c.id)" :key="'d' + r.kind + r.port">
+                  <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                  <ContextMenuSubContent class="w-40">
+                    <template v-for="r in cardPortRows(c.id)" :key="r.kind + r.port">
                       <ContextMenuItem
-                        v-if="r.kind !== 'map' && directPortUrl(c, r.port)"
-                        :title="`直连打开 ${directPortUrl(c, r.port)}`"
-                        @click="openUrl(directPortUrl(c, r.port))"
+                        v-if="r.kind === 'map'"
+                        :title="portRowTitle(c, r)"
+                        @click="openUrl(`http://127.0.0.1:${r.port}`)"
                       >
+                        <ArrowRightLeft class="size-3 shrink-0" />
+                        <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }} → {{ r.priv }}</span>
+                        <span class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
+                      </ContextMenuItem>
+                      <ContextMenuSub v-else-if="directOpenExtra">
+                        <ContextMenuSubTrigger>
+                          <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                          <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                          <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                        </ContextMenuSubTrigger>
+                        <ContextMenuSubContent class="w-36">
+                          <ContextMenuItem
+                            :title="`代理打开 ${serviceUrl('c', c.name, r.port, c.ip)}`"
+                            @click="openUrl(serviceUrl('c', c.name, r.port, c.ip))"
+                            >代理打开</ContextMenuItem
+                          >
+                          <ContextMenuItem
+                            v-if="directPortUrl(c, r.port)"
+                            :title="`IP 直连 ${directPortUrl(c, r.port)}`"
+                            @click="openUrl(directPortUrl(c, r.port))"
+                            >IP 直连</ContextMenuItem
+                          >
+                        </ContextMenuSubContent>
+                      </ContextMenuSub>
+                      <ContextMenuItem v-else :title="portRowTitle(c, r)" @click="openUrl(portRowTarget(c, r))">
+                        <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                         <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                        <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
                       </ContextMenuItem>
                     </template>
                   </ContextMenuSubContent>
@@ -2201,44 +2208,49 @@ onUnmounted(() => {
               <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
               <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
             </template>
-            <!-- 代理地址（二级菜单，IP 口径下即直连）：running 且扫到/有映射才出现。
-                 web（实测返回 HTML）标绿点开；其余监听平铺；docker 宿主映射（历史形态）
-                 标「宿主」恒指本机。行点击目标跟随控制台口径（portRowTarget）。 -->
+            <!-- 监听端口（三级菜单）：右键菜单 → 端口列表 → 每个端口的打开方式。
+                 域名口径下每个端口再展开一级（代理打开 / IP 直连）；IP 口径没有代理
+                 一路，端口本身就是直连、保持单层直点。web（实测返回 HTML）标绿；
+                 docker 宿主映射（历史形态）本身即宿主直连，维持单项。 -->
             <template v-if="c.state === 'running' && cardPortRows(c.id).length">
               <ContextMenuSeparator />
               <ContextMenuSub>
-                <ContextMenuSubTrigger>{{ directOpenExtra ? '代理地址' : 'IP 直连' }}</ContextMenuSubTrigger>
-                <ContextMenuSubContent class="w-44">
-                  <ContextMenuItem
-                    v-for="r in cardPortRows(c.id)"
-                    :key="r.kind + r.port"
-                    :title="portRowTitle(c, r)"
-                    @click="openUrl(portRowTarget(c, r))"
-                  >
-                    <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                    <ArrowRightLeft v-else-if="r.kind === 'map'" class="size-3 shrink-0" />
-                    <span class="min-w-0 flex-1 font-mono tabular-nums">{{
-                      r.kind === 'map' ? `${r.port} → ${r.priv}` : r.port
-                    }}</span>
-                    <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
-                    <span v-else-if="r.kind === 'map'" class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
-                  </ContextMenuItem>
-                </ContextMenuSubContent>
-              </ContextMenuSub>
-              <!-- IP 直连（第二方式）：仅域名口径给出——IP 口径主点击已是直连；
-                   map 行本身是宿主直连形态，不参与。 -->
-              <ContextMenuSub
-                v-if="directOpenExtra && cardPortRows(c.id).some((r) => r.kind !== 'map' && directPortUrl(c, r.port))"
-              >
-                <ContextMenuSubTrigger>IP 直连</ContextMenuSubTrigger>
-                <ContextMenuSubContent class="w-44">
-                  <template v-for="r in cardPortRows(c.id)" :key="'d' + r.kind + r.port">
+                <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                <ContextMenuSubContent class="w-40">
+                  <template v-for="r in cardPortRows(c.id)" :key="r.kind + r.port">
                     <ContextMenuItem
-                      v-if="r.kind !== 'map' && directPortUrl(c, r.port)"
-                      :title="`直连打开 ${directPortUrl(c, r.port)}`"
-                      @click="openUrl(directPortUrl(c, r.port))"
+                      v-if="r.kind === 'map'"
+                      :title="portRowTitle(c, r)"
+                      @click="openUrl(`http://127.0.0.1:${r.port}`)"
                     >
+                      <ArrowRightLeft class="size-3 shrink-0" />
+                      <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }} → {{ r.priv }}</span>
+                      <span class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
+                    </ContextMenuItem>
+                    <ContextMenuSub v-else-if="directOpenExtra">
+                      <ContextMenuSubTrigger>
+                        <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                        <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                        <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                      </ContextMenuSubTrigger>
+                      <ContextMenuSubContent class="w-36">
+                        <ContextMenuItem
+                          :title="`代理打开 ${serviceUrl('c', c.name, r.port, c.ip)}`"
+                          @click="openUrl(serviceUrl('c', c.name, r.port, c.ip))"
+                          >代理打开</ContextMenuItem
+                        >
+                        <ContextMenuItem
+                          v-if="directPortUrl(c, r.port)"
+                          :title="`IP 直连 ${directPortUrl(c, r.port)}`"
+                          @click="openUrl(directPortUrl(c, r.port))"
+                          >IP 直连</ContextMenuItem
+                        >
+                      </ContextMenuSubContent>
+                    </ContextMenuSub>
+                    <ContextMenuItem v-else :title="portRowTitle(c, r)" @click="openUrl(portRowTarget(c, r))">
+                      <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                       <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                      <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
                     </ContextMenuItem>
                   </template>
                 </ContextMenuSubContent>
@@ -2354,37 +2366,40 @@ onUnmounted(() => {
               <ContextMenuContent>
                 <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                 <ContextMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</ContextMenuItem>
-                <!-- 代理地址（二级菜单，IP 口径下即直连）：实测监听扫描（15s 慢轮询 +
-                     running 集变化即时补刷），web 标绿可点开、其余平铺；扫描未回回退
-                     custom 手工登记端口。 -->
+                <!-- 监听端口（三级菜单）：与容器卡片同构——端口列表 → 每个端口的打开
+                     方式（域名口径：代理打开 / IP 直连；IP 口径单层直点）。实测监听扫描
+                     （15s 慢轮询 + running 集变化即时补刷），扫描未回回退 custom 手工
+                     登记端口。 -->
                 <template v-if="s.running && svcPortRows(s).length">
                   <ContextMenuSeparator />
                   <ContextMenuSub>
-                    <ContextMenuSubTrigger>{{ directOpenExtra ? '代理地址' : 'IP 直连' }}</ContextMenuSubTrigger>
-                    <ContextMenuSubContent class="w-44">
-                      <ContextMenuItem
-                        v-for="r in svcPortRows(s)"
-                        :key="r.kind + r.port"
-                        :title="svcPortRowTitle(s, r)"
-                        @click="openUrl(svcPortRowTarget(s, r))"
-                      >
-                        <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                        <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
-                        <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
-                      </ContextMenuItem>
-                    </ContextMenuSubContent>
-                  </ContextMenuSub>
-                  <!-- IP 直连（第二方式）：仅域名口径给出，同容器卡片。 -->
-                  <ContextMenuSub v-if="directOpenExtra && svcPortRows(s).some((r) => svcDirectPortUrl(s, r.port))">
-                    <ContextMenuSubTrigger>IP 直连</ContextMenuSubTrigger>
-                    <ContextMenuSubContent class="w-44">
-                      <template v-for="r in svcPortRows(s)" :key="'sd' + r.kind + r.port">
-                        <ContextMenuItem
-                          v-if="svcDirectPortUrl(s, r.port)"
-                          :title="`直连打开 ${svcDirectPortUrl(s, r.port)}`"
-                          @click="openUrl(svcDirectPortUrl(s, r.port))"
-                        >
+                    <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                    <ContextMenuSubContent class="w-40">
+                      <template v-for="r in svcPortRows(s)" :key="r.kind + r.port">
+                        <ContextMenuSub v-if="directOpenExtra">
+                          <ContextMenuSubTrigger>
+                            <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                            <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                            <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                          </ContextMenuSubTrigger>
+                          <ContextMenuSubContent class="w-36">
+                            <ContextMenuItem
+                              :title="`代理打开 ${serviceUrl('s', s.name, r.port, s.ip)}`"
+                              @click="openUrl(serviceUrl('s', s.name, r.port, s.ip))"
+                              >代理打开</ContextMenuItem
+                            >
+                            <ContextMenuItem
+                              v-if="svcDirectPortUrl(s, r.port)"
+                              :title="`IP 直连 ${svcDirectPortUrl(s, r.port)}`"
+                              @click="openUrl(svcDirectPortUrl(s, r.port))"
+                              >IP 直连</ContextMenuItem
+                            >
+                          </ContextMenuSubContent>
+                        </ContextMenuSub>
+                        <ContextMenuItem v-else :title="svcPortRowTitle(s, r)" @click="openUrl(svcPortRowTarget(s, r))">
+                          <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                           <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                          <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
                         </ContextMenuItem>
                       </template>
                     </ContextMenuSubContent>
