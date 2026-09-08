@@ -243,8 +243,8 @@ export const batchAiConfig = (ids: string[], input: AiGatewayInput) =>
 // 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）；
 // title = pane 动态标题（命令行/空闲路径/CC·opencode 任务标题，比 cwd 更好认）。
 export interface TermSessionView {
-  kind: 'host' | 'container'
-  containerId?: string
+  kind: 'host' | 'container' | 'service'
+  containerId?: string // container=容器 id；service=服务名（web 侧解析显示名/颜色）
   termId: string
   attached: number
   created: number
@@ -253,8 +253,12 @@ export interface TermSessionView {
 }
 // 会话去重 key：ContainerList 算「本窗口已占用」（可见 + 隐藏组的全部叶子）、
 // TermSessionsDialog 过滤远端列表，两处必须同构，收拢在这里。
-export function termSessionKey(kind: 'host' | 'container', containerId: string | undefined, termId: string): string {
-  return kind === 'host' ? `host:${termId}` : `c:${containerId}:${termId}`
+export function termSessionKey(
+  kind: 'host' | 'container' | 'service',
+  containerId: string | undefined,
+  termId: string,
+): string {
+  return kind === 'host' ? `host:${termId}` : kind === 'service' ? `s:${containerId}:${termId}` : `c:${containerId}:${termId}`
 }
 export const listTermSessions = () =>
   api('/api/terminal-sessions') as Promise<{ sessions: TermSessionView[] }>
@@ -262,7 +266,9 @@ export const killTermSession = (s: TermSessionView) =>
   api(
     s.kind === 'host'
       ? `/api/terminal-sessions/host/${encodeURIComponent(s.termId)}`
-      : `/api/terminal-sessions/container/${encodeURIComponent(s.containerId ?? '')}/${encodeURIComponent(s.termId)}`,
+      : s.kind === 'service'
+        ? `/api/terminal-sessions/service/${encodeURIComponent(s.termId)}`
+        : `/api/terminal-sessions/container/${encodeURIComponent(s.containerId ?? '')}/${encodeURIComponent(s.termId)}`,
     { method: 'DELETE' },
   ) as Promise<{ ok: true }>
 
@@ -679,3 +685,39 @@ export const gitPush = (id: string, path: string) =>
   postJson(`${filesBase(id)}/git/push`, { path }, GIT_NET_TIMEOUT) as Promise<{ ok: true }>
 export const gitBranchDelete = (id: string, path: string, name: string) =>
   postJson(`${filesBase(id)}/git/branch-delete`, { path, name }) as Promise<{ ok: true }>
+
+// —— worktree 管理（容器/宿主双端同哨兵；类型与 server/gitpanel.ts 对齐）——
+export interface GitWorktree {
+  path: string
+  head?: string
+  branch?: string // 检出的分支短名；detached/bare 无
+  bare?: boolean
+  detached?: boolean
+  locked?: boolean
+  lockedReason?: string
+  prunable?: boolean
+  prunableReason?: string
+}
+export interface GitWorktreesView {
+  repo: boolean
+  toplevel?: string // 面板路径所在 worktree 的根（即列表中的「当前」）
+  worktrees?: GitWorktree[] // porcelain 原序，首个恒为主工作树（前端隐藏其移除钮）
+}
+export const getGitWorktrees = (id: string, path: string) =>
+  api(`${filesBase(id)}/git/worktrees?path=${encodeURIComponent(path)}`) as Promise<GitWorktreesView>
+// add 三模式：branch = 检出既有本地分支；remote = 从远端短名建跟踪分支（name=origin/xxx）；
+// new = -b 新建（起点 HEAD）。dir 为目标绝对路径。
+export const gitWorktreeAdd = (
+  id: string,
+  path: string,
+  dir: string,
+  mode: 'branch' | 'new' | 'remote',
+  name: string,
+) => postJson(`${filesBase(id)}/git/worktree-add`, { path, dir, mode, name }) as Promise<{ ok: true }>
+// remove：普通删被拒（dirty/locked）时错误含 git 原话，前端二次提供 force
+export const gitWorktreeRemove = (id: string, path: string, dir: string, force = false) =>
+  postJson(`${filesBase(id)}/git/worktree-remove`, { path, dir, ...(force ? { force: true } : {}) }) as Promise<{
+    ok: true
+  }>
+export const gitWorktreePrune = (id: string, path: string) =>
+  postJson(`${filesBase(id)}/git/worktree-prune`, { path }) as Promise<{ ok: true }>

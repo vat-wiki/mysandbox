@@ -37,7 +37,7 @@ const full = computed(() => total.value >= MAX_GROUP_PANES)
 const splitTitle = (dir: 'row' | 'col') =>
   full.value
     ? `每组最多 ${MAX_GROUP_PANES} 个终端；tab 右键「新开一组终端」`
-    : `${dir === 'row' ? '左右' : '上下'}分屏（${props.group.kind === 'host' ? '宿主' : '同容器'}新终端）`
+    : `${dir === 'row' ? '左右' : '上下'}分屏（${props.group.kind === 'host' ? '宿主' : props.group.kind === 'service' ? '同服务' : '同容器'}新终端）`
 const ordinal = computed(() =>
   props.node.kind === 'leaf' ? ordinalOf(props.group.root, props.node.termId) : 0,
 )
@@ -93,6 +93,8 @@ async function pollCwd() {
   const l = leaf.value
   const seq = ++cwdSeq
   if (!l) return
+  // 服务终端无 cwd 端点（docker 容器 fs），恒占位；pane 动态标题照常显示。
+  if (props.group.kind === 'service') return
   try {
     // host 组 containerId 即 HOST_ID 哨兵，getTermCwd 自动落到 /api/host-terminal/cwd
     const r = await getTermCwd(props.group.containerId, l.termId)
@@ -174,6 +176,8 @@ if (leaf.value) {
       :name="group.name"
       :term-id="leaf.termId"
       :host="group.kind === 'host'"
+      :service="group.kind === 'service' ? group.containerId : undefined"
+      :shell="group.kind === 'service' ? 'bash' : undefined"
       :active="active"
       :from-term-id="ops.cwdSourceOf(leaf.termId)"
       @osc-open="onOsc"

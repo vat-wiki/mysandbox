@@ -54,6 +54,19 @@ export function hostSessionName(termId: string): string {
 // 旧版宿主会话名前缀（统一命名前用 h-）。首连探测到旧名会话就 rename 成新名。
 const OLD_HOST_PREFIX = 'h-';
 
+// —— 服务终端（docker exec 挂宿主 tmux）——
+// 服务容器（postgres/redis…）里没有 tmux：会话本体放在宿主专用 socket 上，窗口命令
+// = docker exec -it <name> <shell>——PTY 链：tmux pane → docker CLI（SIGWINCH 自动
+// resize exec tty）→ 容器内 shell。会话同样跨 mysandbox 重启存活（真 tmux 语义）。
+// 会话名 mysandbox-svc-<termId>：服务名不进会话名（可含 '-'，与 termId 拼接切不开），
+// 存进会话自定义选项 @svc（创建时 set），listServiceSessions 经格式串直接读。
+export const SERVICE_PREFIX = 'mysandbox-svc-';
+export function serviceSessionName(termId: string): string {
+  return `${SERVICE_PREFIX}${termId}`;
+}
+// 服务名白名单（docker name 语义）：进 docker exec 参数与会话 @svc 选项，正则收紧。
+const SVC_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/;
+
 // 会话名见 hostSessionName。无宽限期、无周期清扫（语义见文件头）；activeCount 只用于
 // 多窗口计数，最后一个连接断开 = 纯 detach。
 // resize 尾沿防抖：拖窗时前端每帧发 resize，不防抖 = 每秒几十个 stty 进程。
@@ -103,6 +116,30 @@ async function resolveHostShell(want: string): Promise<string> {
   return want;
 }
 
+// 服务容器在跑吗（exec 前置检查：挂了给前端明确文案，不让 tmux 窗口闪死于 docker 报错）。
+async function svcRunning(name: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      'docker',
+      ['inspect', '-f', '{{.State.Running}}', name],
+      { timeout: 5_000 },
+    );
+    return stdout.trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+// 服务容器内 shell：bash 优先（debian 系镜像有），退回 sh（alpine/精简镜像兜底）。
+async function resolveSvcShell(name: string): Promise<string> {
+  try {
+    await execFileAsync('docker', ['exec', name, 'sh', '-c', 'command -v bash'], { timeout: 5_000 });
+    return 'bash';
+  } catch {
+    return 'sh';
+  }
+}
+
 // 跑一条宿主 tmux 命令（专用 socket）。tmux 报 no server running 等一律按失败返回，
 // 调用方按「无会话」处理——宿主 tmux server 只在有会话时存在。
 async function hostTmux(
@@ -123,18 +160,29 @@ async function hostTmux(
 // --scope（见 HOST_TMUX_UNIT 注释）：scope 已 loaded（server 活着、别的 termId 会话
 // 在用）时 systemd-run 必失败（"unit already active"）。server 已活则普通
 // new-session 即可，不会重复拉起 server。
-// 旧名（h-<termId>）会话若在，先 rename 成新名——统一命名前的活会话迁移，用户无感。
-async function hostNewSession(session: string, cols: number, rows: number, cwd: string): Promise<boolean> {
+// opts.cwd：宿主会话的起始目录；opts.command：窗口命令（服务终端 = docker exec），
+// 缺省 = 会话默认 shell。命令词均为常量或正则校验值，无注入面。
+async function ensureTmuxSession(
+  session: string,
+  cols: number,
+  rows: number,
+  opts: { cwd?: string; command?: string[] } = {},
+): Promise<boolean> {
   const alive = await hostTmux(['has-session', '-t', `=${session}`]);
   if (alive.ok) return true; // 会话已在，直接 attach 路径（调用方语义）
-  const old = `${OLD_HOST_PREFIX}${session.slice('mysandbox-host-'.length)}`;
-  const oldAlive = await hostTmux(['has-session', '-t', `=${old}`]);
-  if (oldAlive.ok) {
-    await hostTmux(['rename-session', '-t', `=${old}`, session]);
-    return true;
-  }
   const hasServer = (await hostTmux(['list-sessions', '-F', '#{session_name}'])).ok;
-  const argv = ['new-session', '-d', '-s', session, '-x', String(cols), '-y', String(rows), '-c', cwd];
+  const argv = [
+    'new-session',
+    '-d',
+    '-s',
+    session,
+    '-x',
+    String(cols),
+    '-y',
+    String(rows),
+    ...(opts.cwd ? ['-c', opts.cwd] : []),
+    ...(opts.command ?? []),
+  ];
   if (hasServer) {
     return (await hostTmux(argv)).ok;
   }
@@ -149,6 +197,19 @@ async function hostNewSession(session: string, cols: number, rows: number, cwd: 
     // scope 已被并发首连拉起（unit already active）：此刻 server 已活，退回普通 new-session。
     return (await hostTmux(argv)).ok;
   }
+}
+
+// 宿主会话创建：旧名（h-<termId>）会话先 rename 成新名（统一命名迁移，用户无感）。
+async function hostNewSession(session: string, cols: number, rows: number, cwd: string): Promise<boolean> {
+  const alive = await hostTmux(['has-session', '-t', `=${session}`]);
+  if (alive.ok) return true;
+  const old = `${OLD_HOST_PREFIX}${session.slice('mysandbox-host-'.length)}`;
+  const oldAlive = await hostTmux(['has-session', '-t', `=${old}`]);
+  if (oldAlive.ok) {
+    await hostTmux(['rename-session', '-t', `=${old}`, session]);
+    return true;
+  }
+  return ensureTmuxSession(session, cols, rows, { cwd });
 }
 
 // 当前会话的客户端 pts 列表（`=` 前缀精确匹配，防 tmux 前缀匹配串到别的 termId）。
@@ -224,6 +285,34 @@ export async function killHostSession(termId: string): Promise<void> {
   await hostTmux(['kill-session', '-t', `=${session}`]);
 }
 
+// —— 服务终端的会话发现 / 结束（同宿主 socket，前缀 mysandbox-svc-）——
+// @svc 选项携带服务名（创建时 set），格式串直读，绕开「名字含 - 与 termId 切不开」。
+export async function listServiceSessions(): Promise<TermSessionView[]> {
+  const r = await hostTmux(['list-sessions', '-F', '#{session_name}|#{session_attached}|#{session_created}|#{@svc}']);
+  if (!r.ok) return []; // server 不在（无任何会话）等：按 0 会话
+  const rows: TermSessionView[] = [];
+  for (const line of r.stdout.split('\n')) {
+    if (!line.startsWith(SERVICE_PREFIX)) continue;
+    const [name, att, created, svc] = line.split('|');
+    const termId = name.slice(SERVICE_PREFIX.length);
+    if (!TERMID_RE.test(termId)) continue;
+    rows.push({
+      kind: 'service',
+      containerId: svc || undefined,
+      termId,
+      attached: Number(att) || 0,
+      created: (Number(created) || 0) * 1000,
+    });
+  }
+  return rows;
+}
+
+export async function killServiceSession(termId: string): Promise<void> {
+  const session = serviceSessionName(termId);
+  activeCount.delete(session);
+  await hostTmux(['kill-session', '-t', `=${session}`]);
+}
+
 export async function registerHostTerminal(app: FastifyInstance, cfg: Config): Promise<void> {
   const log = app.log;
 
@@ -284,7 +373,11 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     return { path: p, kind };
   });
 
-  app.get('/ws/host-terminal', { websocket: true }, async (socket, req) => {
+  // 宿主与服务终端共用同一套 attach 机制（同 socket、同协议、同生命周期语义），
+  // 差异只在：会话名前缀、起始 cwd（服务无宿主 cwd 概念）、窗口命令（服务 =
+  // docker exec -it <name> <shell>）、连接前的运行检查。
+  const ttyHandler = (mode: 'host' | 'service') =>
+  async (socket: import('ws').WebSocket, req: import('fastify').FastifyRequest) => {
     const q = (req.query as Record<string, string | undefined>) || {};
     const shell = q.shell || cfg.ui.defaultShell;
     const cols = Math.min(500, Math.max(1, Number(q.cols) || 80));
@@ -302,6 +395,24 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       return;
     }
 
+    // 服务模式入参：服务名进 docker exec 参数与 @svc 选项（白名单正则），连接前查
+    // 运行态——挂了给前端明确文案，不让 tmux 窗口闪死于 docker exec 的报错。
+    let svc = '';
+    let svcShell = 'sh';
+    if (mode === 'service') {
+      svc = (q.name || '').trim();
+      if (!SVC_NAME_RE.test(svc)) {
+        socket.close(1008, 'missing or invalid service name');
+        return;
+      }
+      if (!(await svcRunning(svc))) {
+        socket.send(Buffer.from(`\x1b[31m>> 服务 ${svc} 未运行，无法进入（先在面板里启动）\x1b[0m\r\n`));
+        socket.close(1008, 'service not running');
+        return;
+      }
+      svcShell = await resolveSvcShell(svc);
+    }
+
     try {
       const env = await detectEnv();
       if (env === 'none') {
@@ -315,8 +426,9 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       // 进程 cwd 的权威值），普通连接 = 宿主 home。源会话已死/查询失败一律静默落 home。
       // list-panes 而非 display-message（后者对无 attach client 的会话返回空串，files.ts
       // 同款结论）；target 带「=会话名:」（capture-pane 的教训，精确会话 + 默认窗口）。
+      // 服务终端无宿主 cwd 概念（窗口命令进的是容器 fs），恒落 homedir（不进 tmux 参数）。
       let cwd = homedir();
-      if (useTmux && from) {
+      if (mode === 'host' && useTmux && from) {
         const r = await hostTmux([
           'list-panes', '-t', `=${hostSessionName(from)}:`, '-F', '#{pane_active} #{pane_current_path}',
         ]);
@@ -328,13 +440,19 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         if (r.ok && src.startsWith('/')) cwd = src;
       }
 
-      const session = hostSessionName(termId);
+      const session = mode === 'service' ? serviceSessionName(termId) : hostSessionName(termId);
       if (useTmux) {
         activeCount.set(session, (activeCount.get(session) ?? 0) + 1);
         // 新建 detached 会话（-A 语义手写：有则直接 attach 走下面）。尺寸用 URL 值，
         // attach 后 client 会按自身 pts 尺寸再调——初始 stty 已提前落盘，值一致。
-        // server 可能不存在（首连）→ hostNewSession 走 systemd-run 独立单元拉起。
-        await hostNewSession(session, cols, rows, cwd);
+        // server 可能不存在（首连）→ ensureTmuxSession 走 systemd-run 独立单元拉起。
+        if (mode === 'service') {
+          await ensureTmuxSession(session, cols, rows, { command: ['docker', 'exec', '-it', svc, svcShell] });
+          // 服务名进会话选项：listServiceSessions 直读（名字含 - 时与 termId 切不开）。
+          await hostTmux(['set-option', '-s', '-t', `=${session}`, '@svc', svc]);
+        } else {
+          await hostNewSession(session, cols, rows, cwd);
+        }
         // 与容器终端同组的全局设置。⚠️ 每次 attach 都要跑（不限新建）：重连/第二窗口
         // attach 已存在会话时若跳过，terminal-overrides 保持默认 → attach 发 ?1049h 进
         // alt screen，xterm 滚轮变方向键、无滚动条、历史被覆盖（容器侧 terminal.ts 同款
@@ -482,8 +600,14 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       socket.on('error', cleanup);
 
       // script 提供 PTY。`-f` 防 script 在非 tty stdout 下缓冲输出；命令内容是常量 +
-      // 正则校验过的 termId（TERMID_RE 无 shell 元字符），单字符串 -c 无注入面。
-      const cmd = useTmux ? `tmux -L ${HOST_SOCKET} attach -t =${session}` : await resolveHostShell(shell);
+      // 正则校验过的 termId/服务名（TERMID_RE/SVC_NAME_RE 无 shell 元字符），单字符串
+      // -c 无注入面。服务终端无 tmux 降级 = script 直接跑容器内 shell（一次性）。
+      const cmd =
+        useTmux
+          ? `tmux -L ${HOST_SOCKET} attach -t =${session}`
+          : mode === 'service'
+            ? svcShell
+            : await resolveHostShell(shell);
       child = spawn('script', ['-q', '-f', '-e', '-c', cmd, '/dev/null'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         // SHELL 必须压成 /bin/sh：script 用 $SHELL 跑 -c 命令串，用户登录 zsh 会做 =word
@@ -532,7 +656,10 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         }
       }
     } catch {
-      try { socket.close(1011, 'host terminal error'); } catch { /* noop */ }
+      try { socket.close(1011, 'terminal error'); } catch { /* noop */ }
     }
-  });
+  };
+
+  app.get('/ws/host-terminal', { websocket: true }, ttyHandler('host'));
+  app.get('/ws/service-terminal', { websocket: true }, ttyHandler('service'));
 }

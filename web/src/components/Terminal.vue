@@ -22,6 +22,8 @@ const props = withDefaults(
     shell?: string
     active?: boolean
     host?: boolean
+    // docker 服务终端：连 /ws/service-terminal（PTY = 宿主 tmux 窗口跑 docker exec）。
+    service?: string
     fromTermId?: string
   }>(),
   {
@@ -88,7 +90,9 @@ function connectWs() {
   const shell = props.shell || 'zsh'
   const base = props.host
     ? `${proto}://${location.host}/ws/host-terminal?token=${encodeURIComponent(token)}`
-    : `${proto}://${location.host}/ws/terminal?id=${encodeURIComponent(props.id ?? '')}&token=${encodeURIComponent(token)}`
+    : props.service
+      ? `${proto}://${location.host}/ws/service-terminal?name=${encodeURIComponent(props.service)}&token=${encodeURIComponent(token)}`
+      : `${proto}://${location.host}/ws/terminal?id=${encodeURIComponent(props.id ?? '')}&token=${encodeURIComponent(token)}`
   const url =
     base +
     `&shell=${encodeURIComponent(shell)}&cols=${term ? term.cols : 80}&rows=${term ? term.rows : 24}` +

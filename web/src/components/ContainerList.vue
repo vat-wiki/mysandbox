@@ -194,7 +194,7 @@ function parseGroup(o: unknown): TermGroup | null {
     id: typeof r.id === 'string' ? r.id : newGroupId(),
     containerId: r.containerId,
     name: typeof r.name === 'string' ? r.name : r.containerId,
-    kind: r.kind === 'host' ? ('host' as const) : undefined,
+    kind: r.kind === 'host' ? ('host' as const) : r.kind === 'service' ? ('service' as const) : undefined,
     seq: typeof r.seq === 'number' && r.seq >= 1 ? r.seq : undefined,
     quietNotify: typeof r.quietNotify === 'boolean' ? r.quietNotify : undefined,
     root,
@@ -893,7 +893,7 @@ function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string } }) {
 // 400 not_a_directory 或 404 不存在=文件，编辑器侧对不存在的文件走新建态），
 // 定位后聚焦来源 group、面板跟随来源 pane（termId -> DFS 序号）。
 async function onOscOpen(group: TermGroup, termId: string, path: string) {
-  if (group.kind === 'host') return // 宿主侧暂无 OSC 种子（container-cli 只种容器），预留；将来加宿主 CLI 时复用 locate + HOST_ID 即可
+  if (group.kind) return // 宿主侧暂无 OSC 种子（container-cli 只种容器）；服务终端是 docker 容器，无文件联动
   const c = items.value.find((x) => x.id === group.containerId)
   if (!c || c.state !== 'running') return // 终端还开着容器必在，理论上到不了这
   const gi = groups.value.findIndex((g) => g.id === group.id)
@@ -915,6 +915,8 @@ async function onLinkOpen(group: TermGroup, termId: string, raw: string, line?: 
   const gi = groups.value.findIndex((g) => g.id === group.id)
   if (gi >= 0) activeIdx.value = gi
   filePaneIdx.value = Math.min(ordinalOf(group.root, termId), Math.max(leafCount(group.root) - 1, 0))
+  // 服务终端：无路径解析端点（docker 容器 fs），Ctrl+点击不做文件联动
+  if (group.kind === 'service') return
   let r: ResolveView
   try {
     r = await resolveTermPath(group.containerId, termId, raw) // host 组 containerId 即 HOST_ID，哨兵自动分流
@@ -941,7 +943,7 @@ watch(
 
 // 建组公共体：单叶子根（新 termId = 独立会话），激活为新 tab。分屏走 pane 头部按钮。
 // root 可选传入（会话对话框按既有 termId 建组/合组分屏用）；缺省 = 全新单叶子。
-function createGroup(containerId: string, name: string, kind?: 'host', root?: LayoutNode): TermGroup {
+function createGroup(containerId: string, name: string, kind?: 'host' | 'service', root?: LayoutNode): TermGroup {
   // seq = 同容器现有组的最大序号 + 1（稳定身份，不随关闭/排序变化）
   let seq = 0
   for (const x of groups.value) {
@@ -1012,6 +1014,18 @@ function openHostTerm() {
     return
   }
   createGroup(HOST_ID, '宿主', 'host')
+}
+
+// 点服务卡片：进服务终端（docker exec，与容器「点击即进」同一交互语义）。
+// 会话 = 宿主 tmux 上的 docker exec 窗口，跨 mysandbox 重启存活；想看详情走 ⋯ 详情。
+function openServiceTerm(s: ServiceView) {
+  if (isPhone.value) drawerOpen.value = false
+  const i = groups.value.findIndex((g) => g.kind === 'service' && g.containerId === s.name)
+  if (i >= 0) {
+    activeIdx.value = i
+    return
+  }
+  createGroup(s.name, s.name, 'service')
 }
 
 // 在独立窗口（popout）打开某容器/宿主的纯终端工作区（App 按 ?popout= 渲染无侧栏形态）。
@@ -1119,7 +1133,11 @@ const showSessions = ref(false)
 watch(showSessions, (open) => {
   if (!open) return
   const valid = new Set(items.value.map((c) => c.id))
-  const kept = hiddenGroups.value.filter((g) => g.kind === 'host' || valid.has(g.containerId))
+  const kept = hiddenGroups.value.filter((g) => {
+    if (g.kind === 'host') return true
+    if (g.kind === 'service') return svcItems.value.some((x) => x.name === g.containerId)
+    return valid.has(g.containerId)
+  })
   if (kept.length !== hiddenGroups.value.length) hiddenGroups.value = kept
 })
 // 本窗口已占用的会话 key（可见 + 隐藏的全部叶子）：对话框据此区分「已打开」/
@@ -1127,7 +1145,7 @@ watch(showSessions, (open) => {
 const occupiedSet = computed(() => {
   const s = new Set<string>()
   for (const g of [...groups.value, ...hiddenGroups.value]) {
-    const kind = g.kind === 'host' ? 'host' : 'container'
+    const kind = g.kind === 'host' ? 'host' : g.kind === 'service' ? 'service' : 'container'
     const cid = g.kind === 'host' ? undefined : g.containerId
     for (const t of leafIds(g.root)) s.add(termSessionKey(kind, cid, t))
   }
@@ -1139,9 +1157,10 @@ function adoptSessions(list: TermSessionView[]) {
   const first = list[0]
   if (!first) return
   const host = first.kind === 'host'
+  const svc = first.kind === 'service'
   const cid = host ? HOST_ID : first.containerId!
   const c = host ? undefined : items.value.find((x) => x.id === cid)
-  const name = host ? '宿主' : c ? c.displayName || c.name : cid
+  const name = host ? '宿主' : svc ? (svcItems.value.find((x) => x.name === cid)?.name ?? cid) : c ? c.displayName || c.name : cid
   const ids = list.map((s) => s.termId)
   const root: LayoutNode =
     ids.length === 1
@@ -1153,7 +1172,7 @@ function adoptSessions(list: TermSessionView[]) {
           children: ids.map((t) => ({ kind: 'leaf' as const, termId: t })),
           grows: equalGrows(ids.length),
         }
-  createGroup(cid, name, host ? 'host' : undefined, root)
+  createGroup(cid, name, host ? 'host' : svc ? 'service' : undefined, root)
 }
 
 // —— tab 长按（触屏）= 右键 ——
@@ -1296,9 +1315,9 @@ async function refresh(silent = false) {
     }
     const valid = new Set(r.items.map((c) => c.id))
     // 关闭已消失容器的终端 group（容器已删，会话随容器消失，只从 UI 移除、不调 kill）。
-    // 宿主 group 不依赖容器存在，豁免修剪。
-    if (groups.value.some((g) => g.kind !== 'host' && !valid.has(g.containerId))) {
-      groups.value = groups.value.filter((g) => g.kind === 'host' || valid.has(g.containerId))
+    // 宿主/服务 group 不依赖容器存在，豁免（服务组的修剪在 refreshServices 里按服务表做）。
+    if (groups.value.some((g) => !g.kind && !valid.has(g.containerId))) {
+      groups.value = groups.value.filter((g) => g.kind || valid.has(g.containerId))
       if (activeIdx.value >= groups.value.length) activeIdx.value = Math.max(0, groups.value.length - 1)
     }
     if (!silent) err.value = ''
@@ -1458,11 +1477,6 @@ watch(
       function openServicePort(s: ServiceView, port: number) {
         window.open(serviceUrl('s', s.name, port, s.ip), '_blank', 'noopener')
       }
-      // 点卡片开服务抽屉并定位；手机上先收侧栏抽屉（与 openTerm 同款，避免两层抽屉叠着）。
-      function onServiceCard(s: ServiceView) {
-        if (isPhone.value) drawerOpen.value = false
-        emit('open-services', false, s.name)
-      }
 // null=未知（首拉前），false=docker 不可达
 const svcReachable = ref<boolean | null>(null)
 const svcJobsRunning = ref(0)
@@ -1480,6 +1494,17 @@ async function refreshServices() {
     svcItems.value = v.items
     svcReachable.value = v.status?.reachable ?? null
     svcJobsRunning.value = trackServiceJobs(jobsR.jobs)
+    // 服务已删的终端 group：会话随容器消亡，只从 UI 移除、不调 kill（容器侧同款语义）。
+    // docker 不可达（false）时服务表是旧数据，不修组；首拉前（null）svcItems 不可信，同样跳过。
+    if (
+      svcReachable.value === true &&
+      groups.value.some((g) => g.kind === 'service' && !svcItems.value.some((x) => x.name === g.containerId))
+    ) {
+      groups.value = groups.value.filter(
+        (g) => g.kind !== 'service' || svcItems.value.some((x) => x.name === g.containerId),
+      )
+      if (activeIdx.value >= groups.value.length) activeIdx.value = Math.max(0, groups.value.length - 1)
+    }
     // 有任务在跑 → 收紧轮询；全落定 → 回到闲时节奏
     const want = svcJobsRunning.value > 0 ? SVC_ACTIVE_MS : SVC_IDLE_MS
     if (want !== svcIntervalMs) {
@@ -1583,7 +1608,8 @@ watch(
 )
 
 function activityKeyOf(g: TermGroup, t: string): string {
-  return g.kind === 'host' ? termSessionKey('host', undefined, t) : termSessionKey('container', g.containerId, t)
+  const kind = g.kind === 'host' ? 'host' : g.kind === 'service' ? 'service' : 'container'
+  return termSessionKey(kind, g.kind === 'host' ? undefined : g.containerId, t)
 }
 // tab 身份点颜色（宿主琥珀 / 容器色）：光晕与本体共用。
 function tabDotColor(g: TermGroup): string {
@@ -2085,9 +2111,9 @@ onUnmounted(() => {
            hash 的身份色，非 running=灰条+整卡降亮度），收在环境区、可整体收起（低频
            配套，默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数（容器分区头同款，
            无状态点），整行点击展开/收起；收起时补一行摘要文案（任务进行中/不可达时
-           要紧，不可达红字）。点击卡片开服务抽屉并定位到该服务（管理主场），IP 点击
-           复制，⋯ 收连接命令/打开端口/启停重启。列表 max-h 托底滚动，服务多也不挤占
-           容器区。 -->
+           要紧，不可达红字）。点击卡片进服务终端（与容器「点击即进」同语义），IP 点击
+           复制，⋯ 收详情（服务抽屉）/连接命令/打开端口/启停重启。列表 max-h 托底滚动，
+           服务多也不挤占容器区。 -->
       <div class="shrink-0 border-t border-border">
         <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
           <button
@@ -2128,7 +2154,7 @@ onUnmounted(() => {
               v-for="s in svcItems"
               :key="s.name"
               class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
-              @click="onServiceCard(s)"
+              @click="openServiceTerm(s)"
             >
               <!-- 左缘色条：与容器卡片同一套状态语言——运行=按服务名 hash 的稳定身份色
                    （containerColor 同一机制，hover 恢复饱和），非 running=灰条；
@@ -2469,8 +2495,20 @@ onUnmounted(() => {
         </button>
         <button
           class="flex items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
-          :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
-          :title="showFiles ? '关闭文件面板' : '打开文件面板（跟随终端目录）'"
+          :class="[
+            activeGroup?.kind === 'service'
+              ? 'pointer-events-none opacity-30'
+              : showFiles
+                ? 'bg-accent text-foreground'
+                : 'text-muted-foreground hover:bg-accent/50',
+          ]"
+          :title="
+            activeGroup?.kind === 'service'
+              ? '服务终端无文件面板'
+              : showFiles
+                ? '关闭文件面板（跟随终端目录）'
+                : '打开文件面板（跟随终端目录）'
+          "
           @click="showFiles = !showFiles"
         >
           <FolderOpen class="size-3.5 max-md:size-5" />

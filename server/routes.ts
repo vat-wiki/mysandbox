@@ -17,7 +17,7 @@ import {
 import { setMeta, getMeta, deleteMeta } from './state.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
-import { listHostSessions, killHostSession } from './hostTerminal.js';
+import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
 import { terminalActivity } from './activity.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
@@ -153,6 +153,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const settled = await Promise.allSettled(running.map((c) => listContainerSessions(cfg, c.id)));
     const sessions = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
     sessions.push(...(await listHostSessions()));
+    // 服务终端会话（docker exec 挂宿主 tmux，见 hostTerminal.ts）：同 socket 不同前缀。
+    sessions.push(...(await listServiceSessions()));
     return { sessions };
   });
 
@@ -169,6 +171,13 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const { id, termId } = req.params as { id: string; termId: string };
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
     await killContainerSession(cfg, id, termId);
+    return { ok: true };
+  });
+
+  app.delete('/api/terminal-sessions/service/:termId', async (req) => {
+    const { termId } = req.params as { termId: string };
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    await killServiceSession(termId);
     return { ok: true };
   });
 
