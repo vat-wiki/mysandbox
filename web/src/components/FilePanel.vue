@@ -58,6 +58,7 @@ import {
   ClipboardPaste,
   Copy,
   MoreHorizontal,
+  Pencil,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -71,7 +72,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void
   // opts.diff 存在 = git 变更对比形态（Git 变更区块点击上抛；目录列表点文件不传）。
-  (e: 'open-file', path: string, opts?: { diff?: { headPath?: string } }): void
+  // opts.editing = 右键「编辑」直接落编辑态（默认只读）。
+  (e: 'open-file', path: string, opts?: { diff?: { headPath?: string }; editing?: boolean }): void
   (e: 'pane-pick', termId: string): void
 }>()
 
@@ -927,6 +929,9 @@ function fmtSize(n: number): string {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
+                    <DropdownMenuItem v-if="row.entry.type === 'file'" @click="emit('open-file', row.path, { editing: true })">
+                      <Pencil /> 编辑
+                    </DropdownMenuItem>
                     <DropdownMenuItem @click="download(row)">
                       <Download /> 下载
                     </DropdownMenuItem>
@@ -954,6 +959,9 @@ function fmtSize(n: number): string {
       </ContextMenuTrigger>
       <ContextMenuContent>
         <template v-if="ctxTarget">
+          <ContextMenuItem v-if="ctxTarget.entry.type === 'file'" @click="emit('open-file', ctxTarget.path, { editing: true })">
+            <Pencil /> 编辑
+          </ContextMenuItem>
           <ContextMenuItem @click="copyToClipboard(ctxTarget)">
             复制（跨面板粘贴）
           </ContextMenuItem>

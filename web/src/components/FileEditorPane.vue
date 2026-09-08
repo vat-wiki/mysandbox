@@ -47,6 +47,8 @@ const props = defineProps<{
   col?: number
   /** 主区是否正显示本面板（父级同区切换；定位/重算布局只在 active 时有意义） */
   active?: boolean
+  /** 打开即编辑（文件面板右键「编辑」）：初始与 true→ 的变化都落编辑态，false 不打断 */
+  editing?: boolean
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
@@ -335,7 +337,13 @@ watch(() => [props.line, props.col], revealTarget)
 // 专门的锁定回程是伪需求——用户实测后砍掉对勾态）。新建态（文件不存在，打开意图
 // 必然是写）直接落在编辑态。diff/预览渲染/二进制形态无编辑语义，铅笔只随 Monaco
 // 分支出现。
-const editing = ref(false)
+const editing = ref(!!props.editing)
+watch(
+  () => props.editing,
+  (v) => {
+    if (v) editing.value = true
+  },
+)
 watch([editing, editorRef], ([v, ed]) => {
   if (!ed) return
   ed.updateOptions({ readOnly: !v })

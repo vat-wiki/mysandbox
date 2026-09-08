@@ -467,6 +467,9 @@ type EditorTab = {
   diff?: { headPath?: string }
   line?: number
   col?: number
+  // 一次性编辑请求（右键「编辑」）：pane 消费后 tab 标记即清（openFile 无 editing 时
+  // 重置），localStorage 恢复也不带（loadEditorTabs 只挑字段）——编辑态不跨刷新。
+  editing?: boolean
 }
 function tabId(t: { containerId: string; path: string }): string {
   return `${t.containerId}::${t.path}`
@@ -537,14 +540,14 @@ function setPaneRef(t: EditorTab, el: unknown) {
   if (el) paneRefs.set(key, el as { requestClose: () => void; toggleTextPreview?: () => void })
   else paneRefs.delete(key)
 }
-function openFile(cId: string, cName: string, path: string, opts?: { diff?: { headPath?: string }; line?: number; col?: number }) {
+function openFile(cId: string, cName: string, path: string, opts?: { diff?: { headPath?: string }; line?: number; col?: number; editing?: boolean }) {
   const i = editorTabs.value.findIndex((t) => t.containerId === cId && t.path === path)
   if (i >= 0) {
     // 同文件重复打开：刷新显示名/对比态/定位目标并激活（pane 内 watch 自行跟进）
-    editorTabs.value[i] = { ...editorTabs.value[i], containerName: cName, diff: opts?.diff, line: opts?.line, col: opts?.col }
+    editorTabs.value[i] = { ...editorTabs.value[i], containerName: cName, diff: opts?.diff, line: opts?.line, col: opts?.col, editing: opts?.editing === true ? true : undefined }
     activeEditorIdx.value = i
   } else {
-    editorTabs.value.push({ containerId: cId, containerName: cName, path, diff: opts?.diff, line: opts?.line, col: opts?.col })
+    editorTabs.value.push({ containerId: cId, containerName: cName, path, diff: opts?.diff, line: opts?.line, col: opts?.col, editing: opts?.editing === true ? true : undefined })
     activeEditorIdx.value = editorTabs.value.length - 1
   }
   areaMode.value = 'editor'
@@ -2741,6 +2744,7 @@ onUnmounted(() => {
               :diff="t.diff"
               :line="t.line"
               :col="t.col"
+              :editing="t.editing === true"
               :active="areaMode === 'editor' && i === activeEditorIdx"
               @close="removeTab(t)"
               @open-normal="onOpenNormal(t)"
