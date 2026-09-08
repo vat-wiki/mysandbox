@@ -88,6 +88,19 @@ terminal:
 firewall:
   allow: []
 
+# 宿主 docker API 桥（server/dockerApi.ts）——LXC 容器内免装 docker，直用宿主 dockerd。
+# mysandbox 进程内跑一个 TCP → dockerApi.socket 的透传代理，绑网关 IP（<ipPool 前缀>.1）
+# 的 2375 端口；容器侧自动配套：hosts 注入 host.docker.internal → 网关 IP（services 尾块），
+# shell/exec 注入 DOCKER_HOST=tcp://host.docker.internal:2375，容器里只需 docker 客户端
+# （模板脚本 step docker-cli 装静态 CLI，不带 daemon）。
+# ⚠️ 安全：能调 docker API = 宿主 root 级权限（docker 可挂载宿主 /）。端口只对 LXC 网段
+# 放行（firewall.ts 按 config 推导 INPUT 规则，改完 config 记得
+# sudo systemctl restart mysandbox-firewall）；代理随 mysandbox 进程存活，服务停即关。
+# 换 podman 时 socket 指向其兼容 socket 即可。
+dockerApi:
+  enabled: false
+  socket: /var/run/docker.sock
+
 # Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
 # 端口点击跟随控制台访问口径：IP:端口 打开控制台 → 直连容器/服务 IP:端口；经基域名
 # 打开 → 走 <name>-<port>.<基域名>:<listen.port> 代理（cookie 会话，Path 限 /proxy）。

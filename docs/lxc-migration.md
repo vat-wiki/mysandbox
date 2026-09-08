@@ -369,3 +369,50 @@ force 换旧（默认拒绝）→ 桥就绪检查 → 池内分配模板 IP →
 必须走 lxc-destroy（liblxc 自己经 userns 删），config 未写成时再兜一层宿主 rm；
 脚本失败**容器保留**（正在运行）——脚本幂等（每步先探测再装），可进宿主终端手工重跑补缺
 （此时基座状态 = exists 但 not ready「正在运行」，天然挡住克隆），或 force 从零重建。
+
+## 补记：2026-09-08 容器直用宿主 docker（docker API 桥）
+
+**起因**：容器里要用 docker（构建/起临时容器/推镜像），容器内自装 docker.io 又重又错位
+（unprivileged 容器里跑自己的 dockerd，和宿主 docker 生态两张皮）。宿主 dockerd 就在那，
+问题是容器怎么够得着它的 API。
+
+**方案**（全部随 `cfg.dockerApi.enabled` 开关，默认关）：
+
+- **桥**：`server/dockerApi.ts` 进程内 TCP 服务器，绑网关 IP（`gatewayOf(cfg)`，宿主在
+  mysandbox0 上的副 IP）的 2375 端口，每连接双向透传到 `/var/run/docker.sock`（裸 net
+  pipe，字节透明——docker exec attach 的 HTTP hijack 升级后就是裸 TCP）。EADDRNOTAVAIL
+  退避重试（boot 时 mysandbox-net 可能晚于 user service），EADDRINUSE 等一律放弃（非致命，
+  桥缺席只是容器内 docker 不可用），cli.ts 装配、随 mysandbox 进程存活。
+- **容器侧寻址**：hosts 尾块注入 `host.docker.internal → 网关 IP`（`hosts-sync.ts` 的
+  `currentSvcLines`，与 docker 服务行同一套读-改-写/事件追平/启动补刷）。**域名钉死、
+  IP 走 hosts**——改 ipPool 只动 hosts 那一行，容器内 `DOCKER_HOST` 永不重配。
+- **DOCKER_HOST 注入**：engine `attachArgs` 每次 exec 注入（非交互命令/tmux 新起的 shell
+  都吃到）+ `scripts/zshrc` 条件导出兜底——tmux server 早于功能存在时，exec env 传不进
+  server 起的 shell（MYSANDBOX_WEB 同款问题）；zshrc 判 `getent hosts host.docker.internal`
+  存在才导出，功能关了自动失效、不干扰容器里自装的 docker。
+- **容器内只要客户端**：模板 step docker-cli（官方 static 包只取 `docker` 一个文件到
+  /usr/local/bin，**不装 docker.io**——那带 dockerd + systemd 单元，容器里跑自己的 daemon
+  违背契约还白占几百 MB）。apt 的 noble 没有 docker-cli 包，static 包是唯一干净来源。
+- **ufw**：`firewall.ts` 推导 LXC 网段 → 2375 的 INPUT 放行（services 网段的
+  应用容器不给——它们用不到宿主 docker）。config 变更后照旧
+  `sudo systemctl restart mysandbox-firewall`。
+
+**备选路子为什么不要**：
+
+- **docker.sock bind-mount 进容器**（lxc.mount.entry）：socket 属主 root:docker，两个 uid
+  都不在容器的 idmap 段里（unprivileged 下显示 nobody 且 0600）——要给 docker 组开 idmap
+  例外就得改 default.conf + 全部存量容器 config + 重启，且 dockerd 重建 socket 后属主
+  恢复问题还在。不值得。
+- **docker.socket drop-in 加 TCP 监听**（systemd socket activation + FreeBind）：要 root
+  一次性安装、docker 重启才生效、IP 钉死在 /etc 里不随 config、卸载 mysandbox 后忘删会
+  在 boot 时连累 docker.socket。进程内桥零宿主改动、随 config 走、服务停即关（暴露面
+  最小化），缺点是 mysandbox 停机窗口内容器 docker 不可用——可接受。
+- **容器内跑 dockerd**：见上，与「pet 系统容器 + 宿主生态」的产品语义直接冲突。
+
+**安全立场**：docker API = 宿主 root（docker 可挂宿主 /）。本项目的信任边界本就是
+「容器 dev uid = 宿主 leon、token = 宿主完整权限」，这一步把容器推到 root 级——所以
+默认关、绑死网桥 IP、ufw 只放 LXC 网段、随 mysandbox 存活，四层收窄暴露面。
+
+**存量容器/模板补装（一次性，之后新容器从模板自带）**：模板跑一遍 step docker-cli +
+更新 skel zshrc；存量容器 lxc-attach 装 static CLI + 追加 zshrc 块；hosts 行等
+mysandbox 起来后由 hosts 启动补刷追平。zshrc 是用户资产，块只补缺不覆盖。

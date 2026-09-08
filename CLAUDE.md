@@ -40,6 +40,7 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 - 所有 `/api/*` 与 `/ws/*`（除 `/api/health`）经 `server/auth.ts` 的 token 鉴权 hook；新路由注册在 `routes.ts` / `base.ts` / `terminal.ts` / `hostTerminal.ts` 即自动被覆盖，不要绕过。`/proxy/*`（Web 代理）也在 hook 内，且额外收 cookie（header/query/cookie 三路，见 `auth.ts` extractToken）。
 - sidecar 文件（state.json、config.yaml）权限 `0600`。
 - `/api/health` 免鉴权，所以它只暴露版本/引擎连通性/`caps`——**不要往里加容器名、路径、配置值**。
+- `dockerApi.enabled`（默认关）时容器可经 docker API 桥拿到**宿主 root 级能力**（docker 可挂宿主 /）——桥绑网关 IP、ufw 只放 LXC 网段、随 mysandbox 进程存活（见「docker 服务层」末条）。
 
 ## 架构
 
@@ -119,6 +120,7 @@ docker 引擎移除后 docker 的新角色：**配套服务层**（界面名词�
 - **服务发现 = hosts 尾部服务块**：`hosts.ts` 的 `composeHostsContent(base, serviceBlockLines(...))` 是唯一组合点，`hosts-sync.ts` 的 `applyServicesBlock`（读-改-写，幂等无需 hash 记账）覆盖事件/启动/services 全部触发点；`docker events`（start/die/destroy，label 过滤）+ 2s trailing debounce 驱动外部启停追平。容器内验证：`getent hosts <服务名>` → `+PONG`。
 - **坑**：docker 29 对本地已有 tag 的 pull 仍要联网验 manifest（离线直接失败）——`imageExistsLocal()` 先查再跳过 pull；本机 daemon.json 无 registry-mirrors 且宿主在 fake-ip 网络下，Docker Hub 直连常 EOF（apt 同理换过 aliyun 源）——所以有上面的 mirror 检测提示；docker daemon 挂 → health 仍 200（`dockerStatus` 1.5s 快败）、面板 reachable:false 降级、hosts 应用静默跳过。
 - **前端**：两层分工——侧栏「docker 服务」分区（`ContainerList.vue` 底部环境区：与系统容器同形态同状态语言的卡片——色条=按服务名 hash 的身份色（`containerColor` 同一机制），非 running=灰条+整卡降亮度，无圆点；分区头与容器分区头同款（图标+计数，无状态点），整行点击展开/收起，`mysandbox:svc-cards-open` 记忆，收起时显示摘要文案（不可达红字）；卡片 ⋯ 收复制连接命令/打开端口/启停重启，点卡片进服务终端（与容器同交互，见「宿主终端」节的服务终端）；分区头 ＋ 直开创建对话框（App 挂独立 `ServiceCreateDialog`，不拉抽屉——创建入口只开表单））+ `ServicesPanel` 服务抽屉（右侧滑入的**单服务详情**，抽屉内不放列表——侧栏卡片即切换器，`initialSelect` 变化即跟随；裸用 reka 原语自绘而非 ui/dialog 的居中 DialogContent；信息分层防心智过载：名称/状态/操作/连接命令+IP 常开，「凭据与详情」「日志」折叠默认收，日志懒加载、展开才 3s 跟刷；创建任务=顶部横幅仅进行中/失败/取消可见（点开看日志/取消），完成自动选中新服务；新建入口在抽屉头部 ＋；抽屉 3s 轮询服务+任务，外部启停（docker CLI 等）也即时反映）。创建走 `ServiceCreateDialog`（预设表单/自定义镜像；shadcn-vue Select（reka-ui portal）——**别用原生 `<select>`**，强制 dark 下 OS 自绘弹层白底违和；提交拿 jobId 即关窗）。完成通知：`lib/serviceJobs.ts` 的 `trackServiceJobs`（模块级 Map 记上次 state，只有「见过 running 落到终态」才 toast——两个轮询器喂它天然去重，首拉不误报）+ 全局 `<Toaster>`（vue-sonner，`ui/sonner/Sonner.vue` 硬编码 dark，无 next-themes）。侧栏服务分区自适应轮询（闲时 5s / 有任务 3s），抽屉操作经 ServicesPanel 'changed' → App `svcVersion` 计数 → ContainerList watch 即时跟刷，任务进行中分区头摘要显示「N 个服务任务进行中…」。SSE（`streamOp`）现在只有 base 在用。
+- **宿主 docker 直用（dockerApi，默认关）**：容器内免装 docker、直用宿主 dockerd——`server/dockerApi.ts` 进程内 TCP→docker.sock 透传桥（绑网关 IP:2375，EADDRNOTAVAIL 退避重试，失败非致命，cli.ts 装配）。容器侧配套全随 `dockerApi.enabled` 开关：hosts 尾块注入 `host.docker.internal → 网关`（`currentSvcLines`，域名钉死不随 ipPool 变）；`DOCKER_HOST=tcp://host.docker.internal:2375` 由 engine `attachArgs` 每次 exec 注入 + `scripts/zshrc` 条件导出兜底（tmux 老 server 的 shell 吃不到 exec env）；容器里只要客户端二进制（模板 step docker-cli，静态包只取 `docker`，不装 docker.io——那带 daemon）。安全：docker = 宿主 root 级能力，ufw INPUT 只放 LXC 网段（firewall.ts），services 网段不给；桥随 mysandbox 进程存活。改网段后 hosts 行随 hosts-sync 追平，无需动容器配置。
 
 ### Web 代理——「面板外访问容器/服务的端口」
 

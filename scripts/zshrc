@@ -24,6 +24,15 @@ fi
 alias ll='ls -lah'
 alias la='ls -A'
 
+# —— 宿主 docker 桥：DOCKER_HOST 指到宿主 dockerd（容器内免装 docker）——
+# mysandbox dockerApi 开启时，hosts-sync 会把 host.docker.internal（= 网关 IP，mysandbox
+# 进程内代理 2375 → 宿主 docker.sock）写进 /etc/hosts 的 services 尾块。条目存在才导出：
+# 功能关了/hosts 没同步就不设，不影响容器里自装的 docker。每个新 shell 都会重导（exec 注入
+# 的 DOCKER_HOST 也一样），想临时用容器本地 docker 就在会话里 unset（或删掉这段）。
+if command -v docker >/dev/null 2>&1 && getent hosts host.docker.internal >/dev/null 2>&1; then
+  export DOCKER_HOST=tcp://host.docker.internal:2375
+fi
+
 # —— 动态终端标题：执行中 = 命令行、空闲 = 用户@主机:路径（OSC 2）——
 # web 终端 tab 标签依赖它：tmux 侧 set-titles on（terminal.ts/hostTerminal.ts 每次
 # attach 设置）把 pane title 转发给前端 xterm 的 onTitleChange。omz 自带的 termsupport

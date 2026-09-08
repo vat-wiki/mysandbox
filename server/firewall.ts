@@ -13,6 +13,7 @@
 //   - LXC → docker 跨桥：mysandbox-docker-interop.service（raw 表 + DOCKER-USER，ufw 之前）。
 //   - docker 服务网段出网：docker 自己往 FORWARD 前端插的 `! -o <桥> ACCEPT`，无需重复。
 import type { Config } from './config.js';
+import { DOCKER_API_PORT } from './dockerApi.js';
 
 export interface FirewallRule {
   kind: 'input' | 'route';
@@ -44,6 +45,18 @@ export function desiredFirewallRules(config: Config): FirewallRule[] {
         comment: 'mysandbox: LXC containers -> gateway DNS',
       });
     }
+  }
+
+  // docker API 桥（cfg.dockerApi.enabled，server/dockerApi.ts）：LXC 网段 → 宿主 2375 的
+  // 透传代理（绑网关 IP）。docker = 宿主 root 级能力，来源钉死 LXC 网段——services 网段
+  // 的应用容器用不到宿主 docker，不给。
+  if (config.dockerApi.enabled && lxcSubnet) {
+    rules.push({
+      kind: 'input',
+      spec: `${DOCKER_API_PORT}/tcp`,
+      from: lxcSubnet,
+      comment: 'mysandbox: LXC containers -> host docker API bridge',
+    });
   }
 
   // 非 localhost 监听时才放行容器 → console 端口：localhost（安全默认）下容器反正连不上，

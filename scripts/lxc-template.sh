@@ -27,6 +27,9 @@ set -euo pipefail
 NAME="${1:-ms-template}"
 NODE_VERSION="${NODE_VERSION:-24.19.0}"
 GH_VERSION="${GH_VERSION:-2.97.0}"
+# docker 客户端（仅 CLI，不带 daemon——容器直用宿主 dockerd，见 dockerApi 桥）。
+# 默认对齐宿主 dockerd 的版本；跨小版本由 docker 的 API 版本协商兜底。
+DOCKER_VERSION="${DOCKER_VERSION:-29.4.1}"
 
 # 把脚本喂进容器跑。
 #
@@ -185,6 +188,29 @@ else
 fi
 EOS
 
+# ---------- docker CLI（仅客户端，static 包只取 docker 一个文件）----------
+# 容器内 docker 免安装的另一半：daemon 用宿主的（DOCKER_HOST → dockerApi 桥，见
+# server/dockerApi.ts 与 scripts/zshrc 的条件导出），容器里只要客户端二进制。
+# 不装 apt 的 docker.io：那会带上 dockerd 与 systemd 单元，容器里跑自己的 daemon
+# 违背「宿主 docker 共用」的契约还白占几百 MB。
+step docker-cli
+attsh "$DOCKER_VERSION" <<'EOS'
+want=$1
+if command -v docker >/dev/null 2>&1; then
+  docker --version
+else
+  ARCH=$(case "$(dpkg --print-architecture)" in amd64) echo x86_64 ;; arm64) echo aarch64 ;; *) exit 1 ;; esac)
+  curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+    "https://download.docker.com/linux/static/stable/${ARCH}/docker-${want}.tgz" -o /tmp/docker.tgz
+  # 包内路径跨版本漂移过（旧版 docker-<v>/docker、29.x 起 docker/docker）——通配 + 剥一层
+  # 抽出客户端这一个文件，两个布局都落 /tmp/docker。
+  tar -xzf /tmp/docker.tgz -C /tmp --wildcards '*/docker' --strip-components=1
+  install -m 0755 /tmp/docker /usr/local/bin/docker
+  rm -f /tmp/docker.tgz
+  docker --version
+fi
+EOS
+
 # ---------- skel-home：首启 seed 模板（对齐 Dockerfile 的 /etc/skel-home）----------
 # zshrc 从宿主的 scripts/zshrc 拷进去——同一份文件两个引擎共用，别分叉。
 step skel
@@ -217,6 +243,7 @@ chk "script(1)"           'command -v script'
 chk "node"                'command -v node'
 chk "claude"              'command -v claude'
 chk "gh"                  'command -v gh'
+chk "docker cli"          'command -v docker'
 chk "sudo 免密"           '[ -f /etc/sudoers.d/dev ]'
 chk "skel zshrc"          '[ -f /etc/skel-home/.zshrc ]'
 chk "oh-my-zsh"           '[ -f /usr/share/oh-my-zsh/oh-my-zsh.sh ]'

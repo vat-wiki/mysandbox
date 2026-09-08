@@ -15,6 +15,7 @@ import { log, LOG_DIR } from './logger.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
 import { startServicesEventSync } from './services.js';
+import { startDockerApiBridge } from './dockerApi.js';
 import { getVersion } from './version.js';
 
 interface Args {
@@ -183,6 +184,9 @@ async function main(): Promise<void> {
   startHostsEventSync(config);
   // docker 服务事件 → hosts 服务行追平（debounce + 断线重连，见 services.ts）。
   startServicesEventSync(config);
+  // 宿主 docker API 桥（dockerApi.enabled）：容器内 docker CLI → 宿主 dockerd 的
+  // TCP 透传（server/dockerApi.ts，绑网关 IP:2375，失败非致命）。
+  startDockerApiBridge(config);
   await app.listen({ host: config.listen.host, port: config.listen.port });
   log.info({ logFile: LOG_DIR }, 'file logging active (daily rotate, 14d retention; also on journald)');
 

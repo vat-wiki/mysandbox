@@ -12,6 +12,8 @@ import { readFile } from 'node:fs/promises';
 import pLimit from 'p-limit';
 import { composeHostsContent, stripServicesBlock, serviceBlockLines } from './hosts.js';
 import { listServiceEndpoints } from './docker.js';
+import { DOCKER_API_HOSTNAME } from './dockerApi.js';
+import { gatewayOf } from './network.js';
 import { log } from './logger.js';
 
 export type ApplyHostsResult = BatchResult & { skipped: number };
@@ -20,7 +22,13 @@ const EMPTY_RESULT: ApplyHostsResult = { total: 0, ok: 0, failed: 0, skipped: 0,
 
 // 当前服务行（services 关闭时为空数组 = 剥掉所有服务块的语义）。
 async function currentSvcLines(cfg: Config): Promise<string[]> {
-  return cfg.services.enabled ? serviceBlockLines(await listServiceEndpoints(cfg)) : [];
+  const endpoints: { name: string; ip: string }[] = [];
+  // docker API 桥（dockerApi.enabled）：host.docker.internal → 网关 IP（server/dockerApi.ts）。
+  // 与 docker 服务行同走一个 services 尾块——同一套读-改-写/事件追平/启动补刷，块被剥
+  // 一起剥。域名固定不随 ipPool 变：改池子只动这一行，容器内 DOCKER_HOST 永不重配。
+  if (cfg.dockerApi.enabled) endpoints.push({ name: DOCKER_API_HOSTNAME, ip: gatewayOf(cfg) });
+  if (cfg.services.enabled) endpoints.push(...(await listServiceEndpoints(cfg)));
+  return serviceBlockLines(endpoints);
 }
 
 // base64 token 仅 [A-Za-z0-9+/=]，单引号包裹绝对安全；printf %s 不解释反斜杠。

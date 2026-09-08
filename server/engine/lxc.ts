@@ -36,6 +36,7 @@ import { getAllMeta, type ContainerMeta } from '../state.js';
 import { log } from '../logger.js';
 import { notFound, conflict, badRequest } from '../errors.js';
 import { gatewayOf, allocate } from '../network.js';
+import { DOCKER_API_HOSTNAME, DOCKER_API_PORT } from '../dockerApi.js';
 import {
   templateStatus,
   templateSize,
@@ -477,7 +478,7 @@ async function create(
     // LXC 侧 PID 1 是真 systemd、不存在 entrypoint 钩子，所以由引擎在建完后 attach 进去跑一次。
     // 语义保持「缺失才写」——用户后续改了 ~/.zshrc / ~/.gitconfig 不会被覆盖。
     onProgress?.({ status: '首启 seed' });
-    await seedHome(name, spec);
+    await seedHome(cfg, name, spec);
   } catch (e) {
     // 半成品清理。LXC 下 rootfs 就是数据，
     // 一起删——此时容器刚克隆出来还没有用户数据，删掉是安全的。
@@ -502,7 +503,7 @@ async function create(
 // 「缺失才写」逐条对齐 entrypoint.sh：用户改过的文件绝不覆盖。
 // 失败只 warn 不抛：容器已经建好并跑起来了，seed 半途失败不该把它回滚掉
 // （对齐 lifecycle.ts 里 applyInitialHosts 的取舍）。
-async function seedHome(name: string, spec: CreateSpec): Promise<void> {
+async function seedHome(cfg: Config, name: string, spec: CreateSpec): Promise<void> {
   const script = `
 set -u
 cd /home/dev || exit 0
@@ -529,7 +530,7 @@ if [ ! -f "$HOME/.gitconfig" ]; then
 fi
 exit 0
 `;
-  const r = await runAttach(name, {
+  const r = await runAttach(cfg, name, {
     Cmd: ['sh', '-c', script],
     User: '1000:1000',
     Tty: false,
@@ -645,12 +646,18 @@ async function removeContainer(cfg: Config, id: string, opts: { force?: boolean 
 // lxc-attach 直接 spawn（本进程已在 user manager 环境，子进程继承 cgroup）。
 // --clear-env：不把 mysandbox 服务的环境泄进容器；
 // 需要的变量用 -v 显式带。-u/-g 走容器内 uid（默认 1000 dev）。
-function attachArgs(name: string, opts: ExecOpts): string[] {
+function attachArgs(cfg: Config, name: string, opts: ExecOpts): string[] {
   const { uid, gid } = parseUser(opts.User);
   const args = ['lxc-attach', '-n', name, '--clear-env', '-u', String(uid), '-g', String(gid)];
   const env = [
     `HOME=${uid === 0 ? '/root' : '/home/dev'}`,
     'PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    // docker API 桥（dockerApi.enabled）：容器内进程直用宿主 dockerd（server/dockerApi.ts）。
+    // host.docker.internal 由 hosts-sync 写进容器 /etc/hosts（services 尾块）→ 网关 IP；
+    // tmux 老 server 起的 shell 吃不到这里的 env，scripts/zshrc 里有同款条件导出兜底。
+    ...(cfg.dockerApi.enabled
+      ? [`DOCKER_HOST=tcp://${DOCKER_API_HOSTNAME}:${DOCKER_API_PORT}`]
+      : []),
     ...(opts.Env ?? []),
   ];
   // locale 兜底：--clear-env 后调用方的 LANG 进不来，容器内进程会跑在 C/ASCII charmap 下。
@@ -701,24 +708,24 @@ function shq(s: string): string {
 // 跑命令收结果。spawn 天然分离 stdout/stderr。
 // 超时语义：stderr 追加 [mysandbox: timeout]、exitCode -1，
 // 因为 batch.ts/files.ts 依赖这个约定。
-async function execRun(_cfg: Config, id: string, opts: ExecOpts): Promise<ExecResult> {
-  return runAttach(assertName(id), opts, null);
+async function execRun(cfg: Config, id: string, opts: ExecOpts): Promise<ExecResult> {
+  return runAttach(cfg, assertName(id), opts, null);
 }
 
 // stdin 版：喂完 input 后半关闭（对 `cat > file` 即 EOF）。用途：
 // 写大文件绕开 argv 128KB 上限。
 async function execFeed(
-  _cfg: Config,
+  cfg: Config,
   id: string,
   opts: ExecOpts,
   input: Buffer,
 ): Promise<ExecResult> {
-  return runAttach(assertName(id), opts, input);
+  return runAttach(cfg, assertName(id), opts, input);
 }
 
-function runAttach(name: string, opts: ExecOpts, input: Buffer | null): Promise<ExecResult> {
+function runAttach(cfg: Config, name: string, opts: ExecOpts, input: Buffer | null): Promise<ExecResult> {
   return new Promise((resolve) => {
-    const args = attachArgs(name, opts);
+    const args = attachArgs(cfg, name, opts);
     const child = spawn(args[0], args.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -762,11 +769,11 @@ function runAttach(name: string, opts: ExecOpts, input: Buffer | null): Promise<
 //   script -q -f -e -c '<cmd>' /dev/null 给命令开一个真 pty；
 //   resize 走子进程的 pts 上 `stty -F <pts> cols N rows M`（tmux 3.4 refresh-client 不支持 -x/-y）。
 // stdin/stdout 用 PassThrough 拼成 Duplex，上层拿到 Tty 单流语义（stderr 合入 stdout）。
-async function execStream(_cfg: Config, id: string, opts: ExecOpts): Promise<ExecStream> {
+async function execStream(cfg: Config, id: string, opts: ExecOpts): Promise<ExecStream> {
   const name = assertName(id);
   // script 的 -c 收单个字符串命令，所以 attach 参数要拼成 shell 串。所有片段单引号转义，
   // Cmd 来自 terminal.ts 的常量 + 正则校验过的会话名，无注入面（但转义照做，防将来传入变脏）。
-  const cmd = attachArgs(name, opts).map(shq).join(' ');
+  const cmd = attachArgs(cfg, name, opts).map(shq).join(' ');
   const child = spawn('script', ['-q', '-f', '-e', '-c', cmd, '/dev/null'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     // SHELL 压成 /bin/sh：script 用 $SHELL 跑 -c 串，用户登录 zsh 会做 =word 展开
@@ -823,8 +830,8 @@ process.on('exit', () => {
 // —— 二进制流式 exec（files.ts 下载路由）——
 // 与 runAttach 同参同环境（attachArgs），但 stdout 保持原始字节流不收包、stderr 聚成
 // 字符串。错误兜底形状与 runAttach 一致（exitCode -1、stderr 带原因），调用方好归因。
-function execSpawn(_cfg: Config, id: string, opts: ExecOpts): ExecSpawnHandle {
-  const args = attachArgs(assertName(id), opts);
+function execSpawn(cfg: Config, id: string, opts: ExecOpts): ExecSpawnHandle {
+  const args = attachArgs(cfg, assertName(id), opts);
   const child = spawn(args[0], args.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   // 三流 error 必挂：容器没跑/attach 失败时写 stdin EPIPE，不吞会崩整个 mysandbox（runAttach 同款）。

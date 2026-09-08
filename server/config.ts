@@ -99,6 +99,18 @@ export const ConfigSchema = z.object({
         .default([]),
     })
     .default({ allow: [] }),
+  // 宿主 docker API 桥（server/dockerApi.ts）：容器内 docker CLI 免安装直用宿主 dockerd。
+  // mysandbox 进程内跑 TCP(<网关IP>:2375) → dockerApi.socket 的透传代理；容器侧 hosts
+  // 注入 host.docker.internal → 网关（hosts-sync）+ DOCKER_HOST 注入（engine attachArgs
+  // 与 scripts/zshrc 兜底）。⚠️ docker 能力 = 宿主 root 级权限（可挂宿主 /），端口只对
+  // LXC 网段放行（firewall.ts），且随 mysandbox 进程存活——默认关，明确要才开。
+  dockerApi: z
+    .object({
+      enabled: z.boolean().default(false),
+      // dockerd 的 unix socket。换 podman 等替代品时改这里（socket 兼容 docker API 则桥照用）。
+      socket: z.string().default('/var/run/docker.sock'),
+    })
+    .default({ enabled: false, socket: '/var/run/docker.sock' }),
   // Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
   proxy: z
     .object({
@@ -198,6 +210,7 @@ export async function loadConfig(): Promise<LoadResult> {
       ui: parsed.ui,
       terminal: parsed.terminal,
       firewall: parsed.firewall,
+      dockerApi: parsed.dockerApi,
       proxy: parsed.proxy,
       token: parsed.token,
     });
