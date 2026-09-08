@@ -28,10 +28,13 @@ import {
   parsePorcelainZ,
   parseBranchList,
   parseRemoteBranches,
+  parseWorktreeListZ,
   assertBranchName,
+  assertWorktreeDir,
   type GitStatusView,
   type GitDiffView,
   type GitBranchesView,
+  type GitWorktreesView,
 } from './gitpanel.js';
 
 const execFileAsync = promisify(execFile);
@@ -536,6 +539,94 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     } catch (e) {
       if (e instanceof HttpError) throw e;
       throw badRequest(stderrOf(e) || '删除分支失败');
+    }
+    return { ok: true };
+  });
+
+  // —— git worktree 管理（与容器侧 files.ts 一比一对齐，解析单源 gitpanel.ts）——
+  // list/add/remove/prune 四端点，模式语义与防线见 files.ts 注释；这里是 execFile 数组
+  // 参数版。嵌套拦截（新 worktree 目标不得在任何现有工作树内部）node 侧直接判前缀。
+  app.get('/api/host-terminal/git/worktrees', async (req): Promise<GitWorktreesView> => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
+      return { repo: false }; // rev-parse 失败 = 非仓库（正常态）
+    }
+    const out = await gitExec(['--no-optional-locks', '-C', top, 'worktree', 'list', '--porcelain', '-z']);
+    return { repo: true, toplevel: top, worktrees: parseWorktreeListZ(out) };
+  });
+
+  app.post('/api/host-terminal/git/worktree-add', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown; dir?: unknown; mode?: unknown; name?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const dir = assertWorktreeDir(body.dir);
+    const mode = body.mode;
+    if (mode !== 'branch' && mode !== 'new' && mode !== 'remote') throw badRequest('mode 不合法');
+    const name = assertBranchName(body.name);
+    // remote 模式：name 是远端短名（origin/feat-x），本地名取第一段 '/' 之后（与 checkout 同法）
+    const local = mode === 'remote' ? assertBranchName(name.slice(name.indexOf('/') + 1)) : '';
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    if (dir === top || dir.startsWith(top + '/')) throw badRequest('目标目录在现有工作树内部，请选仓库外的目录');
+    const args =
+      mode === 'branch'
+        ? ['worktree', 'add', dir, name]
+        : mode === 'remote'
+          ? ['worktree', 'add', '-b', local, '--track', dir, name]
+          : ['worktree', 'add', '-b', name, dir];
+    try {
+      await gitExec(['-C', top, ...args]);
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || '创建 worktree 失败');
+    }
+    return { ok: true };
+  });
+
+  app.post('/api/host-terminal/git/worktree-remove', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown; dir?: unknown; force?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const dir = assertWorktreeDir(body.dir);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    try {
+      await gitExec(['-C', top, 'worktree', 'remove', ...(body.force ? ['--force'] : []), dir]);
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || '移除 worktree 失败');
+    }
+    return { ok: true };
+  });
+
+  app.post('/api/host-terminal/git/worktree-prune', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    try {
+      await gitExec(['-C', top, 'worktree', 'prune']);
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || '清理 worktree 失败');
     }
     return { ok: true };
   });

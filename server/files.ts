@@ -20,12 +20,15 @@ import {
   parsePorcelainZ,
   parseBranchList,
   parseRemoteBranches,
+  parseWorktreeListZ,
   mapGitExit,
   assertBranchName,
+  assertWorktreeDir,
   type GitStatusView,
   type GitDiffView,
   type GitDiffSide,
   type GitBranchesView,
+  type GitWorktreesView,
 } from './gitpanel.js';
 
 // 读/写一致的内容上限：超限返回 413（PUT 的路由级 bodyLimit 放得更宽，因 JSON 转义最坏
@@ -861,6 +864,128 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
     if (res.exitCode === 9) throw badRequest('分支名不合法');
     const err = mapGitExit(res, '删除分支');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  // —— git worktree 管理（dock 的 worktree popover 数据源与动作，与分支菜单平级入口）——
+  // worktree 与分支是两个维度：分支菜单改「当前工作树的状态」，这里管「工作树本体」。
+  // list 协议：首行 toplevel，其后是 worktree list --porcelain -z 的 NUL 流（解析单源
+  // gitpanel.ts parseWorktreeListZ）。--no-optional-locks：只读不写锁（同 status 端点）。
+  // add 三模式由前端 quick-pick 输入判定（与分支菜单同一心智）：branch = 检出既有本地分支；
+  // remote = 从远端短名建本地跟踪分支（-b <local> --track，local 由本侧剥出，与 checkout
+  // 端点同法）；new = -b 新建分支（起点恒 HEAD，不猜）。remove 普通删除被 git 拒（dirty/
+  // locked）时 stderr 原话回前端，由前端二次提供 force 重试——本侧只透传 force 参数。
+  // 自定义退出码：7 非仓库 / 9 名字不合法 / 11 目标目录落在现有 worktree 内部（嵌套
+  // worktree 前置拦截，比 git 自身的模糊报错可读）。
+  app.get('/api/containers/:id/git/worktrees', async (req): Promise<GitWorktreesView> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" worktree list --porcelain -z',
+        'sh', path,
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) return { repo: false };
+    const err = mapGitExit(res, 'worktree list');
+    if (err) throw err;
+    const nl = res.stdout.indexOf('\n');
+    const toplevel = res.stdout.slice(0, nl);
+    if (nl < 0 || !toplevel.startsWith('/')) return { repo: false };
+    return { repo: true, toplevel, worktrees: parseWorktreeListZ(res.stdout.slice(nl + 1)) };
+  });
+
+  app.post('/api/containers/:id/git/worktree-add', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown; dir?: unknown; mode?: unknown; name?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const dir = assertWorktreeDir(body.dir);
+    const mode = body.mode;
+    if (mode !== 'branch' && mode !== 'new' && mode !== 'remote') throw badRequest('mode 不合法');
+    const name = assertBranchName(body.name);
+    // remote 模式：name 是远端短名（origin/feat-x），本地名取第一段 '/' 之后（与 checkout 同法）
+    const local = mode === 'remote' ? assertBranchName(name.slice(name.indexOf('/') + 1)) : '';
+    const guard = "case \"$d\" in ''|-*) exit 9 ;; esac";
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'p="$1"; d="$2"; m="$3"; n="$4"; l="$5"',
+          guard,
+          "case \"$m\" in branch|new|remote) ;; *) exit 9 ;; esac",
+          "case \"$n\" in ''|-*) exit 9 ;; esac",
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          // 嵌套拦截：新 worktree 不能建在任何现有工作树内部（含主树自身），git 的报错
+          // 对这种场景不直观，提前给可读错误
+          'case "$d" in "$t"|"$t"/*) exit 11 ;; esac',
+          'if [ "$m" = branch ]; then exec git -C "$t" worktree add "$d" "$n"; fi',
+          'if [ "$m" = remote ]; then exec git -C "$t" worktree add -b "$l" --track "$d" "$n"; fi',
+          'exec git -C "$t" worktree add -b "$n" "$d"',
+        ].join('\n'),
+        'sh', path, dir, mode, name, local,
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 30_000,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    if (res.exitCode === 9) throw badRequest('worktree 路径或分支名不合法');
+    if (res.exitCode === 11) throw badRequest('目标目录在现有工作树内部，请选仓库外的目录');
+    const err = mapGitExit(res, '创建 worktree');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  app.post('/api/containers/:id/git/worktree-remove', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown; dir?: unknown; force?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const dir = assertWorktreeDir(body.dir);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'p="$1"; d="$2"; f="$3"',
+          "case \"$d\" in ''|-*) exit 9 ;; esac",
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          'if [ "$f" = 1 ]; then exec git -C "$t" worktree remove --force "$d"; fi',
+          'exec git -C "$t" worktree remove "$d"',
+        ].join('\n'),
+        'sh', path, dir, body.force ? '1' : '0',
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 30_000,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    if (res.exitCode === 9) throw badRequest('worktree 路径不合法');
+    const err = mapGitExit(res, '移除 worktree');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  app.post('/api/containers/:id/git/worktree-prune', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; exec git -C "$t" worktree prune',
+        'sh', path,
+      ],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    const err = mapGitExit(res, '清理 worktree');
     if (err) throw err;
     return { ok: true };
   });

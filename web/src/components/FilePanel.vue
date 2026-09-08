@@ -988,6 +988,7 @@ function fmtSize(n: number): string {
       @open-change="
         (t) => emit('open-file', t.path, { diff: t.headPath ? { headPath: t.headPath } : {} })
       "
+      @navigate="openDir"
     />
 
     <!-- 命名弹窗（新建/重命名共用） -->

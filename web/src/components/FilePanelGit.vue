@@ -17,12 +17,17 @@ import {
   gitPull,
   gitPush,
   gitBranchDelete,
+  getGitWorktrees,
+  gitWorktreeAdd,
+  gitWorktreeRemove,
+  gitWorktreePrune,
   Unauthorized,
   type GitStatusView,
   type GitChange,
   type GitBranchesView,
+  type GitWorktreesView,
 } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw } from 'lucide-vue-next'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -34,6 +39,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'open-change', target: { path: string; headPath?: string }): void
+  (e: 'navigate', path: string): void
 }>()
 
 const view = ref<GitStatusView | null>(null)
@@ -268,6 +274,164 @@ const fetchRemotes = async () => {
 }
 const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, props.path), 'status')
 const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, props.path), 'status')
+
+// —— worktree 管理（多工作树）：入口在 dock 头（worktree 图标），popover 与分支菜单同构。
+// worktree 与分支是两个维度：分支菜单改「当前工作树的状态」，这里管「工作树本体」——
+// 列出/跳转/新建/移除/prune。点列表行 navigate 给父级把面板导航过去（worktree 的核心
+// 价值是并行多工作区，管理完自然要跳进去看）；移除对 dirty/locked 的树会被 git 拒绝，
+// stderr 原话留窗的同时该行移除钮变「强制移除」（destructive 显式二次确认，不弹窗）。
+// 新建表单复刻分支菜单的 quick-pick 心智：输既有本地分支 = 检出、远端短名 = 建跟踪检出、
+// 其余 = 新建分支（-b）；目标目录默认「<仓库父目录>/<仓库名>-<分支化名>」联动填充，手改
+// 即停联动。
+const wtOpen = ref(false)
+const wts = ref<GitWorktreesView | null>(null)
+const wtLoading = ref(false)
+const wtErr = ref('')
+const wtFilter = ref('')
+const wtBusy = ref(false) // worktree 动作共用忙碌位（同分支菜单的互斥粒度）
+const pruning = ref(false)
+const forceSet = ref(new Set<string>()) // remove 被 git 拒后放行「强制移除」的 worktree 路径
+// 新建表单（默认收起：新建是低频动作，平时列表只留 worktree 本体）
+const wtCreating = ref(false)
+const wtBranchInput = ref('')
+const wtDirInput = ref('')
+const dirTouched = ref(false) // 用户手改过路径即停联动
+
+watch(wtOpen, (open) => {
+  if (!open) return
+  wtErr.value = ''
+  wtFilter.value = ''
+  forceSet.value = new Set()
+  wts.value = null // 清上次打开的残留（path 可能已变）
+  void fetchWorktrees()
+  void fetchBranches() // 新建表单的候选 + mode 判定数据源（与分支菜单共享缓存）
+})
+
+async function fetchWorktrees() {
+  wtLoading.value = true
+  try {
+    const v = await getGitWorktrees(props.containerId, props.path)
+    if (!v.repo) {
+      wtOpen.value = false // 面板路径已走出仓库（轮询间隙发生）：静默收窗
+      return
+    }
+    wts.value = v
+  } catch (e) {
+    if (e instanceof Unauthorized) return
+    wtErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    wtLoading.value = false
+  }
+}
+
+const wtList = computed(() => wts.value?.worktrees ?? [])
+function wtFilterHit(w: { path: string; branch?: string }): boolean {
+  const f = wtFilter.value.trim().toLowerCase()
+  return !f || w.path.toLowerCase().includes(f) || (w.branch ?? '').toLowerCase().includes(f)
+}
+const filteredWts = computed(() => wtList.value.filter(wtFilterHit))
+const prunableCount = computed(() => wtList.value.filter((w) => w.prunable).length)
+// 主工作树 = porcelain 首条（git 保证），不可移除——git 对主树 remove 本就会拒绝，提前藏钮
+const isMainWt = (w: { path: string }) => wtList.value[0]?.path === w.path
+// 当前面板所在 worktree（toplevel 即 rev-parse --show-toplevel 的结果）
+const isCurrentWt = (w: { path: string }) => w.path === view.value?.toplevel
+
+// 通用动作包装：busy 互斥 + git 错误原话留窗（同 runBranchAction 模式）。返回成功与否。
+async function runWtAction(act: () => Promise<unknown>): Promise<boolean> {
+  if (wtBusy.value) return false
+  wtErr.value = ''
+  wtBusy.value = true
+  try {
+    await act()
+    return true
+  } catch (e) {
+    if (e instanceof Unauthorized) return false
+    wtErr.value = e instanceof Error ? e.message : String(e)
+    return false
+  } finally {
+    wtBusy.value = false
+  }
+}
+
+function gotoWt(w: { path: string; bare?: boolean }) {
+  if (w.bare) return // bare 无工作区语义，行不可跳
+  wtOpen.value = false
+  emit('navigate', w.path)
+}
+
+async function removeWt(w: { path: string }) {
+  const ok = await runWtAction(() => gitWorktreeRemove(props.containerId, props.path, w.path, forceSet.value.has(w.path)))
+  if (!ok) {
+    // dirty/locked 被 git 拒：原话已留窗，放行该行的「强制移除」（显式二次确认）
+    forceSet.value = new Set([...forceSet.value, w.path])
+    return
+  }
+  const next = new Set(forceSet.value)
+  next.delete(w.path)
+  forceSet.value = next
+  await fetchWorktrees()
+}
+
+async function pruneWts() {
+  if (pruning.value) return
+  pruning.value = true
+  const ok = await runWtAction(() => gitWorktreePrune(props.containerId, props.path))
+  pruning.value = false
+  if (ok) await fetchWorktrees()
+}
+
+// mode 判定（与分支菜单 onFilterEnter 同一 quick-pick 心智）：命中本地分支 = 检出；
+// 命中远端短名 = 建跟踪检出；其余 = 新建分支。同一窗口内就是完整分支清单，无需再解释。
+function wtModeOf(name: string): 'branch' | 'remote' | 'new' {
+  if ((branches.value?.branches ?? []).includes(name)) return 'branch'
+  if ((branches.value?.remotes ?? []).includes(name)) return 'remote'
+  return 'new'
+}
+
+// 路径默认值联动：<仓库父目录>/<仓库名>-<分支化名>（feat/x → feat-x，业界 worktree 目录
+// 命名惯例）。slug 只需处理分支名中合法但对目录不友好的 / 与空白；`-` 开头是非法分支名
+// 也就到不了这里，仍兜底剥一次。
+const repoName = computed(() => {
+  const t = view.value?.toplevel ?? ''
+  return t.slice(t.lastIndexOf('/') + 1)
+})
+const repoParent = computed(() => {
+  const t = view.value?.toplevel ?? ''
+  const i = t.lastIndexOf('/')
+  return i <= 0 ? '/' : t.slice(0, i)
+})
+watch(wtBranchInput, (b) => {
+  if (dirTouched.value || !repoName.value) return
+  const slug = b.trim().replace(/[/\s]+/g, '-').replace(/^-+/, '')
+  wtDirInput.value = slug ? `${repoParent.value}/${repoName.value}-${slug}` : ''
+})
+
+async function createWt() {
+  const name = wtBranchInput.value.trim()
+  const dir = wtDirInput.value.trim()
+  if (!name || !dir || wtBusy.value) return
+  const ok = await runWtAction(() => gitWorktreeAdd(props.containerId, props.path, dir, wtModeOf(name), name))
+  if (!ok) return
+  // 成功：收表单、清输入、刷列表并直接导航到新工作树（开箱即用）
+  wtCreating.value = false
+  wtBranchInput.value = ''
+  wtDirInput.value = ''
+  dirTouched.value = false
+  await fetchWorktrees()
+  emit('navigate', dir)
+}
+
+// 新建表单候选：分支输入过滤本地 + 远端；点击只填入输入框（不提交），让用户确认路径
+// 联动结果再回车/点创建。
+const wtCandidates = computed(() => {
+  const f = wtBranchInput.value.trim().toLowerCase()
+  const hit = (s: string) => !f || s.toLowerCase().includes(f)
+  return {
+    locals: (branches.value?.branches ?? []).filter(hit).slice(0, 6),
+    remotes: (branches.value?.remotes ?? []).filter(hit).slice(0, 4),
+  }
+})
+const wtHasCandidates = computed(() => wtCandidates.value.locals.length > 0 || wtCandidates.value.remotes.length > 0)
 
 // —— dock 高度拖拽（PaneDivider 夹在折叠头与列表之间）：dock 在底部，向上拖（delta<0）
 // 变高；像素值持久化 localStorage，跨容器/跨窗口一致（:key 重建也读同一份）。 ——
@@ -539,6 +703,174 @@ watch(view, (v) => {
       <span class="shrink-0 rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
         {{ view.truncated ? '999+' : (view.changes?.length ?? 0) }}
       </span>
+      <!-- worktree 入口：与分支菜单平级（分支改当前工作树的状态，worktree 管工作树本体） -->
+      <Popover v-model:open="wtOpen">
+        <PopoverTrigger as-child>
+          <button
+            class="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
+            title="worktree 管理（多工作树）"
+          >
+            <FolderGit2 class="size-3" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="end" :side-offset="6" class="w-80 p-2">
+          <Input
+            v-model="wtFilter"
+            class="mb-1.5 h-7 bg-muted/50 px-2 text-xs md:text-xs"
+            placeholder="过滤 worktree…"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <p v-if="wtLoading && !wts" class="px-1 py-1 text-[11px] text-muted-foreground">加载中…</p>
+          <div v-else class="scroll-thin max-h-56 overflow-y-auto">
+            <template v-for="w in filteredWts" :key="w.path">
+              <!-- bare：无工作区语义，纯展示不可跳不可删（git 也不允许 remove 主 bare） -->
+              <div
+                v-if="w.bare"
+                class="flex items-center gap-1.5 px-1.5 py-1"
+                :title="`bare 仓库（无工作区）\n${w.path}`"
+              >
+                <Check class="size-3 shrink-0 opacity-0" />
+                <span class="shrink-0 font-mono text-xs italic text-muted-foreground">bare</span>
+                <span class="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground/70">{{ w.path }}</span>
+              </div>
+              <!-- 当前 worktree（面板所在）：Check 标记 + 点击仍可重新导航 -->
+              <div
+                v-else-if="isCurrentWt(w)"
+                class="flex items-center gap-1.5 rounded bg-accent/40 px-1.5 py-1"
+                :title="`${w.prunable ? (w.prunableReason ?? '失效（目录已消失）') + '\n' : ''}当前工作树 · 点击导航\n${w.path}`"
+              >
+                <Check class="size-3 shrink-0" />
+                <button
+                  class="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                  :disabled="wtBusy"
+                  @click="gotoWt(w)"
+                >
+                  <span class="shrink-0 font-mono text-xs text-foreground">{{ w.branch ?? '(detached)' }}</span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{{ w.path }}</span>
+                </button>
+              </div>
+              <!-- 其余 worktree：点击导航；hover 出移除（主工作树除外）；被拒后变强制移除 -->
+              <div v-else class="group flex items-center rounded hover:bg-accent/50" :title="w.path">
+                <button
+                  class="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1 text-left disabled:pointer-events-none disabled:opacity-50"
+                  :disabled="wtBusy"
+                  @click="gotoWt(w)"
+                >
+                  <Check class="size-3 shrink-0 opacity-0" />
+                  <span
+                    class="shrink-0 font-mono text-xs"
+                    :class="w.prunable ? 'text-muted-foreground/60 line-through' : 'text-muted-foreground'"
+                  >
+                    {{ w.branch ?? (w.detached ? '(detached)' : w.head?.slice(0, 7) ?? '?') }}
+                  </span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground/70">{{ w.path }}</span>
+                  <TriangleAlert
+                    v-if="w.prunable"
+                    class="size-3 shrink-0 text-amber-500"
+                    :title="w.prunableReason ?? '失效（目录已消失）'"
+                  />
+                  <Lock v-else-if="w.locked" class="size-3 shrink-0 text-muted-foreground/60" :title="w.lockedReason ?? '已锁定'" />
+                </button>
+                <!-- 移除：普通删 -> git 拒（dirty/locked）后变强制移除（destructive 显式二次确认） -->
+                <button
+                  class="mr-1 shrink-0 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-50"
+                  :class="forceSet.has(w.path) ? 'text-destructive opacity-100' : 'hover:text-destructive'"
+                  :title="forceSet.has(w.path) ? '强制移除（丢弃未提交变更）' : '移除 worktree'"
+                  :disabled="wtBusy"
+                  @click="removeWt(w)"
+                >
+                  <Trash2 class="size-3" />
+                </button>
+              </div>
+            </template>
+            <p v-if="!filteredWts.length" class="px-1.5 py-1 text-[10px] text-muted-foreground/50">
+              {{ wtList.length ? '没有匹配的 worktree' : '没有 worktree（仓库尚无提交时不可创建）' }}
+            </p>
+          </div>
+          <!-- 底部动作区：新建（默认收起）+ 失效清理（仅存在可 prune 的登记时出现） -->
+          <div class="mt-1.5 border-t border-border pt-1.5">
+            <div v-if="!wtCreating" class="flex items-center gap-1">
+              <button
+                class="flex-1 rounded bg-muted/50 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="新建 worktree（另开一个工作树）"
+                @click="wtCreating = true"
+              >
+                新建 worktree
+              </button>
+              <button
+                v-if="prunableCount"
+                class="flex items-center gap-1 rounded bg-muted/50 px-2 py-1 text-[11px] text-amber-500 hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                title="清理目录已消失的失效登记（git worktree prune）"
+                :disabled="wtBusy"
+                @click="pruneWts()"
+              >
+                <Eraser class="size-3" :class="{ 'animate-spin': pruning }" />
+                清理 {{ prunableCount }}
+              </button>
+            </div>
+            <template v-else>
+              <!-- 分支输入：quick-pick——命中本地分支即检出、命中远端短名即建跟踪、其余为新建 -->
+              <Input
+                v-model="wtBranchInput"
+                class="mb-1.5 h-7 bg-muted/50 px-2 text-xs md:text-xs"
+                placeholder="分支（本地 / origin/x / 新名）"
+                spellcheck="false"
+                autocomplete="off"
+                @keydown.enter.prevent="createWt()"
+              />
+              <div v-if="wtHasCandidates" class="mb-1.5 max-h-24 overflow-y-auto scroll-thin">
+                <button
+                  v-for="b in wtCandidates.locals"
+                  :key="b"
+                  class="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-mono text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                  @click="wtBranchInput = b"
+                >
+                  <GitBranch class="size-3 shrink-0 opacity-60" />
+                  <span class="min-w-0 flex-1 truncate">{{ b }}</span>
+                </button>
+                <button
+                  v-for="r in wtCandidates.remotes"
+                  :key="r"
+                  class="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-mono text-xs text-muted-foreground/80 hover:bg-accent/50 hover:text-foreground"
+                  :title="`从 ${r} 建本地跟踪分支`"
+                  @click="wtBranchInput = r"
+                >
+                  <ArrowUpRight class="size-3 shrink-0 opacity-60" />
+                  <span class="min-w-0 flex-1 truncate">{{ r }}</span>
+                </button>
+              </div>
+              <Input
+                v-model="wtDirInput"
+                class="mb-1.5 h-7 bg-muted/50 px-2 font-mono text-xs md:text-xs"
+                placeholder="目标目录（随分支自动填充，可改）"
+                spellcheck="false"
+                autocomplete="off"
+                @input="dirTouched = true"
+                @keydown.enter.prevent="createWt()"
+              />
+              <div class="flex items-center gap-1">
+                <button
+                  class="flex-1 rounded bg-muted/50 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                  :disabled="wtBusy || !wtBranchInput.trim() || !wtDirInput.trim()"
+                  title="创建 worktree 并把面板导航过去"
+                  @click="createWt()"
+                >
+                  创建
+                </button>
+                <button
+                  class="rounded bg-muted/50 px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                  @click="wtCreating = false"
+                >
+                  取消
+                </button>
+              </div>
+            </template>
+          </div>
+          <!-- 失败（路径冲突/分支被检出/locked 等）把 git stderr 原话留在窗内，窗不关 -->
+          <p v-if="wtErr" class="mt-1 whitespace-pre-line px-1 text-[11px] text-destructive">{{ wtErr }}</p>
+        </PopoverContent>
+      </Popover>
       <div class="flex shrink-0 items-center gap-0.5 pr-1.5">
         <button
           class="rounded p-0.5"

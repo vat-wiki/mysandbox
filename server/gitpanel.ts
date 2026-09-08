@@ -194,3 +194,74 @@ export function mapGitExit(r: { exitCode: number; stderr: string }, ctx: string)
   );
 }
 
+// —— worktree 管理（dock 的 worktree popover 数据源与动作；容器/宿主两侧共用解析）——
+// git worktree = 同一仓库的多个并行工作树（共享 .git 对象库）：开 worktree 让某分支独立
+// 工作区（AI CLI 并行开发/长任务不占主工作区的标准姿势）。管理面做四件事：list / add /
+// remove / prune。lock/unlock 与 detach 检出刻意不做——低频且终端一键可解，面板只读呈现
+// locked/prunable 状态不提供操作。
+
+export interface GitWorktree {
+  path: string; // worktree 根的绝对路径
+  head?: string; // HEAD 短 hash（bare 记录无 HEAD 行）
+  branch?: string; // 检出的分支短名（refs/heads/x -> x）；detached/bare 无
+  bare?: boolean; // 主 bare 仓库记录（无工作区语义：不可跳转、git 也不允许 remove）
+  detached?: boolean; // detached HEAD
+  locked?: boolean; // 管理锁（remove 会被 git 拒绝，面板只读呈现 + stderr 原话）
+  lockedReason?: string;
+  prunable?: boolean; // 目录已消失等（worktree prune 可清掉的失效登记）
+  prunableReason?: string;
+}
+
+export interface GitWorktreesView {
+  repo: boolean;
+  toplevel?: string; // 面板路径所在 worktree 的根（rev-parse --show-toplevel，即「当前」）
+  worktrees?: GitWorktree[]; // porcelain 原序（git 保证首个恒为主工作树——前端按序号
+  // 隐藏主工作树的移除钮，git 对主树 remove 本就会拒绝，这里提前藏掉）
+}
+
+// 解析 `git worktree list --porcelain -z`（git ≥2.36，模板/宿主为 2.43）输出：
+// -z 下记录间与记录内字段全部 NUL 分隔、空 token 为记录分隔——路径含换行/引号也原样安全，
+// 与 status 的 -z 选型同理由。字段行（参数跟在同 token 内，reason 可含空格）：
+//   worktree <path> / HEAD <hash> / branch <ref> / bare / detached / locked [reason] / prunable [reason]
+export function parseWorktreeListZ(out: string): GitWorktree[] {
+  const wts: GitWorktree[] = [];
+  let cur: GitWorktree | null = null;
+  for (const tok of out.split('\0')) {
+    if (tok === '') {
+      cur = null; // 记录分隔
+      continue;
+    }
+    if (tok.startsWith('worktree ')) {
+      cur = { path: tok.slice(9) };
+      wts.push(cur);
+      continue;
+    }
+    if (!cur) continue; // 防御：字段先于 worktree 行（git 不这么输出）
+    if (tok.startsWith('HEAD ')) cur.head = tok.slice(5);
+    else if (tok.startsWith('branch ')) cur.branch = tok.slice(7).replace(/^refs\/heads\//, '');
+    else if (tok === 'bare') cur.bare = true;
+    else if (tok === 'detached') cur.detached = true;
+    else if (tok === 'locked') cur.locked = true;
+    else if (tok.startsWith('locked ')) {
+      cur.locked = true;
+      cur.lockedReason = tok.slice(7);
+    } else if (tok === 'prunable') cur.prunable = true;
+    else if (tok.startsWith('prunable ')) {
+      cur.prunable = true;
+      cur.prunableReason = tok.slice(9);
+    }
+  }
+  return wts;
+}
+
+// worktree 目标目录校验（add/remove 共用）：绝对路径、拒 \0/超长/- 开头——worktree 的
+// <path> 位置参数没有 -- 分隔的可靠惯例，- 开头会被 git 当选项吃掉，必须自己挡。
+// 不 import files.ts 的 cleanPath：gitpanel 是被 files/hostFiles 双侧复用的纯函数层，
+// 保持对实现模块零依赖（files.ts 反向 import 本文件）。
+export function assertWorktreeDir(p: unknown): string {
+  if (typeof p !== 'string' || !p.startsWith('/') || p.startsWith('-') || p.includes('\0') || p.length > 4096) {
+    throw badRequest('worktree 路径不合法');
+  }
+  return p.length > 1 ? p.replace(/\/+$/, '') : p; // 去尾斜杠（根除外），与 cleanPath 同规整
+}
+
