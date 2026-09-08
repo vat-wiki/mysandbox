@@ -28,6 +28,8 @@ export function stateLabel(state: string): string {
 
 // 容器稳定色：hash(容器id) -> hsl hue。同容器永远同色，黑底上鲜明。
 // 用于终端 tab 色条 + 容器列表表格行色条，两边一致关联、一眼分组。
+// 服务文件目标 id（'s:' 前缀，api.ts filesBase 哨兵）剥掉再 hash：编辑器 tab/文件面板
+// 里出现的 's:pg' 与服务卡片/终端 tab 的 'pg' 同色。
 export function containerColor(id: string): string {
   return containerColorA(id, 1)
 }
@@ -35,6 +37,7 @@ export function containerColor(id: string): string {
 // 容器色带透明度变体（侧栏窄边 rail 的图标底色等淡染场景）：与 containerColor 同一
 // hash、只补 alpha（legacy hsl 逗号语法 + 第四参，浏览器全支持）。
 export function containerColorA(id: string, alpha: number): string {
+  if (id.startsWith('s:')) id = id.slice(2)
   let h = 0
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
   return `hsl(${h % 360}, 65%, 58%, ${alpha})`

@@ -447,7 +447,13 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         // attach 后 client 会按自身 pts 尺寸再调——初始 stty 已提前落盘，值一致。
         // server 可能不存在（首连）→ ensureTmuxSession 走 systemd-run 独立单元拉起。
         if (mode === 'service') {
-          await ensureTmuxSession(session, cols, rows, { command: ['docker', 'exec', '-it', svc, svcShell] });
+          // -e MYSANDBOX_TERM=<termId>：容器内 cwd 标记（serviceFiles.ts 的 /cwd 扫
+          // /proc/*/environ 定位 exec 直启的 shell 读 /proc/<pid>/cwd——服务终端的 tmux
+          // 在宿主，pane_current_path 是宿主路径不是容器内 cwd）。⚠️ 只在「新建会话」时
+          // 注入：ensureTmuxSession 命中已存在会话直接 attach，改这里不会给老会话补标记。
+          await ensureTmuxSession(session, cols, rows, {
+            command: ['docker', 'exec', '-it', '-e', `MYSANDBOX_TERM=${termId}`, svc, svcShell],
+          });
           // 服务名进会话选项：listServiceSessions 直读（名字含 - 时与 termId 切不开）。
           // ⚠️ 不能带 -s：set-option 的 -s 是 SERVER 级选项、-t 被静默忽略（实测两个测试
           // 会话都读到同一个值）——多服务时所有会话的 #{@svc} 全等于最后设的服务名，

@@ -7,7 +7,7 @@ import { computed, defineAsyncComponent, inject, onBeforeUnmount, onMounted, ref
 import { SquareSplitHorizontal, SquareSplitVertical, X } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { containerColor } from '@/lib/utils'
-import { getTermCwd } from '@/lib/api'
+import { getTermCwd, serviceFileId } from '@/lib/api'
 import {
   TERM_OPS,
   MAX_GROUP_PANES,
@@ -93,11 +93,13 @@ async function pollCwd() {
   const l = leaf.value
   const seq = ++cwdSeq
   if (!l) return
-  // 服务终端无 cwd 端点（docker 容器 fs），恒占位；pane 动态标题照常显示。
-  if (props.group.kind === 'service') return
   try {
+    // 服务组走 's:' 前缀切 /api/services/<name>/cwd（docker exec 进容器查会话 shell 的
+    // cwd，标记注入与扫描见 server/serviceFiles.ts / hostTerminal.ts）。
+    const id =
+      props.group.kind === 'service' ? serviceFileId(props.group.containerId) : props.group.containerId
     // host 组 containerId 即 HOST_ID 哨兵，getTermCwd 自动落到 /api/host-terminal/cwd
-    const r = await getTermCwd(props.group.containerId, l.termId)
+    const r = await getTermCwd(id, l.termId)
     if (seq !== cwdSeq) return
     cwd.value = r.cwd
   } catch {

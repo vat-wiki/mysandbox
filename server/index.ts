@@ -15,6 +15,7 @@ import { registerHostTerminal } from './hostTerminal.js';
 import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
 import { registerServices } from './services.js';
+import { registerServiceFileRoutes } from './serviceFiles.js';
 import { makeRewriteUrl, registerProxy, consoleOrigin, proxyBases, proxyUnauthorizedHtml } from './proxy.js';
 import { startActivityPoller } from './activity.js';
 import { ensureTlsMaterial } from './tls.js';
@@ -92,6 +93,9 @@ export async function buildServer(cfg: Config) {
   await registerHostFileRoutes(app);
   await registerBaseRoutes(app, cfg);
   registerServices(app, cfg);
+  // 服务文件端点（server/serviceFiles.ts）：docker 服务容器的文件面板/编辑器/git 套件，
+  // 前端 's:' 前缀 id（api.ts filesBase）切到这里。
+  await registerServiceFileRoutes(app);
   // Web 代理（server/proxy.ts）：cookie 会话 + /api/proxy/config + /proxy 转发核心。
   await registerProxy(app, cfg);
   // 终端输出活动扫描（server/activity.ts）：进程内周期轮询，供 /api/terminal-activity。

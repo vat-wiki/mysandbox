@@ -6,8 +6,21 @@ const TOKEN_KEY = 'mysandbox.token'
 // 宿主哨兵 id：ContainerList 的 host 终端组用它当 containerId；文件 API 据此切宿主端点
 // （两侧路由形状一一对应，FilePanel/FileEditorPane 无需感知）。
 export const HOST_ID = '__host__'
-// 容器 / 宿主文件端点前缀。
-const filesBase = (id: string) => (id === HOST_ID ? '/api/host-terminal' : `/api/containers/${id}`)
+// 服务文件端点哨兵前缀：服务终端组（kind='service'）的文件目标 id = 's:'+服务名，
+// filesBase 据此切 /api/services/<name>/*（后端 server/serviceFiles.ts）。约定与
+// termSessionKey 的 's:' 前缀同源。与 HOST_ID 的差异：服务组的 containerId 本体是真名
+// （WS /卡片/会话 key 都用它），只有**文件目标**在边界处（ContainerList/TermLayoutNode）
+// 加前缀，进了 FilePanel/编辑器/复制粘贴后全程透传无需感知。
+export const SVC_FILE_PREFIX = 's:'
+export const serviceFileId = (id: string): string => SVC_FILE_PREFIX + id
+export const isServiceFileId = (id: string): boolean => id.startsWith(SVC_FILE_PREFIX)
+// 容器 / 宿主 / 服务文件端点前缀。
+const filesBase = (id: string) =>
+  id === HOST_ID
+    ? '/api/host-terminal'
+    : id.startsWith(SVC_FILE_PREFIX)
+      ? `/api/services/${id.slice(SVC_FILE_PREFIX.length)}`
+      : `/api/containers/${id}`
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)

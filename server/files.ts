@@ -7,7 +7,8 @@
 import type { FastifyInstance } from 'fastify';
 import type { Readable } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { lstat, mkdir, rename, rm, stat } from 'node:fs/promises';
@@ -15,6 +16,7 @@ import type { Config } from './config.js';
 import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
+import { listServiceContainers } from './docker.js';
 import { TERMID_RE, sessionName } from './terminal.js';
 import {
   parsePorcelainZ,
@@ -34,6 +36,8 @@ import {
 // 读/写一致的内容上限：超限返回 413（PUT 的路由级 bodyLimit 放得更宽，因 JSON 转义最坏
 // 膨胀 ~6x：2MB 内容 -> ~12MB body，留余量到 16MB）。hostFiles.ts 复用同一上限。
 export const MAX_BYTES = 2 * 1024 * 1024;
+
+const execFileAsync = promisify(execFile);
 
 export interface FileEntry {
   name: string;
@@ -422,16 +426,15 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     return { ok: true };
   });
 
-  // —— 跨面板复制粘贴（容器↔宿主↔容器，文件/目录通用）——
-  // 双端统一解析宿主实址（容器 = rootfs 前缀直拼——unprivileged LXC 的 rootfs 都在固定
-  // 位置，adopted 同样成立；宿主 = 路径本身），宿主侧 tar 管道复制。为什么用 tar 而不是
-  // fs.cp：tar 打包不跟随符号链接，链接字符串原样进包、解到目的端后语义正确（容器内指向
-  // /etc 的绝对链接，fs.cp 会按宿主视角把它解析到宿主 /etc，语义错乱）；包内 uid 全部来自
-  // dev(1000) 可读范围，非 root 解包 --no-same-owner 落为 leon(1000) = 容器 dev（D1 直通
-  // 下属主天然正确）。解包到兄弟临时目录、成功后 rename 落位：失败清理临时目录不留半拷，
-  // 落位是同 fs rename 瞬时完成。容器不要求运行中（rootfs 直操作），但必须受控
-  // （requireControlled：external 容器 adopt 前不碰 rootfs）。无进度上报（本地管道秒级，
-  // 大目录由前端 toast.promise 兜住观感），10min watchdog 硬顶防悬挂进程堆积。
+  // —— 跨面板复制粘贴（容器↔宿主↔容器↔服务，文件/目录通用）——
+  // 双侧统一解析成 Side 再组 tar 管道：宿主/容器（'__host__' 与 LXC 容器）宿主实址直拼、
+  // tar 在宿主跑；服务（'s:' 前缀，web 侧 api.ts filesBase 约定）容器内路径，tar 经
+  // docker exec 流式进出。为什么用 tar 而不是 fs.cp：tar 打包不跟随符号链接，链接字符串
+  // 原样进包、解到目的端后语义正确；包内 uid 由解包侧 --no-same-owner 落为执行用户。
+  // 宿主侧解包到兄弟临时目录、成功后 rename 落位（失败清理不留半拷，落位瞬时）；服务侧
+  // 同构：容器内 /tmp 临时目录 + 容器内 mv（mkdir -p 兜 /tmp 必在）。服务侧必须运行中
+  // （docker exec 前提）；容器侧不要求运行中（rootfs 直操作）但必须受控。无进度上报
+  // （本地管道秒级，大目录由前端 toast.promise 兜住观感），10min watchdog 硬顶防悬挂。
   app.post('/api/files/copy', async (req): Promise<{ ok: true }> => {
     const body = (req.body as Record<string, unknown>) || {};
     const srcC = typeof body.srcContainer === 'string' ? body.srcContainer : '';
@@ -441,57 +444,102 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (!srcC || !dstC) throw badRequest('srcContainer and dstContainer are required');
     if (srcPath === '/') throw badRequest('cannot copy /');
 
-    async function locate(id: string, p: string): Promise<string> {
-      if (id === HOST_ID) return p;
+    // 服务侧探测/操作小助手（docker exec，数组参数无 shell 注入面；受管边界 = label
+    // 过滤的 listServiceContainers，非 mysandbox 容器结构性查不到）。
+    async function svcTest(sname: string, script: string, p: string): Promise<boolean> {
+      try {
+        await execFileAsync('docker', ['exec', sname, 'sh', '-c', script, 'sh', p], { timeout: 8_000 });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    async function svcRow(sname: string): Promise<boolean> {
+      const rows = await listServiceContainers();
+      return rows.some((r) => r.Names.split(',')[0].replace(/^\//, '') === sname);
+    }
+
+    type Side = { kind: 'host'; path: string } | { kind: 'docker'; name: string; path: string };
+    async function locate(id: string, p: string): Promise<Side> {
+      if (id === HOST_ID) return { kind: 'host', path: p };
+      if (id.startsWith('s:')) {
+        const sname = id.slice(2);
+        if (!(await svcRow(sname))) throw notFound(`service "${sname}" not found`);
+        return { kind: 'docker', name: sname, path: p };
+      }
       const r = await resolve(cfg, id); // 存在性校验：容器名来自列表，仍防直调 API 的注入名
       requireControlled(r);
       const rootfs = rootfsPath(cfg, r.id);
       if (!rootfs) throw badRequest(`cannot map container ${id} to a host path`);
-      return rootfs + p;
+      return { kind: 'host', path: rootfs + p };
     }
     const [src, dst] = await Promise.all([locate(srcC, srcPath), locate(dstC, dstPath)]);
 
-    const srcName = src.slice(src.lastIndexOf('/') + 1);
-    const dstName = dst.slice(dst.lastIndexOf('/') + 1);
+    const srcName = src.path.slice(src.path.lastIndexOf('/') + 1);
+    const dstName = dst.path.slice(dst.path.lastIndexOf('/') + 1);
     if (!srcName || srcName === '.' || srcName === '..' || !dstName || dstName === '.' || dstName === '..') {
       throw badRequest('cannot copy / or dot paths');
     }
-    // 预检：源存在（lstat 不跟随——断链也原样复制）；目标不存在；不能拷进自身内部
-    // （tar 边读边写会自噬）。预检到落位有 TOCTOU 窗口（与 rename 路由同思路：best-effort），
-    // 落位前再查一次把窗口压到最小。
-    try {
-      await lstat(src);
-    } catch {
-      throw notFound(`source not found: ${srcPath}`);
+    // 源存在（不跟随——断链也原样复制）；目标不存在；不能拷进自身内部（tar 边读边写会
+    // 自噬）。预检到落位有 TOCTOU 窗口（best-effort），落位前再查一次把窗口压到最小。
+    const srcExists =
+      src.kind === 'host'
+        ? await lstat(src.path).then(
+            () => true,
+            () => false,
+          )
+        : await svcTest(src.name, '[ -e "$1" ] || [ -L "$1" ]', src.path);
+    if (!srcExists) throw notFound(`source not found: ${srcPath}`);
+    const dstFree =
+      dst.kind === 'host'
+        ? await lstat(dst.path).then(
+            () => false,
+            (e) => {
+              if (e instanceof HttpError) throw e;
+              return true;
+            },
+          )
+        : !(await svcTest(dst.name, '[ -e "$1" ] || [ -L "$1" ]', dst.path));
+    if (!dstFree) throw conflict('同名文件或目录已存在');
+    // 自噬检查只在同一 fs 内有意义（跨 fs 永不成立）
+    if (
+      (src.kind === 'host' && dst.kind === 'host' && (dst.path === src.path || dst.path.startsWith(`${src.path}/`))) ||
+      (src.kind === 'docker' && dst.kind === 'docker' && src.name === dst.name &&
+        (dst.path === src.path || dst.path.startsWith(`${src.path}/`)))
+    ) {
+      throw badRequest('cannot copy into itself');
     }
-    try {
-      await lstat(dst);
-      throw conflict('同名文件或目录已存在');
-    } catch (e) {
-      if (e instanceof HttpError) throw e;
-    }
-    if (dst === src || dst.startsWith(`${src}/`)) throw badRequest('cannot copy into itself');
-    const dstParent = dst.slice(0, dst.lastIndexOf('/')) || '/';
-    let parentSt;
-    try {
-      parentSt = await stat(dstParent);
-    } catch {
-      throw notFound(`destination directory not found: ${dstPath}`);
-    }
-    if (!parentSt.isDirectory())
-      throw new HttpError(400, 'destination parent is not a directory', 'not_a_directory');
+    const dstParent = dst.path.slice(0, dst.path.lastIndexOf('/')) || '/';
+    const dstParentOk =
+      dst.kind === 'host'
+        ? await stat(dstParent).then(
+            (s) => s.isDirectory(),
+            () => false,
+          )
+        : await svcTest(dst.name, '[ -d "$1" ]', dstParent);
+    if (!dstParentOk) throw notFound(`destination directory not found: ${dstPath}`);
 
-    const tmp = join(dstParent, `.mysandbox-copy-${randomUUID().slice(0, 8)}`);
-    await mkdir(tmp);
+    // 临时目录 + pack/unpack 进程：宿主侧落 dst 兄弟目录；服务侧落容器内 /tmp。
+    const tmpHost = join(dstParent, `.mysandbox-copy-${randomUUID().slice(0, 8)}`);
+    const tmp = dst.kind === 'host' ? tmpHost : '/tmp/.mysandbox-copy-' + randomUUID().slice(0, 8);
+    if (dst.kind === 'host') await mkdir(tmp);
+    const srcParent = src.path.slice(0, src.path.lastIndexOf('/')) || '/';
+    const packArgv =
+      src.kind === 'host'
+        ? ['tar', '-C', srcParent, '-cf', '-', '--', srcName]
+        : ['docker', 'exec', src.name, 'tar', '-C', srcParent, '-cf', '-', '--', srcName];
+    const unpackArgv =
+      dst.kind === 'host'
+        ? ['tar', '-x', '-C', tmp, '--no-same-owner']
+        : [
+            'docker', 'exec', '-i', dst.name, 'sh', '-c',
+            'mkdir -p "$1" && tar -x -C "$1" --no-same-owner', 'sh', tmp,
+          ];
     const kids: ChildProcess[] = [];
     const errs: string[] = [];
     try {
-      const pack = spawn('tar', ['-C', join(src, '..'), '-cf', '-', '--', srcName], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const unpack = spawn('tar', ['-x', '-C', tmp, '--no-same-owner'], {
-        stdio: ['pipe', 'ignore', 'pipe'],
-      });
+      const pack = spawn(packArgv[0], packArgv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const unpack = spawn(unpackArgv[0], unpackArgv.slice(1), { stdio: ['pipe', 'ignore', 'pipe'] });
       for (const [c, tag] of [
         [pack, 'pack'],
         [unpack, 'unpack'],
@@ -517,18 +565,36 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
       }
       // 落位前复查冲突（压 TOCTOU 窗口）；rename 对已存在目录会 ENOTEMPTY、对文件会覆盖
       // ——复查覆盖掉文件场景的竞态窗口。
-      try {
-        await lstat(dst);
-        throw conflict('同名文件或目录已存在');
-      } catch (e) {
-        if (e instanceof HttpError) throw e;
+      const dstStillFree =
+        dst.kind === 'host'
+          ? await lstat(dst.path).then(
+              () => false,
+              () => true,
+            )
+          : !(await svcTest(dst.name, '[ -e "$1" ] || [ -L "$1" ]', dst.path));
+      if (!dstStillFree) throw conflict('同名文件或目录已存在');
+      if (dst.kind === 'host') {
+        await rename(join(tmp, srcName), dst.path);
+        // 落位后临时目录只剩空壳（包内唯一顶层条目已移走），一并清掉——失败路径在 catch 里清。
+        await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      } else {
+        const fin = await execFileAsync(
+          'docker',
+          ['exec', dst.name, 'sh', '-c', 'mv -- "$1" "$2" && rm -rf -- "$3"', 'sh', join(tmp, srcName), dst.path, tmp],
+          { timeout: 30_000 },
+        ).catch((e) => {
+          throw new HttpError(
+            400,
+            String((e as { stderr?: string }).stderr ?? e).trim().slice(0, 500) || 'copy finalize failed',
+            'copy_failed',
+          );
+        });
+        void fin;
       }
-      await rename(join(tmp, srcName), dst);
-      // 落位后临时目录只剩空壳（包内唯一顶层条目已移走），一并清掉——失败路径在 catch 里清。
-      await rm(tmp, { recursive: true, force: true }).catch(() => {});
       return { ok: true };
     } catch (e) {
-      await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      if (dst.kind === 'host') await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      else await execFileAsync('docker', ['exec', dst.name, 'rm', '-rf', '--', tmp], { timeout: 8_000 }).catch(() => {});
       throw e;
     }
   });

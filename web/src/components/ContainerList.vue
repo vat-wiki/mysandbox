@@ -20,6 +20,7 @@ import {
   listTermActivity,
   termSessionKey,
   HOST_ID,
+  serviceFileId,
   Unauthorized,
   type ContainerView,
   type ResolveView,
@@ -430,6 +431,11 @@ function onFilesDrag(dx: number) {
 // 文件面板跟随哪个 pane（active group 内的序号；group 切换/结构变化时归零）。
 const filePaneIdx = ref(0)
 const activeGroup = computed(() => groups.value[activeIdx.value])
+// 文件面板/编辑器/复制粘贴的目标 id：服务组加 's:' 前缀（api.ts filesBase 切
+// /api/services/<name>/*），容器/宿主组原样（宿主即 HOST_ID 哨兵）。
+function fileTargetId(g: TermGroup): string {
+  return g.kind === 'service' ? serviceFileId(g.containerId) : g.containerId
+}
 const filePanes = computed(() => {
   const g = activeGroup.value
   if (!g) return []
@@ -869,11 +875,17 @@ async function locateContainerPath(
   line?: number,
   col?: number,
 ) {
-  // 有 group 聚焦、无则开一个（编辑器/面板都以终端组为锚）。
-  const gi = groups.value.findIndex((g) => g.containerId === c.id)
+  // 有 group 聚焦、无则开一个（编辑器/面板都以终端组为锚）。组匹配按文件目标 id
+  // （fileTargetId：服务组 = 's:'+名），让 Ctrl+点击/深链能锚到对应组。
+  const gi = groups.value.findIndex((g) => fileTargetId(g) === c.id)
   if (gi >= 0) activeIdx.value = gi
   else if (c.id === HOST_ID) openHostTerm()
-  else openTerm(c)
+  else if (c.id.startsWith('s:')) {
+    const sname = c.id.slice(2)
+    const si = groups.value.findIndex((g) => g.kind === 'service' && g.containerId === sname)
+    if (si >= 0) activeIdx.value = si
+    else createGroup(sname, sname, 'service')
+  } else openTerm(c)
   showFiles.value = true
   await nextTick()
   const dir = kind === 'dir' ? path : dirname(path)
@@ -886,7 +898,7 @@ async function locateContainerPath(
 // 文件面板 open-file 汇聚点：目录列表点文件（无 opts）与 Git 变更条目点击（opts.diff
 // = 对比形态）共用。写成函数而非模板内联箭头——对象类型字面量在模板表达式里编不过。
 function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string } }) {
-  if (activeGroup.value) openFile(activeGroup.value.containerId, activeGroup.value.name, p, o)
+  if (activeGroup.value) openFile(fileTargetId(activeGroup.value), activeGroup.value.name, p, o)
 }
 
 // 容器内 mysandbox 命令（web 终端 OSC 7677）：kind 未知 -> listFiles 探测（200=目录 /
@@ -915,11 +927,15 @@ async function onLinkOpen(group: TermGroup, termId: string, raw: string, line?: 
   const gi = groups.value.findIndex((g) => g.id === group.id)
   if (gi >= 0) activeIdx.value = gi
   filePaneIdx.value = Math.min(ordinalOf(group.root, termId), Math.max(leafCount(group.root) - 1, 0))
-  // 服务终端：无路径解析端点（docker 容器 fs），Ctrl+点击不做文件联动
-  if (group.kind === 'service') return
+  // 路径解析：服务组走 /api/services/<name>/resolve（id 加 's:' 前缀）；host 组
+  // containerId 即 HOST_ID 哨兵自动分流；容器组走 /api/containers/<id>/resolve。
   let r: ResolveView
   try {
-    r = await resolveTermPath(group.containerId, termId, raw) // host 组 containerId 即 HOST_ID，哨兵自动分流
+    r = await resolveTermPath(
+      group.kind === 'service' ? serviceFileId(group.containerId) : group.containerId,
+      termId,
+      raw,
+    )
   } catch {
     return // 会话已收 / 容器已停等：静默（终端还在屏上，用户看得见状态）
   }
@@ -927,6 +943,11 @@ async function onLinkOpen(group: TermGroup, termId: string, raw: string, line?: 
   if (group.kind === 'host') {
     // 宿主组必在（点击来自组内活着的 Terminal），无 running 概念
     await locateContainerPath({ id: HOST_ID, name: '宿主' }, r.path, kind, line, col)
+    return
+  }
+  if (group.kind === 'service') {
+    // 服务终端无「容器列表项」概念，直接以文件目标 id 定位（组锚定在 locateContainerPath 内）
+    await locateContainerPath({ id: serviceFileId(group.containerId), name: group.name }, r.path, kind, line, col)
     return
   }
   const c = items.value.find((x) => x.id === group.containerId)
@@ -2495,20 +2516,8 @@ onUnmounted(() => {
         </button>
         <button
           class="flex items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
-          :class="[
-            activeGroup?.kind === 'service'
-              ? 'pointer-events-none opacity-30'
-              : showFiles
-                ? 'bg-accent text-foreground'
-                : 'text-muted-foreground hover:bg-accent/50',
-          ]"
-          :title="
-            activeGroup?.kind === 'service'
-              ? '服务终端无文件面板'
-              : showFiles
-                ? '关闭文件面板（跟随终端目录）'
-                : '打开文件面板（跟随终端目录）'
-          "
+          :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
+          :title="showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
           @click="showFiles = !showFiles"
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
@@ -2681,7 +2690,7 @@ onUnmounted(() => {
       ref="filePanelRef"
       class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
       :style="isPhone ? undefined : { width: filesW + 'px' }"
-      :container-id="activeGroup ? activeGroup.containerId : ''"
+      :container-id="activeGroup ? fileTargetId(activeGroup) : ''"
       :container-name="activeGroup ? activeGroup.name : ''"
       :panes="filePanes"
       :term-id="fileTermId"
