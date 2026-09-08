@@ -8,6 +8,7 @@ import {
   createService,
   listContainers,
   listDockerImages,
+  listServices,
   Unauthorized,
   type ServicePresetView,
   type DockerImageRef,
@@ -51,13 +52,59 @@ const envValues = ref<Record<string, string>>({})
 const busy = ref(false)
 const err = ref('')
 
-// 撞名提示（软提示不阻断：服务与 LXC 容器是不同命名空间，同名技术上允许，
-// 但 hosts 里会互相覆盖，值得提醒）。
+// 撞名提示：服务重名是硬提示（后端必 409，同名任务进行中也会撞）；与 LXC 容器同名是
+// 软提示（不同命名空间技术上允许，但 hosts 里会互相覆盖）。
 const lxcNames = ref<Set<string>>(new Set())
 const nameClash = computed(() => name.value.trim() !== '' && lxcNames.value.has(name.value.trim()))
+const svcNames = ref<Set<string>>(new Set())
+const svcClash = computed(() => name.value.trim() !== '' && svcNames.value.has(name.value.trim()))
 
-// 宿主已有镜像：自定义镜像的候选（选中即填输入框，仍可手改）；也为预设标注「已在本地」。
+// 宿主已有镜像：自定义镜像的候选（输入即过滤，选中即填）；也为预设标注「已在本地」。
 const localImages = ref<DockerImageRef[]>([])
+const imgOpen = ref(false)
+const imgHighlight = ref(0)
+const imgFiltered = computed(() => {
+  const q = customImage.value.trim().toLowerCase()
+  const list = q
+    ? localImages.value.filter((i) => i.ref.toLowerCase().includes(q))
+    : localImages.value
+  return list.slice(0, 60) // 渲染上限，滚轮消化不了的量就靠输入收窄
+})
+watch(() => customImage.value, () => (imgHighlight.value = 0))
+
+function pickImage(refName: string): void {
+  customImage.value = refName
+  imgOpen.value = false
+}
+
+// 镜像框 Enter 语义分层：候选开着先选候选，没候选才当提交。
+function onImageKeydown(e: KeyboardEvent): void {
+  if (imgOpen.value && imgFiltered.value.length) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      imgHighlight.value = Math.min(imgHighlight.value + 1, imgFiltered.value.length - 1)
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      imgHighlight.value = Math.max(imgHighlight.value - 1, 0)
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      pickImage(imgFiltered.value[imgHighlight.value]!.ref)
+      return
+    }
+  }
+  if (e.key === 'Escape') imgOpen.value = false
+  else if (e.key === 'Enter') submit()
+}
+
+// 预设默认名：名称空或还停留在别的预设默认名时代填（不覆盖用户手输）。
+const PRESET_DEFAULT_NAME: Record<string, string> = { postgres: 'pg', redis: 'redis', mysql: 'mysql' }
+
+// 自动分配的 IP 预览（status.pool 首个可用；创建时后端重算，进行中任务可能抢占，仅供预览）。
+const nextIp = ref<string | null>(null)
 
 onMounted(() => {
   getServicePresets()
@@ -80,7 +127,15 @@ onMounted(() => {
       localImages.value = v.images
     })
     .catch(() => {
-      /* 候选提示，失败静默（选择器整块隐藏） */
+      /* 候选提示，失败静默（候选列表为空） */
+    })
+  listServices()
+    .then((v) => {
+      svcNames.value = new Set(v.items.map((s) => s.name))
+      nextIp.value = v.status.pool.free[0] ?? null
+    })
+    .catch(() => {
+      /* 提示功能，失败静默 */
     })
 })
 
@@ -91,9 +146,14 @@ const currentImageLocal = computed(
   () => !!current.value && localImages.value.some((i) => i.ref === current.value!.image),
 )
 
-// 预设切换清掉上一预设的 env 值（不同预设的 required 集不同，残留值会误提交）。
+// 预设切换清掉上一预设的 env 值（不同预设的 required 集不同，残留值会误提交）；
+// 名称按需代填。
 watch(presetKey, () => {
   envValues.value = {}
+  const def = isCustom.value ? '' : (PRESET_DEFAULT_NAME[presetKey.value] ?? '')
+  if (def && (!name.value.trim() || Object.values(PRESET_DEFAULT_NAME).includes(name.value.trim()))) {
+    name.value = def
+  }
 })
 
 // custom env 文本框 → Record（每行 KEY=VALUE，坏行即时报错而非提交时）。
@@ -172,7 +232,7 @@ async function submit() {
       <DialogHeader>
         <DialogTitle>新建应用容器</DialogTitle>
         <DialogDescription>
-          单容器 + 固定 IP + 数据卷，不发布端口——容器内按服务名直连（hosts 自动注入）。
+          单容器 + 固定 IP，不发布端口——容器内按服务名直连（hosts 自动注入）；数据卷预设自动带，自定义可选。
         </DialogDescription>
       </DialogHeader>
 
@@ -209,30 +269,63 @@ async function submit() {
           </div>
         </div>
 
+        <!-- 宽版双列：名称/描述并排，减少纵向滚动；手机自动退回单列。 -->
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="space-y-1.5">
+            <Label for="s-name">名称 *</Label>
+            <Input id="s-name" v-model="name" placeholder="pg" @keydown.enter="submit()" />
+            <p v-if="name && !nameOk" class="text-xs text-destructive">仅小写字母/数字/连字符，2-31 位</p>
+            <p v-else-if="svcClash" class="text-xs text-destructive">已存在同名应用容器（进行中的同名任务也冲突）</p>
+            <p v-else-if="nameClash" class="text-xs text-amber-600">
+              与现有 LXC 容器同名——hosts 里会互相覆盖，建议换个名字
+            </p>
+          </div>
+
+          <div class="space-y-1.5">
+            <Label for="s-desc">描述</Label>
+            <Input id="s-desc" v-model="description" placeholder="（可选）" @keydown.enter="submit()" />
+          </div>
+        </div>
+
         <div v-if="isCustom" class="space-y-1.5">
           <div class="space-y-1.5">
             <Label for="s-image">镜像 *</Label>
-            <Input id="s-image" v-model="customImage" placeholder="postgres:15 / 10.12.135.233/xx/yy:tag" />
-            <!-- 宿主已有镜像直接选：受控 Select，选中即填上面的输入框（输入框是权威值，
-                 手改成列表外的引用时回退 placeholder）。daemon 不可达时整块隐藏。 -->
-            <Select
-              v-if="localImages.length"
-              :model-value="localImages.some((i) => i.ref === customImage) ? customImage : ''"
-              @update:model-value="(v: unknown) => (customImage = String(v))"
-            >
-              <SelectTrigger class="h-8 w-full text-xs">
-                <SelectValue placeholder="从宿主已有镜像选择…" />
-              </SelectTrigger>
-              <SelectContent class="max-h-64">
-                <SelectItem v-for="img in localImages" :key="img.ref" :value="img.ref">
-                  {{ img.ref }}（{{ img.size }}，{{ img.createdSince }}）
-                </SelectItem>
-              </SelectContent>
-            </Select>
+            <!-- 镜像 combobox：一个输入框吃两种来源——手打任意引用 / 从宿主已有镜像里
+                 输入过滤 + 键盘选取（↑↓ 高亮、Enter 选）。自绘弹层走 token，不用
+                 原生 <select>（OS 自绘弹层 dark 下白底违和）。daemon 不可达时退化纯输入框。 -->
+            <div class="relative">
+              <Input
+                id="s-image"
+                v-model="customImage"
+                placeholder="输入引用，或从宿主已有镜像选择（如 postgres:17）"
+                autocomplete="off"
+                @focus="imgOpen = localImages.length > 0"
+                @keydown="onImageKeydown"
+                @blur="imgOpen = false"
+              />
+              <div
+                v-if="imgOpen && imgFiltered.length"
+                class="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+              >
+                <button
+                  v-for="(img, i) in imgFiltered"
+                  :key="img.ref"
+                  type="button"
+                  class="flex w-full items-baseline justify-between gap-3 rounded-sm px-2 py-1.5 text-left text-xs"
+                  :class="i === imgHighlight ? 'bg-accent text-accent-foreground' : ''"
+                  @mousedown.prevent
+                  @click="pickImage(img.ref)"
+                  @mousemove="imgHighlight = i"
+                >
+                  <span class="min-w-0 truncate font-mono">{{ img.ref }}</span>
+                  <span class="shrink-0 text-muted-foreground">{{ img.size }} · {{ img.createdSince }}</span>
+                </button>
+              </div>
+            </div>
           </div>
           <div class="space-y-1.5">
             <Label for="s-volume">数据卷挂载路径</Label>
-            <Input id="s-volume" v-model="customVolume" placeholder="（可选）如 /data——填了建 mysandbox-svc-<名> 卷" />
+            <Input id="s-volume" v-model="customVolume" placeholder="（可选）如 /data——填了建 mysandbox-svc-<名> 卷" @keydown.enter="submit()" />
             <p v-if="customVolume && !customVolumeOk" class="text-xs text-destructive">须为绝对路径（/ 开头）</p>
             <p v-else class="text-xs text-muted-foreground">留空不建卷，数据写在容器可写层（重启不丢，删容器即丢）</p>
           </div>
@@ -250,7 +343,7 @@ async function submit() {
           </div>
           <div class="space-y-1.5">
             <Label for="s-cmd">命令</Label>
-            <Input id="s-cmd" v-model="customCommand" placeholder="（可选）空格分词直接执行，无 shell" />
+            <Input id="s-cmd" v-model="customCommand" placeholder="（可选）空格分词直接执行，无 shell" @keydown.enter="submit()" />
           </div>
         </div>
 
@@ -262,25 +355,9 @@ async function submit() {
               v-model="envValues[u.key]"
               :type="u.secret ? 'password' : 'text'"
               autocomplete="off"
+              @keydown.enter="submit()"
             />
           </template>
-        </div>
-
-        <!-- 宽版双列：名称/描述并排，减少纵向滚动；手机自动退回单列。 -->
-        <div class="grid gap-3 sm:grid-cols-2">
-          <div class="space-y-1.5">
-            <Label for="s-name">名称 *</Label>
-            <Input id="s-name" v-model="name" placeholder="pg" />
-            <p v-if="name && !nameOk" class="text-xs text-destructive">仅小写字母/数字/连字符，2-31 位</p>
-            <p v-else-if="nameClash" class="text-xs text-amber-600">
-              与现有 LXC 容器同名——hosts 里会互相覆盖，建议换个名字
-            </p>
-          </div>
-
-          <div class="space-y-1.5">
-            <Label for="s-desc">描述</Label>
-            <Input id="s-desc" v-model="description" placeholder="（可选）" />
-          </div>
         </div>
 
         <div class="space-y-1.5">
@@ -296,7 +373,10 @@ async function submit() {
                 <Label for="sip-manual" class="font-normal">手动</Label>
               </div>
             </RadioGroup>
-            <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.0.210" class="max-w-48" />
+            <Input v-if="ipMode === 'manual'" v-model="manualIp" placeholder="10.88.0.210" class="max-w-48" @keydown.enter="submit()" />
+            <span v-else class="text-xs text-muted-foreground">
+              {{ nextIp ? `预计分配 ${nextIp}（池内首个可用）` : '取服务池首个可用 IP' }}
+            </span>
           </div>
         </div>
 
