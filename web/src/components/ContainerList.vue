@@ -398,6 +398,11 @@ const EDITOR_AREA_KEY =
   props.popout && props.popoutTarget
     ? `mysandbox:editor-area-popout-${props.popoutTarget}`
     : 'mysandbox:editor-area'
+// 激活的文件 tab 下标：刷新后高亮回到刷新前正看的那个 tab（越界/坏值回落 0）。
+const EDITOR_ACTIVE_KEY =
+  props.popout && props.popoutTarget
+    ? `mysandbox:editor-active-popout-${props.popoutTarget}`
+    : 'mysandbox:editor-active'
 function loadBool(key: string): boolean {
   try {
     return localStorage.getItem(key) === '1'
@@ -502,7 +507,18 @@ function loadEditorTabs(): EditorTab[] {
   }
 }
 const editorTabs = ref<EditorTab[]>(loadEditorTabs())
-const activeEditorIdx = ref(0)
+// 激活下标：从 localStorage 恢复并钳在有效范围（tab 列表可能已变/坏值回落 0）
+const activeEditorIdx = ref(
+  (() => {
+    try {
+      const n = Number(localStorage.getItem(EDITOR_ACTIVE_KEY))
+      if (Number.isInteger(n) && n >= 0 && n < editorTabs.value.length) return n
+    } catch {
+      /* localStorage 不可用就落 0 */
+    }
+    return 0
+  })(),
+)
 function loadAreaMode(): 'editor' | 'terminal' {
   try {
     return localStorage.getItem(EDITOR_AREA_KEY) === 'editor' && editorTabs.value.length ? 'editor' : 'terminal'
@@ -517,6 +533,7 @@ watch(
     try {
       localStorage.setItem(EDITOR_TABS_KEY, JSON.stringify(editorTabs.value))
       localStorage.setItem(EDITOR_AREA_KEY, areaMode.value)
+      localStorage.setItem(EDITOR_ACTIVE_KEY, String(activeEditorIdx.value))
     } catch {
       /* localStorage 不可用就跳过 */
     }
