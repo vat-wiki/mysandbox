@@ -277,6 +277,170 @@ function pasteInto(dir: string) {
   )
 }
 
+// —— 拖拽移动（HTML5 DnD）——
+// 拖行 = 移动（mv 语义，非复制）：命中行在多选集内 = 整个选中集一起拖（VS Code 语义），
+// 否则该行。落点 = 面板内带 data-drop-dir 的元素（目录行 / 面包屑段 / 上一级）+ 列表
+// 空白（= 落进当前目录），根节点上统一委托判定。实现走 renameEntry 的 toDir 扩展：
+// 服务端一条 mv/rename 完成，原子、无复制中间态。跨容器移动不做（那要 tar 管道 +
+// 删源两步非原子，仍走「复制 → 切面板 → 粘贴」），拖入外部文件/文本也不接。
+const MOVE_TYPE = 'application/x-mysandbox-move' // 值 = JSON：拖动条目完整路径数组
+const MOVE_FROM_PREFIX = 'application/x-mysandbox-move-from-' // 值 = 源容器 id（hex）
+// dataTransfer 在 dragover 阶段只暴露 types 读不到 getData，源容器 id 编进 type 才能悬停
+// 时校验「同容器才可落」。type 会被浏览器小写化，base64 有大小写会坏，用 hex 编码。
+function idToHex(s: string): string {
+  return [...new TextEncoder().encode(s)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+function hexToId(h: string): string {
+  const bytes = new Uint8Array((h.match(/../g) ?? []).map((x) => parseInt(x, 16)))
+  return new TextDecoder().decode(bytes)
+}
+function moveFromType(id: string): string {
+  return MOVE_FROM_PREFIX + idToHex(id)
+}
+// 客户端算父目录（拖拽移动的「已在目标目录」判定用；与 files.ts 服务端同名同语义）。
+function parentOf(p: string): string {
+  const i = p.lastIndexOf('/')
+  return i <= 0 ? '/' : p.slice(0, i)
+}
+// 同窗口拖拽的实时载荷（dragover 校验用）。拖拽是浏览器模态操作，本窗口一次只有一场
+// 拖拽；跨窗口（弹窗面板 ↔ 主窗口）拿不到它，paths 到 drop 时才从 dataTransfer 读。
+let dragPayload: { containerId: string; paths: string[] } | null = null
+// 面板根元素 ref（拖拽落点委托 + dragleave 的 relatedTarget 判界用）。
+const rootEl = ref<HTMLElement | null>(null)
+// 当前悬停落点：dragOverDir = 目录路径（对应目录行/面包屑/上一级高亮）；dragOverBlank =
+// 列表空白（整列表轻染 = 松手落进当前目录）。
+const dragOverDir = ref<string | null>(null)
+const dragOverBlank = ref(false)
+function clearDragOver() {
+  dragOverDir.value = null
+  dragOverBlank.value = false
+}
+function onDragStartRow(row: EntryRow, ev: DragEvent) {
+  const paths =
+    selected.value.has(row.path) && selected.value.size > 1
+      ? entryPaths.value.filter((p) => selected.value.has(p))
+      : [row.path]
+  dragPayload = { containerId: targetId(), paths }
+  const dt = ev.dataTransfer
+  if (!dt) return
+  dt.effectAllowed = 'move'
+  dt.setData(MOVE_TYPE, JSON.stringify(paths))
+  dt.setData(moveFromType(dragPayload.containerId), '1')
+}
+function onDragEndRow() {
+  // 只在源元素触发：落没落下（含拖出面板/Esc 取消）都清实时态
+  dragPayload = null
+  clearDragOver()
+}
+// 拖拽源解析：type 里带我们标记的源容器 id 才认（OS 文件/纯文本拖入不接）。
+function dragSourceOf(ev: DragEvent): { containerId: string; paths: string[] } | null {
+  const dt = ev.dataTransfer
+  if (!dt) return null
+  const types = Array.from(dt.types)
+  if (!types.includes(MOVE_TYPE)) return null
+  let containerId: string | null = null
+  for (const t of types) {
+    if (t.startsWith(MOVE_FROM_PREFIX)) {
+      try {
+        containerId = hexToId(t.slice(MOVE_FROM_PREFIX.length))
+        break
+      } catch {
+        return null
+      }
+    }
+  }
+  if (!containerId) return null
+  return { containerId, paths: dragPayload?.containerId === containerId ? dragPayload.paths : [] }
+}
+// 落点校验：同容器 + 落点不在拖动源子树内（目录拖进自己/子孙 = mv 自嵌套，服务端也拒）。
+function canDropOn(dir: string, src: { containerId: string; paths: string[] }): boolean {
+  if (src.containerId !== targetId()) return false
+  return !src.paths.some((p) => dir === p || dir.startsWith(`${p}/`))
+}
+// 落点委托（面板根）：dragover 从事件目标找最近的 [data-drop-dir]，找不到再看
+// [data-drop-blank]（列表体）。命中才 preventDefault——否则浏览器显示禁止光标、drop 不来。
+function onPanelDragOver(ev: DragEvent) {
+  const src = dragSourceOf(ev)
+  if (!src) return
+  clearDragOver() // 悬停点变了（特别是移入无效落点）旧的就得灭；ref 同值写不触发渲染
+  const el = (ev.target as HTMLElement | null)?.closest?.('[data-drop-dir]') as HTMLElement | null
+  const dir = el?.getAttribute('data-drop-dir') ?? null
+  if (dir ? canDropOn(dir, src) : canDropOn(path.value, src)) {
+    ev.preventDefault()
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+    if (dir) dragOverDir.value = dir
+    else dragOverBlank.value = true
+  }
+}
+function onPanelDragLeave(ev: DragEvent) {
+  // 进子元素也冒泡 dragleave：relatedTarget 还在面板内就不清
+  if (ev.relatedTarget && rootEl.value?.contains(ev.relatedTarget as Node)) return
+  clearDragOver()
+}
+function onPanelDrop(ev: DragEvent) {
+  const dir = dragOverDir.value
+  const blank = dragOverBlank.value
+  clearDragOver()
+  const src = dragSourceOf(ev)
+  if ((!dir && !blank) || !src) return
+  ev.preventDefault()
+  // 跨窗口拖拽此刻才读得到 paths；同窗口用实时载荷
+  let paths = src.paths
+  if (!paths.length && ev.dataTransfer) {
+    try {
+      const v: unknown = JSON.parse(ev.dataTransfer.getData(MOVE_TYPE))
+      if (Array.isArray(v) && v.every((x) => typeof x === 'string')) paths = v as string[]
+    } catch {
+      paths = []
+    }
+  }
+  void moveEntries(paths, dir ?? path.value)
+}
+// 执行移动：先过滤（已在目标目录的无事可做；自嵌套报错），逐项 mv，部分失败汇总
+// （同 pasteInto 的循环手法）。
+function moveEntries(paths: string[], dir: string) {
+  if (!paths.length || !dir) return
+  const nameOf = (p: string) => p.slice(p.lastIndexOf('/') + 1) || p
+  const movable: string[] = []
+  let selfNested = 0
+  for (const p of paths) {
+    if (dir === p || dir.startsWith(`${p}/`)) selfNested++
+    else if (parentOf(p) !== dir) movable.push(p)
+  }
+  if (!movable.length) {
+    if (selfNested) toast.error('不能把目录移动到它自己（或其子目录）里')
+    return
+  }
+  const id = targetId()
+  const total = movable.length
+  const run = (async () => {
+    const failed: string[] = []
+    for (const p of movable) {
+      try {
+        await renameEntry(id, p, nameOf(p), dir)
+        // 被移动目录的展开状态按旧路径记，随迁作废
+        const prefix = `${p}/`
+        for (const k of [...expanded.keys()]) if (k === p || k.startsWith(prefix)) expanded.delete(k)
+      } catch (e) {
+        failed.push(`${nameOf(p)}：${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    if (failed.length === total) throw new Error(failed[0])
+    selected.value = new Set() // 选中按旧路径记，移动后不成立
+    selAnchor = null
+    refresh()
+    if (failed.length)
+      toast.warning(`其余 ${total - failed.length} 项已移动；失败：${failed.join('；')}`)
+    return total === 1 ? `已移动「${nameOf(movable[0])}」到 ${dir}` : `已移动 ${total - failed.length}/${total} 项到 ${dir}`
+  })()
+  toast.promise(run, {
+    loading:
+      total === 1 ? `正在移动「${nameOf(movable[0])}」到 ${dir}…` : `正在移动 ${total} 项到 ${dir}…`,
+    success: (msg: string) => msg,
+    error: (e: unknown) => (e instanceof Error ? e.message : String(e)),
+  })
+}
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let loadSeq = 0 // 竞态防护：慢响应回来时已被新请求取代则丢弃
 // 非静默加载在途数：>0 = 转圈。静默轮询不置位也不清理（见 loadDir finally 的注释）。
@@ -444,6 +608,13 @@ function goParent() {
   const i = path.value.lastIndexOf('/')
   openDir(i <= 0 ? '/' : path.value.slice(0, i))
 }
+// 父目录路径（拖拽落点：拖到「上一级」按钮 = 移动到上级目录）。
+const parentPath = computed(() => {
+  const p = path.value
+  if (!p || p === '/') return null
+  const i = p.lastIndexOf('/')
+  return i <= 0 ? '/' : p.slice(0, i)
+})
 // —— 面包屑 ——
 // 返回上级的高频痛点：上级按钮只有路径行一颗，深层目录连点多次才到顶。面包屑让任意
 // 祖先一键直达（点击中间段 = 跳到那级），末段保留「点击进路径编辑」的老交互。
@@ -781,7 +952,14 @@ function fmtSize(n: number): string {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col bg-card">
+  <!-- 拖拽落点委托挂根：dragover/dragleave/drop 统一判定（见脚本「拖拽移动」节） -->
+  <div
+    ref="rootEl"
+    class="flex h-full min-h-0 flex-col bg-card"
+    @dragover="onPanelDragOver"
+    @dragleave="onPanelDragLeave"
+    @drop="onPanelDrop"
+  >
     <!-- 头：容器名 + pane 选择 + 关闭 -->
     <div class="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
       <Folder class="size-3.5 shrink-0 text-muted-foreground" />
@@ -888,7 +1066,9 @@ function fmtSize(n: number): string {
     <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
       <button
         v-if="path && path !== '/'"
-        class="shrink-0 text-muted-foreground hover:text-foreground"
+        class="shrink-0 rounded text-muted-foreground hover:text-foreground"
+        :class="dragOverDir === parentPath ? 'bg-accent text-foreground' : ''"
+        :data-drop-dir="parentPath ?? undefined"
         title="上一级"
         @click="goParent"
       >
@@ -921,11 +1101,13 @@ function fmtSize(n: number): string {
           <ChevronRight v-if="i || crumbsDropped" class="size-2.5 shrink-0 text-muted-foreground/40" />
           <button
             class="flex shrink-0 items-center rounded px-0.5 font-mono text-[11px] leading-none"
-            :class="
+            :class="[
               i === visibleCrumbs.length - 1
                 ? 'text-foreground'
-                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-            "
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+              dragOverDir === c.p ? 'bg-accent text-foreground' : '',
+            ]"
+            :data-drop-dir="i === visibleCrumbs.length - 1 ? null : c.p"
             @click="i === visibleCrumbs.length - 1 ? startEditPath() : openDir(c.p)"
           >
             {{ c.name }}
@@ -955,7 +1137,13 @@ function fmtSize(n: number): string {
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
     <ContextMenu @update:open="(v: boolean) => (menuOpen = v)">
       <ContextMenuTrigger as-child>
-        <div class="scroll-thin min-h-0 flex-1 overflow-y-auto" @contextmenu="onCtxMenu">
+        <!-- 空白落点：拖到非目录行/空白处松手 = 移动到当前目录（整列表轻染提示） -->
+        <div
+          data-drop-blank
+          class="scroll-thin min-h-0 flex-1 overflow-y-auto"
+          :class="dragOverBlank ? 'bg-accent/20' : ''"
+          @contextmenu="onCtxMenu"
+        >
           <p v-if="!hasTerminal" class="px-3 py-6 text-center text-xs text-muted-foreground">
             先在左侧打开终端
           </p>
@@ -994,10 +1182,17 @@ function fmtSize(n: number): string {
               <div
                 v-else
                 :data-path="row.path"
+                :data-drop-dir="row.entry.type === 'dir' ? row.path : null"
+                draggable="true"
                 class="flex cursor-pointer items-center gap-2 py-1.5 pr-2.5"
-                :class="selected.has(row.path) ? 'bg-accent hover:bg-accent/70' : 'hover:bg-accent/50'"
+                :class="[
+                  selected.has(row.path) ? 'bg-accent hover:bg-accent/70' : 'hover:bg-accent/50',
+                  dragOverDir === row.path ? 'bg-primary/15 ring-1 ring-inset ring-primary/50' : '',
+                ]"
                 :style="{ paddingLeft: `${ROW_BASE + row.depth * ROW_INDENT}px` }"
                 @click="onRowClick(row, $event)"
+                @dragstart="onDragStartRow(row, $event)"
+                @dragend="onDragEndRow"
               >
                 <!-- 展开热区 = chevron + 文件夹图标整体（含中间空隙）：点哪都是展开/收起，
                      间隙不再漏给行点击；hover 双双变亮 + cursor 暗示整块可点，展开态 chevron

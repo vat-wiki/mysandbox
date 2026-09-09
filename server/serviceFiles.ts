@@ -359,17 +359,20 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
     return { ok: true };
   });
 
+  // 重命名 / 移动（toDir 可选 = 目标目录，缺省 = 原父目录纯改名；自嵌套前置拒绝，
+  // 语义同 files.ts 容器侧）。
   app.post('/api/services/:name/fs/rename', async (req): Promise<{ ok: true; to: string }> => {
     const name = (req.params as { name: string }).name;
     await requireServiceRunning(name);
-    const body = (req.body as { path?: unknown; name?: unknown }) || {};
+    const body = (req.body as { path?: unknown; name?: unknown; toDir?: unknown }) || {};
     const path = cleanPath(body.path);
     const nname = body.name;
     if (typeof nname !== 'string' || !nname || nname.includes('/') || nname === '.' || nname === '..' || nname.length > 255) {
       throw badRequest('invalid name');
     }
-    const parent = parentOf(path);
-    const to = parent === '/' ? `/${nname}` : `${parent}/${nname}`;
+    const toDir = body.toDir === undefined ? (parentOf(path) ?? '/') : cleanPath(body.toDir, 'toDir');
+    if (toDir === path || toDir.startsWith(`${path}/`)) throw badRequest('不能把目录移动到它自己（或其子目录）里');
+    const to = toDir === '/' ? `/${nname}` : `${toDir}/${nname}`;
     const res = await svcExec(
       name,
       ['sh', '-c', '[ -e "$2" ] && exit 9; mv -- "$1" "$2"', 'sh', path, to],

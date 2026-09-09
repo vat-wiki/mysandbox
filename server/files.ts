@@ -413,19 +413,23 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     return { ok: true };
   });
 
-  // —— 重命名 ——
-  // 只换最后一段（name 不能含 /）：目标 = 父目录 + 新名。mv 前查重（exit 9 -> 409），
-  // 防 mv 静默覆盖同名文件。符号链接用 mv 本体（默认不跟随）。
+  // —— 重命名 / 移动 ——
+  // name 只换最后一段（不能含 /）；可选 toDir = 目标目录（缺省 = 原父目录，即纯改名；
+  // 文件面板拖拽移动传它，目标 = toDir + name）。mv 前查重（exit 9 -> 409），防 mv
+  // 静默覆盖同名文件。符号链接用 mv 本体（默认不跟随）。目录拖进自身/子孙（自嵌套）
+  // 在 JS 侧前置拒绝——coreutils mv 也会拒，但报错晚且文案差；hostFiles 的 rename(2)
+  // 对自嵌套的 errno 因内核而异，统一挡在校验层。
   app.post('/api/containers/:id/fs/rename', async (req): Promise<{ ok: true; to: string }> => {
     const r = await resolveRunning(cfg, (req.params as { id: string }).id);
-    const body = (req.body as { path?: unknown; name?: unknown }) || {};
+    const body = (req.body as { path?: unknown; name?: unknown; toDir?: unknown }) || {};
     const path = cleanPath(body.path);
     const name = body.name;
     if (typeof name !== 'string' || !name || name.includes('/') || name === '.' || name === '..' || name.length > 255) {
       throw badRequest('invalid name');
     }
-    const parent = parentOf(path);
-    const to = parent === '/' ? `/${name}` : `${parent}/${name}`;
+    const toDir = body.toDir === undefined ? (parentOf(path) ?? '/') : cleanPath(body.toDir, 'toDir');
+    if (toDir === path || toDir.startsWith(`${path}/`)) throw badRequest('不能把目录移动到它自己（或其子目录）里');
+    const to = toDir === '/' ? `/${name}` : `${toDir}/${name}`;
     const res = await execRun(cfg, r.id, {
       Cmd: ['sh', '-c', '[ -e "$2" ] && exit 9; mv -- "$1" "$2"', 'sh', path, to],
       Tty: false,

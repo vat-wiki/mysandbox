@@ -572,8 +572,9 @@ export const resolveTermPath = (id: string, termId: string, raw: string) =>
   ) as Promise<ResolveView>
 export const createEntry = (id: string, path: string, type: 'file' | 'dir') =>
   postJson(`${filesBase(id)}/fs/create`, { path, type }) as Promise<{ ok: true }>
-export const renameEntry = (id: string, path: string, name: string) =>
-  postJson(`${filesBase(id)}/fs/rename`, { path, name }) as Promise<{ ok: true; to: string }>
+// 改名（name 只含最后一段）；可选 toDir = 目标目录（文件面板拖拽移动用，缺省 = 原父目录）。
+export const renameEntry = (id: string, path: string, name: string, toDir?: string) =>
+  postJson(`${filesBase(id)}/fs/rename`, { path, name, toDir }) as Promise<{ ok: true; to: string }>
 export const deleteEntry = (id: string, path: string) =>
   postJson(`${filesBase(id)}/fs/delete`, { path }) as Promise<{ ok: true }>
 // —— 跨面板复制粘贴 ——

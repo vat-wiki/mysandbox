@@ -272,10 +272,13 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     return { ok: true };
   });
 
-  // —— 重命名 ——
-  // name 校验与目标拼法同容器侧；mv 前查重防静默覆盖；rename 对 symlink 移动本体。
+  // —— 重命名 / 移动 ——
+  // name 校验与目标拼法同容器侧（可选 toDir = 目标目录，缺省 = 原父目录，即纯改名；
+  // 自嵌套前置拒绝，见 files.ts 注释）；mv 前查重防静默覆盖；rename 对 symlink 移动
+  // 本体。跨挂载点 rename(2) 报 EXDEV，由 mapErr 如实反馈（容器侧 coreutils mv 自带
+  // 落地拷贝回退，宿主侧不做——面板拖拽场景同挂载点为主）。
   app.post('/api/host-terminal/fs/rename', async (req): Promise<{ ok: true; to: string }> => {
-    const body = (req.body as { path?: unknown; name?: unknown }) || {};
+    const body = (req.body as { path?: unknown; name?: unknown; toDir?: unknown }) || {};
     const path = cleanPath(body.path);
     const name = body.name;
     if (
@@ -288,8 +291,9 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     ) {
       throw badRequest('invalid name');
     }
-    const parent = parentOf(path);
-    const to = parent === '/' ? `/${name}` : `${parent}/${name}`;
+    const toDir = body.toDir === undefined ? (parentOf(path) ?? '/') : cleanPath(body.toDir, 'toDir');
+    if (toDir === path || toDir.startsWith(`${path}/`)) throw badRequest('不能把目录移动到它自己（或其子目录）里');
+    const to = toDir === '/' ? `/${name}` : `${toDir}/${name}`;
     try {
       if (await exists(to)) throw conflict('同名文件或目录已存在');
       await rename(path, to);
