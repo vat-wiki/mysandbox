@@ -55,9 +55,9 @@ const emit = defineEmits<{
   (e: 'saved', path: string): void
   (e: 'open-normal'): void
   (e: 'dirty', v: boolean): void
-  // 形态上报（tab 上的编辑/预览切换按钮按此渲染图标）：editing = 编辑会话中；
-  // preview = 当前正显示渲染视图（仅 md/svg）；renderable = 有渲染视图可回（md/svg）。
-  (e: 'mode', v: { editing: boolean; preview: boolean; renderable: boolean }): void
+  // 形态上报（tab 右键菜单的编辑/预览项按此判定）：editing = 编辑会话中；
+  // preview = 当前正显示渲染视图（仅 md/svg）。
+  (e: 'mode', v: { editing: boolean; preview: boolean }): void
 }>()
 
 const name = computed(() => props.path.slice(props.path.lastIndexOf('/') + 1))
@@ -358,17 +358,21 @@ function enterEdit() {
   editing.value = true
   if (textPreview.value) textPreview.value = false
 }
-// 形态上报：编辑/预览双向切换的第二入口在文件 tab 上（父级按 mode 画图标）
+// 形态上报：编辑/预览双向切换的第二入口在文件 tab 右键菜单（父级按 mode 画文案）
 watch(
   [editing, textPreview, isSvg, isMd],
-  ([ed, tp, svg, md]) =>
-    emit('mode', { editing: ed, preview: tp && (svg || md), renderable: svg || md }),
+  ([ed, tp, svg, md]) => emit('mode', { editing: ed, preview: tp && (svg || md) }),
   { immediate: true },
 )
 defineExpose({
   requestClose: () => requestClose(),
   enterEdit: () => enterEdit(),
-  showPreview: () => (textPreview.value = true),
+  // 「预览」回程：md/svg 回渲染视图（编辑会话保持，可再点铅笔回源码）；
+  // 普通文件没有渲染视图，语义是锁回只读（改动不丢，自动保存照常落盘）
+  showPreview: () => {
+    if (isSvg.value || isMd.value) textPreview.value = true
+    else editing.value = false
+  },
 })
 watch([editing, editorRef], ([v, ed]) => {
   if (!ed) return

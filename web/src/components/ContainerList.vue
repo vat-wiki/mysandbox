@@ -529,9 +529,10 @@ watch(
 )
 // 各 tab 的脏标（pane 上报，tab 上画 ● ——自动保存窗口内/冲突未决时可见）
 const tabDirty = ref<Record<string, boolean>>({})
-// 各 tab 的形态（pane 上报）：tab 上的编辑/预览切换按钮按此画图标——
-// 渲染视图/只读态铅笔进编辑；md/svg 源码态眼睛回预览；普通文件编辑态无按钮。
-const tabMode = ref<Record<string, { editing: boolean; preview: boolean; renderable: boolean }>>({})
+// 各 tab 的形态（pane 上报）：tab 右键菜单的编辑/预览项按此判定——
+// 渲染视图/只读态显示「编辑」；编辑会话中显示「预览」（md/svg 回渲染视图，
+// 普通文件锁回只读）。
+const tabMode = ref<Record<string, { editing: boolean; preview: boolean }>>({})
 // pane 引用表：tab X 要先让 pane 冲刷未落改动（requestClose），冲完 pane 自己 emit close；
 // enterEdit/showPreview 供 tab 上编辑/预览切换按钮调。
 const paneRefs = new Map<string, { requestClose: () => void; enterEdit?: () => void; showPreview?: () => void }>()
@@ -2836,19 +2837,16 @@ onUnmounted(() => {
           </ContextMenuTrigger>
           <ContextMenuContent>
             <!-- 形态动作：编辑/预览切换（状态感知——渲染视图/只读态显示「编辑」，
-                 md/svg 源码态显示「预览」，普通文件编辑态无渲染视图不显示）；diff 态
+                 编辑会话中显示「预览」：md/svg 回渲染视图、普通文件锁回只读）；diff 态
                  「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
                  音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
             <ContextMenuItem
-              v-if="tabMode[tabId(t)] && (!tabMode[tabId(t)].editing || tabMode[tabId(t)].preview)"
+              v-if="!tabMode[tabId(t)] || !tabMode[tabId(t)].editing || tabMode[tabId(t)].preview"
               @click="tabModeClick(t, i)"
             >
               编辑
             </ContextMenuItem>
-            <ContextMenuItem
-              v-else-if="tabMode[tabId(t)]?.editing && tabMode[tabId(t)]?.renderable"
-              @click="tabModeClick(t, i)"
-            >
+            <ContextMenuItem v-else @click="tabModeClick(t, i)">
               预览
             </ContextMenuItem>
             <ContextMenuItem v-if="t.diff" @click="onOpenNormal(t)">
@@ -2857,9 +2855,7 @@ onUnmounted(() => {
             <ContextMenuItem v-if="previewKind(t.path)" @click="downloadTab(t)">
               下载
             </ContextMenuItem>
-            <template
-              v-if="tabMode[tabId(t)] && (!tabMode[tabId(t)].editing || tabMode[tabId(t)].renderable) || t.diff || previewKind(t.path)"
-            >
+            <template v-if="tabMode[tabId(t)] || t.diff || previewKind(t.path)">
               <ContextMenuSeparator />
             </template>
             <ContextMenuItem @click="copyTabPath(t)">
