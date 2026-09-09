@@ -100,6 +100,22 @@ export async function resetMachineId(containerDir: string, config: string): Prom
   }
 }
 
+// 归还容器 home 的属主（容器内视角 dev:dev = ns 里的 1000:1000）：模板制作过程/源容器
+// 可能以 root 在 /home/dev 下落文件（.local/.config 等），克隆链会传染（脏模板 → 脏容器），
+// 宿主 seed（uid 1000 直读直写）就 EACCES——实测踩坑：容器 CLI/peer.json 种子全挂。
+// 在 create() 里统一防御，失败只 warn（seed 失败本身也只 warn，见 seedHome）。
+export async function fixHomeOwnership(containerDir: string, config: string): Promise<void> {
+  try {
+    const target = join(containerDir, 'rootfs', 'home', 'dev');
+    const r = await nsRun(config, ['chown', '-R', '1000:1000', target], undefined, 120_000);
+    if (!r.ok) {
+      log.warn({ stderr: r.stderr.slice(0, 300) }, 'fix home ownership failed (continuing)');
+    }
+  } catch (e) {
+    log.warn({ err: String(e) }, 'fix home ownership failed (continuing)');
+  }
+}
+
 // spawn + 收集输出 + 把 stderr 逐行当进度推出去（lxc/tar 的进度都走 stderr）。
 // io.stdout 给出时，子进程 stdout 直接 pipe 到它（归档数据流，不进内存）。
 function spawnCollect(
@@ -188,12 +204,28 @@ export async function templateStatus(cfg: Config, deps: TemplateDeps): Promise<B
   const detail: Record<string, string> = { state, rootfs: join(dir, 'rootfs') };
   const src = await templateSource(dir);
   if (src) detail.source = src;
-  const ready = state === 'STOPPED';
+  // 制作标记：building/failed → 不可克隆（结构在但契约工具没装全，见标记注释）。
+  // 容器 RUNNING + building = 制作正在进行（合法中间态）；STOPPED + building = 被中断。
+  const build = await buildState(deps, name);
+  if (build) detail.build = build.state;
+  const ready = state === 'STOPPED' && !build;
+  let notReady: string | undefined;
+  if (state !== 'STOPPED') {
+    notReady =
+      build?.state === 'building'
+        ? `模板制作进行中（${state}）——完成后自动停机`
+        : `模板正在运行（${state}）——克隆要求已停：lxc-stop -n ${name}`;
+  } else if (build) {
+    notReady =
+      build.state === 'failed'
+        ? `模板制作上次失败${build.note ? `：${build.note}` : ''}——进宿主终端重跑 scripts/lxc-template.sh ${name} 补齐（幂等），或从零制作（force）重建`
+        : `模板制作被中断——从零制作（force）重建，或重跑 scripts/lxc-template.sh ${name} 补齐（幂等）`;
+  }
   return {
     ...base,
     exists: true,
     ready,
-    ...(ready ? {} : { notReady: `模板正在运行（${state}）——克隆要求已停：lxc-stop -n ${name}` }),
+    ...(notReady ? { notReady } : {}),
     createdAt,
     detail,
     // size 不在这里算：du 整个 rootfs 要秒级（2.8G 实测 ~0.1s 冷缓存更久），
@@ -206,6 +238,47 @@ const SOURCE_FILE = 'mysandbox-template-source';
 async function templateSource(dir: string): Promise<string | null> {
   try {
     return (await readFile(join(dir, SOURCE_FILE), 'utf8')).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// —— 制作状态标记 ——
+// 「exists && STOPPED」≠「制作完成」：create/clone/import 中途被杀（服务重启、断流、断电）
+// 会留下一个结构完整但没跑完制作脚本的模板，克隆它出来的容器没有契约工具（node/zsh 缺失）。
+// 实测踩坑：脚本跑到一半服务被重启，半成品模板 ready:true。约定：
+//   - 三个制作动作开跑即写 {state:'building'}，成功**删除**标记，失败改 {state:'failed'};
+//   - 没有标记 = 制作完成（机制上线前就存在的老模板天然兼容，无需迁移）。
+// ⚠️ 标记文件放**容器目录之外**（<lxcpath>/.<name>.mysandbox-build）：lxc-copy 按目录判
+// 「容器已存在」（实测：预建目录+空内容，copy 静默失败 exit 1），目录内放任何东西都会破坏它。
+const BUILD_FILE = 'mysandbox-template-build';
+function buildMarkerPath(deps: TemplateDeps, name: string): string {
+  return join(dirname(deps.containerDir(name)), `.${name}.${BUILD_FILE}`);
+}
+interface BuildMarker {
+  state: 'building' | 'failed';
+  at?: string;
+  note?: string;
+}
+async function markBuild(deps: TemplateDeps, name: string, state: BuildMarker['state'], note?: string): Promise<void> {
+  try {
+    const marker: BuildMarker = { state, at: new Date().toISOString(), ...(note ? { note } : {}) };
+    await writeFile(buildMarkerPath(deps, name), JSON.stringify(marker));
+  } catch {
+    /* 写不上时标记丢失——status 退回旧行为，不影响主流程 */
+  }
+}
+async function clearBuild(deps: TemplateDeps, name: string): Promise<void> {
+  try {
+    await rm(buildMarkerPath(deps, name), { force: true });
+  } catch {
+    /* noop */
+  }
+}
+async function buildState(deps: TemplateDeps, name: string): Promise<BuildMarker | null> {
+  try {
+    const raw = JSON.parse(await readFile(buildMarkerPath(deps, name), 'utf8')) as BuildMarker;
+    return raw?.state === 'building' || raw?.state === 'failed' ? raw : null;
   } catch {
     return null;
   }
@@ -270,10 +343,20 @@ export async function cloneTemplate(
   }
 
   onProgress?.({ status: `克隆 ${from} -> ${name}（复制 rootfs，可能要几分钟）` });
+  // 制作标记先于拷贝：拷贝中途被杀 → status 如实报「未完成」（见 BUILD_FILE 注释）。
+  // 标记在容器目录之外——不能预建目录，lxc-copy 按目录判「已存在」会静默失败（实测踩坑）。
+  // 目录残留也一并清掉：失败的拷贝会留下 100000 属主的半成品目录（宿主用户不可写，
+  // writeSource/后续操作全挂），tar 按目录合并解包也会让旧文件漏进来。
+  await rm(deps.containerDir(name), { recursive: true, force: true }).catch(() => {});
+  await markBuild(deps, name, 'building');
   const r = await spawnCollect('lxc-copy', ['-n', from, '-N', name], onProgress, 30 * 60_000);
   if (!r.ok) {
+    await markBuild(deps, name, 'failed', tail(r.stderr) || 'lxc-copy failed');
+    await deps.remove(cfg, name).catch(() => {});
+    await rm(deps.containerDir(name), { recursive: true, force: true }).catch(() => {});
     throw new Error(`lxc-copy failed: ${r.stderr.trim() || 'no error output (is the source running?)'}`);
   }
+  await clearBuild(deps, name);
   await writeSource(deps.containerDir(name), `clone of container "${from}"`);
   onProgress?.({ status: `模板 ${name} 就绪（已停止，可直接建容器）` });
   log.info({ from, template: name }, 'lxc template cloned');
@@ -325,6 +408,9 @@ export async function createTemplate(
 
   const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
   onProgress?.({ status: `下载 ubuntu noble rootfs（${arch}，lxc-create download 模板）` });
+  // 制作标记先于下载：下载/脚本任一环节被杀（服务重启/断流），status 都能如实报「未完成」
+  // 而不是把半成品当 ready（实测踩坑：脚本中途服务被重启，残留模板 ready:true）。
+  await markBuild(deps, name, 'building');
   const r = await spawnCollect(
     'lxc-create',
     ['-n', name, '-t', 'download', '--', '-d', 'ubuntu', '-r', 'noble', '-a', arch],
@@ -337,6 +423,7 @@ export async function createTemplate(
     // destroy 会报「not defined」，再兜一层宿主 rm 清 leon 属主的空壳目录。
     await deps.remove(cfg, name).catch(() => {});
     await rm(deps.containerDir(name), { recursive: true, force: true }).catch(() => {});
+    await markBuild(deps, name, 'failed', tail(r.stderr) || 'lxc-create failed');
     throw new Error(`lxc-create failed: ${tail(r.stderr) || 'unknown error'}`);
   }
 
@@ -352,6 +439,14 @@ export async function createTemplate(
   onProgress?.({ status: '跑制作脚本（apt + npm 占大头，10–20 分钟）' });
   const s = await spawnCollect('bash', [script, name], onProgress, 60 * 60_000);
   if (!s.ok) {
+    // 失败标记：容器保留供排查，status 从此报「制作失败」而非 ready——
+    // 这正是半成品模板被误判 ready 的防护点（重跑脚本/force 重建成功后标记清除）。
+    await markBuild(
+      deps,
+      name,
+      'failed',
+      tail(s.stderr, 200) || 'template script failed',
+    );
     throw new Error(
       `template script failed — 容器 ${name} 保留（正在运行）供排查：可进宿主终端重跑 ` +
         `scripts/lxc-template.sh ${name}（脚本幂等，只补缺的），或 force 从零重建。 ${tail(s.stderr) || ''}`,
@@ -360,6 +455,7 @@ export async function createTemplate(
 
   onProgress?.({ status: `停止 ${name}（克隆要求已停）` });
   await deps.stop(cfg, name);
+  await clearBuild(deps, name);
   await writeSource(deps.containerDir(name), 'created from scratch (lxc-create + scripts/lxc-template.sh)');
   log.info({ template: name }, 'lxc template created from scratch');
   onProgress?.({ status: `模板 ${name} 就绪（已停止，可直接建容器）` });
@@ -465,7 +561,13 @@ export async function importTemplate(
     await deps.remove(cfg, name);
   }
 
+  // 制作标记：解包中途被杀 → status 如实报「未完成」（解包失败会清目录，标记随现场保留）。
+  // 目录先清：tar 是按目录合并解包——残留的半成品文件会漏进新模板；且失败拷贝留下的
+  // 100000 属主目录让宿主用户不可写（writeSource/后续操作全挂）。
+  await rm(deps.containerDir(name), { recursive: true, force: true }).catch(() => {});
+  await markBuild(deps, name, 'building');
   await importArchiveTo(cfg, deps, name, src, onProgress);
+  await clearBuild(deps, name);
   await writeSource(deps.containerDir(name), `import of ${src}`);
   log.info({ template: name, path: src }, 'lxc template imported');
   onProgress?.({ status: `模板 ${name} 就绪` });

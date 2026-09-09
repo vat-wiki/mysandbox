@@ -60,6 +60,24 @@ if [ "$state" != "RUNNING" ]; then
   exit 1
 fi
 
+# ---------- boot-wait：等容器内 systemd 就绪 ----------
+# lxc-start 返回 RUNNING ≠ systemd 开完机：api 驱动的 create 是起容器立刻喂脚本，
+# 嵌套/慢环境下 bus 可能还没开，dns 步的 systemctl 会 "Failed to connect to bus"
+# （实测踩坑：嵌套部署首跑必挂）。degraded 也算就绪（总线已开，个别 unit 失败不影响）。
+step boot-wait
+attsh <<'EOS'
+for _ in $(seq 1 120); do
+  _s=$(systemctl is-system-running 2>/dev/null || true)
+  case "$_s" in running|degraded) break;; esac
+  sleep 2
+done
+_s=$(systemctl is-system-running 2>&1 || true)
+case "$_s" in
+  running|degraded) echo "systemd 就绪（$_s）";;
+  *) echo "systemd 240s 未就绪: $_s" >&2; exit 1;;
+esac
+EOS
+
 # ---------- dns：静态 IP 无 DHCP，resolved 没有上游 ----------
 # 网关 10.88.10.1 是宿主在网桥上的副 IP（见 docs/lxc-migration.md P8）。
 step dns
@@ -232,6 +250,15 @@ else
 mkdir -p /etc/skel-home
 EOS
 fi
+
+# ---------- home 归属：/home/dev 全量归还 dev ----------
+# 构建过程以 root 落在 /home/dev 下的文件（.local/.config 等），克隆后宿主 seed（uid 1000
+# 直读直写）会 EACCES——实测踩坑：.local 卡死容器 CLI/peer.json 种子。统一归还。
+step home-owner
+attsh <<'EOS'
+chown -R dev:dev /home/dev
+chmod 750 /home/dev
+EOS
 
 # ---------- 收尾自检：契约项逐条断言 ----------
 step verify

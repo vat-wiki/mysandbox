@@ -46,6 +46,7 @@ import {
   importTemplate,
   importArchiveTo,
   resetMachineId,
+  fixHomeOwnership,
   type TemplateDeps,
 } from './template.js';
 import type {
@@ -474,6 +475,9 @@ async function create(
     // 首启前清空 machine-id（systemd 会重新生成）：克隆连身份一起拷，所有容器
     // 共享源的 machine-id（见 template.ts resetMachineId 注释的踩坑记录）。
     await resetMachineId(containerDir(name), next);
+    // home 属主统一归还 dev：脏模板的 root 属主文件经克隆链传染，宿主 seed 直读直写
+    // 会 EACCES（实测踩坑：.local 卡死容器 CLI/peer.json 种子）。
+    await fixHomeOwnership(containerDir(name), next);
 
     onProgress?.({ status: '启动容器' });
     await startContainer(cfg, name);

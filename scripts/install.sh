@@ -3,6 +3,8 @@
 #
 #   cd mysandbox && sudo ./scripts/install.sh          # 仓库即安装位置
 #   sudo ./scripts/install.sh --user alice             # 指定属主用户（默认 SUDO_USER）
+#   sudo ./scripts/install.sh --subnet 10.89.10.0/24   # 自定义容器网段（嵌套部署等场景，
+#                                                      # 须与外层网桥网段不同，否则 ARP 冲突）
 #   sudo ./scripts/install.sh --uninstall              # 反操作（保留容器/config/模板数据）
 #
 # 分界哲学：需要特权的操作全部收敛成独立 system unit（net/firewall/interop），由 systemd
@@ -12,7 +14,7 @@
 # 幂等：所有步骤可重复跑（已存在则跳过或等价覆盖）；仓库 unit 改动后重跑即可同步到 /etc。
 #
 # 系统级步骤（root）：
-#   1. apt 装 lxc uidmap lxcfs iptables（apt 系发行版限定）
+#   1. apt 装 lxc uidmap lxcfs iptables zstd（apt 系发行版限定）
 #   2. /etc/subuid + /etc/subgid 追加 <user>:100000:65536
 #   3. /etc/lxc/lxc-usernet 放行 <user> veth <bridge>
 #   4. 落盘三个 system unit（scripts/*.service 占位符填充）+ enable --now
@@ -31,11 +33,12 @@ SUBNET="10.88.10.0/24"        # 与 config.default.yaml 的 ipPool 前缀一致�
 REBUILD=0
 UNINSTALL=0
 
-usage() { sed -n '2,12p' "$0"; exit "${1:-0}"; }
+usage() { sed -n '2,14p' "$0"; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --user)     TARGET_USER="$2"; shift 2 ;;
     --bridge)   BRIDGE="$2"; shift 2 ;;
+    --subnet)   SUBNET="$2"; shift 2 ;;
     --rebuild)  REBUILD=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help)  usage 0 ;;
@@ -49,6 +52,15 @@ MS_DIR="$(cd "$SELF_DIR/.." && pwd)"
 log()  { printf '>> %s\n' "$*"; }
 warn() { printf '>> ⚠️  %s\n' "$*" >&2; }
 die()  { printf '>> ✗ %s\n' "$*" >&2; exit 1; }
+
+# 网段格式检查：只支持 /24（unit/防火墙/池前缀推导都按 /24 简化）。
+case "$SUBNET" in
+  *.0/24) : ;;
+  *) die "网段须为 /24 形态（a.b.c.0/24）: $SUBNET" ;;
+esac
+case "${SUBNET%/*}" in
+  *[!0-9.]*) die "无效网段: $SUBNET（格式 a.b.c.0/24）" ;;
+esac
 
 # ---------- 前置检查 ----------
 [ "$(id -u)" = 0 ] || die "请用 sudo 运行（这是整个安装里唯一需要 root 的一步）"
@@ -85,9 +97,10 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 # ---------- 系统级 ----------
-log "1/8 apt 包（lxc uidmap lxcfs iptables）"
+log "1/8 apt 包（lxc uidmap lxcfs iptables zstd）"
 MISSING=""
-for p in lxc uidmap lxcfs iptables; do
+for p in lxc uidmap lxcfs iptables zstd; do
+  # zstd：base export 的 tar --zstd 必需——精简环境（嵌套/容器内）默认没有，缺了导出直接挂。
   dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"
 done
 if [ -n "$MISSING" ]; then
@@ -138,6 +151,27 @@ if [ ! -d "$TARGET_SSH" ]; then
   mkdir -p "$TARGET_SSH"
   chmod 700 "$TARGET_SSH"
   chown "$TARGET_USER:" "$TARGET_SSH"
+fi
+
+# 自定义网段 → 首启 config 对齐：config.default.yaml 的 ipPool 是写死的默认段，--subnet
+# 装出来的环境若不覆盖，首启生成的池就在错误网段上（建容器分到不可达 IP）。
+# 只在 config **尚不存在**时写（已有 config 尊重不动，末尾探活后有不一致提醒）；
+# 故意只写 ipPool 一项——缺的 token/peerToken 由首启补生成并全量写回（config.ts）。
+CFG_SEED="$TARGET_HOME/.config/mysandbox/config.yaml"
+if [ "$SUBNET_PREFIX" != "10.88.10" ] && [ ! -f "$CFG_SEED" ]; then
+  log "3.5/8 config 预置（ipPool 对齐自定义网段 $SUBNET）"
+  mkdir -p "$TARGET_HOME/.config/mysandbox"
+  cat > "$CFG_SEED" <<EOF
+# scripts/install.sh --subnet $SUBNET 生成：仅覆盖 ipPool，其余字段首启按 default 生成。
+ipPool:
+  from: ${SUBNET_PREFIX}.20
+  to: ${SUBNET_PREFIX}.250
+  reserved:
+    - ${SUBNET_PREFIX}.1
+    - ${SUBNET_PREFIX}.2
+EOF
+  chown -R "$TARGET_USER:" "$TARGET_HOME/.config/mysandbox"
+  chmod 600 "$CFG_SEED"
 fi
 
 log "4/8 node 探测（属主 shell）"
@@ -300,7 +334,8 @@ done
 
 # config 已存在且 ipPool 前缀与 unit 网段不一致时提醒（unit 网关是容器网段的 .1）。
 if [ -f "$CFG" ] && ! grep -qE "from: ${SUBNET_PREFIX}\." "$CFG"; then
-  warn "config.yaml 的 ipPool 前缀与 unit 网段（$SUBNET）不一致——容器网关/NAT 会错位，请对齐后 sudo systemctl restart mysandbox-firewall"
+  warn "config.yaml 的 ipPool 前缀与 unit 网段（$SUBNET）不一致——容器网关/NAT 会错位"
+  warn "对齐方式：改 config.yaml 的 ipPool 后 sudo systemctl restart mysandbox-firewall；或重跑 sudo $0 --subnet <a.b.c.0/24>（全新机可用）"
 fi
 
 cat <<EOF
