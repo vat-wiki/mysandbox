@@ -71,7 +71,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Pencil, Eye } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -656,8 +656,8 @@ function removeTab(t: EditorTab) {
   editorTabs.value.splice(i, 1)
   if (!editorTabs.value.length) areaMode.value = 'terminal' // 最后一个文件 tab 关掉，主区还给终端
 }
-// tab 上的编辑/预览切换（pane 右下角按钮的第二入口）：先激活该 tab，再按当前形态
-// 调 pane——渲染视图/只读进编辑，md/svg 源码态回预览。
+// tab 右键「编辑/预览」（状态感知项，pane 右下角按钮的第二入口）：先激活该 tab，
+// 再按当前形态调 pane——渲染视图/只读进编辑，md/svg 源码态回预览。
 function tabModeClick(t: EditorTab, i: number) {
   onFileTabClick(i)
   const p = paneRefs.get(tabId(t))
@@ -2825,24 +2825,6 @@ onUnmounted(() => {
                 class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
                 title="有未落盘改动"
               />
-              <!-- 编辑/预览切换（pane 右下角按钮的第二入口）：渲染视图/只读态铅笔、
-                   md/svg 源码态眼睛；普通文件编辑态无渲染视图可回，按钮隐藏 -->
-              <button
-                v-if="tabMode[tabId(t)] && (!tabMode[tabId(t)].editing || tabMode[tabId(t)].preview)"
-                class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
-                title="编辑"
-                @click.stop="tabModeClick(t, i)"
-              >
-                <Pencil class="size-3 max-md:size-3.5" />
-              </button>
-              <button
-                v-else-if="tabMode[tabId(t)]?.editing && tabMode[tabId(t)]?.renderable"
-                class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
-                title="预览渲染"
-                @click.stop="tabModeClick(t, i)"
-              >
-                <Eye class="size-3 max-md:size-3.5" />
-              </button>
               <button
                 class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
                 title="关闭（未落盘改动会先自动保存）"
@@ -2853,16 +2835,31 @@ onUnmounted(() => {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <!-- 形态动作：diff 态「以普通方式打开」（清 diff 转普通编辑）；可预览类型
-                 （图片/视频/音频/PDF）的下载。编辑器面板无 header，动作全收在这里；
-                 svg/md 的编辑⇄预览已统一为右下角浮动铅笔，这里不再有切换项。 -->
+            <!-- 形态动作：编辑/预览切换（状态感知——渲染视图/只读态显示「编辑」，
+                 md/svg 源码态显示「预览」，普通文件编辑态无渲染视图不显示）；diff 态
+                 「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
+                 音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
+            <ContextMenuItem
+              v-if="tabMode[tabId(t)] && (!tabMode[tabId(t)].editing || tabMode[tabId(t)].preview)"
+              @click="tabModeClick(t, i)"
+            >
+              编辑
+            </ContextMenuItem>
+            <ContextMenuItem
+              v-else-if="tabMode[tabId(t)]?.editing && tabMode[tabId(t)]?.renderable"
+              @click="tabModeClick(t, i)"
+            >
+              预览
+            </ContextMenuItem>
             <ContextMenuItem v-if="t.diff" @click="onOpenNormal(t)">
               以普通方式打开
             </ContextMenuItem>
             <ContextMenuItem v-if="previewKind(t.path)" @click="downloadTab(t)">
               下载
             </ContextMenuItem>
-            <template v-if="t.diff || previewKind(t.path)">
+            <template
+              v-if="tabMode[tabId(t)] && (!tabMode[tabId(t)].editing || tabMode[tabId(t)].renderable) || t.diff || previewKind(t.path)"
+            >
               <ContextMenuSeparator />
             </template>
             <ContextMenuItem @click="copyTabPath(t)">
