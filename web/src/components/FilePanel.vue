@@ -960,7 +960,7 @@ function fmtSize(n: number): string {
       <ContextMenuContent>
         <template v-if="ctxTarget">
           <ContextMenuItem v-if="ctxTarget.entry.type === 'file'" @click="emit('open-file', ctxTarget.path, { editing: true })">
-            <Pencil /> 编辑
+            编辑
           </ContextMenuItem>
           <ContextMenuItem @click="copyToClipboard(ctxTarget)">
             复制（跨面板粘贴）
