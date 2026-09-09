@@ -62,7 +62,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   ContextMenu,
-  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -2606,13 +2605,18 @@ onUnmounted(() => {
             </ContextMenuItem>
             <ContextMenuSeparator />
             <!-- 无输出提醒（per 组，随组持久化）：agent 干完活/等输入时 tab 挂琥珀状态标
-                 （不打断视线，切回即消）。默认开；跑 dev server 这类长驻进程的 tab 可关。 -->
-            <ContextMenuCheckboxItem
-              :checked="g.quietNotify !== false"
-              @update:checked="(v: boolean | 'indeterminate') => (g.quietNotify = v === true)"
+                 （不打断视线，切回即消）。默认开；跑 dev server 这类长驻进程的 tab 可关。
+                 状态用高亮编码而非复选框：开 = 琥珀字（与提醒标同色系），关 = 置灰——
+                 复选框指示器的预留位会把文字挤得与其他项不对齐。 -->
+            <ContextMenuItem
+              :class="g.quietNotify !== false ? 'text-amber-400' : 'text-muted-foreground'"
+              :title="g.quietNotify !== false
+                ? '已开启：切走后安静下来（可能已完成或等你输入）时挂琥珀标，切回即消。长驻进程 tab 可点此关闭'
+                : '已关闭：点此开启'"
+              @click="g.quietNotify = g.quietNotify === false"
             >
               无输出时提醒
-            </ContextMenuCheckboxItem>
+            </ContextMenuItem>
             <!-- popout 是组级动作（给该容器/宿主开独立工作区），收在这里而不是 pane 头部。
                  容器要 running 才有意义（停着的容器 popout 出来是死终端）。 -->
             <ContextMenuItem
