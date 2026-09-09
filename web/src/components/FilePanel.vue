@@ -217,6 +217,12 @@ function copyLabel(row: EntryRow): string {
     ? `复制选中 ${selected.value.size} 项（跨面板粘贴）`
     : '复制（跨面板粘贴）'
 }
+// 命中行在多选集内（多选态）：单目标动作（编辑/下载/复制路径/重命名/删除）整体禁用，
+// 只留「复制选中 N 项」——否则菜单暗示只作用于这一行，实际选中集还在，语义混乱。
+function isMultiHit(row: EntryRow): boolean {
+  return selected.value.has(row.path) && selected.value.size > 1
+}
+const ctxMulti = computed(() => !!ctxTarget.value && isMultiHit(ctxTarget.value))
 // 粘贴按钮 tooltip（顶栏）：单项显名字，多项显数量。
 const clipLabel = computed(() => {
   const c = clip.value
@@ -1021,25 +1027,25 @@ function fmtSize(n: number): string {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem v-if="row.entry.type === 'file'" @click="emit('open-file', row.path, { editing: true })">
+                    <DropdownMenuItem v-if="row.entry.type === 'file'" :disabled="isMultiHit(row)" @click="emit('open-file', row.path, { editing: true })">
                       <Pencil /> 编辑
                     </DropdownMenuItem>
-                    <DropdownMenuItem @click="download(row)">
+                    <DropdownMenuItem :disabled="isMultiHit(row)" @click="download(row)">
                       <Download /> 下载
                     </DropdownMenuItem>
                     <DropdownMenuItem @click="copyToClipboard(row)">
                       <ClipboardPaste /> {{ copyLabel(row) }}
                     </DropdownMenuItem>
-                    <DropdownMenuItem v-if="!isHost" @click="copyText(row.path, '已复制容器路径')">
+                    <DropdownMenuItem v-if="!isHost" :disabled="isMultiHit(row)" @click="copyText(row.path, '已复制容器路径')">
                       <Copy /> 复制容器路径
                     </DropdownMenuItem>
-                    <DropdownMenuItem v-if="hostPathOf(row)" @click="copyRowHostPath(row)">
+                    <DropdownMenuItem v-if="hostPathOf(row)" :disabled="isMultiHit(row)" @click="copyRowHostPath(row)">
                       <Copy /> 复制实际路径
                     </DropdownMenuItem>
-                    <DropdownMenuItem @click="onRowMenu(row); nameDialog = { mode: 'rename' }">
+                    <DropdownMenuItem :disabled="isMultiHit(row)" @click="onRowMenu(row); nameDialog = { mode: 'rename' }">
                       <PenLine /> 重命名
                     </DropdownMenuItem>
-                    <DropdownMenuItem variant="destructive" @click="onRowMenu(row); delTarget = row">
+                    <DropdownMenuItem variant="destructive" :disabled="isMultiHit(row)" @click="onRowMenu(row); delTarget = row">
                       <Trash2 /> 删除
                     </DropdownMenuItem>
                   </DropdownMenuContent>
@@ -1051,25 +1057,25 @@ function fmtSize(n: number): string {
       </ContextMenuTrigger>
       <ContextMenuContent>
         <template v-if="ctxTarget">
-          <ContextMenuItem v-if="ctxTarget.entry.type === 'file'" @click="emit('open-file', ctxTarget.path, { editing: true })">
+          <ContextMenuItem v-if="ctxTarget.entry.type === 'file'" :disabled="ctxMulti" @click="emit('open-file', ctxTarget.path, { editing: true })">
             编辑
           </ContextMenuItem>
           <ContextMenuItem @click="copyToClipboard(ctxTarget)">
             {{ copyLabel(ctxTarget) }}
           </ContextMenuItem>
-          <ContextMenuItem v-if="!isHost" @click="copyText(ctxTarget.path, '已复制容器路径')">
+          <ContextMenuItem v-if="!isHost" :disabled="ctxMulti" @click="copyText(ctxTarget.path, '已复制容器路径')">
             复制容器路径
           </ContextMenuItem>
-          <ContextMenuItem v-if="hostPathOf(ctxTarget)" @click="copyRowHostPath(ctxTarget)">
+          <ContextMenuItem v-if="hostPathOf(ctxTarget)" :disabled="ctxMulti" @click="copyRowHostPath(ctxTarget)">
             复制实际路径
           </ContextMenuItem>
-          <ContextMenuItem @click="download(ctxTarget)">
+          <ContextMenuItem :disabled="ctxMulti" @click="download(ctxTarget)">
             下载
           </ContextMenuItem>
-          <ContextMenuItem @click="nameDialog = { mode: 'rename' }">
+          <ContextMenuItem :disabled="ctxMulti" @click="nameDialog = { mode: 'rename' }">
             重命名
           </ContextMenuItem>
-          <ContextMenuItem variant="destructive" @click="delTarget = ctxTarget">
+          <ContextMenuItem variant="destructive" :disabled="ctxMulti" @click="delTarget = ctxTarget">
             删除
           </ContextMenuItem>
           <ContextMenuItem v-if="clip && ctxTarget.entry.type === 'dir'" @click="pasteInto(ctxTarget.path)">
