@@ -579,13 +579,17 @@ export const deleteEntry = (id: string, path: string) =>
 // —— 跨面板复制粘贴 ——
 // 面板内部剪贴板：模块级单例（非系统剪贴板），跨 FilePanel 实例共享——复制后切到目标
 // 容器/宿主的文件面板粘贴。服务端统一 /api/files/copy（双端解析宿主实址走 tar 管道），
-// containerId 用 HOST_ID 哨兵表示宿主端。
-export interface FileClipboard {
-  containerId: string
-  containerName: string
+// containerId 用 HOST_ID 哨兵表示宿主端。items 支持多项：文件面板 Ctrl/⌘ 点选多行
+// 后整体复制（VS Code 式多选），粘贴端逐项调 copyEntry。
+export interface FileClipItem {
   path: string
   name: string
   isDir: boolean
+}
+export interface FileClipboard {
+  containerId: string
+  containerName: string
+  items: FileClipItem[]
 }
 let fileClip: FileClipboard | null = null
 export const setFileClipboard = (c: FileClipboard | null): void => {

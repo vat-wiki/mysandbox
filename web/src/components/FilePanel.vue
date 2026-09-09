@@ -154,31 +154,117 @@ function copyRowHostPath(row: EntryRow) {
 // 剪贴板是模块级单例（api.ts）：复制后切到目标容器/宿主的文件面板粘贴，支持
 // 容器↔宿主↔容器与同容器跨目录。目标冲突由服务端 409 报错（不覆盖）。
 const clip = ref<FileClipboard | null>(getFileClipboard())
+
+// —— 多选（VS Code 式）：普通点击 = 打开/进入并清空选中；Ctrl/⌘ 点击 = 加入/移出选中；
+// Shift 点击 = 从锚点到当前行范围选。选中按完整路径记（展开视图里同名条目可多层出现，
+// 路径才唯一），3s 静默轮询换列表不影响；换目录整体清空（见下方 path watch）。
+const selected = ref<Set<string>>(new Set())
+let selAnchor: string | null = null
+// 平铺视图里按显示顺序的条目路径：Shift 范围选的坐标系。
+const entryPaths = computed(() =>
+  rows.value.filter((r): r is EntryRow => r.kind === 'entry').map((r) => r.path),
+)
+function onRowClick(row: EntryRow, ev: MouseEvent) {
+  if (ev.ctrlKey || ev.metaKey) {
+    const s = new Set(selected.value)
+    if (s.has(row.path)) s.delete(row.path)
+    else s.add(row.path)
+    selected.value = s
+    selAnchor = row.path
+    return
+  }
+  if (ev.shiftKey && selAnchor && selAnchor !== row.path) {
+    const all = entryPaths.value
+    const a = all.indexOf(selAnchor)
+    const b = all.indexOf(row.path)
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a]
+      selected.value = new Set(all.slice(lo, hi + 1))
+      return
+    }
+  }
+  selected.value = new Set()
+  selAnchor = row.path
+  openRow(row)
+}
+// 复制目标：右键/⋯ 菜单命中的行在选中集内 = 整个选中集一起复制，否则收拢为仅该行
+// （VS Code 同语义）。选中集按 rows 现存条目过滤——选中后条目被删/折叠收起的不进剪贴板。
 function copyToClipboard(row: EntryRow) {
+  if (!selected.value.has(row.path)) {
+    selected.value = new Set([row.path])
+    selAnchor = row.path
+  }
+  const items = rows.value
+    .filter((r): r is EntryRow => r.kind === 'entry' && selected.value.has(r.path))
+    .map((r) => ({ path: r.path, name: r.entry.name, isDir: r.entry.type === 'dir' }))
+  if (!items.length) return
   const c: FileClipboard = {
     containerId: targetId(),
     containerName: props.containerName,
-    path: row.path,
-    name: row.entry.name,
-    isDir: row.entry.type === 'dir',
+    items,
   }
   setFileClipboard(c)
   clip.value = c
-  toast(`已复制「${c.name}」，到目标面板粘贴（可跨容器 / 宿主）`)
+  toast(
+    items.length === 1
+      ? `已复制「${items[0].name}」，到目标面板粘贴（可跨容器 / 宿主）`
+      : `已复制 ${items.length} 项，到目标面板粘贴（可跨容器 / 宿主）`,
+  )
 }
+// 菜单文案：命中行在多选集内时显示数量。
+function copyLabel(row: EntryRow): string {
+  return selected.value.has(row.path) && selected.value.size > 1
+    ? `复制选中 ${selected.value.size} 项（跨面板粘贴）`
+    : '复制（跨面板粘贴）'
+}
+// 粘贴按钮 tooltip（顶栏）：单项显名字，多项显数量。
+const clipLabel = computed(() => {
+  const c = clip.value
+  if (!c) return ''
+  return c.items.length === 1
+    ? `粘贴「${c.items[0].name}」到当前目录`
+    : `粘贴 ${c.items.length} 项到当前目录`
+})
 function pasteInto(dir: string) {
   const c = clip.value
   if (!c || !dir) return
-  const dst = dir === '/' ? `/${c.name}` : `${dir}/${c.name}`
+  const dstC = targetId()
   const from = c.containerId === HOST_ID ? '宿主' : c.containerName || c.containerId
+  const to = isHost.value ? '宿主' : props.containerName
+  const dstOf = (name: string) => (dir === '/' ? `/${name}` : `${dir}/${name}`)
+  const items = c.items
+  const total = items.length
+  // 逐项顺序复制（服务端一份源一条 tar 管道）：单项冲突/失败不中断其余项，最后汇总。
+  // 全部失败抛第一项错误走 error 分支；部分失败走成功分支外补一条 warning。
   toast.promise(
-    copyEntry({ srcContainer: c.containerId, srcPath: c.path, dstContainer: targetId(), dstPath: dst }),
+    (async () => {
+      const failed: string[] = []
+      for (const it of items) {
+        try {
+          await copyEntry({
+            srcContainer: c.containerId,
+            srcPath: it.path,
+            dstContainer: dstC,
+            dstPath: dstOf(it.name),
+          })
+        } catch (e) {
+          failed.push(`${it.name}：${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      if (failed.length === total) throw new Error(failed[0])
+      if (dir === path.value) refresh() // 粘进当前目录立即刷新；粘进子目录下钻时可见
+      if (failed.length)
+        toast.warning(`其余 ${total - failed.length} 项已粘贴；失败：${failed.join('；')}`)
+      return total === 1
+        ? `已复制到 ${dstOf(items[0].name)}`
+        : `已粘贴 ${total - failed.length}/${total} 项`
+    })(),
     {
-      loading: `正在复制 ${c.name}（${from} → ${isHost.value ? '宿主' : props.containerName}）…`,
-      success: () => {
-        if (dir === path.value) refresh() // 粘进当前目录立即刷新；粘进子目录下钻时可见
-        return `已复制到 ${dst}`
-      },
+      loading:
+        total === 1
+          ? `正在复制 ${items[0].name}（${from} → ${to}）…`
+          : `正在复制 ${total} 项（${from} → ${to}）…`,
+      success: (msg: string) => msg,
       error: (e: unknown) => (e instanceof Error ? e.message : String(e)),
     },
   )
@@ -301,7 +387,11 @@ watch(
 )
 // 路径变化（跟随跳转/手动导航/面包屑）：树展开整体收起——展开是「当前目录视图」的形态，
 // 换了目录旧展开没有意义；静默轮询写回同值不触发 watch，展开原样保留。
-watch(path, () => expanded.clear())
+watch(path, () => {
+  expanded.clear()
+  selected.value = new Set() // 换目录清空多选（选中是当前目录视图的形态，同展开）
+  selAnchor = null
+})
 
 // —— 导航（均暂停跟随）——
 function pauseFollow() {
@@ -690,7 +780,7 @@ function fmtSize(n: number): string {
         size="icon-xs"
         class="shrink-0"
         :disabled="!path"
-        :title="`粘贴「${clip.name}」到当前目录`"
+        :title="clipLabel"
         @click="pasteInto(path)"
       >
         <ClipboardPaste class="size-3.5" />
@@ -856,8 +946,9 @@ function fmtSize(n: number): string {
               空目录
             </p>
             <!-- 行 = 树平面化结果（rows）：主列表 + 各展开目录的子内容。点行 = 进入/打开，
-                 点行首 chevron 或文件夹图标 = 原位展开子目录（.stop 防止触发行点击）；
-                 文件行用等宽占位保持名字列对齐。 -->
+                 Ctrl/⌘ 点行 = 加入/移出多选、Shift 点行 = 从锚点范围选（VS Code 式，选中集
+                 供「复制」整体带走）；点行首 chevron 或文件夹图标 = 原位展开子目录（.stop
+                 防止触发行点击）；文件行用等宽占位保持名字列对齐。 -->
             <template v-for="row in rows" :key="row.kind + ':' + row.path">
               <!-- 展开失败的行内错误（点击重试）与空目录占位：缩进到同层名字列 -->
               <button
@@ -879,9 +970,10 @@ function fmtSize(n: number): string {
               <div
                 v-else
                 :data-path="row.path"
-                class="flex cursor-pointer items-center gap-2 py-1.5 pr-2.5 hover:bg-accent/50"
+                class="flex cursor-pointer items-center gap-2 py-1.5 pr-2.5"
+                :class="selected.has(row.path) ? 'bg-accent hover:bg-accent/70' : 'hover:bg-accent/50'"
                 :style="{ paddingLeft: `${ROW_BASE + row.depth * ROW_INDENT}px` }"
-                @click="openRow(row)"
+                @click="onRowClick(row, $event)"
               >
                 <!-- 展开热区 = chevron + 文件夹图标整体（含中间空隙）：点哪都是展开/收起，
                      间隙不再漏给行点击造成误下钻；hover 双双变亮 + cursor 暗示整块可点，
@@ -936,7 +1028,7 @@ function fmtSize(n: number): string {
                       <Download /> 下载
                     </DropdownMenuItem>
                     <DropdownMenuItem @click="copyToClipboard(row)">
-                      <ClipboardPaste /> 复制（跨面板粘贴）
+                      <ClipboardPaste /> {{ copyLabel(row) }}
                     </DropdownMenuItem>
                     <DropdownMenuItem v-if="!isHost" @click="copyText(row.path, '已复制容器路径')">
                       <Copy /> 复制容器路径
@@ -963,7 +1055,7 @@ function fmtSize(n: number): string {
             编辑
           </ContextMenuItem>
           <ContextMenuItem @click="copyToClipboard(ctxTarget)">
-            复制（跨面板粘贴）
+            {{ copyLabel(ctxTarget) }}
           </ContextMenuItem>
           <ContextMenuItem v-if="!isHost" @click="copyText(ctxTarget.path, '已复制容器路径')">
             复制容器路径
