@@ -47,6 +47,7 @@ import '../../node_modules/monaco-editor/esm/vs/languages/definitions/graphql/re
 // editor.api.js，Monaco 单例不重复）。升级 monaco 若挪走这些入口，构建期即报错，不会静默丢功能。
 import '../../node_modules/monaco-editor/esm/vs/features/codicon/register.js' // 图标字体 CSS（不引则查找框图标空白）
 import '../../node_modules/monaco-editor/esm/vs/features/find/register.js' // Ctrl+F 查找（FindController + FindWidget）
+import '../../node_modules/monaco-editor/esm/vs/features/comment/register.js' // Ctrl+/ 行注释 / Shift+Alt+A 块注释
 import '../../node_modules/monaco-editor/esm/vs/features/diffEditor/register.js' // diff 视图的命令/菜单贡献
 
 ;(self as unknown as { MonacoEnvironment: { getWorker: (moduleId: string, label: string) => Worker } }).MonacoEnvironment = {
