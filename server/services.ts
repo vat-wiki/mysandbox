@@ -165,6 +165,7 @@ export interface ServiceView {
   envKeys: string[];
   env: Record<string, string>; // 全量 env（含密码值），供 UI 展示/复制
   connect: string[]; // 预设感知的现成连接命令（容器内服务名口径）
+  displayName?: string; // 显示名（侧栏卡片/终端 tab），不动容器真名
   description?: string;
   createdAt?: string;
   command?: string[];
@@ -229,6 +230,7 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
       envKeys: m ? Object.keys(m.env) : [],
       env: m ? m.env : {},
       connect: m ? composeConnect(presetKey, name, m.env, m.ports ?? []) : [],
+      displayName: m?.displayName,
       description: m?.description,
       createdAt: m?.createdAt ?? row.CreatedAt,
       command: m?.command,
@@ -774,6 +776,21 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
 
   app.post<{ Params: { id: string } }>('/api/services/jobs/:id/cancel', async (req) => {
     cancelServiceJob(req.params.id); // 不在 pull 阶段时抛 conflict(409)，人话见 jobs.ts
+    return { ok: true };
+  });
+
+  // —— 元数据（显示名）—— 与容器 PATCH /meta 同款：改 sidecar 易变数据，不动容器对象。
+  // setServiceMeta 是整对象覆盖，先读旧值再合并；清空显示名传 undefined 即删键。
+  app.patch<{ Params: { name: string } }>('/api/services/:name/meta', async (req) => {
+    const name = req.params.name;
+    await requireService(name);
+    const body = (req.body as { displayName?: unknown } | null) || {};
+    const patch: Partial<ServiceMeta> = {};
+    if (typeof body.displayName === 'string') patch.displayName = body.displayName.trim() || undefined;
+    if (!('displayName' in patch) && body.displayName !== undefined) throw badRequest('displayName must be a string');
+    const prev = await getServiceMeta(name);
+    if (!prev) throw notFound(`service "${name}" meta missing`);
+    await setServiceMeta(name, { ...prev, ...patch });
     return { ok: true };
   });
 

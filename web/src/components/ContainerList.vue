@@ -18,6 +18,7 @@ import {
   stopService,
   restartService,
   deleteService,
+  updateServiceMeta,
   listTermActivity,
   termSessionKey,
   HOST_ID,
@@ -1116,7 +1117,7 @@ function openServiceTerm(s: ServiceView) {
     activeIdx.value = i
     return
   }
-  createGroup(s.name, s.name, 'service')
+  createGroup(s.name, s.displayName || s.name, 'service')
 }
 
 // 在独立窗口（popout）打开某容器/宿主的纯终端工作区（App 按 ?popout= 渲染无侧栏形态）。
@@ -1615,6 +1616,22 @@ watch(
         await svcOp(p.name, () =>
           deleteService(p.name, { deleteData: p.deleteData, confirmName: p.deleteData ? p.name : undefined }),
         )
+      }
+      // 重命名 = 改显示名（meta.displayName）：侧栏卡片/终端 tab 用它，不动容器真名，
+      // 随时可改。成功后同步已开服务终端组的名字快照（与容器 doRename 同语义）。
+      const svcRenameTarget = ref<ServiceView | null>(null)
+      async function doSvcRename(value: string | undefined) {
+        const s = svcRenameTarget.value
+        if (!s) return
+        svcRenameTarget.value = null
+        const displayName = value?.trim()
+        if (!displayName) return
+        await svcOp(s.name, async () => {
+          await updateServiceMeta(s.name, { displayName })
+          for (const g of groups.value) {
+            if (g.kind === 'service' && g.containerId === s.name) g.name = displayName
+          }
+        })
       }
 // null=未知（首拉前），false=docker 不可达
 const svcReachable = ref<boolean | null>(null)
@@ -2412,10 +2429,10 @@ onUnmounted(() => {
                     :style="s.running ? { backgroundColor: containerColor(s.name) } : undefined"
                     :title="stateLabel(s.state)"
                   />
-                  <!-- 第一行：名称。非 running 整行降亮度。 -->
+                  <!-- 第一行：显示名优先（真名进 title/兜底）。非 running 整行降亮度。 -->
                   <div class="flex min-w-0 items-center gap-1.5" :class="s.running ? '' : 'opacity-60'">
                     <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground" :title="s.name">{{
-                      s.name
+                      s.displayName || s.name
                     }}</span>
                     <span
                       v-if="s.metaMissing"
@@ -2446,6 +2463,7 @@ onUnmounted(() => {
                    代理地址二级菜单 / 更新 / 启停重启。原 ⋯ 按钮退役。 -->
               <ContextMenuContent>
                 <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
+                <ContextMenuItem @click="svcRenameTarget = s">重命名</ContextMenuItem>
                 <ContextMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</ContextMenuItem>
                 <!-- 监听端口（三级菜单）：与容器卡片同构——端口列表 → 每个端口的打开
                      方式（域名口径：代理打开 / IP 直连；IP 口径单层直点）。实测监听扫描
@@ -3003,6 +3021,18 @@ onUnmounted(() => {
     :input="{ default: renameTarget.displayName || renameTarget.name, placeholder: renameTarget.name }"
     @confirm="doRename"
     @close="renameTarget = null"
+  />
+
+  <!-- 服务重命名 = 显示名：侧栏卡片/服务终端 tab 用它，不动容器真名（hosts 注入、
+       连接命令仍按真名解析） -->
+  <ConfirmDialog
+    v-if="svcRenameTarget"
+    title="重命名服务"
+    description="修改显示名（侧栏卡片、服务终端 tab 用它），不影响服务本身的名称（容器内连接仍按真名解析）。"
+    confirm-text="重命名"
+    :input="{ default: svcRenameTarget.displayName || svcRenameTarget.name, placeholder: svcRenameTarget.name }"
+    @confirm="doSvcRename"
+    @close="svcRenameTarget = null"
   />
 
   <!-- 停止/重启确认（仅 adopted/外部容器）：这是别人的服务，误触半径不该只有 24px -->

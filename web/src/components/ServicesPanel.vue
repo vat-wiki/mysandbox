@@ -385,7 +385,7 @@ onUnmounted(() => {
             <!-- 一层：身份 + 操作（状态由彩色文字承担，不加点——颜色重复编码） -->
             <div class="space-y-2">
               <div class="flex min-w-0 flex-wrap items-center gap-2">
-                <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.name }}</h3>
+                <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.displayName || sel.name }}</h3>
                 <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset }}</Badge>
                 <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复">⚠</span>
                 <span class="shrink-0 text-xs" :class="stateCls(sel)" :title="sel.status">{{ stateLabel(sel.state) }}</span>

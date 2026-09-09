@@ -28,6 +28,7 @@ export interface ServiceMeta {
   volume: string | null; // 'mysandbox-svc-<name>' | null（custom 可无卷）
   ip: string; // 创建时分配的静态 IP（权威在 docker IPAMConfig，此处为停机占用记录）
   ports?: number[];
+  displayName?: string; // 显示名（侧栏卡片/终端 tab），不动容器真名——与容器 meta.displayName 同语义
   description?: string;
   createdAt: string;
 }

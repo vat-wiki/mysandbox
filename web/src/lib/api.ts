@@ -409,6 +409,7 @@ export interface ServiceView {
   envKeys: string[]
   env: Record<string, string>
   connect: string[]
+  displayName?: string
   description?: string
   createdAt?: string
   command?: string[]
@@ -467,6 +468,9 @@ export const listDockerImages = () =>
 export const startService = (name: string) => postJson(`/api/services/${name}/start`)
 export const stopService = (name: string) => postJson(`/api/services/${name}/stop`)
 export const restartService = (name: string) => postJson(`/api/services/${name}/restart`)
+// 元数据（显示名）：与容器 updateMeta 同语义——改 sidecar，不动容器真名
+export const updateServiceMeta = (name: string, patch: { displayName?: string }) =>
+  api(`/api/services/${name}/meta`, { method: 'PATCH', body: JSON.stringify(patch) })
 export const deleteService = (name: string, opts: { deleteData?: boolean; confirmName?: string }) =>
   api(`/api/services/${name}`, { method: 'DELETE', body: JSON.stringify(opts) })
 export const getServiceLogs = (name: string, tail = 200) =>
