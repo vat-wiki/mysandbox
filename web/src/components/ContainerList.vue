@@ -2606,10 +2606,10 @@ onUnmounted(() => {
             <ContextMenuSeparator />
             <!-- 无输出提醒（per 组，随组持久化）：agent 干完活/等输入时 tab 挂琥珀状态标
                  （不打断视线，切回即消）。默认开；跑 dev server 这类长驻进程的 tab 可关。
-                 状态用高亮编码而非复选框：开 = 琥珀字（与提醒标同色系），关 = 置灰——
-                 复选框指示器的预留位会把文字挤得与其他项不对齐。 -->
+                 状态不用复选框（指示器预留位会把文字挤得与其他项不对齐）也不用字色，
+                 直接复用 hover 高亮：开 = 常驻 bg-accent（hover 效果常亮），关 = 普通项。 -->
             <ContextMenuItem
-              :class="g.quietNotify !== false ? 'text-amber-400' : 'text-muted-foreground'"
+              :class="g.quietNotify !== false && 'bg-accent text-accent-foreground'"
               :title="g.quietNotify !== false
                 ? '已开启：切走后安静下来（可能已完成或等你输入）时挂琥珀标，切回即消。长驻进程 tab 可点此关闭'
                 : '已关闭：点此开启'"
