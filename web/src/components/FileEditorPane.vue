@@ -78,13 +78,15 @@ const previewKindV = computed(() => (props.diff ? null : previewKind(name.value)
 const previewUrl = ref('')
 const previewSize = ref(0)
 // —— 文本型预览（svg / markdown）——
-// 本体走 Monaco 文本编辑（源码可改），头部按钮在「编辑 / 预览渲染」间切换。
+// 本体走 Monaco 文本编辑（源码可改），预览渲染态与源码编辑态由右下角浮动铅笔/进编辑联动切换。
 // 默认落在预览（svg 直接看形状、md 直接读排版，编辑是少数场景）；渲染用当前编辑内容
 // 实时生成（改动立即可见），不落盘——想看保存后的效果先保存。
 // 刻意用 data: URL 而非 blob:（两者都受控渲染，效果一致），避免与文件预览的 blob 生命周期混管。
 const isSvg = computed(() => !props.diff && extOf(name.value) === 'svg')
 const isMd = computed(() => !props.diff && ['md', 'markdown'].includes(extOf(name.value)))
-const textPreview = ref(true)
+// 默认落在预览（svg 直接看形状、md 直接读排版，编辑是少数场景）；打开即编辑
+// （右键「编辑」editing=true）时直接落源码态。渲染用当前编辑内容实时生成。
+const textPreview = ref(!props.editing)
 function clearPreview() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
@@ -338,6 +340,10 @@ watch(() => [props.line, props.col], revealTarget)
 // 必然是写）直接落在编辑态。diff/预览渲染/二进制形态无编辑语义，铅笔只随 Monaco
 // 分支出现。
 const editing = ref(!!props.editing)
+// 进编辑联动强出渲染态：md/svg 的编辑就是源码 Monaco，渲染视图下 Monaco 未挂载
+watch(editing, (v) => {
+  if (v && textPreview.value) textPreview.value = false
+})
 watch(
   () => props.editing,
   (v) => {
@@ -446,8 +452,6 @@ async function requestClose() {
 }
 defineExpose({
   requestClose: () => requestClose(),
-  // 文件 tab 右键菜单的「编辑 ⇄ 预览切换」入口（svg/md 渲染态在 pane 内部）
-  toggleTextPreview: () => (textPreview.value = !textPreview.value),
 })
 function doDiscard() {
   confirmDiscard.value = false
@@ -477,8 +481,8 @@ function fmtSize(n: number): string {
 <template>
   <div class="flex h-full min-h-0 flex-col bg-card">
     <!-- 无 header 的极简形态：路径语境在 tab title（hover）与右键「复制路径」里，
-         形态徽章（对比）在 tab 上，动作按钮（编辑⇄预览/下载/以普通方式打开）收进
-         文件 tab 右键菜单（ContainerList）——编辑区一行不占。只读态说明条
+         形态徽章（对比）在 tab 上，下载/以普通方式打开收进文件 tab 右键菜单
+         （ContainerList），编辑入口是右下角浮动铅笔——编辑区一行不占。只读态说明条
          （diffNotice/冲突/错误）保留在编辑区上方，它们是内容的一部分而非工具栏。 -->
     <!-- 体 -->
     <div class="flex min-h-0 flex-1 flex-col">
@@ -553,42 +557,42 @@ function fmtSize(n: number): string {
         </div>
       </template>
       <template v-else>
-        <!-- 冲突条：文件在编辑期间被外部修改。挂在预览/编辑两种形态之外——自动保存
-             可能在预览态打出 409，收进编辑分支用户会看不见 -->
-        <div
-          v-if="conflict"
-          class="flex flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-600 dark:text-amber-400"
-        >
-          <span class="min-w-0 flex-1">文件在编辑期间被修改（mtime 不一致）</span>
-          <Button variant="outline" size="xs" :disabled="busy" @click="reload">重载（丢弃本地）</Button>
-          <Button size="xs" :disabled="busy" @click="overwrite">覆盖保存</Button>
-        </div>
-        <!-- svg 预览渲染：实时反映编辑内容（data URL，未保存也可见）。白底卡片：
-             透明底 svg 在深色主题下白形状会糊掉，垫白最稳。
-             必须带 isSvg 门——textPreview 初始 true，漏判会让所有文本文件都落进预览卡
-             （Monaco 不挂载、且无切换按钮，编辑直接废掉） -->
-        <div
-          v-if="isSvg && textPreview"
-          class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-muted/20 p-4"
-        >
-          <img
-            :src="svgUrl"
-            :alt="name"
-            class="max-h-full max-w-full rounded border bg-white object-contain p-3 shadow-sm"
+        <div class="relative flex min-h-0 flex-1 flex-col">
+          <!-- 冲突条：文件在编辑期间被外部修改。挂在预览/编辑两种形态之外——自动保存
+               可能在预览态打出 409，收进编辑分支用户会看不见 -->
+          <div
+            v-if="conflict"
+            class="flex flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-600 dark:text-amber-400"
+          >
+            <span class="min-w-0 flex-1">文件在编辑期间被修改（mtime 不一致）</span>
+            <Button variant="outline" size="xs" :disabled="busy" @click="reload">重载（丢弃本地）</Button>
+            <Button size="xs" :disabled="busy" @click="overwrite">覆盖保存</Button>
+          </div>
+          <!-- svg 预览渲染：实时反映编辑内容（data URL，未保存也可见）。白底卡片：
+               透明底 svg 在深色主题下白形状会糊掉，垫白最稳。
+               必须带 isSvg 门——textPreview 初始 true，漏判会让所有文本文件都落进预览卡
+               （Monaco 不挂载、且无切换按钮，编辑直接废掉） -->
+          <div
+            v-if="isSvg && textPreview"
+            class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-muted/20 p-4"
+          >
+            <img
+              :src="svgUrl"
+              :alt="name"
+              class="max-h-full max-w-full rounded border bg-white object-contain p-3 shadow-sm"
+            />
+          </div>
+          <!-- md 预览：marked + DOMPurify 渲染当前编辑内容；走主题变量排版（长文阅读，
+               不用 svg 那种白底卡），相对图片在 hydrateMdImages 里换 objectURL，
+               mermaid 代码块由 hydrateMdMermaid 懒加载渲染成 SVG -->
+          <div
+            v-else-if="isMd && textPreview"
+            ref="mdBody"
+            class="md-body scroll-thin min-h-0 flex-1 overflow-auto px-8 py-5"
+            v-html="mdHtml"
           />
-        </div>
-        <!-- md 预览：marked + DOMPurify 渲染当前编辑内容；走主题变量排版（长文阅读，
-             不用 svg 那种白底卡），相对图片在 hydrateMdImages 里换 objectURL，
-             mermaid 代码块由 hydrateMdMermaid 懒加载渲染成 SVG -->
-        <div
-          v-else-if="isMd && textPreview"
-          ref="mdBody"
-          class="md-body scroll-thin min-h-0 flex-1 overflow-auto px-8 py-5"
-          v-html="mdHtml"
-        />
-        <template v-else>
-          <p v-if="err" class="px-5 py-2 text-xs text-destructive">{{ err }}</p>
-          <div class="relative flex min-h-0 flex-1">
+          <template v-else>
+            <p v-if="err" class="px-5 py-2 text-xs text-destructive">{{ err }}</p>
             <CodeEditor
               v-model="content"
               :language="language"
@@ -597,20 +601,21 @@ function fmtSize(n: number): string {
               @mount="onEditorMount"
               @save="() => save()"
             />
-            <!-- 只读态浮动铅笔：进编辑即消失（只进不出，见 script 说明）。
-                 悬浮于编辑器右下角，不占布局 -->
-            <Button
-              v-if="!editing"
-              variant="outline"
-              size="icon"
-              class="absolute right-3 bottom-3 z-10 size-8 rounded-md bg-background/80 shadow-sm backdrop-blur"
-              title="编辑"
-              @click="editing = true"
-            >
-              <Pencil class="size-4" />
-            </Button>
-          </div>
-        </template>
+          </template>
+          <!-- 只读态浮动铅笔：进编辑即消失（只进不出，见 script 说明）。悬浮于编辑区
+               右下角不占布局；svg/md 预览态也显示（进编辑 = 切源码 Monaco，watch 联动），
+               与普通文件同一入口同一心智 -->
+          <Button
+            v-if="!editing"
+            variant="outline"
+            size="icon"
+            class="absolute right-3 bottom-3 z-10 size-8 rounded-md bg-background/80 shadow-sm backdrop-blur"
+            title="编辑"
+            @click="editing = true"
+          >
+            <Pencil class="size-4" />
+          </Button>
+        </div>
       </template>
     </div>
     <!-- 冲突未决强关确认。刻意放在根 div 内部：本组件必须保持单根——多根片段会让

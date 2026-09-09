@@ -529,15 +529,11 @@ watch(
 )
 // 各 tab 的脏标（pane 上报，tab 上画 ● ——自动保存窗口内/冲突未决时可见）
 const tabDirty = ref<Record<string, boolean>>({})
-// pane 引用表：tab X 要先让 pane 冲刷未落改动（requestClose），冲完 pane 自己 emit close；
-// toggleTextPreview 供 tab 右键菜单切换 svg/md 的编辑⇄预览渲染。
-const paneRefs = new Map<
-  string,
-  { requestClose: () => void; toggleTextPreview?: () => void }
->()
+// pane 引用表：tab X 要先让 pane 冲刷未落改动（requestClose），冲完 pane 自己 emit close。
+const paneRefs = new Map<string, { requestClose: () => void }>()
 function setPaneRef(t: EditorTab, el: unknown) {
   const key = tabId(t)
-  if (el) paneRefs.set(key, el as { requestClose: () => void; toggleTextPreview?: () => void })
+  if (el) paneRefs.set(key, el as { requestClose: () => void })
   else paneRefs.delete(key)
 }
 function openFile(cId: string, cName: string, path: string, opts?: { diff?: { headPath?: string }; line?: number; col?: number; editing?: boolean }) {
@@ -2824,19 +2820,16 @@ onUnmounted(() => {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <!-- 形态动作：svg/md 编辑⇄预览切换（状态在 pane 内部，经 paneRefs 调）；
-                 diff 态「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
-                 音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
-            <ContextMenuItem v-if="['svg', 'md', 'markdown'].includes(extOf(t.path))" @click="paneRefs.get(tabId(t))?.toggleTextPreview?.()">
-              编辑 ⇄ 预览
-            </ContextMenuItem>
+            <!-- 形态动作：diff 态「以普通方式打开」（清 diff 转普通编辑）；可预览类型
+                 （图片/视频/音频/PDF）的下载。编辑器面板无 header，动作全收在这里；
+                 svg/md 的编辑⇄预览已统一为右下角浮动铅笔，这里不再有切换项。 -->
             <ContextMenuItem v-if="t.diff" @click="onOpenNormal(t)">
               以普通方式打开
             </ContextMenuItem>
             <ContextMenuItem v-if="previewKind(t.path)" @click="downloadTab(t)">
               下载
             </ContextMenuItem>
-            <template v-if="t.diff || previewKind(t.path) || ['svg', 'md', 'markdown'].includes(extOf(t.path))">
+            <template v-if="t.diff || previewKind(t.path)">
               <ContextMenuSeparator />
             </template>
             <ContextMenuItem @click="copyTabPath(t)">
