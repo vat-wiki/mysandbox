@@ -55,6 +55,9 @@ const emit = defineEmits<{
   (e: 'saved', path: string): void
   (e: 'open-normal'): void
   (e: 'dirty', v: boolean): void
+  // 形态上报（tab 上的编辑/预览切换按钮按此渲染图标）：editing = 编辑会话中；
+  // preview = 当前正显示渲染视图（仅 md/svg）；renderable = 有渲染视图可回（md/svg）。
+  (e: 'mode', v: { editing: boolean; preview: boolean; renderable: boolean }): void
 }>()
 
 const name = computed(() => props.path.slice(props.path.lastIndexOf('/') + 1))
@@ -355,6 +358,18 @@ function enterEdit() {
   editing.value = true
   if (textPreview.value) textPreview.value = false
 }
+// 形态上报：编辑/预览双向切换的第二入口在文件 tab 上（父级按 mode 画图标）
+watch(
+  [editing, textPreview, isSvg, isMd],
+  ([ed, tp, svg, md]) =>
+    emit('mode', { editing: ed, preview: tp && (svg || md), renderable: svg || md }),
+  { immediate: true },
+)
+defineExpose({
+  requestClose: () => requestClose(),
+  enterEdit: () => enterEdit(),
+  showPreview: () => (textPreview.value = true),
+})
 watch([editing, editorRef], ([v, ed]) => {
   if (!ed) return
   ed.updateOptions({ readOnly: !v })
@@ -455,9 +470,6 @@ async function requestClose() {
   }
   emit('close')
 }
-defineExpose({
-  requestClose: () => requestClose(),
-})
 function doDiscard() {
   confirmDiscard.value = false
   emit('close')

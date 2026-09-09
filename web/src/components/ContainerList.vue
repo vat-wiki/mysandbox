@@ -71,7 +71,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Pencil, Eye } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -529,11 +529,15 @@ watch(
 )
 // 各 tab 的脏标（pane 上报，tab 上画 ● ——自动保存窗口内/冲突未决时可见）
 const tabDirty = ref<Record<string, boolean>>({})
-// pane 引用表：tab X 要先让 pane 冲刷未落改动（requestClose），冲完 pane 自己 emit close。
-const paneRefs = new Map<string, { requestClose: () => void }>()
+// 各 tab 的形态（pane 上报）：tab 上的编辑/预览切换按钮按此画图标——
+// 渲染视图/只读态铅笔进编辑；md/svg 源码态眼睛回预览；普通文件编辑态无按钮。
+const tabMode = ref<Record<string, { editing: boolean; preview: boolean; renderable: boolean }>>({})
+// pane 引用表：tab X 要先让 pane 冲刷未落改动（requestClose），冲完 pane 自己 emit close；
+// enterEdit/showPreview 供 tab 上编辑/预览切换按钮调。
+const paneRefs = new Map<string, { requestClose: () => void; enterEdit?: () => void; showPreview?: () => void }>()
 function setPaneRef(t: EditorTab, el: unknown) {
   const key = tabId(t)
-  if (el) paneRefs.set(key, el as { requestClose: () => void })
+  if (el) paneRefs.set(key, el as { requestClose: () => void; enterEdit?: () => void; showPreview?: () => void })
   else paneRefs.delete(key)
 }
 function openFile(cId: string, cName: string, path: string, opts?: { diff?: { headPath?: string }; line?: number; col?: number; editing?: boolean }) {
@@ -648,8 +652,18 @@ function removeTab(t: EditorTab) {
   const i = editorTabs.value.findIndex((x) => tabId(x) === tabId(t))
   if (i < 0) return
   delete tabDirty.value[tabId(t)]
+  delete tabMode.value[tabId(t)]
   editorTabs.value.splice(i, 1)
   if (!editorTabs.value.length) areaMode.value = 'terminal' // 最后一个文件 tab 关掉，主区还给终端
+}
+// tab 上的编辑/预览切换（pane 右下角按钮的第二入口）：先激活该 tab，再按当前形态
+// 调 pane——渲染视图/只读进编辑，md/svg 源码态回预览。
+function tabModeClick(t: EditorTab, i: number) {
+  onFileTabClick(i)
+  const p = paneRefs.get(tabId(t))
+  const m = tabMode.value[tabId(t)]
+  if (m?.editing && !m.preview) p?.showPreview?.()
+  else p?.enterEdit?.()
 }
 // diff 面板「以普通方式打开」：清 diff 标记，pane 的 watch(diff) 自动重走普通加载。
 function onOpenNormal(t: EditorTab) {
@@ -2746,6 +2760,7 @@ onUnmounted(() => {
               @open-normal="onOpenNormal(t)"
               @saved="onEditorSaved"
               @dirty="(v: boolean) => (tabDirty[tabId(t)] = v)"
+              @mode="(m) => (tabMode[tabId(t)] = m)"
             />
           </div>
           <div v-show="!(areaMode === 'editor' && editorTabs.length)" class="absolute inset-0 bg-zinc-950">
@@ -2810,6 +2825,24 @@ onUnmounted(() => {
                 class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
                 title="有未落盘改动"
               />
+              <!-- 编辑/预览切换（pane 右下角按钮的第二入口）：渲染视图/只读态铅笔、
+                   md/svg 源码态眼睛；普通文件编辑态无渲染视图可回，按钮隐藏 -->
+              <button
+                v-if="tabMode[tabId(t)] && (!tabMode[tabId(t)].editing || tabMode[tabId(t)].preview)"
+                class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
+                title="编辑"
+                @click.stop="tabModeClick(t, i)"
+              >
+                <Pencil class="size-3 max-md:size-3.5" />
+              </button>
+              <button
+                v-else-if="tabMode[tabId(t)]?.editing && tabMode[tabId(t)]?.renderable"
+                class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
+                title="预览渲染"
+                @click.stop="tabModeClick(t, i)"
+              >
+                <Eye class="size-3 max-md:size-3.5" />
+              </button>
               <button
                 class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
                 title="关闭（未落盘改动会先自动保存）"
