@@ -593,7 +593,10 @@ function onEscCloseFile(e: KeyboardEvent) {
   const target = e.target
   if (target instanceof HTMLElement) {
     const inMonaco = !!target.closest('.monaco-editor')
-    const isEditorBody = inMonaco && target.classList.contains('inputarea')
+    // Monaco 的输入 textarea 用 tagName 判（class 随版本变：inputarea / ime-text-area，
+    // 实测本机 5.x 是 ime-text-area——class 判定曾让编辑器内 Esc 全部失效）；monaco 内
+    // 唯一的 textarea 就是它，find widget 等输入框是 INPUT 标签，落下面的 else 分支。
+    const isEditorBody = inMonaco && target.tagName === 'TEXTAREA'
     if (isEditorBody) {
       if (e.defaultPrevented) return
     } else if (target.isContentEditable || target.closest('input, textarea, select, .monaco-editor')) {
