@@ -101,13 +101,43 @@ for f in /etc/subuid /etc/subgid; do
   grep -q "^${TARGET_USER}:" "$f" 2>/dev/null || echo "${TARGET_USER}:100000:65536" >> "$f"
 done
 
-log "3/8 lxc-usernet（veth 配额）"
+log "3/8 lxc-usernet + 用户级 default.conf"
 LXC_USERNET=/etc/lxc/lxc-usernet
 touch "$LXC_USERNET"
 if grep -qE "^${TARGET_USER}[[:space:]]+veth[[:space:]]+" "$LXC_USERNET"; then
   sed -i -E "s|^(${TARGET_USER}[[:space:]]+veth[[:space:]]+).*|\1${BRIDGE} 20|" "$LXC_USERNET"
 else
   echo "${TARGET_USER} veth ${BRIDGE} 20" >> "$LXC_USERNET"
+fi
+# 用户级 default.conf：base import / 模板克隆的 idmap 源头（无它建出的容器无 uid 映射，
+# unprivileged 环境下 lxc-start 必败）。缺失才生成——已有配置尊重不动。
+# idmap 语义 = D1 契约：容器 root→100000 段、dev(1000) 直通宿主用户。
+LXC_DEF="$TARGET_HOME/.config/lxc/default.conf"
+if [ ! -f "$LXC_DEF" ]; then
+  mkdir -p "$TARGET_HOME/.config/lxc"
+  cat > "$LXC_DEF" <<EOF
+# mysandbox unprivileged LXC 默认配置（scripts/install.sh 生成）。
+lxc.idmap = u 0 100000 1000
+lxc.idmap = g 0 100000 1000
+lxc.idmap = u 1000 1000 1
+lxc.idmap = g 1000 1000 1
+lxc.idmap = u 1001 101001 64535
+lxc.idmap = g 1001 101001 64535
+
+lxc.net.0.type = veth
+lxc.net.0.link = ${BRIDGE}
+lxc.net.0.flags = up
+EOF
+  chown -R "$TARGET_USER:" "$TARGET_HOME/.config/lxc"
+fi
+
+# sshSource 前置：首启 config 会把 ~/.ssh 填进 sshSource（容器只读挂 /mnt/host/.ssh），
+# 目录不存在时建容器会因 mount 死路径直接 start 失败——这里保证它存在。
+TARGET_SSH="$TARGET_HOME/.ssh"
+if [ ! -d "$TARGET_SSH" ]; then
+  mkdir -p "$TARGET_SSH"
+  chmod 700 "$TARGET_SSH"
+  chown "$TARGET_USER:" "$TARGET_SSH"
 fi
 
 log "4/8 node 探测（属主 shell）"
@@ -134,13 +164,23 @@ fi
 log "   node: $NODE"
 
 log "5/8 构建（npm install + npm run build）"
-if [ ! -d "$MS_DIR/node_modules" ]; then
-  as_user_login "cd '$MS_DIR' && npm install" >/dev/null
-else
-  log "   node_modules 已在，跳过 install"
-fi
-if [ "$REBUILD" = 1 ] || [ ! -f "$MS_DIR/dist/server/cli.js" ]; then
-  as_user_login "cd '$MS_DIR' && npm run build" >/dev/null
+# npm install 恒跑（幂等）：残缺的 node_modules（上次 install 中断）靠它自愈补齐，
+# 已完整时只花几秒——「目录存在就跳过」会把残缺件带进 build（npm 会把中断残留误判
+# 成 up to date）。web/ 是独立 package.json（无 workspace），依赖必须单独装。
+# 差网络（DNS 抖动/CDN 超时）下重试 3 次——实测偶发 EAI_AGAIN/ETIMEDOUT，重试即过。
+for sub in . web; do
+  ok=0
+  for attempt in 1 2 3; do
+    if as_user_login "cd '$MS_DIR/$sub' && npm install --no-audit --no-fund" >/dev/null; then
+      ok=1; break
+    fi
+    warn "npm install 失败（$sub，第 $attempt 次）——重试"
+    sleep 3
+  done
+  [ "$ok" = 1 ] || die "npm install 失败（$sub；网络/registry？国内网络可试: npm config set registry https://registry.npmmirror.com）"
+done
+if [ "$REBUILD" = 1 ] || [ ! -f "$MS_DIR/dist/server/cli.js" ] || [ ! -f "$MS_DIR/web/dist/index.html" ]; then
+  as_user_login "cd '$MS_DIR' && npm run build" >/dev/null || die "npm run build 失败"
 else
   log "   dist 已在（--rebuild 可强制重建），跳过 build"
 fi
@@ -174,7 +214,11 @@ log "7/8 linger（用户级 systemd 常驻）"
 loginctl enable-linger "$TARGET_USER" 2>/dev/null || true
 
 log "8/8 user service（mysandbox 本体）"
+# mkdir -p 会把缺失的父目录建成 root 属主（.config 原本不存在时）——devtest 的服务
+# 首启要往 ~/.config/mysandbox 写 config，属主残留 root 就是 EACCES crash 循环。
+# 三个层级全部 chown（已属目标用户时幂等无害）。
 mkdir -p "$TARGET_HOME/.config/systemd/user"
+chown "$TARGET_USER:" "$TARGET_HOME/.config" "$TARGET_HOME/.config/systemd" "$TARGET_HOME/.config/systemd/user"
 cat > "$TARGET_HOME/.config/systemd/user/mysandbox.service" <<EOF
 [Unit]
 Description=mysandbox web console (LXC engine)
@@ -200,6 +244,8 @@ for _ in $(seq 1 10); do
 done
 [ -d "/run/user/$TARGET_UID" ] || die "/run/user/$TARGET_UID 未就位——请登录一次该用户后重跑"
 as_user systemctl --user daemon-reload
+# 上次 crash 循环后 unit 处于 failed 态——不清掉 enable --now 拉不起来（幂等重跑场景）。
+as_user systemctl --user reset-failed mysandbox.service 2>/dev/null || true
 as_user systemctl --user enable --now mysandbox.service >/dev/null 2>&1 || {
   as_user systemctl --user enable mysandbox.service >/dev/null
   as_user systemctl --user restart mysandbox.service

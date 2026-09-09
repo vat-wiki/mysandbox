@@ -307,8 +307,13 @@ function bind(cfg: Config, bindIp: string): void {
         const waitMs = Math.min(1000 * attempt, 5_000);
         // 前两次 warn（正常宿主上应很快起来），之后降 debug：非 LXC 宿主上跑 mysandbox
         // 会一路重试到底，别刷 warn。
-        const logFn = attempt <= 2 ? log.warn : log.debug;
-        logFn({ bindIp, port: cfg.peer.port, attempt, retryMs: waitMs }, 'peer api: gateway IP not up yet, retrying');
+        // ⚠️ pino 的方法不绑定 this——解引用（const f = log.warn）再调用会 TypeError
+        // （嵌套环境首次触发 EADDRNOTAVAIL 时实测崩掉启动），必须直接调用。
+        if (attempt <= 2) {
+          log.warn({ bindIp, port: cfg.peer.port, attempt, retryMs: waitMs }, 'peer api: gateway IP not up yet, retrying');
+        } else {
+          log.debug({ bindIp, port: cfg.peer.port, attempt, retryMs: waitMs }, 'peer api: gateway IP not up yet, retrying');
+        }
         setTimeout(listen, waitMs).unref();
         return;
       }

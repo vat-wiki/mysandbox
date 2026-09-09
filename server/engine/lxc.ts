@@ -454,11 +454,14 @@ async function create(
     // 宿主 ~/.ssh 只读进容器 /mnt/host/.ssh。
     // 相对路径 + create=dir：LXC 的挂载点相对 rootfs，挂载点不存在时自动建。
     // unprivileged 下实测可读、写被 ro 挡住——首启 seed 与 batch ssh reseed 都依赖它。
-    next = setConfigValue(
-      next,
-      'lxc.mount.entry',
-      `${cfg.sshSource} mnt/host/.ssh none bind,ro,create=dir 0 0`,
-    );
+    // sshSource 留空（config 可置空）则不挂：空源的 mount entry 会让 lxc-start 死在 mount 阶段。
+    if (cfg.sshSource) {
+      next = setConfigValue(
+        next,
+        'lxc.mount.entry',
+        `${cfg.sshSource} mnt/host/.ssh none bind,ro,create=dir 0 0`,
+      );
+    }
     if (cfg.claudeSettingsTemplate) {
       next = `${next.endsWith('\n') ? next : next + '\n'}lxc.mount.entry = ${cfg.claudeSettingsTemplate} mnt/claude-settings.template none bind,ro,create=file 0 0\n`;
     }
