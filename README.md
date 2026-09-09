@@ -54,16 +54,27 @@ mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），�
 
 ## 安装与运行
 
-```bash
-# 全局安装（发布后）
-npm install -g mysandbox
-mysandbox
+### 一键安装（唯一需要 sudo 的一步）
 
-# 或一次性
-npx mysandbox
+```bash
+git clone <repo> mysandbox && cd mysandbox
+sudo ./scripts/install.sh        # --user <name> 指定属主（默认 SUDO_USER）；--uninstall 反操作
 ```
 
-首次启动会在终端打印一次 token 和访问地址：
+之后运行时**全程无 root**。脚本幂等可重跑（仓库 unit 改动后重跑即同步到 /etc）。它做的事：
+
+| 层 | 步骤 |
+|---|---|
+| 系统级（root） | apt 装 `lxc uidmap lxcfs iptables`；`/etc/subuid`+`/etc/subgid` 追加 `<user>:100000:65536`；`/etc/lxc/lxc-usernet` 放行 veth；落盘三个 system unit（`mysandbox-net` 建桥+网关+MASQUERADE、`mysandbox-firewall` 应用 ufw 规则、`mysandbox-docker-interop` 跨桥放行，docker 缺失时跳过）；`loginctl enable-linger` |
+| 用户级（runuser 切回） | `npm install` + `npm run build`（缺才做，`--rebuild` 强制）；写 `~/.config/systemd/user/mysandbox.service`（ExecStart 用 node 绝对路径——user manager 不继承交互 shell 的 PATH）；`systemctl --user enable --now` |
+
+> 安全模型的关键：需要特权的操作全部收敛成**独立 system unit**（由 systemd 而非 sudoers 界定边界），
+> mysandbox 服务本体以普通用户跑——这是 unprivileged LXC 的 cgroup 委派要求，也是 token 泄露
+> 爆炸半径的上限（宿主用户而非整机 root，见「安全须知」）。
+
+### 首次启动
+
+服务装完即起（`systemctl --user status mysandbox` 查看）。首次启动打印一次 token：
 
 ```
 >> mysandbox 0.1.0  lxc 5.0.3
@@ -72,7 +83,22 @@ npx mysandbox
 >> token:   <48-hex>
 ```
 
-浏览器打开 `http://127.0.0.1:7321`，粘贴 token 登录。
+浏览器打开访问地址（探活失败的看 `journalctl --user -u mysandbox`），粘贴 token 登录。
+
+还差一步——**制作模板容器**（新建容器 = 克隆它，跑完记得 stop）：
+
+```bash
+sudo -u <user> scripts/lxc-template.sh ms-template   # 10-20 分钟（apt + npm 为主）
+# 或从既有包恢复: mysandbox base import <path>
+```
+
+### 手动安装（逐条审计用）
+
+不想跑脚本的话，上表的每一步都可以手工做——unit 模板在 `scripts/*.service`（占位符
+`__MSB_DIR__`/`__MSB_USER__`/`__MSB_NODE__`/`__MSB_BRIDGE__`/`__MSB_SUBNET__`/`__MSB_GW__`，
+sed 填充后放 `/etc/systemd/system/`），user unit 形状见上表/`scripts/install.sh` 第 8 步。
+核心约束只有三条：cgroup 委派（服务必须在 user manager 里）、subuid/subgid 映射段、
+桥 + 网关 IP + MASQUERADE（`mysandbox-net.service` 的职责）。
 
 CLI 选项：
 

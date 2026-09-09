@@ -1,0 +1,23 @@
+# /etc/systemd/system/mysandbox-net.service（由 scripts/install.sh 以占位符填充落盘）
+[Unit]
+# mysandbox LXC 独立网桥（与 docker 桥彻底解耦，2026-09 迁移自 dev-lan 桥 br-f0cc7d98dca0）。
+# 职责：建 __MSB_BRIDGE__ 桥 + 挂网关副 IP __MSB_GW__/24 + LXC 网段出网 MASQUERADE
+# （此前 10.88.10.0/24 无 NAT，容器出网寄生在 clash TUN 上，见 docs/lxc-migration.md 补记）。
+# LXC 容器 veth 挂本桥（config.network: __MSB_BRIDGE__）；与 docker 服务网段 10.88.0.0/24
+# 的跨桥互通由 mysandbox-docker-interop.service 负责。不依赖 docker。
+Description=mysandbox network (bridge __MSB_BRIDGE__ + gateway __MSB_GW__ + NAT)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'ip link show __MSB_BRIDGE__ >/dev/null 2>&1 || ip link add __MSB_BRIDGE__ type bridge'
+ExecStart=/usr/sbin/ip link set __MSB_BRIDGE__ up
+ExecStart=/usr/sbin/ip addr replace __MSB_GW__/24 dev __MSB_BRIDGE__
+ExecStart=/bin/sh -c 'iptables -t nat -C POSTROUTING -s __MSB_SUBNET__ ! -o __MSB_BRIDGE__ -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s __MSB_SUBNET__ ! -o __MSB_BRIDGE__ -j MASQUERADE'
+ExecStop=-/bin/sh -c 'iptables -t nat -D POSTROUTING -s __MSB_SUBNET__ ! -o __MSB_BRIDGE__ -j MASQUERADE 2>/dev/null; true'
+ExecStop=-/usr/sbin/ip addr del __MSB_GW__/24 dev __MSB_BRIDGE__
+
+[Install]
+WantedBy=multi-user.target

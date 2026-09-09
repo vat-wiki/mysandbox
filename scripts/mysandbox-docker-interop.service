@@ -1,0 +1,25 @@
+# /etc/systemd/system/mysandbox-docker-interop.service（由 scripts/install.sh 落盘，docker 缺失时跳过安装）
+[Unit]
+# mysandbox LXC → docker 服务互通放行。__MSB_BRIDGE__（LXC 桥）与 mysandbox-lan（docker 服务
+# 网络，桥设备钉名 br-mysandbox）分离后，docker 在 DOCKER 链有 `! -i <桥> -o <桥> -j DROP`：
+# 外来接口（__MSB_BRIDGE__）进 docker 容器的新连接会被丢弃。DOCKER-USER 挂在 FORWARD 最顶端
+# （早于 ufw），是 docker 官方指定的用户注入点，docker 重启不清空本链内容。-o br+ 通配
+# 所有 docker 桥：mysandbox-lan 重建（钉名丢失时桥名回 br-<hash>）也生效。
+# docker → LXC 方向无需规则（DOCKER-FORWARD 的 -i <docker 桥> -j ACCEPT 已放行）。
+Description=mysandbox LXC-docker interop (raw + DOCKER-USER accept from __MSB_BRIDGE__)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -i __MSB_BRIDGE__ -o br+ -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -i __MSB_BRIDGE__ -o br+ -j ACCEPT'
+# raw 表放行必须排在 dockerd 的服务 IP 隔离规则之前：docker 29 会在每次服务容器 start 时
+# 重写 `-t raw -A PREROUTING -d <服务IP> ! -i <桥> -j DROP`（实测删了会在下次 start 回来，
+# 无法一次性清除）；dockerd 用 -A 追加、这里用 -I 1 插入，顺序恒在前，dockerd restart 亦然。
+ExecStart=/bin/sh -c 'iptables -t raw -C PREROUTING -i __MSB_BRIDGE__ -j ACCEPT 2>/dev/null || iptables -t raw -I PREROUTING 1 -i __MSB_BRIDGE__ -j ACCEPT'
+ExecStop=-/bin/sh -c 'iptables -D DOCKER-USER -i __MSB_BRIDGE__ -o br+ -j ACCEPT 2>/dev/null; true'
+ExecStop=-/bin/sh -c 'iptables -t raw -D PREROUTING -i __MSB_BRIDGE__ -j ACCEPT 2>/dev/null; true'
+
+[Install]
+WantedBy=multi-user.target

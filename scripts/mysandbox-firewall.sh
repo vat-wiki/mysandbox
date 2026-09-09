@@ -13,11 +13,17 @@
 #   route<TAB><桥设备名><TAB><comment>
 set -u
 
-# 部署路径（systemd user service 与本单元同源）：仓库即安装位置。
-MS_DIR=/home/leon/projects/mysandbox
-MS_USER=leon
-# fnm 的默认 node（user service 的 ExecStart 用的同一条；root 的 PATH 里没有它）。
-NODE=/home/leon/.local/share/fnm/aliases/default/bin/node
+# 部署参数：优先读 unit 注入的环境变量（mysandbox-firewall.service 的 Environment=，
+# install.sh 按实际安装位置填充）；缺省时自行推导兜底（仓库形态：脚本所在目录的上级即安装目录）。
+MS_DIR="${MS_DIR:-$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)}"
+MS_USER="${MS_USER:-$(stat -c '%U' "$MS_DIR" 2>/dev/null || true)}"
+# NODE 兜底：以属主用户**交互式** shell 探测（fnm/nvm 的 PATH 挂在交互 rc 里，-lc 拿不到）。
+if [ -z "${NODE:-}" ] && [ -n "$MS_USER" ]; then
+  USR_SHELL="$(getent passwd "$MS_USER" | cut -d: -f7)"
+  NODE="$(runuser -u "$MS_USER" -- "${USR_SHELL:-/bin/sh}" -lic 'command -v node' 2>/dev/null | tail -n1 || true)"
+fi
+[ -n "$MS_USER" ] || { echo ">> mysandbox-firewall: 推导不出 MS_USER（unit 环境变量缺失？）" >&2; exit 1; }
+[ -n "$NODE" ] || { echo ">> mysandbox-firewall: 推导不出 node 路径（先跑 scripts/install.sh）" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || { echo ">> mysandbox-firewall: 需要 root（ufw）" >&2; exit 1; }
 command -v ufw >/dev/null 2>&1 || { echo ">> mysandbox-firewall: ufw 未安装，跳过" >&2; exit 0; }

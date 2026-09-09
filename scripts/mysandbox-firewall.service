@@ -1,10 +1,12 @@
+# /etc/systemd/system/mysandbox-firewall.service（由 scripts/install.sh 占位符填充落盘）
 [Unit]
 # mysandbox 宿主防火墙放行（ufw）——三方互通（宿主 ↔ LXC 容器 ↔ docker 服务）的 INPUT 与
 # LXC 桥 route 层。转发层各有归属：LXC 网段出网 MASQUERADE = mysandbox-net.service；
 # LXC → docker 跨桥（raw + DOCKER-USER）= mysandbox-docker-interop.service，均在 ufw 之前。
 # 期望规则由 `mysandbox firewall print` 按 config 计算（server/firewall.ts），本单元只负责应用：
 # 幂等（已存在跳过）、只增不删（手敲的历史规则不会被回收）。config 变更后手工重启本单元。
-# unit 文件随仓库维护（scripts/mysandbox-firewall.service），改动后同步到 /etc/systemd/system/。
+# unit 文件随仓库维护（scripts/mysandbox-firewall.service，占位符形态），install.sh 填充落盘；
+# 手改仓库版后重跑 install.sh 同步到 /etc/systemd/system/。
 Description=mysandbox firewall (ufw allows for host<->LXC<->docker interconnect)
 After=network-online.target ufw.service
 Wants=network-online.target
@@ -12,7 +14,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/home/leon/projects/mysandbox/scripts/mysandbox-firewall.sh
+# 路径参数由 install.sh 按实际安装位置注入（firewall.sh 读环境，缺省时自行推导兜底）：
+# MS_DIR=mysandbox 安装目录；MS_USER=属主用户（firewall print 以其身份跑）；NODE=node 绝对路径
+# （root 的 PATH 里通常没有 fnm/nvm 的 node，必须显式给）。
+Environment=MS_DIR=__MSB_DIR__
+Environment=MS_USER=__MSB_USER__
+Environment=NODE=__MSB_NODE__
+ExecStart=__MSB_DIR__/scripts/mysandbox-firewall.sh
 
 [Install]
 WantedBy=multi-user.target
