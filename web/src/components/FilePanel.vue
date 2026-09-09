@@ -150,6 +150,14 @@ function copyRowHostPath(row: EntryRow) {
   const hp = hostPathOf(row)
   if (hp) copyText(hp, '已复制实际路径')
 }
+// 相对当前目录的路径：面板当前目录恒显示在面包屑上，弹窗提示/「复制相对路径」用它——
+// 绝对路径（容器 rootfs 前缀 / 宿主 home 前缀）太长，看不出操作落点。不在当前目录
+// 子树下的（防御）原样返回。
+function relPathOf(p: string): string {
+  if (p === path.value) return '.'
+  if (path.value === '/') return p.replace(/^\//, '')
+  return p.startsWith(`${path.value}/`) ? p.slice(path.value.length + 1) : p
+}
 
 // —— 跨面板复制粘贴（文件/文件夹通用）——
 // 剪贴板是模块级单例（api.ts）：复制后切到目标容器/宿主的文件面板粘贴，支持
@@ -724,6 +732,16 @@ const nameDialog = ref<null | { mode: 'newFile' | 'newDir' | 'rename'; dir?: str
 function newEntryDir(): string | undefined {
   return ctxTarget.value?.entry.type === 'dir' ? ctxTarget.value.path : undefined
 }
+// 命名弹窗的 desc：rename = 目标相对路径；新建 = 目标目录相对路径带尾斜杠
+// （当前目录 ./，根 /，子目录 src/）——绝对路径太长看不清落点，相对路径一眼定位，
+// 完整位置抬头看面包屑即可。
+const nameDialogDesc = computed(() => {
+  const d = nameDialog.value
+  if (!d) return ''
+  if (d.mode === 'rename') return relPathOf(ctxTarget.value?.path ?? '')
+  const dir = d.dir ?? path.value
+  return dir === '/' ? '/' : `${relPathOf(dir)}/`
+})
 const delTarget = ref<EntryRow | null>(null)
 const opErr = ref('')
 const opBusy = ref(false)
@@ -751,7 +769,9 @@ function downloadDir() {
   return downloadTo(p, p.slice(p.lastIndexOf('/') + 1) || p, true)
 }
 
-// —— 名称搜索：命中按相关度前排 + 高亮，未命中不过滤、稳定垫后 ——
+// —— 名称搜索：两套语义随浏览模式（渲染分支见 rows）——
+// 下钻：当前目录内相关度排序平铺——命中前排 + 高亮，未命中不过滤、稳定垫后（跳文件优先）。
+// 展开：目录树内过滤、保层级——只留命中条目与其祖先目录，目录名命中则子树照旧。
 // 纯客户端视图（displayEntries 派生自 entries）：静默轮询换列表时搜索结果自动跟着重算。
 // 相关度：全等 > 前缀 > 词边界（-_. 空格 数字 之后）> 裸包含（位置越靠前越相关）；
 // 同分保持原顺序（服务端目录在前、字母序），未命中 MAX 保持原序垫后。
@@ -883,9 +903,15 @@ function openRow(row: EntryRow) {
 }
 
 // 平面化渲染模型：主列表 + 各展开目录的子内容（递归，带缩进层级），v-for 直接吃它。
-// 搜索态退化为 displayEntries 的单层平铺。sigOf 吃 FilesView（子目录视图同构，签名复用）。
+// 搜索随浏览模式分两套（与两种浏览模型同构）：
+// - 下钻：单目录相关度排序平铺（displayEntries，未命中不过滤垫后）——跳转文件优先；
+// - 展开：树内过滤、保层级（VS Code filter-on-type 语义）——只留命中条目与其祖先目录，
+//   目录名命中则整个子树照旧（树是正在搭建的浏览上下文，搜索不该把它拍平换掉）。
+// 目录行先占位再递归，子树全不命中就连子层一起 splice 回收（目录行必须渲染在子层之前）。
+// sigOf 吃 FilesView（子目录视图同构，签名复用）。
 const rows = computed<TreeRow[]>(() => {
-  if (q.value.trim()) {
+  const needle = q.value.trim().toLowerCase()
+  if (needle && props.browseMode === 'drill') {
     return displayEntries.value.map((e) => ({
       kind: 'entry' as const,
       entry: e,
@@ -894,18 +920,39 @@ const rows = computed<TreeRow[]>(() => {
     }))
   }
   const out: TreeRow[] = []
-  const walk = (list: FileEntry[], parent: string, depth: number) => {
+  const walk = (list: FileEntry[], parent: string, depth: number): boolean => {
+    let any = false
     for (const e of list) {
       const p = parent === '/' ? `/${e.name}` : `${parent}/${e.name}`
-      out.push({ kind: 'entry', entry: e, path: p, depth })
-      if (e.type !== 'dir') continue
+      const hit = !needle || e.name.toLowerCase().includes(needle)
+      if (e.type !== 'dir') {
+        if (hit) {
+          out.push({ kind: 'entry', entry: e, path: p, depth })
+          any = true
+        }
+        continue
+      }
       const st = expanded.get(p)
-      if (!st?.open) continue
-      if (st.err) out.push({ kind: 'err', path: p, depth: depth + 1, msg: st.err })
-      else if (!st.entries.length) {
-        if (!st.loading) out.push({ kind: 'empty', path: p, depth: depth + 1 })
-      } else walk(st.entries, p, depth + 1)
+      const at = out.length
+      out.push({ kind: 'entry', entry: e, path: p, depth }) // 占位：目录行在子层之前
+      let sub = false
+      if (st?.open) {
+        if (st.err) {
+          out.push({ kind: 'err', path: p, depth: depth + 1, msg: st.err })
+          sub = true
+        } else if (!st.entries.length) {
+          if (!st.loading) {
+            out.push({ kind: 'empty', path: p, depth: depth + 1 })
+            sub = true
+          }
+        } else {
+          sub = walk(st.entries, p, depth + 1)
+        }
+      }
+      if (needle && !hit && !sub) out.splice(at, out.length - at)
+      else any = true
     }
+    return any
   }
   walk(entries.value, path.value, 0)
   return out
@@ -1049,13 +1096,14 @@ function fmtSize(n: number): string {
       终端会话未就绪，等待中…
     </p>
 
-    <!-- 名称搜索：命中相关度前排 + 高亮，未命中垫后不滤掉；Esc/✕ 清空 -->
+    <!-- 名称搜索：随浏览模式分两套（下钻=当前目录排序平铺 / 展开=树内过滤保层级）；
+         Esc/✕ 清空 -->
     <div v-if="hasTerminal" class="flex h-7 shrink-0 items-center gap-1.5 border-b border-border px-2">
       <Search class="size-3.5 shrink-0 text-muted-foreground" />
       <input
         v-model="q"
         class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
-        placeholder="搜索当前目录文件名…"
+        :placeholder="browseMode === 'expand' ? '在目录树中过滤（含已展开的子目录）…' : '搜索当前目录文件名…'"
         @keydown.esc="q = ''"
       />
       <button
@@ -1166,6 +1214,14 @@ function fmtSize(n: number): string {
             >
               空目录
             </p>
+            <!-- 展开模式的搜索是过滤语义：全不命中时树被滤空，给个明确空态（下钻的排序
+                 语义永远有行，走不到这） -->
+            <p
+              v-else-if="q.trim() && !rows.length && !loading"
+              class="px-3 py-6 text-center text-xs text-muted-foreground"
+            >
+              无匹配条目
+            </p>
             <!-- 行 = 树平面化结果（rows）：主列表 + 各展开目录的子内容。点行 = 打开/进入/
                  展开（随浏览模式），Ctrl/⌘ 点行 = 加入/移出多选、Shift 点行 = 从锚点范围选
                  （VS Code 式，选中集供「复制」整体带走）；点行首 chevron 或文件夹图标 =
@@ -1261,6 +1317,9 @@ function fmtSize(n: number): string {
                     <DropdownMenuItem v-if="!isHost" :disabled="isMultiHit(row)" @click="copyText(row.path, '已复制容器路径')">
                       <Copy /> 复制容器路径
                     </DropdownMenuItem>
+                    <DropdownMenuItem :disabled="isMultiHit(row)" @click="copyText(relPathOf(row.path), '已复制相对路径')">
+                      <Copy /> 复制相对路径
+                    </DropdownMenuItem>
                     <DropdownMenuItem v-if="hostPathOf(row)" :disabled="isMultiHit(row)" @click="copyRowHostPath(row)">
                       <Copy /> 复制实际路径
                     </DropdownMenuItem>
@@ -1287,6 +1346,9 @@ function fmtSize(n: number): string {
           </ContextMenuItem>
           <ContextMenuItem v-if="!isHost" :disabled="ctxMulti" @click="copyText(ctxTarget.path, '已复制容器路径')">
             复制容器路径
+          </ContextMenuItem>
+          <ContextMenuItem :disabled="ctxMulti" @click="copyText(relPathOf(ctxTarget.path), '已复制相对路径')">
+            复制相对路径
           </ContextMenuItem>
           <ContextMenuItem v-if="hostPathOf(ctxTarget)" :disabled="ctxMulti" @click="copyRowHostPath(ctxTarget)">
             复制实际路径
@@ -1340,7 +1402,7 @@ function fmtSize(n: number): string {
     <NameDialog
       v-if="nameDialog"
       :title="nameDialog.mode === 'rename' ? '重命名' : nameDialog.mode === 'newDir' ? '新建文件夹' : '新建文件'"
-      :desc="nameDialog.mode === 'rename' ? ctxTarget?.path : nameDialog.dir ?? path"
+      :desc="nameDialogDesc"
       :initial="nameDialog.mode === 'rename' ? ctxTarget?.entry.name : ''"
       :ok-text="nameDialog.mode === 'rename' ? '重命名' : '创建'"
       :err="opErr"
