@@ -2,6 +2,7 @@
 // 右侧文件面板：跟随终端 pane 的 cwd 展示目录内容（tmux 查询），可逐级浏览、点文件
 // 抛 open-file 给父级开编辑器，右键 新建文件/新建文件夹/重命名/删除。跟随与手动浏览
 // 互斥：手动导航（点目录/输路径/外部定位）暂停跟随，恢复条一键回到终端所在目录。
+// 文件夹的行点击语义由浏览模式决定（下钻=进入目录 / 展开=原位展开不下钻），顶栏可切。
 import { ref, reactive, computed, watch, onMounted, onUnmounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   listFiles,
@@ -37,7 +38,6 @@ import {
 import NameDialog from '@/components/NameDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   Folder,
   FileText,
@@ -54,11 +54,12 @@ import {
   Download,
   Search,
   Loader2,
-  HardDrive,
   ClipboardPaste,
   Copy,
   MoreHorizontal,
   Pencil,
+  FolderInput,
+  FolderTree,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -131,10 +132,6 @@ function copyText(s: string, okMsg: string) {
     done(legacy())
   }
 }
-// 顶栏弹框：复制当前目录的宿主路径。
-function copyHostPath() {
-  if (hostPath.value) copyText(hostPath.value, '已复制宿主路径')
-}
 // 行条目的宿主实际路径：当前目录 hostPath 加相对后缀（容器 /home/dev 在宿主 rootfs 是
 // 线性映射，子路径同规则拼接即可，无需额外请求）。hostPath 不可用（挂载点等映射不到的
 // 目录）返回 null，菜单里隐藏该项；宿主面板下 hostPath 就是路径本身，拼接天然成立。
@@ -155,7 +152,7 @@ function copyRowHostPath(row: EntryRow) {
 // 容器↔宿主↔容器与同容器跨目录。目标冲突由服务端 409 报错（不覆盖）。
 const clip = ref<FileClipboard | null>(getFileClipboard())
 
-// —— 多选（VS Code 式）：普通点击 = 打开/进入并清空选中；Ctrl/⌘ 点击 = 加入/移出选中；
+// —— 多选（VS Code 式）：普通点击 = 打开/进入/展开（随浏览模式）并清空选中；Ctrl/⌘ 点击 = 加入/移出选中；
 // Shift 点击 = 从锚点到当前行范围选。选中按完整路径记（展开视图里同名条目可多层出现，
 // 路径才唯一），3s 静默轮询换列表不影响；换目录整体清空（见下方 path watch）。
 const selected = ref<Set<string>>(new Set())
@@ -380,6 +377,7 @@ watch(
     path.value = '' // 连路径一起清：在途静默响应的 p 比对落空被丢弃，不把旧容器列表写进新容器
     hostPath.value = null
     entries.value = []
+    expanded.clear() // 展开状态不跨容器保留（路径是容器相对的，撞名纯属巧合）
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
     q.value = '' // 搜索是当前目录视图，切容器一并清掉
     tick()
@@ -391,13 +389,39 @@ watch(
     if (follow.value) tick()
   },
 )
-// 路径变化（跟随跳转/手动导航/面包屑）：树展开整体收起——展开是「当前目录视图」的形态，
-// 换了目录旧展开没有意义；静默轮询写回同值不触发 watch，展开原样保留。
-watch(path, () => {
-  expanded.clear()
+// 路径变化（跟随跳转/手动导航/面包屑）：下钻模式 = 树展开整体收起（展开是「当前目录
+// 视图」的形态，换了目录旧展开没有意义）；展开模式 = 只剪掉不在新目录子树里的展开状态
+// ——留着不可见子树的唯一效果是每 3s 一轮无谓的静默刷新，剪掉后回到上级/再进子目录时
+// 展开原样保留，树浏览上下文连续。静默轮询写回同值不触发 watch，展开原样保留。
+watch(path, (np) => {
+  if (browseMode.value === 'drill') expanded.clear()
+  else pruneExpanded(np)
   selected.value = new Set() // 换目录清空多选（选中是当前目录视图的形态，同展开）
   selAnchor = null
 })
+
+// —— 浏览模式（下钻 / 展开）——
+// 文件夹「点行」的语义二选一：下钻 = 进入目录（导航，原默认）；展开 = 原位展开/收起
+// （VS Code 树语义，不动当前目录）。行首 chevron/文件夹图标热区在两种模式下都是原位
+// 展开——切换的是「点行」。模块级单例 + localStorage：面板 v-if 挂卸，重开要记得。
+type BrowseMode = 'drill' | 'expand'
+const BROWSE_KEY = 'mysandbox:file-browse-mode'
+function loadBrowseMode(): BrowseMode {
+  try {
+    return localStorage.getItem(BROWSE_KEY) === 'expand' ? 'expand' : 'drill'
+  } catch {
+    return 'drill' // localStorage 不可用（隐私模式等）走默认
+  }
+}
+const browseMode = ref<BrowseMode>(loadBrowseMode())
+function toggleBrowseMode() {
+  browseMode.value = browseMode.value === 'drill' ? 'expand' : 'drill'
+  try {
+    localStorage.setItem(BROWSE_KEY, browseMode.value)
+  } catch {
+    /* 持久化失败不影响使用 */
+  }
+}
 
 // —— 导航（均暂停跟随）——
 function pauseFollow() {
@@ -601,10 +625,11 @@ function nameSegs(name: string): { t: string; hit: boolean }[] {
 }
 
 // —— 目录展开（行内树形视图）——
-// 点行 = 进入目录（原导航不变）；点行首 chevron 或文件夹图标 = 原位展开子内容，子目录
-// 可继续层层展开。展开状态按完整路径记（子层会出现与顶层同名的条目，路径才唯一）；
-// 导航去新目录（path 变化）整体收起（见上方 watch），搜索时收起、只按相关度平铺——
-// 树展开与搜索排序混排会让人迷失层级。
+// 点行首 chevron 或文件夹图标 = 原位展开子内容，子目录可继续层层展开（两种模式下都
+// 可用，展开热区与行点击分工明确）；「点行」的语义随浏览模式 browseMode：下钻 = 进入
+// 目录（原导航不变），展开 = 整行即展开/收起。展开状态按完整路径记（子层会出现与顶层
+// 同名的条目，路径才唯一）；换目录的收尾随模式（见上方 path watch），搜索时收起、只按
+// 相关度平铺——树展开与搜索排序混排会让人迷失层级。
 // 展开的目录随 3s 静默轮询刷新（per-dir 签名，内容没变零 DOM 变更，与主列表同手法）。
 type EntryRow = { kind: 'entry'; entry: FileEntry; path: string; depth: number }
 type TreeRow =
@@ -619,6 +644,15 @@ const ROW_INDENT = 16
 
 const expanded = reactive(new Map<string, ExpandState>())
 const expandSeq = new Map<string, number>()
+
+// 展开模式的换目录收尾（path watch 调）：剪掉不在 newPath 子树里的展开状态——当前目录
+// 自身的保留（从展开中的目录点面包屑进去，子层照旧展开）。
+function pruneExpanded(newPath: string) {
+  const prefix = newPath === '/' ? '/' : `${newPath}/`
+  for (const p of [...expanded.keys()]) {
+    if (p !== newPath && !p.startsWith(prefix)) expanded.delete(p)
+  }
+}
 
 // 当前目录下拼完整路径（rows 顶层与新建/删除共用）。
 function joinPath(name: string): string {
@@ -669,10 +703,14 @@ function toggleExpand(row: EntryRow) {
   void loadExpanded(p, false)
 }
 
-// 行点击语义：目录进目录、link 先试目录后回退文件、文件抛 open-file（与原 openEntry 一致）。
+// 行点击语义（随浏览模式）：下钻 = 目录进目录；展开 = 目录原位展开/收起（不下钻）。
+// link 先试目录后回退文件、文件抛 open-file——本就不是下钻语义，两种模式一致。
+// 下钻模式下想原位看子内容，点行首 chevron/文件夹图标热区即可（见下方展开热区）。
 function openRow(row: EntryRow) {
-  if (row.entry.type === 'dir') openDir(row.path)
-  else if (row.entry.type === 'link') void openLink(row.path)
+  if (row.entry.type === 'dir') {
+    if (browseMode.value === 'expand') toggleExpand(row)
+    else openDir(row.path)
+  } else if (row.entry.type === 'link') void openLink(row.path)
   else emit('open-file', row.path)
 }
 
@@ -904,34 +942,23 @@ function fmtSize(n: number): string {
         </template>
       </div>
       <span v-else class="min-w-0 flex-1 font-mono text-[11px] text-muted-foreground">…</span>
-      <!-- 宿主实际路径：弹框展示容器路径与宿主 rootfs 实址（D1 直通，宿主可直读直写），
-           宿主行点击复制。容器路径不设复制——就在屏上，终端里 tab 补全更顺手。 -->
-      <Popover v-if="path">
-        <PopoverTrigger as-child>
-          <button class="shrink-0 text-muted-foreground hover:text-foreground" title="宿主机实际路径">
-            <HardDrive class="size-3.5" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="end" class="w-80">
-          <div v-if="!isHost" class="mb-2">
-            <p class="mb-0.5 text-[10px] text-muted-foreground">容器内路径</p>
-            <p class="break-all font-mono text-[11px]">{{ path }}</p>
-          </div>
-          <button
-            class="block w-full text-left"
-            title="点击复制宿主路径"
-            @click="copyHostPath"
-          >
-            <p class="mb-0.5 text-[10px] text-muted-foreground">
-              {{ isHost ? '宿主机路径（点击复制）' : '宿主机实际路径（点击复制）' }}
-            </p>
-            <p class="flex items-start gap-1.5 break-all font-mono text-[11px] text-foreground hover:text-primary">
-              <span class="min-w-0">{{ hostPath || '（无法映射）' }}</span>
-              <Copy v-if="hostPath" class="mt-0.5 size-3 shrink-0 opacity-60" />
-            </p>
-          </button>
-        </PopoverContent>
-      </Popover>
+      <!-- 浏览模式切换（状态按钮）：下钻 = 点文件夹进入目录；展开 = 点文件夹原位展开/收起，
+           不动当前目录（VS Code 树语义）。图标即状态（FolderInput=下钻 / FolderTree=展开，
+           展开态染文件夹同款 sky 提示「树模式生效中」）。原「宿主机实际路径」弹框已撤——
+           行级「复制实际路径」（右键/⋯）仍在，这个位置让给模式切换。 -->
+      <button
+        class="shrink-0 hover:text-foreground"
+        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
+        :title="
+          browseMode === 'expand'
+            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
+            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
+        "
+        @click="toggleBrowseMode"
+      >
+        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
+        <FolderInput v-else class="size-3.5" />
+      </button>
     </div>
 
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
@@ -951,10 +978,10 @@ function fmtSize(n: number): string {
             >
               空目录
             </p>
-            <!-- 行 = 树平面化结果（rows）：主列表 + 各展开目录的子内容。点行 = 进入/打开，
-                 Ctrl/⌘ 点行 = 加入/移出多选、Shift 点行 = 从锚点范围选（VS Code 式，选中集
-                 供「复制」整体带走）；点行首 chevron 或文件夹图标 = 原位展开子目录（.stop
-                 防止触发行点击）；文件行用等宽占位保持名字列对齐。 -->
+            <!-- 行 = 树平面化结果（rows）：主列表 + 各展开目录的子内容。点行 = 打开/进入/
+                 展开（随浏览模式），Ctrl/⌘ 点行 = 加入/移出多选、Shift 点行 = 从锚点范围选
+                 （VS Code 式，选中集供「复制」整体带走）；点行首 chevron 或文件夹图标 =
+                 原位展开子目录（.stop 防止触发行点击）；文件行用等宽占位保持名字列对齐。 -->
             <template v-for="row in rows" :key="row.kind + ':' + row.path">
               <!-- 展开失败的行内错误（点击重试）与空目录占位：缩进到同层名字列 -->
               <button
@@ -982,9 +1009,9 @@ function fmtSize(n: number): string {
                 @click="onRowClick(row, $event)"
               >
                 <!-- 展开热区 = chevron + 文件夹图标整体（含中间空隙）：点哪都是展开/收起，
-                     间隙不再漏给行点击造成误下钻；hover 双双变亮 + cursor 暗示整块可点，
-                     展开态 chevron 常亮（收起态淡灰）。点名字仍是进入目录。文件/link 行用
-                     等宽占位（w-4 + 行 gap + 图标 = 38px）保持名字列对齐。 -->
+                     间隙不再漏给行点击；hover 双双变亮 + cursor 暗示整块可点，展开态 chevron
+                     常亮（收起态淡灰）。文件/link 行用等宽占位（w-4 + 行 gap + 图标 = 38px）
+                     保持名字列对齐。 -->
                 <span
                   v-if="row.entry.type === 'dir'"
                   class="group flex shrink-0 cursor-pointer items-center"
