@@ -28,7 +28,7 @@ import {
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
-import { Music, Pencil } from 'lucide-vue-next'
+import { Music, Pencil, Eye } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
@@ -335,10 +335,9 @@ watch(() => [props.line, props.col], revealTarget)
 // —— 只读默认 + 浮动铅笔 ——
 // 使用画像是预览/复制为主、编辑偶发：打开默认 readOnly（Monaco 只读仍可选中/复制/
 // 双击选词，高频路径零成本，且不点铅笔永远不会写盘），右下角浮动铅笔进入编辑。
-// 只进不出：进编辑后按钮消失，回只读走关 tab 重开（自动保存下无「保存」动作，
-// 专门的锁定回程是伪需求——用户实测后砍掉对勾态）。新建态（文件不存在，打开意图
-// 必然是写）直接落在编辑态。diff/预览渲染/二进制形态无编辑语义，铅笔只随 Monaco
-// 分支出现。
+// md/svg 的编辑会话内铅笔⇄眼睛（预览渲染）双向切换；普通文件进编辑后无按钮
+// （没有渲染视图可回，锁定回程是伪需求——对勾态用户实测后砍掉）。新建态（文件
+// 不存在，打开意图必然是写）直接落在编辑态。diff/二进制形态无编辑语义无按钮。
 const editing = ref(!!props.editing)
 // 进编辑联动强出渲染态：md/svg 的编辑就是源码 Monaco，渲染视图下 Monaco 未挂载
 watch(editing, (v) => {
@@ -350,6 +349,12 @@ watch(
     if (v) editing.value = true
   },
 )
+// 铅笔进编辑：editing 已是 true（md/svg 编辑会话中正看渲染视图）时 watch 不触发，
+// 直接强出渲染态落回源码 Monaco
+function enterEdit() {
+  editing.value = true
+  if (textPreview.value) textPreview.value = false
+}
 watch([editing, editorRef], ([v, ed]) => {
   if (!ed) return
   ed.updateOptions({ readOnly: !v })
@@ -602,18 +607,28 @@ function fmtSize(n: number): string {
               @save="() => save()"
             />
           </template>
-          <!-- 只读态浮动铅笔：进编辑即消失（只进不出，见 script 说明）。悬浮于编辑区
-               右下角不占布局；svg/md 预览态也显示（进编辑 = 切源码 Monaco，watch 联动），
-               与普通文件同一入口同一心智 -->
+          <!-- 右下角浮动按钮：铅笔 = 进编辑（所有文件只读态 + md/svg 渲染视图）；
+               眼睛 = 回预览渲染（仅 md/svg 源码态），编辑会话内双向切换。普通文件
+               进编辑后无按钮（没有渲染视图可回）。悬浮右下角不占布局 -->
           <Button
-            v-if="!editing"
+            v-if="!editing || ((isSvg || isMd) && textPreview)"
             variant="outline"
             size="icon"
             class="absolute right-3 bottom-3 z-10 size-8 rounded-md bg-background/80 shadow-sm backdrop-blur"
             title="编辑"
-            @click="editing = true"
+            @click="enterEdit"
           >
             <Pencil class="size-4" />
+          </Button>
+          <Button
+            v-else-if="(isSvg || isMd) && !textPreview"
+            variant="outline"
+            size="icon"
+            class="absolute right-3 bottom-3 z-10 size-8 rounded-md bg-background/80 shadow-sm backdrop-blur"
+            title="预览渲染"
+            @click="textPreview = true"
+          >
+            <Eye class="size-4" />
           </Button>
         </div>
       </template>
