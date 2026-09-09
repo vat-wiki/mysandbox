@@ -4,6 +4,11 @@
 # 用法（在宿主上跑，容器必须已启动）：
 #   scripts/lxc-template.sh <容器名>            # 默认 ms-template
 #
+# 前置（脚本只负责装环境 + 契约定型，容器的创建与联网要自己先就位）：
+#   lxc-create -n ms-template -t download -- -d ubuntu -r noble -a amd64
+#   config 里配好网桥 + 静态 IP/网关（lxc.net.0.ipv4.address/gateway——静态 IP 无 DHCP，
+#   没有网就没有 apt）。缺前置时脚本会明确报「未在运行」并列出启动命令。
+#
 # 与 Dockerfile 的关系：同一份镜像契约，换了执行形态。
 #   Dockerfile 是「分层构建 + 每层 RUN」，LXC 这边是「一个跑起来的容器里跑一遍脚本」，
 #   产物直接留在 rootfs 里，之后 lxc-copy 克隆。所以：

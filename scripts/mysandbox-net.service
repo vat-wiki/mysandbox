@@ -12,6 +12,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# 转发内核开关必须自己开：全新宿主上没有 docker/ufw 代劳时（两者都会开 ip_forward），
+# 只配 MASQUERADE 是死的——容器出网全部黑洞。
+ExecStart=/usr/sbin/sysctl -w net.ipv4.ip_forward=1
 ExecStart=/bin/sh -c 'ip link show __MSB_BRIDGE__ >/dev/null 2>&1 || ip link add __MSB_BRIDGE__ type bridge'
 ExecStart=/usr/sbin/ip link set __MSB_BRIDGE__ up
 ExecStart=/usr/sbin/ip addr replace __MSB_GW__/24 dev __MSB_BRIDGE__

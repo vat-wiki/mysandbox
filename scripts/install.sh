@@ -169,6 +169,13 @@ log "5/8 构建（npm install + npm run build）"
 # 成 up to date）。web/ 是独立 package.json（无 workspace），依赖必须单独装。
 # 差网络（DNS 抖动/CDN 超时）下重试 3 次——实测偶发 EAI_AGAIN/ETIMEDOUT，重试即过。
 for sub in . web; do
+  # 全产物已在（重跑同步 unit 的典型场景）则整体跳过构建段：省时，也避开 npm 网络
+  # 抖动把一次纯同步卡死。任一产物缺失才进入 npm install 恒跑（自愈残缺件）。
+  if [ -d "$MS_DIR/node_modules" ] && [ -d "$MS_DIR/web/node_modules" ] && \
+     [ -f "$MS_DIR/dist/server/cli.js" ] && [ -f "$MS_DIR/web/dist/index.html" ]; then
+    log "   产物齐全，跳过构建段"
+    break
+  fi
   ok=0
   for attempt in 1 2 3; do
     if as_user_login "cd '$MS_DIR/$sub' && npm install --no-audit --no-fund" >/dev/null; then
