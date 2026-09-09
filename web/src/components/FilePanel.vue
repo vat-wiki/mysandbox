@@ -717,7 +717,13 @@ function onRowMenu(row: EntryRow) {
   ctxTarget.value = row
 }
 // 命名弹窗：mode 区分三个操作；entry 为重命名/删除目标。err 是异步结果回显。
-const nameDialog = ref<null | { mode: 'newFile' | 'newDir' | 'rename' }>(null)
+// dir = 新建的父目录：右键/⋯ 命中文件夹时建在该文件夹内（VS Code 同语义），
+// 空白处/顶栏按钮不传 = 当前目录。开弹窗时捕获，不依赖存活的 ctxTarget。
+const nameDialog = ref<null | { mode: 'newFile' | 'newDir' | 'rename'; dir?: string }>(null)
+// 新建目标：右键命中文件夹 = 该文件夹，其余 = 当前目录（undefined 即 path.value）。
+function newEntryDir(): string | undefined {
+  return ctxTarget.value?.entry.type === 'dir' ? ctxTarget.value.path : undefined
+}
 const delTarget = ref<EntryRow | null>(null)
 const opErr = ref('')
 const opBusy = ref(false)
@@ -816,7 +822,7 @@ function pruneExpanded(newPath: string) {
   }
 }
 
-// 当前目录下拼完整路径（rows 顶层与新建/删除共用）。
+// 当前目录下拼完整路径（rows 顶层搜索平铺用；新建的目标目录见 nameDialog.dir）。
 function joinPath(name: string): string {
   return path.value === '/' ? `/${name}` : `${path.value}/${name}`
 }
@@ -916,7 +922,10 @@ async function confirmName(name: string) {
       const t = ctxTarget.value
       if (t && name !== t.entry.name) await renameEntry(id, t.path, name)
     } else {
-      await createEntry(id, joinPath(name), d.mode === 'newDir' ? 'dir' : 'file')
+      const dir = d.dir ?? path.value
+      await createEntry(id, dir === '/' ? `/${name}` : `${dir}/${name}`, d.mode === 'newDir' ? 'dir' : 'file')
+      // 建进了非当前目录（右键文件夹的新建）：目录在展开树里就立即重拉，别等 3s 轮询
+      if (dir !== path.value && expanded.get(dir)?.open) void loadExpanded(dir, false)
     }
     nameDialog.value = null
     refresh()
@@ -1302,10 +1311,10 @@ function fmtSize(n: number): string {
         <ContextMenuItem :disabled="!path || path === '/'" @click="downloadDir">
           下载当前文件夹
         </ContextMenuItem>
-        <ContextMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
+        <ContextMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile', dir: newEntryDir() }">
           新建文件
         </ContextMenuItem>
-        <ContextMenuItem :disabled="!path" @click="nameDialog = { mode: 'newDir' }">
+        <ContextMenuItem :disabled="!path" @click="nameDialog = { mode: 'newDir', dir: newEntryDir() }">
           新建文件夹
         </ContextMenuItem>
       </ContextMenuContent>
@@ -1331,7 +1340,7 @@ function fmtSize(n: number): string {
     <NameDialog
       v-if="nameDialog"
       :title="nameDialog.mode === 'rename' ? '重命名' : nameDialog.mode === 'newDir' ? '新建文件夹' : '新建文件'"
-      :desc="nameDialog.mode === 'rename' ? ctxTarget?.path : path"
+      :desc="nameDialog.mode === 'rename' ? ctxTarget?.path : nameDialog.dir ?? path"
       :initial="nameDialog.mode === 'rename' ? ctxTarget?.entry.name : ''"
       :ok-text="nameDialog.mode === 'rename' ? '重命名' : '创建'"
       :err="opErr"
