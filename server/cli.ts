@@ -91,10 +91,12 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
   mysandbox targets
       List peer exec targets (host, system containers, docker services).
 
-  mysandbox status
+  mysandbox status [--json]
       Scan and list every mysandbox-managed object on this host (containers,
       template, docker services/volumes, host-terminal sessions, transient
       systemd units, sidecar files). Read-only; does not need the server.
+      --json emits the same scan as structured JSON (no secrets: token/env
+      values are never included).
 
   mysandbox firewall print
       Print the desired ufw rules for host<->LXC<->docker interconnect
@@ -147,7 +149,7 @@ async function main(): Promise<void> {
   // 一次性子命令：mysandbox status（不启动 server；只读扫宿主，各段独立降级）。
   if (process.argv[2] === 'status') {
     const { config } = await loadConfig();
-    await runStatusCommand(config);
+    await runStatusCommand(config, { json: process.argv.slice(3).includes('--json') });
     return;
   }
 
