@@ -338,9 +338,9 @@ watch(() => [props.line, props.col], revealTarget)
 // —— 只读默认 + 浮动铅笔 ——
 // 使用画像是预览/复制为主、编辑偶发：打开默认 readOnly（Monaco 只读仍可选中/复制/
 // 双击选词，高频路径零成本，且不点铅笔永远不会写盘），右下角浮动铅笔进入编辑。
-// md/svg 的编辑会话内铅笔⇄眼睛（预览渲染）双向切换；普通文件进编辑后无按钮
-// （没有渲染视图可回，锁定回程是伪需求——对勾态用户实测后砍掉）。新建态（文件
-// 不存在，打开意图必然是写）直接落在编辑态。diff/二进制形态无编辑语义无按钮。
+// 编辑态右下角眼睛 = 回程：md/svg 回预览渲染、普通文件锁回只读，双向自由切换。
+// 新建态（文件不存在，打开意图必然是写）直接落在编辑态。diff/二进制形态无编辑
+// 语义无按钮。
 const editing = ref(!!props.editing)
 // 进编辑联动强出渲染态：md/svg 的编辑就是源码 Monaco，渲染视图下 Monaco 未挂载
 watch(editing, (v) => {
@@ -358,7 +358,13 @@ function enterEdit() {
   editing.value = true
   if (textPreview.value) textPreview.value = false
 }
-// 形态上报：编辑/预览双向切换的第二入口在文件 tab 右键菜单（父级按 mode 画文案）
+// 「预览」回程（眼睛按钮与 tab 右键共用）：md/svg 回渲染视图（编辑会话保持，可再
+// 点铅笔回源码）；普通文件没有渲染视图，语义是锁回只读（改动不丢，自动保存照常落盘）
+function exitEdit() {
+  if (isSvg.value || isMd.value) textPreview.value = true
+  else editing.value = false
+}
+// 形态上报：编辑/预览切换入口（右下角按钮 + tab 右键菜单）按此判定
 watch(
   [editing, textPreview, isSvg, isMd],
   ([ed, tp, svg, md]) => emit('mode', { editing: ed, preview: tp && (svg || md) }),
@@ -367,12 +373,7 @@ watch(
 defineExpose({
   requestClose: () => requestClose(),
   enterEdit: () => enterEdit(),
-  // 「预览」回程：md/svg 回渲染视图（编辑会话保持，可再点铅笔回源码）；
-  // 普通文件没有渲染视图，语义是锁回只读（改动不丢，自动保存照常落盘）
-  showPreview: () => {
-    if (isSvg.value || isMd.value) textPreview.value = true
-    else editing.value = false
-  },
+  showPreview: () => exitEdit(),
 })
 watch([editing, editorRef], ([v, ed]) => {
   if (!ed) return
@@ -623,9 +624,8 @@ function fmtSize(n: number): string {
               @save="() => save()"
             />
           </template>
-          <!-- 右下角浮动按钮：铅笔 = 进编辑（所有文件只读态 + md/svg 渲染视图）；
-               眼睛 = 回预览渲染（仅 md/svg 源码态），编辑会话内双向切换。普通文件
-               进编辑后无按钮（没有渲染视图可回）。悬浮右下角不占布局 -->
+          <!-- 右下角浮动按钮：铅笔 = 进编辑（渲染视图/只读态）；眼睛 = 编辑态回程
+               （md/svg 回预览渲染，普通文件锁回只读），所有文件对等。悬浮右下角不占布局 -->
           <Button
             v-if="!editing || ((isSvg || isMd) && textPreview)"
             variant="outline"
@@ -637,12 +637,12 @@ function fmtSize(n: number): string {
             <Pencil class="size-4" />
           </Button>
           <Button
-            v-else-if="(isSvg || isMd) && !textPreview"
+            v-else
             variant="outline"
             size="icon"
             class="absolute right-3 bottom-3 z-10 size-8 rounded-md bg-background/80 shadow-sm backdrop-blur"
-            title="预览渲染"
-            @click="textPreview = true"
+            :title="(isSvg || isMd) ? '预览渲染' : '锁回只读'"
+            @click="exitEdit"
           >
             <Eye class="size-4" />
           </Button>
