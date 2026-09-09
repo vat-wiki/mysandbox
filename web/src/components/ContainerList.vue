@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent, provide } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent, provide } from 'vue'
 import {
   listContainers,
   startContainer,
@@ -458,6 +458,35 @@ watch(
   },
 )
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
+// —— 文件面板浏览模式（下钻/展开）——
+// FilePanel 是单实例跟随 activeGroup，但模式是「每个终端组自己的」而非全局：切 tab 随组
+// 切换（FilePanel 只认 containerId，认不了组，所以状态上收在这里按组 id 记）。存
+// sessionStorage：浏览器会话（标签页）内有效——跨标签页/窗口互不影响，会话结束即忘，
+// 不做跨会话持久化。已关组的残留键几字节无害，不清理。
+type FileBrowseMode = 'drill' | 'expand'
+const FILE_BROWSE_KEY = 'mysandbox:file-browse-modes'
+function loadFileBrowseModes(): Record<string, FileBrowseMode> {
+  try {
+    const v: unknown = JSON.parse(sessionStorage.getItem(FILE_BROWSE_KEY) ?? '{}')
+    return v && typeof v === 'object' ? (v as Record<string, FileBrowseMode>) : {}
+  } catch {
+    return {}
+  }
+}
+const fileBrowseModes = reactive(loadFileBrowseModes())
+const fileBrowseMode = computed<FileBrowseMode>(
+  () => fileBrowseModes[activeGroup.value?.id ?? ''] ?? 'drill',
+)
+function setFileBrowseMode(m: FileBrowseMode) {
+  const id = activeGroup.value?.id
+  if (!id) return
+  fileBrowseModes[id] = m
+  try {
+    sessionStorage.setItem(FILE_BROWSE_KEY, JSON.stringify(fileBrowseModes))
+  } catch {
+    /* sessionStorage 不可用（隐私模式等）就只留内存态 */
+  }
+}
 // —— 文件 tab（VSCode 式多开）——
 // 每个 tab 一个常驻 FileEditorPane（v-show 切换，保 Monaco 撤销栈/滚动位——同终端组机制）。
 // diff 存在 = git 变更对比模式（只读快照分支）；line/col 来自终端 Ctrl+点击 `:行:列` 后缀。
@@ -2934,6 +2963,8 @@ onUnmounted(() => {
       :panes="filePanes"
       :term-id="fileTermId"
       :has-terminal="!!activeGroup"
+      :browse-mode="fileBrowseMode"
+      @browse-mode="setFileBrowseMode"
       @close="showFiles = false"
       @open-file="onPanelOpenFile"
       @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"

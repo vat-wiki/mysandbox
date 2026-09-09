@@ -69,6 +69,9 @@ const props = defineProps<{
   panes: { termId: string; label: string }[]
   termId: string | null
   hasTerminal: boolean
+  // 浏览模式：下钻（点文件夹进入目录）/ 展开（点文件夹原位展开，不下钻）。
+  // 父组件按终端组持有（sessionStorage），本组件只消费 + 上抛切换。
+  browseMode: 'drill' | 'expand'
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
@@ -76,6 +79,7 @@ const emit = defineEmits<{
   // opts.editing = 右键「编辑」直接落编辑态（默认只读）。
   (e: 'open-file', path: string, opts?: { diff?: { headPath?: string }; editing?: boolean }): void
   (e: 'pane-pick', termId: string): void
+  (e: 'browse-mode', mode: 'drill' | 'expand'): void
 }>()
 
 // 跟随模式：path 跟着终端 cwd 走。手动导航置 false（容器 id 冻结到 manualContainerId，
@@ -394,7 +398,7 @@ watch(
 // ——留着不可见子树的唯一效果是每 3s 一轮无谓的静默刷新，剪掉后回到上级/再进子目录时
 // 展开原样保留，树浏览上下文连续。静默轮询写回同值不触发 watch，展开原样保留。
 watch(path, (np) => {
-  if (browseMode.value === 'drill') expanded.clear()
+  if (props.browseMode === 'drill') expanded.clear()
   else pruneExpanded(np)
   selected.value = new Set() // 换目录清空多选（选中是当前目录视图的形态，同展开）
   selAnchor = null
@@ -403,24 +407,11 @@ watch(path, (np) => {
 // —— 浏览模式（下钻 / 展开）——
 // 文件夹「点行」的语义二选一：下钻 = 进入目录（导航，原默认）；展开 = 原位展开/收起
 // （VS Code 树语义，不动当前目录）。行首 chevron/文件夹图标热区在两种模式下都是原位
-// 展开——切换的是「点行」。模块级单例 + localStorage：面板 v-if 挂卸，重开要记得。
-type BrowseMode = 'drill' | 'expand'
-const BROWSE_KEY = 'mysandbox:file-browse-mode'
-function loadBrowseMode(): BrowseMode {
-  try {
-    return localStorage.getItem(BROWSE_KEY) === 'expand' ? 'expand' : 'drill'
-  } catch {
-    return 'drill' // localStorage 不可用（隐私模式等）走默认
-  }
-}
-const browseMode = ref<BrowseMode>(loadBrowseMode())
+// 展开——切换的是「点行」。状态按终端组归父组件持有（sessionStorage 存，会话内有效），
+// 这里 prop 进 / 事件出，面板自己不存、挂卸无感。
+// 切换即上抛，状态落地在父组件（按终端组 + sessionStorage）。
 function toggleBrowseMode() {
-  browseMode.value = browseMode.value === 'drill' ? 'expand' : 'drill'
-  try {
-    localStorage.setItem(BROWSE_KEY, browseMode.value)
-  } catch {
-    /* 持久化失败不影响使用 */
-  }
+  emit('browse-mode', props.browseMode === 'drill' ? 'expand' : 'drill')
 }
 
 // —— 导航（均暂停跟随）——
@@ -708,7 +699,7 @@ function toggleExpand(row: EntryRow) {
 // 下钻模式下想原位看子内容，点行首 chevron/文件夹图标热区即可（见下方展开热区）。
 function openRow(row: EntryRow) {
   if (row.entry.type === 'dir') {
-    if (browseMode.value === 'expand') toggleExpand(row)
+    if (props.browseMode === 'expand') toggleExpand(row)
     else openDir(row.path)
   } else if (row.entry.type === 'link') void openLink(row.path)
   else emit('open-file', row.path)
