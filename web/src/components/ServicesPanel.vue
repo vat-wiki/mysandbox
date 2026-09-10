@@ -423,7 +423,7 @@ onUnmounted(() => {
                 <span
                   v-if="sel.imageDrift === true"
                   class="shrink-0 text-amber-600"
-                  title="容器现用镜像 ≠ 本地 ref 指向——本地 build 过新版，点「重建」收编（详情看凭据与镜像身份）"
+                  title="容器现用镜像 ≠ 本地 ref 指向——本地 build 过新版，点「本地重建」收编（详情看凭据与镜像身份）"
                   >⚠ 本地有新镜像</span
                 >
                 <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复">⚠</span>
@@ -450,28 +450,28 @@ onUnmounted(() => {
                   >停止</Button
                 >
                 <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
-                <!-- 更新：拉新镜像，ID 变了才按原配置重建（latest 标签追新）；重建：用本地
-                     已有镜像重建，不碰 registry（本地 build 迭代服务的对口入口）。无数据卷的
-                     custom 由 requestServiceUpdate/requestServiceRebuild 先给可行动的警告。
-                     任务进顶部横幅。收编容器不支持原地动作（rm 重建会抹掉它自己的编排配置），
-                     不显示。 -->
+                <!-- 检查更新：去 registry 拉新镜像，ID 变了才按原配置重建（latest 追新）；
+                     本地重建：不联网，直接用本地镜像（本地 build 迭代服务的对口入口）。
+                     两者文案把「镜像来源」挑明，避免「更新≠吃本地 build」的误点（实测踩过）。
+                     无数据卷的 custom 由 serviceJobs 的入口先给可行动的警告。任务进顶部横幅。
+                     收编容器不支持原地动作（rm 重建会抹掉它自己的编排配置），不显示。 -->
                 <Button
                   v-if="!sel.adopted"
                   variant="outline"
                   size="sm"
                   :disabled="!!busyName"
-                  title="从 registry 拉最新镜像，ID 变了才重建（latest 追新）"
+                  title="从 registry 拉最新镜像，镜像 ID 变了才重建（latest 追新）"
                   @click="sel && requestServiceUpdate(sel)"
-                  >更新</Button
+                  >检查更新</Button
                 >
                 <Button
                   v-if="!sel.adopted"
                   variant="outline"
                   size="sm"
                   :disabled="!!busyName"
-                  title="用本地已有镜像按原配置重建容器（不联网）"
+                  title="不联网：直接用本地镜像按原配置重建容器（本地 build 迭代用）"
                   @click="sel && requestServiceRebuild(sel)"
-                  >重建</Button
+                  >本地重建</Button
                 >
                 <!-- 打开：端口表来自实测监听扫描（3s 跟刷，全预设通用），未扫到时回退
                      custom 手工登记端口。非 HTTP 端口浏览器打不开无妨（尽力而为）。 -->
@@ -583,7 +583,7 @@ onUnmounted(() => {
                     <span
                       v-if="sel.imageDrift === true"
                       class="shrink-0 text-amber-600"
-                      title="容器现用镜像与本地 ref 当前指向不同——本地 build 过新版，点「重建」收编"
+                      title="容器现用镜像与本地 ref 当前指向不同——本地 build 过新版，点「本地重建」收编"
                       >⚠ 本地有新镜像</span
                     >
                   </span>

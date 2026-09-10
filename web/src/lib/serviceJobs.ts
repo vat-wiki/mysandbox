@@ -51,10 +51,10 @@ export function trackServiceJobs(jobs: ServiceJobView[]): number {
 // 更新/重建共用的入口壳：无数据卷的服务动作 = 重建容器，可写层数据（容器内非挂载
 // 路径）会丢——先给可行动的警告，确认才动手；其余直接开。启动失败（同名任务进行中 /
 // meta 缺失）toast 展示，不弹窗打断。
-function requestServiceMutation(s: ServiceView, verb: string, go: () => void): void {
+function requestServiceMutation(s: ServiceView, warn: string, go: () => void): void {
   if (s.preset === 'custom' && !s.volume) {
-    toast.warning(`「${s.name}」没有数据卷，${verb}会重建容器——可写层里的数据将丢失`, {
-      action: { label: `仍要${verb}`, onClick: go },
+    toast.warning(warn, {
+      action: { label: '仍要执行', onClick: go },
       duration: 10_000,
     })
     return
@@ -62,20 +62,21 @@ function requestServiceMutation(s: ServiceView, verb: string, go: () => void): v
   go()
 }
 
-// 更新入口（侧栏卡片 ⋯ 菜单 / 服务面板按钮共用）：registry latest 追新。
+// 检查更新入口（侧栏卡片右键菜单 / 服务面板按钮共用）：registry latest 追新——
+// 去 registry 拉新镜像，ID 变了才重建。文案挑明「去 registry」，与本地重建区分。
 export function requestServiceUpdate(s: ServiceView): void {
-  requestServiceMutation(s, '更新', () => {
+  requestServiceMutation(s, `「${s.name}」没有数据卷——检查更新若拉到新版会重建容器，可写层里的数据将丢失`, () => {
     updateService(s.name)
-      .then(() => toast.info(`已开始更新 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
+      .then(() => toast.info(`已开始检查更新 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
       .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
   })
 }
 
-// 重建入口（同上）：用本地镜像重建，不碰 registry——本地 build 迭代服务的对口入口。
+// 本地重建入口（同上）：用本地镜像重建，不碰 registry——本地 build 迭代服务的对口入口。
 export function requestServiceRebuild(s: ServiceView): void {
-  requestServiceMutation(s, '重建', () => {
+  requestServiceMutation(s, `「${s.name}」没有数据卷——本地重建会删掉现容器重做，可写层里的数据将丢失`, () => {
     rebuildService(s.name)
-      .then(() => toast.info(`已开始重建 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
+      .then(() => toast.info(`已开始本地重建 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
       .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
   })
 }
