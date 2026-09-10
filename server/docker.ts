@@ -321,6 +321,15 @@ export async function imageId(ref: string): Promise<string | null> {
   return id || null;
 }
 
+// 容器现用镜像的 ID（sha256:…；查不到 = null）。服务重建用它对比本地 m.image 的当前
+// ID——相同 = 容器已跑在本地这份镜像上，重建无事发生（防误点白重建）。
+export async function containerImageId(name: string): Promise<string | null> {
+  const r = await dockerExec(['container', 'inspect', '--format', '{{.Image}}', name], 5_000);
+  if (!r.ok) return null;
+  const id = r.stdout.trim();
+  return id || null;
+}
+
 // 重建前的现场快照：运行态 + labels + 命名卷的容器内挂载点。更新（拉新镜像后按原
 // 形状重建容器）要复刻创建时的全部形状——env/command 在 meta 里，卷挂载点 meta 没记
 // （只有卷名），labels（含 preset/created-at）也在容器身上，inspect 是权威。

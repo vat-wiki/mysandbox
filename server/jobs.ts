@@ -14,7 +14,7 @@ import { log } from './logger.js';
 import type { ServiceView } from './services.js';
 
 export type JobState = 'running' | 'done' | 'error' | 'canceled';
-export type JobKind = 'create' | 'update';
+export type JobKind = 'create' | 'update' | 'rebuild';
 
 // 任务对 run thunk 暴露的全部控制面。log/status 追加进环形缓冲（status 同时更新
 // statusText——列表未展开时前端只显示这一行）；setCancellable 标记当前阶段可否取消
@@ -40,7 +40,7 @@ export interface ServicePlan {
 // 全量日志走 GET /jobs/:id 按需拉。
 export interface ServiceJobView {
   id: string;
-  kind: JobKind; // create = 新建服务；update = 更新（拉新镜像重建容器）——前端横幅/toast 文案据此区分
+  kind: JobKind; // create = 新建服务；update = 更新（拉新镜像重建容器）；rebuild = 重建（本地镜像，不碰 registry）——前端横幅/toast 文案据此区分
   name: string;
   image: string;
   ip: string;
@@ -202,7 +202,7 @@ export function cancelServiceJob(id: string): void {
   const rec = jobs.get(id);
   if (!rec) throw notFound(`job "${id}" not found`);
   if (rec.view.state !== 'running') throw conflict('任务已结束，无需取消');
-  if (!rec.view.cancellable) throw conflict('已过拉取阶段，无法取消（容器创建/启动数秒内完成）');
+  if (!rec.view.cancellable) throw conflict('当前阶段不可取消（容器创建/启动数秒内完成）');
   rec.cancelRequested = true;
   rec.view.statusText = '正在取消…';
   rec.controller.abort();

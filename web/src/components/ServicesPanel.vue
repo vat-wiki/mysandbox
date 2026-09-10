@@ -26,7 +26,7 @@ import {
   type ServicesStatus,
   type ServiceJobView,
 } from '@/lib/api'
-import { trackServiceJobs, requestServiceUpdate } from '@/lib/serviceJobs'
+import { trackServiceJobs, requestServiceUpdate, requestServiceRebuild } from '@/lib/serviceJobs'
 import { serviceUrl } from '@/lib/proxy'
 import { stateLabel } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -133,6 +133,7 @@ async function refresh() {
 
 // —— 创建任务横幅：进行中/失败/取消才出现（done 由自动选中承接）——
 const jobs = ref<ServiceJobView[]>([])
+const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', update: '更新', rebuild: '重建' }
 const activeJobs = computed(() =>
   jobs.value.filter((j) => j.state === 'running' || j.state === 'error' || j.state === 'canceled').slice(0, 3),
 )
@@ -359,13 +360,13 @@ onUnmounted(() => {
               <Check v-else-if="j.state === 'done'" class="size-3.5 shrink-0 text-emerald-600" />
               <X v-else-if="j.state === 'error'" class="size-3.5 shrink-0 text-destructive" />
               <Ban v-else class="size-3.5 shrink-0 text-muted-foreground" />
-              <span class="shrink-0 font-medium">{{ j.kind === 'update' ? '更新' : '创建' }} {{ j.name }}</span>
+              <span class="shrink-0 font-medium">{{ kindLabel[j.kind] }} {{ j.name }}</span>
               <span
                 class="min-w-0 flex-1 truncate text-muted-foreground"
                 :class="j.state === 'error' ? 'text-destructive' : ''"
                 :title="j.state === 'error' ? (j.error || j.statusText) : j.statusText"
               >
-                {{ j.state === 'running' ? j.statusText : j.state === 'error' ? `创建失败：${j.error || j.statusText}` : '已取消' }}
+                {{ j.state === 'running' ? j.statusText : j.state === 'error' ? `${kindLabel[j.kind]}失败：${j.error || j.statusText}` : '已取消' }}
               </span>
               <Button variant="ghost" size="xs" class="shrink-0" @click="toggleJobLog(j)">
                 {{ expandedJob === j.id ? '收起日志' : '日志' }}
@@ -437,10 +438,29 @@ onUnmounted(() => {
                   >停止</Button
                 >
                 <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
-                <!-- 更新：拉新镜像，ID 变了才按原配置重建（latest 标签追新）；无数据卷的
-                     custom 由 requestServiceUpdate 先给可行动的警告。任务进顶部横幅。
-                     收编容器不支持原地更新（rm 重建会抹掉它自己的编排配置），不显示。 -->
-                <Button v-if="!sel.adopted" variant="outline" size="sm" :disabled="!!busyName" @click="sel && requestServiceUpdate(sel)">更新</Button>
+                <!-- 更新：拉新镜像，ID 变了才按原配置重建（latest 标签追新）；重建：用本地
+                     已有镜像重建，不碰 registry（本地 build 迭代服务的对口入口）。无数据卷的
+                     custom 由 requestServiceUpdate/requestServiceRebuild 先给可行动的警告。
+                     任务进顶部横幅。收编容器不支持原地动作（rm 重建会抹掉它自己的编排配置），
+                     不显示。 -->
+                <Button
+                  v-if="!sel.adopted"
+                  variant="outline"
+                  size="sm"
+                  :disabled="!!busyName"
+                  title="从 registry 拉最新镜像，ID 变了才重建（latest 追新）"
+                  @click="sel && requestServiceUpdate(sel)"
+                  >更新</Button
+                >
+                <Button
+                  v-if="!sel.adopted"
+                  variant="outline"
+                  size="sm"
+                  :disabled="!!busyName"
+                  title="用本地已有镜像按原配置重建容器（不联网）"
+                  @click="sel && requestServiceRebuild(sel)"
+                  >重建</Button
+                >
                 <!-- 打开：端口表来自实测监听扫描（3s 跟刷，全预设通用），未扫到时回退
                      custom 手工登记端口。非 HTTP 端口浏览器打不开无妨（尽力而为）。 -->
                 <Button

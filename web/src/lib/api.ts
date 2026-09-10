@@ -483,6 +483,10 @@ export const getServiceListenPorts = (name: string) =>
 // 更新（latest 追新）：后台任务——拉新镜像，ID 变了才按原配置重建容器。
 export const updateService = (name: string) =>
   postJson(`/api/services/${name}/update`) as Promise<{ jobId: string }>
+// 重建（本地镜像）：不碰 registry，直接用本地镜像按原配置重建容器——本地 build
+// 迭代的服务用这个让改动生效；容器已在用本地镜像时无事发生。
+export const rebuildService = (name: string) =>
+  postJson(`/api/services/${name}/rebuild`) as Promise<{ jobId: string }>
 // 创建走后台任务：POST 只做快校验 + 预占，成功返回 jobId（进度看 jobs 轮询），
 // 失败（重名/池尽/缺必填）4xx 内联显示在对话框。
 export const createService = (input: CreateServiceInput) =>
@@ -508,7 +512,7 @@ export const unadoptService = (name: string) => postJson(`/api/services/${name}/
 // —— 服务创建任务 ——
 export interface ServiceJobView {
   id: string
-  kind: 'create' | 'update'
+  kind: 'create' | 'update' | 'rebuild'
   name: string
   image: string
   ip: string

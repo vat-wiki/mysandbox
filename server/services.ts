@@ -28,6 +28,7 @@ import {
   containerIpamIp,
   containerPid,
   imageId,
+  containerImageId,
   inspectServiceSnapshot,
   startContainer,
   stopContainer,
@@ -651,6 +652,59 @@ export async function runServiceUpdate(cfg: Config, name: string, ctx: JobCtx): 
   return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
 }
 
+// —— 重建（本地镜像）——
+// 与更新共用 rm → 按原形状重建的编排，差别只在镜像来源：不碰 registry，直接用本地
+// m.image 的当前 ID。为本地 build 迭代的服务准备（build 完点一下，服务就跑上新镜像）；
+// registry 追新走 runServiceUpdate。容器现用镜像 ID 与本地相同 = 没事发生（防误点）。
+// 无 pull 阶段故不可取消；rm 之后失败不自动回滚（数据在卷里无损，再点一次重建即可）。
+export async function runServiceRebuild(cfg: Config, name: string, ctx: JobCtx): Promise<ServiceView> {
+  const m = await getServiceMeta(name);
+  if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法重建——删除后重新创建一次即可`);
+  const snap = await inspectServiceSnapshot(name);
+  if (!snap) throw notFound(`service "${name}" not found`);
+  const ip = (await containerIpamIp(name)) ?? m.ip;
+  const wasRunning = snap.running;
+  const volume = m.volume && snap.volumeTarget ? { source: m.volume, target: snap.volumeTarget } : null;
+
+  const local = await imageId(m.image);
+  if (!local) throw badRequest(`本地没有镜像 ${m.image}——先 build/tag，或走「更新」从 registry 拉取`);
+  const current = await containerImageId(name);
+  if (current && current === local) {
+    ctx.status(`容器已在用本地镜像（${m.image}），无需重建`);
+    const { items } = await listServices(cfg);
+    return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
+  }
+
+  ctx.status(`用本地镜像重建 ${name}（${ip}）`);
+  if (wasRunning) await stopContainer(name);
+  await removeContainer(name);
+  try {
+    await createServiceContainer({
+      name,
+      image: m.image,
+      ip,
+      network: cfg.services.network,
+      labels: snap.labels, // 原样复刻（含 service-preset / created-at——创建时间不因重建而重置）
+      env: m.env,
+      volume,
+      command: m.command,
+    });
+  } catch (e) {
+    throw new Error(`重建失败（旧容器已移除，数据卷无损，可重试重建）：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (wasRunning) {
+    ctx.status(`启动 ${name}`);
+    await startContainer(name);
+  }
+
+  ctx.status('追平容器 hosts（服务名解析）');
+  await applyServicesBlock(cfg);
+
+  ctx.status(wasRunning ? `服务 ${name} 已重建（${ip}）` : `容器已重建（${name} 保持停机）`);
+  const { items } = await listServices(cfg);
+  return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
+}
+
 // listServices 没找到（极端竞态）时的兜底视图：用 meta 拼一个，不让任务死在收尾。
 async function currentServiceView(
   _cfg: Config,
@@ -1050,6 +1104,32 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     try {
       const job = startServiceJob({ name, image: m.image, ip, kind: 'update' }, (ctx) =>
         runServiceUpdate(cfg, name, ctx),
+      );
+      return { jobId: job.id };
+    } catch (e) {
+      releaseJobName(name);
+      releaseJobIp(ip);
+      throw e;
+    }
+  });
+
+  // —— 重建（本地镜像）：不碰 registry，直接用本地 m.image 重建容器——本地 build
+  // 迭代服务的对口入口（registry 追新走上面的 /update）。快校验/预占与 update 同构。
+  app.post<{ Params: { name: string } }>('/api/services/:name/rebuild', async (req) => {
+    const name = req.params.name;
+    await requireService(name);
+    const m = await getServiceMeta(name);
+    if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法重建——删除后重新创建一次即可`);
+    if (m.adopted) {
+      // 重建同样 = rm 后按 mysandbox 形状重建——会抹掉外部容器自己的挂载/端口/网络配置。
+      throw conflict(`"${name}" 是收编的外部容器，不支持原地重建（生命周期归它自己的编排方管）`);
+    }
+    if (!tryReserveJobName(name)) throw conflict(`「${name}」已有任务进行中`);
+    const ip = (await containerIpamIp(name)) ?? m.ip;
+    reserveJobIp(ip);
+    try {
+      const job = startServiceJob({ name, image: m.image, ip, kind: 'rebuild' }, (ctx) =>
+        runServiceRebuild(cfg, name, ctx),
       );
       return { jobId: job.id };
     } catch (e) {
