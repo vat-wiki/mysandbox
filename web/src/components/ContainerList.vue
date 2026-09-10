@@ -349,20 +349,76 @@ function cardDragStart(e: DragEvent, kind: CardKind, key: string) {
     /* dataTransfer 不可用就纯视觉 */
   }
 }
+// 当前可视全量 key 序（排序数组只记拖过的卡，表达不了「拖到没动过的卡之间」——
+// 每次以可视序为底稿做移动，得到的才是完整新序）。
+function displayedKeys(kind: CardKind): string[] {
+  return kind === 'ct'
+    ? orderedItems.value.map((c) => c.id)
+    : kind === 'svc'
+      ? orderedSvc.value.map((s) => s.name)
+      : orderedSsh.value.map((t) => t.name)
+}
 function cardDragOver(e: DragEvent, kind: CardKind, key: string) {
   if (!dragCard || dragCard.kind !== kind || dragCard.key === key) return
   e.preventDefault()
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  const order = cardOrders[kind].value
-  const at = order.indexOf(dragCard.key)
-  if (at >= 0) order.splice(at, 1)
-  const ti = order.indexOf(key)
-  order.splice(ti >= 0 ? ti : order.length, 0, dragCard.key)
+  const keys = displayedKeys(kind)
+  const from = keys.indexOf(dragCard.key)
+  const to = keys.indexOf(key)
+  if (from < 0 || to < 0 || from === to) return
+  keys.splice(from, 1)
+  // 摘掉后再插到目标当前下标：向下拖 = 落到目标之后，向上拖 = 目标之前——两种方向
+  // 都与目标相邻，其余卡整体滑移补位（FLIP 补间吃这个位移，见 flipPlay）
+  keys.splice(to, 0, dragCard.key)
+  const before = flipCapture(kind)
+  cardOrders[kind].value = keys
+  nextTick(() => flipPlay(kind, before))
+}
+// —— 卡片 FLIP 补间（拖拽排序的实时动效）：cross 到别的卡、顺序变化后，位移的卡从
+// 旧位置滑到新位置——「实时排序」的观感来自这里。First-Last-Invert-Play：改动前记
+// 各卡 rect（capture），Vue patch 后按位移反向平移再回弹到 0（play）。只动 transform
+// 不碰布局；拖拽连跨多卡时每次 capture 拿到的是动画中的当前位置，补间自然接续。
+const FLIP_MS = 200
+function flipCapture(kind: CardKind): Map<string, DOMRect> {
+  const m = new Map<string, DOMRect>()
+  const scope = document.querySelector<HTMLElement>(`[data-flip="${kind}"]`)
+  if (!scope) return m
+  for (const el of Array.from(scope.querySelectorAll<HTMLElement>('[data-card-key]'))) {
+    if (el.dataset.cardKey) m.set(el.dataset.cardKey, el.getBoundingClientRect())
+  }
+  return m
+}
+function flipPlay(kind: CardKind, before: Map<string, DOMRect>) {
+  if (!before.size || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  const scope = document.querySelector<HTMLElement>(`[data-flip="${kind}"]`)
+  if (!scope) return
+  for (const el of Array.from(scope.querySelectorAll<HTMLElement>('[data-card-key]'))) {
+    const r0 = el.dataset.cardKey ? before.get(el.dataset.cardKey) : undefined
+    if (!r0) continue
+    const r1 = el.getBoundingClientRect()
+    const dx = r0.left - r1.left
+    const dy = r0.top - r1.top
+    if (!dx && !dy) continue
+    el.style.transition = 'none'
+    el.style.transform = `translate(${dx}px, ${dy}px)`
+    void el.offsetWidth // 强制 reflow：起点生效后才开补间，否则两步合并成瞬移
+    el.style.transition = `transform ${FLIP_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1)`
+    el.style.transform = ''
+    const done = (ev: TransitionEvent) => {
+      if (ev.target !== el || ev.propertyName !== 'transform') return
+      el.style.transition = ''
+      el.removeEventListener('transitionend', done)
+    }
+    el.addEventListener('transitionend', done)
+  }
 }
 function cardDragEnd(kind: CardKind) {
   if (!dragCard) return
   dragCard = null
   dragCardKey.value = ''
+  // 落盘前剪掉已不存在的 key（容器/服务/目标删了不残留）；列表空时不剪（首载窗口防误清）
+  const live = new Set(displayedKeys(kind))
+  if (live.size) cardOrders[kind].value = cardOrders[kind].value.filter((k) => live.has(k))
   try {
     localStorage.setItem(CARD_ORDER_KEYS[kind], JSON.stringify(cardOrders[kind].value))
   } catch {
@@ -2451,8 +2507,9 @@ onUnmounted(() => {
 
       <!-- 容器卡片区：数量有限（个人 sandbox 常年个位数），行形态浪费纵向空间且
            信息密度低——改两行卡片平铺「看一眼就该知道」的状态（状态文字、IP、描述），
-           低频操作仍收 ⋯。色条与 tab 栏同色呼应。卡片可拖拽排序（桌面，localStorage 记忆）。 -->
-      <div v-if="ctExpanded" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+           低频操作仍收 ⋯。色条与 tab 栏同色呼应。卡片可拖拽排序（桌面，localStorage 记忆），
+           FLIP 补间让被 cross 让位的卡实时滑移（flipCapture/flipPlay）。 -->
+      <div v-if="ctExpanded" data-flip="ct" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
         <!-- 首屏加载骨架：只在列表还没数据时占位（轮询静默刷新不打这里） -->
         <template v-if="loading && !items.length">
           <Skeleton v-for="i in 3" :key="i" class="h-12 w-full rounded-lg" />
@@ -2468,6 +2525,7 @@ onUnmounted(() => {
                 dragCardKey === c.id ? 'opacity-40' : '',
               ]"
               :draggable="!isPhone"
+              :data-card-key="c.id"
               @pointerdown="cardPointerDown"
               @pointermove="cardPointerMove"
               @pointercancel="cardPointerCancel"
@@ -2668,6 +2726,7 @@ onUnmounted(() => {
         </div>
         <div
           v-if="svcExpanded"
+          data-flip="svc"
           class="flex flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2"
           :style="{ maxHeight: sectionHeights.svc + 'px' }"
         >
@@ -2681,6 +2740,7 @@ onUnmounted(() => {
                   class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
                   :class="dragCardKey === s.name ? 'opacity-40' : ''"
                   :draggable="!isPhone"
+                  :data-card-key="s.name"
                   @pointerdown="cardPointerDown"
                   @pointermove="cardPointerMove"
                   @pointercancel="cardPointerCancel"
@@ -2862,6 +2922,7 @@ onUnmounted(() => {
         </div>
         <div
           v-if="termExpanded"
+          data-flip="ssh"
           class="flex flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2"
           :style="{ maxHeight: sectionHeights.term + 'px' }"
         >
@@ -2898,6 +2959,7 @@ onUnmounted(() => {
               dragCardKey === t.name ? 'opacity-40' : '',
             ]"
             :draggable="!isPhone"
+            :data-card-key="t.name"
             :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
             @dragstart="cardDragStart($event, 'ssh', t.name)"
             @dragover="cardDragOver($event, 'ssh', t.name)"
