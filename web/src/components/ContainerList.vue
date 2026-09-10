@@ -76,7 +76,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Server, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Import } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Import } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -274,6 +274,127 @@ async function refreshSshTargets() {
     // 失败静默：终端区照常（本机可用），目标列表下轮交互再试
   }
 }
+
+// —— 侧栏分区收展（系统容器/终端区，应用容器在下方服务段声明）——
+// 三区同一交互语言：分区头整行点击收展 + localStorage 记忆。系统容器是主列表默认展开；
+// 终端区（本机 + SSH 主机）低频，默认展开但可收。
+const ctExpanded = ref(loadBool('mysandbox:ct-cards-open') || !('mysandbox:ct-cards-open' in localStorage))
+watch(ctExpanded, (v) => {
+  try {
+    localStorage.setItem('mysandbox:ct-cards-open', v ? '1' : '0')
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+})
+const termExpanded = ref(loadBool('mysandbox:term-cards-open') || !('mysandbox:term-cards-open' in localStorage))
+watch(termExpanded, (v) => {
+  try {
+    localStorage.setItem('mysandbox:term-cards-open', v ? '1' : '0')
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+})
+// 收起时的容器摘要：M 运行中（err 时交给上方错误条，摘要不重复）。
+const ctSummary = computed(() => {
+  const run = items.value.filter((c) => c.state === 'running').length
+  return `${run} 运行中 · ${items.value.length - run} 已停止`
+})
+
+// —— 卡片拖拽排序（系统容器/应用容器/SSH 主机，桌面 only）——
+// 顺序存各浏览器 localStorage（tab 布局同款约定）：拖拽是查看偏好，不值得进 sidecar。
+// 列表 = 按序数组排（未知项按服务端相对序垫底），拖 over 时原地移动 + dragend 落盘。
+const CARD_ORDER_KEYS = {
+  ct: 'mysandbox:ct-order',
+  svc: 'mysandbox:svc-order',
+  ssh: 'mysandbox:ssh-order',
+} as const
+type CardKind = keyof typeof CARD_ORDER_KEYS
+function loadOrder(key: string): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+const cardOrders = {
+  ct: ref(loadOrder(CARD_ORDER_KEYS.ct)),
+  svc: ref(loadOrder(CARD_ORDER_KEYS.svc)),
+  ssh: ref(loadOrder(CARD_ORDER_KEYS.ssh)),
+}
+// 按序数组重排：order 里没有的项保持原相对序垫在后面（新容器/新目标自然追加）。
+function orderBy<T>(list: T[], keyOf: (x: T) => string, order: string[]): T[] {
+  if (!order.length) return list
+  const idx = new Map(order.map((k, i) => [k, i]))
+  return [...list].sort((a, b) => {
+    const ia = idx.get(keyOf(a)) ?? Number.MAX_SAFE_INTEGER
+    const ib = idx.get(keyOf(b)) ?? Number.MAX_SAFE_INTEGER
+    return ia !== ib ? ia - ib : list.indexOf(a) - list.indexOf(b)
+  })
+}
+const orderedItems = computed(() => orderBy(items.value, (c) => c.id, cardOrders.ct.value))
+const orderedSvc = computed(() => orderBy(svcItems.value, (s) => s.name, cardOrders.svc.value))
+const orderedSsh = computed(() => orderBy(sshTargets.value, (t) => t.name, cardOrders.ssh.value))
+
+let dragCard: { kind: CardKind; key: string } | null = null
+const dragCardKey = ref('')
+function cardDragStart(e: DragEvent, kind: CardKind, key: string) {
+  if (isPhone.value) return
+  dragCard = { kind, key }
+  dragCardKey.value = key
+  try {
+    e.dataTransfer?.setData('text/plain', key)
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+  } catch {
+    /* dataTransfer 不可用就纯视觉 */
+  }
+}
+function cardDragOver(e: DragEvent, kind: CardKind, key: string) {
+  if (!dragCard || dragCard.kind !== kind || dragCard.key === key) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const order = cardOrders[kind].value
+  const at = order.indexOf(dragCard.key)
+  if (at >= 0) order.splice(at, 1)
+  const ti = order.indexOf(key)
+  order.splice(ti >= 0 ? ti : order.length, 0, dragCard.key)
+}
+function cardDragEnd(kind: CardKind) {
+  if (!dragCard) return
+  dragCard = null
+  dragCardKey.value = ''
+  try {
+    localStorage.setItem(CARD_ORDER_KEYS[kind], JSON.stringify(cardOrders[kind].value))
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+}
+
+// —— 分区高度拖拽（应用容器/终端区展开体，桌面 only）——
+// maxHeight 拖的是「内容多时的滚动区上限」：内容少时分区自然矮，拖多了也只是 cap。
+const sectionHeights = reactive({
+  svc: loadNum('mysandbox:svc-h', 176), // 旧版固定 max-h-44 = 176px，沿用为默认
+  term: loadNum('mysandbox:term-h', 208),
+})
+const asideRef = ref<HTMLElement | null>(null)
+let secDrag: { kind: 'svc' | 'term'; startY: number; startH: number; max: number } | null = null
+function secDragStart(e: PointerEvent, kind: 'svc' | 'term') {
+  if (isPhone.value) return
+  const aside = asideRef.value
+  const avail = aside ? aside.clientHeight : 700
+  secDrag = { kind, startY: e.clientY, startH: sectionHeights[kind], max: Math.max(120, avail - 340) }
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+function secDragMove(e: PointerEvent) {
+  if (!secDrag) return
+  // 向上拖 = 加高（吃掉上方容器区）；钳制下限保住一行卡片的可读性
+  sectionHeights[secDrag.kind] = Math.min(Math.max(secDrag.startH + (secDrag.startY - e.clientY), 88), secDrag.max)
+}
+function secDragEnd() {
+  if (!secDrag) return
+  saveNum(secDrag.kind === 'svc' ? 'mysandbox:svc-h' : 'mysandbox:term-h', sectionHeights[secDrag.kind])
+  secDrag = null
+}
 // termId -> Terminal 实例（close 时调 kill() 发 kill 帧真杀会话；无输出提醒的内容
 // 基线调 screenHash() 取视口快照）。函数式 ref 挂/卸自动进出表；key 是稳定的 termId，
 // 布局重排/塌缩不会错杀别的会话。
@@ -435,6 +556,21 @@ function loadBool(key: string): boolean {
     return localStorage.getItem(key) === '1'
   } catch {
     return false
+  }
+}
+function loadNum(key: string, dflt: number): number {
+  try {
+    const v = Number(localStorage.getItem(key))
+    return Number.isFinite(v) && v > 0 ? v : dflt
+  } catch {
+    return dflt
+  }
+}
+function saveNum(key: string, v: number): void {
+  try {
+    localStorage.setItem(key, String(Math.round(v)))
+  } catch {
+    /* localStorage 不可用就跳过 */
   }
 }
 const showFiles = ref(loadBool(FILES_OPEN_KEY))
@@ -2039,6 +2175,7 @@ onUnmounted(() => {
     />
     <aside
       v-if="!props.popout"
+      ref="asideRef"
       class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:transition-[width] md:duration-200"
       :class="[drawerOpen ? '' : 'max-md:-translate-x-full', collapsed && !isPhone ? 'md:w-12' : 'md:w-64']"
     >
@@ -2236,10 +2373,23 @@ onUnmounted(() => {
       </div>
 
       <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题
-           上下叠着会互相竞争。⟳ 刷新 / ＋ 新建（基座未就绪时禁用）/ ⋯ 低频配置 -->
+           上下叠着会互相竞争。分区头整行点击收/展（与应用容器/终端区同一交互语言），
+           收起时头内带摘要。⟳ 刷新 / ＋ 新建（基座未就绪时禁用）/ ⋯ 低频配置 -->
       <div class="flex shrink-0 items-center gap-2 border-b border-border py-1.5 pl-3 pr-1.5">
-        <img src="/lxc.svg" alt="" class="size-3.5" /><span class="text-xs font-medium text-muted-foreground">系统容器</span>
-        <span class="text-[10px] text-muted-foreground/70">{{ items.length }}</span>
+        <button
+          type="button"
+          class="flex min-w-0 flex-1 items-center gap-2 text-left"
+          :title="ctExpanded ? '收起容器列表' : '展开容器列表'"
+          @click="ctExpanded = !ctExpanded"
+        >
+          <img src="/lxc.svg" alt="" class="size-3.5" /><span class="text-xs font-medium text-muted-foreground">系统容器</span>
+          <span class="text-[10px] text-muted-foreground/70">{{ items.length }}</span>
+          <span v-if="!ctExpanded" class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70">{{ ctSummary }}</span>
+          <ChevronDown
+            class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
+            :class="ctExpanded ? 'rotate-180' : ''"
+          />
+        </button>
         <div class="ml-auto flex items-center gap-0.5">
           <Button
             variant="ghost"
@@ -2301,25 +2451,30 @@ onUnmounted(() => {
 
       <!-- 容器卡片区：数量有限（个人 sandbox 常年个位数），行形态浪费纵向空间且
            信息密度低——改两行卡片平铺「看一眼就该知道」的状态（状态文字、IP、描述），
-           低频操作仍收 ⋯。色条与 tab 栏同色呼应。宿主条目刻意保持单行（见上）。 -->
-      <div class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+           低频操作仍收 ⋯。色条与 tab 栏同色呼应。卡片可拖拽排序（桌面，localStorage 记忆）。 -->
+      <div v-if="ctExpanded" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
         <!-- 首屏加载骨架：只在列表还没数据时占位（轮询静默刷新不打这里） -->
         <template v-if="loading && !items.length">
           <Skeleton v-for="i in 3" :key="i" class="h-12 w-full rounded-lg" />
         </template>
-        <ContextMenu v-for="c in items" :key="c.id">
+        <ContextMenu v-for="c in orderedItems" :key="c.id">
           <ContextMenuTrigger as-child>
             <div
               class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
-              :class="
+              :class="[
                 activeGroup?.containerId === c.id
                   ? 'border-border/60 bg-accent'
-                  : 'border-transparent hover:bg-accent/40'
-              "
+                  : 'border-transparent hover:bg-accent/40',
+                dragCardKey === c.id ? 'opacity-40' : '',
+              ]"
+              :draggable="!isPhone"
               @pointerdown="cardPointerDown"
               @pointermove="cardPointerMove"
               @pointercancel="cardPointerCancel"
               @pointerup="cardPointerCancel"
+              @dragstart="cardDragStart($event, 'ct', c.id)"
+              @dragover="cardDragOver($event, 'ct', c.id)"
+              @dragend="cardDragEnd('ct')"
               @click="cardClickSwallowed() || openTerm(c)"
             >
               <!-- 左缘色条：卡片唯一的色彩元素——容器身份色（与 tab 呼应），兼作状态指示：
@@ -2461,9 +2616,18 @@ onUnmounted(() => {
            配套，默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数（容器分区头同款，
            无状态点），整行点击展开/收起；收起时补一行摘要文案（任务进行中/不可达时
            要紧，不可达红字）。点击卡片进服务终端（与容器「点击即进」同语义），IP 点击
-            复制，右键菜单收详情（服务抽屉）/连接命令/代理地址二级菜单/检查更新/本地重建/启停重启。
-           列表 max-h 托底滚动，服务多也不挤占容器区。 -->
+             复制，右键菜单收详情（服务抽屉）/连接命令/代理地址二级菜单/检查更新/本地重建/启停重启。
+            列表高度可拖拽（顶部细把手，maxHeight 上限记忆 localStorage），卡片可拖拽排序。 -->
       <div class="shrink-0 border-t border-border">
+        <div
+          v-if="svcExpanded"
+          class="h-1 cursor-row-resize transition-colors hover:bg-primary/30"
+          title="拖拽调整列表高度"
+          @pointerdown="secDragStart($event, 'svc')"
+          @pointermove="secDragMove"
+          @pointerup="secDragEnd"
+          @pointercancel="secDragEnd"
+        />
         <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
           <button
             type="button"
@@ -2502,19 +2666,28 @@ onUnmounted(() => {
             <Plus />
           </Button>
         </div>
-        <div v-if="svcExpanded" class="flex max-h-44 flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2">
+        <div
+          v-if="svcExpanded"
+          class="flex flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2"
+          :style="{ maxHeight: sectionHeights.svc + 'px' }"
+        >
           <p v-if="svcReachable === false" class="px-1.5 py-2 text-[11px] text-muted-foreground">
             运行时不可达
           </p>
           <template v-else>
-            <ContextMenu v-for="s in svcItems" :key="s.name">
+            <ContextMenu v-for="s in orderedSvc" :key="s.name">
               <ContextMenuTrigger as-child>
                 <div
                   class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
+                  :class="dragCardKey === s.name ? 'opacity-40' : ''"
+                  :draggable="!isPhone"
                   @pointerdown="cardPointerDown"
                   @pointermove="cardPointerMove"
                   @pointercancel="cardPointerCancel"
                   @pointerup="cardPointerCancel"
+                  @dragstart="cardDragStart($event, 'svc', s.name)"
+                  @dragover="cardDragOver($event, 'svc', s.name)"
+                  @dragend="cardDragEnd('svc')"
                   @click="cardClickSwallowed() || openServiceTerm(s)"
                 >
                   <!-- 左缘色条：与容器卡片同一套状态语言——运行=按服务名 hash 的稳定身份色
@@ -2646,42 +2819,109 @@ onUnmounted(() => {
 
       <!-- 终端区：本机 + SSH 主机（远程主机只是终端延伸，非被管理对象——无文件面板/
            网络信息/批量操作，会话语义与宿主终端同构，见 server/sshTerminal.ts）。
-           钉在底部，与 docker 服务分区同属「容器之外的环境」区；独立窗口入口收进 tab 右键菜单。 -->
+           与系统容器/应用容器同款卡片语言：分区头整行收展（记忆 localStorage）、
+           左缘色条卡片（本机=amber 恒亮，SSH=按名 hash 身份色，无运行态概念故恒饱和）、
+           列表高度可拖拽、卡片可拖拽排序。＋ = 添加 SSH 主机 / 管理已有目标。
+           独立窗口入口收进 tab 右键菜单。 -->
       <div class="shrink-0 border-t border-border">
-        <div class="px-3 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-          终端
+        <div
+          v-if="termExpanded"
+          class="h-1 cursor-row-resize transition-colors hover:bg-primary/30"
+          title="拖拽调整列表高度"
+          @pointerdown="secDragStart($event, 'term')"
+          @pointermove="secDragMove"
+          @pointerup="secDragEnd"
+          @pointercancel="secDragEnd"
+        />
+        <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-2 text-left"
+            :title="termExpanded ? '收起终端列表' : '展开终端列表'"
+            @click="termExpanded = !termExpanded"
+          >
+            <Monitor class="size-3.5 shrink-0 text-amber-500" />
+            <span class="text-xs font-medium text-muted-foreground">终端</span>
+            <span class="text-[10px] text-muted-foreground/70">{{ 1 + sshTargets.length }}</span>
+            <span v-if="!termExpanded" class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70">
+              {{ sshTargets.length ? `${sshTargets.length} 台主机` : '添加 SSH 主机' }}
+            </span>
+            <ChevronDown
+              class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
+              :class="termExpanded ? 'rotate-180' : ''"
+            />
+          </button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            title="添加 SSH 主机 / 管理已有目标"
+            @click="showSshTargets = true"
+          >
+            <Plus />
+          </Button>
         </div>
-        <button
-          type="button"
-          class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/50"
-          :class="activeGroup?.kind === 'host' ? 'bg-accent/50' : ''"
-          title="本机终端"
-          @click="openHostTerm()"
+        <div
+          v-if="termExpanded"
+          class="flex flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2"
+          :style="{ maxHeight: sectionHeights.term + 'px' }"
         >
-          <Monitor class="size-3.5 shrink-0 text-amber-500" />
-          <span class="min-w-0 flex-1 truncate text-sm">本机</span>
-        </button>
-        <button
-          v-for="t in sshTargets"
-          :key="t.name"
-          type="button"
-          class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/50"
-          :class="activeGroup?.containerId === sshGroupId(t.name) ? 'bg-accent/50' : ''"
-          :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
-          @click="openSshTerm(t)"
-        >
-          <Server class="size-3.5 shrink-0" :style="{ color: containerColor(t.name) }" />
-          <span class="min-w-0 flex-1 truncate text-sm">{{ t.name }}</span>
-        </button>
-        <button
-          type="button"
-          class="flex w-full items-center gap-2 px-3 pb-2 pt-1 text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="添加 SSH 主机 / 管理已有目标"
-          @click="showSshTargets = true"
-        >
-          <Plus class="size-3.5 shrink-0" />
-          <span class="min-w-0 flex-1 truncate text-xs">{{ sshTargets.length ? '添加 / 管理' : '添加主机（SSH）' }}</span>
-        </button>
+          <!-- 本机卡片：宿主终端恒可用——色条 amber 恒饱和（与 tab 身份点同色） -->
+          <div
+            class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
+            :class="
+              activeGroup?.kind === 'host'
+                ? 'border-border/60 bg-accent'
+                : 'border-transparent hover:bg-accent/40'
+            "
+            @click="openHostTerm()"
+          >
+            <span
+              class="absolute inset-y-2.5 left-0 w-[3px] rounded-full bg-amber-500"
+              title="本机终端"
+            />
+            <div class="flex min-w-0 items-center gap-1.5">
+              <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground">本机</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground">
+              <span class="min-w-0 flex-1 truncate">宿主 shell · tmux 会话保留</span>
+            </div>
+          </div>
+          <!-- SSH 主机卡片：无运行态概念（连接失败在终端里可见），色条恒用身份色 -->
+          <div
+            v-for="t in orderedSsh"
+            :key="t.name"
+            class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
+            :class="[
+              activeGroup?.containerId === sshGroupId(t.name)
+                ? 'border-border/60 bg-accent'
+                : 'border-transparent hover:bg-accent/40',
+              dragCardKey === t.name ? 'opacity-40' : '',
+            ]"
+            :draggable="!isPhone"
+            :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
+            @dragstart="cardDragStart($event, 'ssh', t.name)"
+            @dragover="cardDragOver($event, 'ssh', t.name)"
+            @dragend="cardDragEnd('ssh')"
+            @click="openSshTerm(t)"
+          >
+            <span
+              class="absolute inset-y-2.5 left-0 w-[3px] rounded-full"
+              :style="{ backgroundColor: containerColor(t.name) }"
+              :title="t.name"
+            />
+            <div class="flex min-w-0 items-center gap-1.5">
+              <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground">{{ t.name }}</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground">
+              <span class="min-w-0 flex-1 truncate font-mono">{{
+                `${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`
+              }}</span>
+            </div>
+          </div>
+          <p v-if="!sshTargets.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
+            暂无 SSH 主机，点 ＋ 添加
+          </p>
+        </div>
       </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
