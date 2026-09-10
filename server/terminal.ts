@@ -197,8 +197,8 @@ async function reapOrphanClients(cfg: Config, id: string): Promise<void> {
 // 迁移前的活会话要等连接时才 rename，这里原样识别，前端接入走正常连接即自动迁移）。
 // cwd 取会话活跃 pane 的当前目录，给会话对话框当「这是哪个终端」的识别信息。
 export interface TermSessionView {
-  kind: 'host' | 'container' | 'service';
-  containerId?: string; // kind=container 时为容器 id；kind=service 时为服务名（web 侧用它解析显示名/颜色）
+  kind: 'host' | 'container' | 'service' | 'ssh';
+  containerId?: string; // kind=container 时为容器 id；kind=service/ssh 时为服务名/SSH 目标名（web 侧用它解析显示名/颜色）
   termId: string;
   attached: number; // 正在 attach 的客户端数（>0 = 有窗口正在用）
   created: number; // epoch ms

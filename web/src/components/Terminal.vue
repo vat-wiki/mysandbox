@@ -12,6 +12,8 @@ import { isPhone } from '@/composables/useDevice'
 
 const props = withDefaults(
   // host=true 时连 /ws/host-terminal（宿主终端，PTY 由 server 管理，无容器 id）。
+  // ssh 时连 /ws/ssh-terminal（远程主机，PTY 链 = script → ssh → 远端 tmux，shell 参数
+  // 不适用——远端 shell 由远端自己决定）。
   // fromTermId = 分屏来源 pane 的 termId（仅分屏时由 TermLayoutNode 传入）：后端首次
   // 创建新会话时继承源 pane 的当前目录。放进 URL 而非 localStorage 布局树——cwd 只在
   // 新会话创建那一刻有意义，刷新后（会话必已存在、纯 attach）随内存映射消失即不再传。
@@ -24,6 +26,8 @@ const props = withDefaults(
     host?: boolean
     // docker 服务终端：连 /ws/service-terminal（PTY = 宿主 tmux 窗口跑 docker exec）。
     service?: string
+    // SSH 主机终端：连 /ws/ssh-terminal（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
+    ssh?: string
     fromTermId?: string
   }>(),
   {
@@ -90,12 +94,15 @@ function connectWs() {
   const shell = props.shell || 'zsh'
   const base = props.host
     ? `${proto}://${location.host}/ws/host-terminal?token=${encodeURIComponent(token)}`
-    : props.service
-      ? `${proto}://${location.host}/ws/service-terminal?name=${encodeURIComponent(props.service)}&token=${encodeURIComponent(token)}`
-      : `${proto}://${location.host}/ws/terminal?id=${encodeURIComponent(props.id ?? '')}&token=${encodeURIComponent(token)}`
+    : props.ssh
+      ? `${proto}://${location.host}/ws/ssh-terminal?target=${encodeURIComponent(props.ssh)}&token=${encodeURIComponent(token)}`
+      : props.service
+        ? `${proto}://${location.host}/ws/service-terminal?name=${encodeURIComponent(props.service)}&token=${encodeURIComponent(token)}`
+        : `${proto}://${location.host}/ws/terminal?id=${encodeURIComponent(props.id ?? '')}&token=${encodeURIComponent(token)}`
   const url =
     base +
-    `&shell=${encodeURIComponent(shell)}&cols=${term ? term.cols : 80}&rows=${term ? term.rows : 24}` +
+    (props.ssh ? '' : `&shell=${encodeURIComponent(shell)}`) +
+    `&cols=${term ? term.cols : 80}&rows=${term ? term.rows : 24}` +
     `&termId=${encodeURIComponent(props.termId)}` +
     (props.fromTermId ? `&from=${encodeURIComponent(props.fromTermId)}` : '')
   ws = new WebSocket(url)
@@ -103,7 +110,7 @@ function connectWs() {
 
   ws.onopen = () => {
     connState.value = 'ok'
-    term?.writeln(`\x1b[2m>> 连接 ${props.name} (${shell})\x1b[0m`)
+    term?.writeln(`\x1b[2m>> 连接 ${props.name}${props.ssh ? '' : ` (${shell})`}\x1b[0m`)
   }
   ws.onmessage = (ev) => {
     // 文本帧 = 服务端控制帧（二进制才是终端流）。目前只有 history：tmux pane 历史回填

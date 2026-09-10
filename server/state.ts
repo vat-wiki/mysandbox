@@ -62,9 +62,22 @@ export interface AiGatewayState {
   updatedAt: string;
 }
 
+// SSH 终端目标（server/sshTerminal.ts）：远程主机的连接定义。只作为「终端延伸」存在
+// （侧栏终端区的本机之外条目），不是被管理对象——无 sidecar 生命周期、不进批量操作/
+// hosts/总览。存这里而非 config.yaml：UI 可增删（config.yaml 是用户手改文件，程序
+// 回写会丢注释），且属易变元数据，与 displayName 同语义。
+export interface SshTarget {
+  name: string; // 标识 + 显示名（唯一）
+  host: string; // ssh 目的地：host / user@host / ~/.ssh/config 别名均可（凭据全走宿主 ssh）
+  user?: string;
+  port?: number;
+  createdAt?: string;
+}
+
 interface StateShape {
   containers: Record<string, ContainerMeta>;
   services: Record<string, ServiceMeta>;
+  sshTargets?: SshTarget[];
   aiGateway?: AiGatewayState;
 }
 
@@ -73,15 +86,16 @@ let cache: StateShape | null = null;
 async function load(): Promise<StateShape> {
   if (cache) return cache;
   if (!existsSync(STATE_FILE)) {
-    cache = { containers: {}, services: {} };
+    cache = { containers: {}, services: {}, sshTargets: [] };
     return cache;
   }
   try {
     cache = JSON.parse(await readFile(STATE_FILE, 'utf8')) as StateShape;
     if (!cache.containers) cache.containers = {};
     if (!cache.services) cache.services = {};
+    if (!cache.sshTargets) cache.sshTargets = [];
   } catch {
-    cache = { containers: {}, services: {} };
+    cache = { containers: {}, services: {}, sshTargets: [] };
   }
   return cache;
 }
@@ -136,6 +150,32 @@ export async function deleteServiceMeta(name: string): Promise<void> {
   const s = await load();
   delete s.services[name];
   await persist(s);
+}
+
+// —— SSH 终端目标（与容器/服务 meta 同款 sidecar 形状）——
+
+export async function getSshTargets(): Promise<SshTarget[]> {
+  return (await load()).sshTargets ?? [];
+}
+
+/** 新增（name 查重，冲突返回 null）。 */
+export async function addSshTarget(t: SshTarget): Promise<SshTarget | null> {
+  const s = await load();
+  if (!s.sshTargets) s.sshTargets = [];
+  if (s.sshTargets.some((x) => x.name === t.name)) return null;
+  s.sshTargets.push(t);
+  await persist(s);
+  return t;
+}
+
+export async function deleteSshTarget(name: string): Promise<boolean> {
+  const s = await load();
+  const before = s.sshTargets?.length ?? 0;
+  if (!s.sshTargets) return false;
+  s.sshTargets = s.sshTargets.filter((x) => x.name !== name);
+  const removed = s.sshTargets.length !== before;
+  if (removed) await persist(s);
+  return removed;
 }
 
 // —— AI 网关配置存档（全局一份，不按容器分）——

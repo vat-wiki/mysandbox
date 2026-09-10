@@ -24,6 +24,10 @@ import {
   termSessionKey,
   HOST_ID,
   serviceFileId,
+  sshGroupId,
+  sshTargetName,
+  listSshTargets,
+  type SshTargetView,
   getServiceListenPorts,
   Unauthorized,
   type ContainerView,
@@ -72,12 +76,13 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Import } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Server, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Import } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
+import SshTargetsDialog from '@/components/SshTargetsDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
 import TermLayoutNode from '@/components/TermLayoutNode.vue'
@@ -202,7 +207,14 @@ function parseGroup(o: unknown): TermGroup | null {
     id: typeof r.id === 'string' ? r.id : newGroupId(),
     containerId: r.containerId,
     name: typeof r.name === 'string' ? r.name : r.containerId,
-    kind: r.kind === 'host' ? ('host' as const) : r.kind === 'service' ? ('service' as const) : undefined,
+    kind:
+      r.kind === 'host'
+        ? ('host' as const)
+        : r.kind === 'service'
+          ? ('service' as const)
+          : r.kind === 'ssh'
+            ? ('ssh' as const)
+            : undefined,
     seq: typeof r.seq === 'number' && r.seq >= 1 ? r.seq : undefined,
     quietNotify: typeof r.quietNotify === 'boolean' ? r.quietNotify : undefined,
     root,
@@ -249,6 +261,19 @@ const savedTabs = loadTabs()
 const groups = ref<TermGroup[]>(savedTabs.groups)
 const activeIdx = ref(savedTabs.activeIdx)
 const hiddenGroups = ref<TermGroup[]>(loadHidden())
+
+// —— SSH 终端目标（侧栏终端区的「本机之外」条目）——
+// 只作终端延伸（非被管理对象）：加载一次 + 管理对话框增删后刷新，无轮询。
+// 声明前置：popout 首屏种子的 watch（下方）要按它决定何时建 ssh 组。
+const sshTargets = ref<SshTargetView[]>([])
+async function refreshSshTargets() {
+  try {
+    sshTargets.value = (await listSshTargets()).targets
+  } catch (e) {
+    if (e instanceof Unauthorized) emit('unauthorized')
+    // 失败静默：终端区照常（本机可用），目标列表下轮交互再试
+  }
+}
 // termId -> Terminal 实例（close 时调 kill() 发 kill 帧真杀会话；无输出提醒的内容
 // 基线调 screenHash() 取视口快照）。函数式 ref 挂/卸自动进出表；key 是稳定的 termId，
 // 布局重排/塌缩不会错杀别的会话。
@@ -458,6 +483,9 @@ watch(
   () => activeGroup.value?.id,
   () => {
     filePaneIdx.value = 0
+    // SSH 组没有文件端点（远端 fs 不经本机 API）：切到该组时收起文件面板，
+    // 面板按钮同步禁用（模板）。切回其他组不自动重开——保持用户上次显式选择。
+    if (activeGroup.value?.kind === 'ssh' && showFiles.value) showFiles.value = false
   },
 )
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
@@ -997,6 +1025,8 @@ async function onOscOpen(group: TermGroup, termId: string, path: string) {
 // 终端 Ctrl+点击路径链接：后端权威解析（tmux pane cwd + ~ 展开 + readlink 归一 + 类型
 // 探测，一次往返），宿主组与容器组同路径。missing 按 file（编辑器侧 404 → 新建态）。
 async function onLinkOpen(group: TermGroup, termId: string, raw: string, line?: number, col?: number) {
+  // SSH 组没有路径解析端点（远端 fs 不经本机 API），Ctrl+点击不联动文件面板。
+  if (group.kind === 'ssh') return
   const gi = groups.value.findIndex((g) => g.id === group.id)
   if (gi >= 0) activeIdx.value = gi
   filePaneIdx.value = Math.min(ordinalOf(group.root, termId), Math.max(leafCount(group.root) - 1, 0))
@@ -1015,7 +1045,7 @@ async function onLinkOpen(group: TermGroup, termId: string, raw: string, line?: 
   const kind: 'file' | 'dir' = r.kind === 'dir' ? 'dir' : 'file'
   if (group.kind === 'host') {
     // 宿主组必在（点击来自组内活着的 Terminal），无 running 概念
-    await locateContainerPath({ id: HOST_ID, name: '宿主' }, r.path, kind, line, col)
+    await locateContainerPath({ id: HOST_ID, name: '本机' }, r.path, kind, line, col)
     return
   }
   if (group.kind === 'service') {
@@ -1037,7 +1067,7 @@ watch(
 
 // 建组公共体：单叶子根（新 termId = 独立会话），激活为新 tab。分屏走 pane 头部按钮。
 // root 可选传入（会话对话框按既有 termId 建组/合组分屏用）；缺省 = 全新单叶子。
-function createGroup(containerId: string, name: string, kind?: 'host' | 'service', root?: LayoutNode): TermGroup {
+function createGroup(containerId: string, name: string, kind?: 'host' | 'service' | 'ssh', root?: LayoutNode): TermGroup {
   // seq = 同容器现有组的最大序号 + 1（稳定身份，不随关闭/排序变化）
   let seq = 0
   for (const x of groups.value) {
@@ -1099,7 +1129,7 @@ function openTerm(c: { id: string; name: string; displayName?: string }) {
   }
   createGroup(c.id, c.displayName || c.name)
 }
-// 点侧栏「宿主」条目：开宿主终端（PTY 由 server 管理，cwd=镜像目录）。全局唯一一个 group。
+// 点侧栏「本机」条目：开本机终端（PTY 由 server 管理，cwd=镜像目录）。全局唯一一个 group。
 function openHostTerm() {
   if (isPhone.value) drawerOpen.value = false
   const i = groups.value.findIndex((g) => g.kind === 'host')
@@ -1107,7 +1137,20 @@ function openHostTerm() {
     activeIdx.value = i
     return
   }
-  createGroup(HOST_ID, '宿主', 'host')
+  createGroup(HOST_ID, '本机', 'host')
+}
+
+// 点 SSH 目标条目：开远程主机终端（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
+// 同目标唯一 group；containerId 用 'ssh:'+名前缀（api.ts sshGroupId）隔离与容器名撞名。
+function openSshTerm(t: SshTargetView) {
+  if (isPhone.value) drawerOpen.value = false
+  const id = sshGroupId(t.name)
+  const i = groups.value.findIndex((g) => g.containerId === id)
+  if (i >= 0) {
+    activeIdx.value = i
+    return
+  }
+  createGroup(id, t.name, 'ssh')
 }
 
 // 点服务卡片：进服务终端（docker exec，与容器「点击即进」同一交互语义）。
@@ -1133,14 +1176,20 @@ function openPopout(target: string) {
   const url = `${location.pathname}?popout=${encodeURIComponent(target)}`
   window.open(url, '_blank', 'noopener,width=1080,height=720')
 }
-// popout 首屏种子：等首轮容器列表就绪再建组（名字要用 displayName）。已有存档则跳过
-// （刷新恢复语义）；目标容器不存在/已删则不种子，空态文案兜底、修剪逻辑随后清档。
+// popout 首屏种子：等首轮容器列表与 SSH 目标就绪再建组（名字要用 displayName）。
+// 已有存档则跳过（刷新恢复语义）；目标容器不存在/已删则不种子，空态文案兜底、
+// 修剪逻辑随后清档。popoutTarget 的 ssh 分支 = 'ssh:'+目标名（tab 右键菜单写入）。
 watch(
-  () => itemsReady.value,
-  (ready) => {
+  [() => itemsReady.value, sshTargets],
+  ([ready]) => {
     if (!props.popout || !ready || groups.value.length) return
     if (props.popoutTarget === HOST_ID) {
-      createGroup(HOST_ID, '宿主', 'host')
+      createGroup(HOST_ID, '本机', 'host')
+      return
+    }
+    if (props.popoutTarget?.startsWith('ssh:')) {
+      const t = sshTargets.value.find((x) => x.name === sshTargetName(props.popoutTarget!))
+      if (t) createGroup(sshGroupId(t.name), t.name, 'ssh')
       return
     }
     const c = items.value.find((x) => x.id === props.popoutTarget)
@@ -1223,12 +1272,15 @@ function restoreHidden(g: TermGroup) {
 
 // 会话对话框：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
 const showSessions = ref(false)
+// SSH 目标管理对话框（侧栏终端区「添加 / 管理」入口）。
+const showSshTargets = ref(false)
 // 打开时剪掉容器已删的隐藏组：会话随容器消亡，留着只会恢复出连不上的空 tab。
 watch(showSessions, (open) => {
   if (!open) return
   const valid = new Set(items.value.map((c) => c.id))
   const kept = hiddenGroups.value.filter((g) => {
     if (g.kind === 'host') return true
+    if (g.kind === 'ssh') return sshTargets.value.some((t) => t.name === sshTargetName(g.containerId))
     if (g.kind === 'service') return svcItems.value.some((x) => x.name === g.containerId)
     return valid.has(g.containerId)
   })
@@ -1236,11 +1288,13 @@ watch(showSessions, (open) => {
 })
 // 本窗口已占用的会话 key（可见 + 隐藏的全部叶子）：对话框据此区分「已打开」/
 // 「使用中」——不再从列表排除任何会话，扫到的全列（用户要的就是全集）。
+// SSH 组的 cid 剥前缀：对话框侧的 termSessionKey 用后端真名（无前缀）。
 const occupiedSet = computed(() => {
   const s = new Set<string>()
   for (const g of [...groups.value, ...hiddenGroups.value]) {
-    const kind = g.kind === 'host' ? 'host' : g.kind === 'service' ? 'service' : 'container'
-    const cid = g.kind === 'host' ? undefined : g.containerId
+    const kind = g.kind === 'host' ? 'host' : g.kind === 'service' ? 'service' : g.kind === 'ssh' ? 'ssh' : 'container'
+    const cid =
+      g.kind === 'host' ? undefined : g.kind === 'ssh' ? sshTargetName(g.containerId) : g.containerId
     for (const t of leafIds(g.root)) s.add(termSessionKey(kind, cid, t))
   }
   return s
@@ -1252,9 +1306,18 @@ function adoptSessions(list: TermSessionView[]) {
   if (!first) return
   const host = first.kind === 'host'
   const svc = first.kind === 'service'
-  const cid = host ? HOST_ID : first.containerId!
-  const c = host ? undefined : items.value.find((x) => x.id === cid)
-  const name = host ? '宿主' : svc ? (svcItems.value.find((x) => x.name === cid)?.name ?? cid) : c ? c.displayName || c.name : cid
+  const ssh = first.kind === 'ssh'
+  const cid = host ? HOST_ID : ssh ? sshGroupId(first.containerId!) : first.containerId!
+  const c = host || ssh ? undefined : items.value.find((x) => x.id === cid)
+  const name = host
+    ? '本机'
+    : ssh
+      ? first.containerId!
+      : svc
+        ? (svcItems.value.find((x) => x.name === cid)?.name ?? cid)
+        : c
+          ? c.displayName || c.name
+          : cid
   const ids = list.map((s) => s.termId)
   const root: LayoutNode =
     ids.length === 1
@@ -1266,7 +1329,7 @@ function adoptSessions(list: TermSessionView[]) {
           children: ids.map((t) => ({ kind: 'leaf' as const, termId: t })),
           grows: equalGrows(ids.length),
         }
-  createGroup(cid, name, host ? 'host' : svc ? 'service' : undefined, root)
+  createGroup(cid, name, host ? 'host' : svc ? 'service' : ssh ? 'ssh' : undefined, root)
 }
 
 // —— tab 长按（触屏）= 右键 ——
@@ -1561,6 +1624,7 @@ async function doDelete(payload: { deleteData: boolean; confirmName?: string }) 
       // 完成 toast 的及时性；任务 tail=0，payload 极小）。完成通知去重在
       // lib/serviceJobs.ts（服务面板打开时的独立轮询也喂它，天然只发一次）。
   const svcItems = ref<ServiceView[]>([])
+
 // 抽屉里的操作（启停/删除/创建完成）经 App 计数回传：即时刷侧栏，不等下一拍轮询。
 watch(
   () => props.svcVersion,
@@ -1841,8 +1905,13 @@ watch(
 )
 
 function activityKeyOf(g: TermGroup, t: string): string {
-  const kind = g.kind === 'host' ? 'host' : g.kind === 'service' ? 'service' : 'container'
-  return termSessionKey(kind, g.kind === 'host' ? undefined : g.containerId, t)
+  const kind =
+    g.kind === 'host' ? 'host' : g.kind === 'service' ? 'service' : g.kind === 'ssh' ? 'ssh' : 'container'
+  return termSessionKey(
+    kind,
+    g.kind === 'host' ? undefined : g.kind === 'ssh' ? sshTargetName(g.containerId) : g.containerId,
+    t,
+  )
 }
 // tab 身份点颜色（宿主琥珀 / 容器色）：光晕与本体共用。
 function tabDotColor(g: TermGroup): string {
@@ -1926,6 +1995,7 @@ async function refreshActivity() {
 
 onMounted(() => {
   refresh()
+  void refreshSshTargets()
   timer = setInterval(() => refresh(true), 5000)
   // 无输出提醒：popout 独立窗口也有自己的终端组，同样参与轮询。
   void refreshActivity()
@@ -1957,7 +2027,8 @@ onUnmounted(() => {
     <!-- 左侧窄栏的信息架构：一个主体 + 底部环境区。
          「系统容器」是主列表（弱化小标签作分组头）；docker 服务是与容器同形态的卡片组，
          但作为低频配套收在底部环境区、可整体收起（分区头即摘要，状态点常显）。
-         宿主终端是环境区里的单行入口。模板/全局 hosts 等容器作用域的低频配置收进
+         终端区（本机 + SSH 主机）钉在环境区底部——远程主机只是终端延伸，非被管理对象。
+         模板/全局 hosts 等容器作用域的低频配置收进
          容器标题的 ⋯ 菜单。popout 独立窗口不渲染。
          手机（<768px）：侧栏转 overlay 抽屉（max-md:absolute + 遮罩），默认收起，
          汉堡入口在 tab 栏最左；桌面（≥768）恒为静态侧栏，抽屉相关类全部不命中。 -->
@@ -2120,7 +2191,7 @@ onUnmounted(() => {
             type="button"
             class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
             :class="activeGroup?.kind === 'host' ? 'bg-accent/50' : ''"
-            title="宿主终端"
+            title="本机终端"
             @click="openHostTerm()"
           >
             <Monitor class="size-4 text-amber-500" />
@@ -2573,18 +2644,45 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 宿主终端快捷行：钉在底部，与 docker 服务分区同属「容器之外的环境」区，
-           点击开/切宿主 tab；独立窗口入口收进 tab 右键菜单。 -->
-      <button
-        type="button"
-        class="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left hover:bg-accent/50"
-        :class="activeGroup?.kind === 'host' ? 'bg-accent/50' : ''"
-        title="宿主终端"
-        @click="openHostTerm()"
-      >
-        <Monitor class="size-3.5 shrink-0 text-amber-500" />
-        <span class="min-w-0 flex-1 truncate text-sm">宿主终端</span>
-      </button>
+      <!-- 终端区：本机 + SSH 主机（远程主机只是终端延伸，非被管理对象——无文件面板/
+           网络信息/批量操作，会话语义与宿主终端同构，见 server/sshTerminal.ts）。
+           钉在底部，与 docker 服务分区同属「容器之外的环境」区；独立窗口入口收进 tab 右键菜单。 -->
+      <div class="shrink-0 border-t border-border">
+        <div class="px-3 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+          终端
+        </div>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/50"
+          :class="activeGroup?.kind === 'host' ? 'bg-accent/50' : ''"
+          title="本机终端"
+          @click="openHostTerm()"
+        >
+          <Monitor class="size-3.5 shrink-0 text-amber-500" />
+          <span class="min-w-0 flex-1 truncate text-sm">本机</span>
+        </button>
+        <button
+          v-for="t in sshTargets"
+          :key="t.name"
+          type="button"
+          class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/50"
+          :class="activeGroup?.containerId === sshGroupId(t.name) ? 'bg-accent/50' : ''"
+          :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
+          @click="openSshTerm(t)"
+        >
+          <Server class="size-3.5 shrink-0" :style="{ color: containerColor(t.name) }" />
+          <span class="min-w-0 flex-1 truncate text-sm">{{ t.name }}</span>
+        </button>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 px-3 pb-2 pt-1 text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="添加 SSH 主机 / 管理已有目标"
+          @click="showSshTargets = true"
+        >
+          <Plus class="size-3.5 shrink-0" />
+          <span class="min-w-0 flex-1 truncate text-xs">{{ sshTargets.length ? '添加 / 管理' : '添加主机（SSH）' }}</span>
+        </button>
+      </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
            与收缩态 rail 底部的展开键互为镜像。 -->
@@ -2713,10 +2811,10 @@ onUnmounted(() => {
             >
               无输出时提醒
             </ContextMenuItem>
-            <!-- popout 是组级动作（给该容器/宿主开独立工作区），收在这里而不是 pane 头部。
-                 容器要 running 才有意义（停着的容器 popout 出来是死终端）。 -->
+            <!-- popout 是组级动作（给该容器/宿主/SSH 主机开独立工作区），收在这里而不是 pane 头部。
+                 容器要 running 才有意义（停着的容器 popout 出来是死终端）；宿主/SSH 恒可。 -->
             <ContextMenuItem
-              v-if="g.kind === 'host' || containerRunning(g.containerId)"
+              v-if="g.kind === 'host' || g.kind === 'ssh' || containerRunning(g.containerId)"
               @click="openPopout(g.kind === 'host' ? HOST_ID : g.containerId)"
             >
               在独立窗口打开
@@ -2734,7 +2832,7 @@ onUnmounted(() => {
         </div>
         <!-- 网络：active group 容器的 IP / 监听端口 / 映射端口收进下拉（原独立信息条）。
              宿主组没有网络信息，禁用置灰。popout 独立窗口同样有此入口。 -->
-        <DropdownMenu v-if="activeGroup?.kind !== 'host'">
+        <DropdownMenu v-if="activeGroup?.kind !== 'host' && activeGroup?.kind !== 'ssh'">
           <DropdownMenuTrigger as-child>
             <button
               class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
@@ -2836,14 +2934,22 @@ onUnmounted(() => {
         <button
           v-else
           class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5 pointer-events-none opacity-30"
-          title="宿主终端无网络信息"
+          title="本机 / SSH 终端无网络信息"
         >
           <Network class="size-3.5 max-md:size-5" />
         </button>
         <button
           class="flex items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
-          :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
-          :title="showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
+          :class="[
+            activeGroup?.kind === 'ssh'
+              ? 'pointer-events-none opacity-30'
+              : showFiles
+                ? 'bg-accent text-foreground'
+                : 'text-muted-foreground hover:bg-accent/50',
+          ]"
+          :title="activeGroup?.kind === 'ssh'
+            ? 'SSH 主机暂无文件面板'
+            : showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
           @click="showFiles = !showFiles"
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
@@ -3157,5 +3263,14 @@ onUnmounted(() => {
     v-if="showSvcAdopt"
     @adopted="onSvcAdopted"
     @close="showSvcAdopt = false"
+  />
+
+  <!-- SSH 主机管理：添加 / 从 ~/.ssh/config 候选导入 / 删除（目标存 sidecar） -->
+  <SshTargetsDialog
+    v-if="showSshTargets"
+    @changed="refreshSshTargets()"
+    @open="openSshTerm($event)"
+    @close="showSshTargets = false"
+    @unauthorized="emit('unauthorized')"
   />
 </template>

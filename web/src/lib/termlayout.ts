@@ -32,8 +32,9 @@ export interface TermGroup {
   containerId: string
   name: string
   // host = 宿主终端（containerId 为 HOST_ID 哨兵）；service = docker 服务终端
-  // （containerId 为服务名，WS 走 /ws/service-terminal）；缺省 = 系统容器。
-  kind?: 'host' | 'service'
+  // （containerId 为服务名，WS 走 /ws/service-terminal）；ssh = SSH 主机终端
+  // （containerId 为 'ssh:'+目标名，WS 走 /ws/ssh-terminal）；缺省 = 系统容器。
+  kind?: 'host' | 'service' | 'ssh'
   root: LayoutNode
   // 同容器内的创建序号（1 起）：多组并存时显示 name·seq，身份稳定——关掉中间的组
   // 留缺口也不换号（语义同 tmux 窗口号）。单组独存时不显示后缀。

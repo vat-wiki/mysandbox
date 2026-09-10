@@ -70,15 +70,16 @@ onMounted(load)
 function hiddenLabel(g: TermGroup): string {
   return g.seq ? `${g.name}·${g.seq}` : g.name
 }
-// 会话归属地（确认文案用）：宿主 / 容器 / 服务显示名，容器已删则退回 id。
+// 会话归属地（确认文案用）：宿主 / 容器 / 服务 / SSH 主机显示名，容器已删则退回 id。
 function sessionWhere(s: TermSessionView): string {
-  if (s.kind === 'host') return '宿主'
+  if (s.kind === 'host') return '本机'
+  if (s.kind === 'ssh') return s.containerId || 'SSH 主机'
   if (s.kind === 'service') return s.containerId || '服务'
   const c = props.items.find((x) => x.id === s.containerId)
   return (c ? c.displayName || c.name : s.containerId) || '?'
 }
 
-// ---- 远端会话按容器/宿主/服务分组 ----
+// ---- 远端会话按容器/宿主/服务/SSH 主机分组 ----
 interface RemoteRow {
   host: boolean
   service?: boolean
@@ -93,11 +94,27 @@ const remoteRows = computed<RemoteRow[]>(() => {
   const list = sessions.value
   const rows = new Map<string, RemoteRow>()
   const rowFor = (s: TermSessionView): RemoteRow => {
-    const k = s.kind === 'host' ? 'host' : s.kind === 'service' ? `s:${s.containerId}` : `c:${s.containerId}`
+    const k =
+      s.kind === 'host'
+        ? 'host'
+        : s.kind === 'ssh'
+          ? `x:${s.containerId}`
+          : s.kind === 'service'
+            ? `s:${s.containerId}`
+            : `c:${s.containerId}`
     let r = rows.get(k)
     if (!r) {
       if (s.kind === 'host') {
-        r = { host: true, name: '宿主', color: '#f59e0b', sessions: [] }
+        r = { host: true, name: '本机', color: '#f59e0b', sessions: [] }
+      } else if (s.kind === 'ssh') {
+        // SSH 会话本体在远端 tmux（server/sshTerminal.ts）：目标名即身份，色沿用名字 hash。
+        r = {
+          host: false,
+          containerId: s.containerId,
+          name: s.containerId || 'SSH 主机',
+          color: containerColor(s.containerId ?? ''),
+          sessions: [],
+        }
       } else if (s.kind === 'service') {
         r = {
           host: false,
@@ -121,8 +138,9 @@ const remoteRows = computed<RemoteRow[]>(() => {
     }
     return r
   }
-  // 排序：宿主置顶（与侧栏一致）→ 已知容器按列表序 → 容器已删的垫底 → 服务最后
+  // 排序：本机置顶 → SSH 主机 → 已知容器按列表序 → 容器已删的垫底 → 服务最后
   for (const s of list) if (s.kind === 'host') rowFor(s).sessions.push(s)
+  for (const s of list) if (s.kind === 'ssh') rowFor(s).sessions.push(s)
   for (const c of props.items)
     for (const s of list) if (s.kind === 'container' && s.containerId === c.id) rowFor(s).sessions.push(s)
   for (const s of list)

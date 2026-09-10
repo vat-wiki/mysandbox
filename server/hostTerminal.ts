@@ -80,7 +80,9 @@ const activeCount = new Map<string, number>();
 // ⚠️ exit 事件只覆盖「正常跑完/显式 process.exit」；SIGINT/SIGTERM 默认直接终死进程、
 // **不触发 exit**（实测踩坑：手动 Ctrl+C 的 dev 实例泄漏了一个 script，之后它在的会话
 // 永远 attached=1，会话对话框满屏假「使用中」）。所以信号也挂：收到即同步杀子进程再退出。
-const children = new Set<ChildProcess>();
+// sshTerminal.ts 的 ssh+script 子进程也注册进同一张表（同宿主进程派生、同泄漏形态）；
+// 处理器只在本模块注册一次，两个模块共用。
+export const children = new Set<ChildProcess>();
 const killChildren = () => {
   for (const c of children) {
     try { c.kill('SIGKILL'); } catch { /* noop */ }
@@ -93,7 +95,8 @@ process.on('SIGTERM', () => { killChildren(); process.exit(143); });
 // 环境探测缓存：'tmux' | 'plain' | 'none'（none=连 script 都没有，无 PTY 可给）。
 let envCache: 'tmux' | 'plain' | 'none' | null = null;
 
-async function detectEnv(): Promise<'tmux' | 'plain' | 'none'> {
+// 导出给 sshTerminal.ts：本地只需要 script（PTY），ssh 目标端 tmux 在远端探测。
+export async function detectEnv(): Promise<'tmux' | 'plain' | 'none'> {
   if (envCache) return envCache;
   const has = async (cmd: string) => {
     try { await execFileAsync('sh', ['-c', `command -v ${cmd}`]); return true; }
@@ -236,8 +239,8 @@ async function killSession(session: string): Promise<void> {
 // script 子进程的控制终端 pts（`ps -o tty=` 输出 pts/N 或 ?）。拿不到给 stty 落初始尺寸用。
 // script 自己的 controlling tty 继承自 node（无 tty），ps -o tty= 查它永远返回 '?'；
 // 它为命令开的 pts 挂在**子进程**（sh -c tmux ...）身上。所以查子进程的 tty。
-// 子进程起得稍晚，调用方轮询重试。
-function childTty(pid: number): Promise<string | null> {
+// 子进程起得稍晚，调用方轮询重试。（sshTerminal.ts 的 ssh+script 同构，共用。）
+export function childTty(pid: number): Promise<string | null> {
   return new Promise((resolvePromise) => {
     execFile('ps', ['-o', 'tty=', '--ppid', String(pid)], { timeout: 2_000 }, (err, stdout) => {
       const t = (stdout ?? '')
@@ -250,7 +253,8 @@ function childTty(pid: number): Promise<string | null> {
 }
 
 // stty 改 pts 尺寸（发 SIGWINCH 给 pty 前台进程组，tmux client 随即感知）。
-async function applyTtySize(pts: string, cols: number, rows: number): Promise<void> {
+// ssh 终端同构复用：pts 是本机 ssh client 的 tty，SIGWINCH 由 ssh 转发到远端。
+export async function applyTtySize(pts: string, cols: number, rows: number): Promise<void> {
   try {
     await execFileAsync('stty', ['-F', pts, 'cols', String(cols), 'rows', String(rows)], {
       timeout: 2_000,

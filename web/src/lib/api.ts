@@ -6,6 +6,13 @@ const TOKEN_KEY = 'mysandbox.token'
 // 宿主哨兵 id：ContainerList 的 host 终端组用它当 containerId；文件 API 据此切宿主端点
 // （两侧路由形状一一对应，FilePanel/FileEditorPane 无需感知）。
 export const HOST_ID = '__host__'
+// SSH 终端组的 containerId 前缀（同 HOST_ID 哨兵思路）：组 containerId = 'ssh:'+目标名。
+// 前缀隔离与容器名的撞名面（目标名可自由起，容器名来自 docker/LXC）；WS/会话 key 在
+// 边界处剥前缀用真名。与 SVC_FILE_PREFIX 的差异：SSH 组**没有**文件端点，前缀全程
+// 身份用，不进 filesBase。
+export const SSH_ID_PREFIX = 'ssh:'
+export const sshGroupId = (name: string): string => SSH_ID_PREFIX + name
+export const sshTargetName = (id: string): string => id.slice(SSH_ID_PREFIX.length)
 // 服务文件端点哨兵前缀：服务终端组（kind='service'）的文件目标 id = 's:'+服务名，
 // filesBase 据此切 /api/services/<name>/*（后端 server/serviceFiles.ts）。约定与
 // termSessionKey 的 's:' 前缀同源。与 HOST_ID 的差异：服务组的 containerId 本体是真名
@@ -256,8 +263,8 @@ export const batchAiConfig = (ids: string[], input: AiGatewayInput) =>
 // 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）；
 // title = pane 动态标题（命令行/空闲路径/CC·opencode 任务标题，比 cwd 更好认）。
 export interface TermSessionView {
-  kind: 'host' | 'container' | 'service'
-  containerId?: string // container=容器 id；service=服务名（web 侧解析显示名/颜色）
+  kind: 'host' | 'container' | 'service' | 'ssh'
+  containerId?: string // container=容器 id；service=服务名；ssh=SSH 目标名（web 侧解析显示名/颜色）
   termId: string
   attached: number
   created: number
@@ -267,11 +274,17 @@ export interface TermSessionView {
 // 会话去重 key：ContainerList 算「本窗口已占用」（可见 + 隐藏组的全部叶子）、
 // TermSessionsDialog 过滤远端列表，两处必须同构，收拢在这里。
 export function termSessionKey(
-  kind: 'host' | 'container' | 'service',
+  kind: 'host' | 'container' | 'service' | 'ssh',
   containerId: string | undefined,
   termId: string,
 ): string {
-  return kind === 'host' ? `host:${termId}` : kind === 'service' ? `s:${containerId}:${termId}` : `c:${containerId}:${termId}`
+  return kind === 'host'
+    ? `host:${termId}`
+    : kind === 'service'
+      ? `s:${containerId}:${termId}`
+      : kind === 'ssh'
+        ? `x:${containerId}:${termId}`
+        : `c:${containerId}:${termId}`
 }
 export const listTermSessions = () =>
   api('/api/terminal-sessions') as Promise<{ sessions: TermSessionView[] }>
@@ -281,9 +294,33 @@ export const killTermSession = (s: TermSessionView) =>
       ? `/api/terminal-sessions/host/${encodeURIComponent(s.termId)}`
       : s.kind === 'service'
         ? `/api/terminal-sessions/service/${encodeURIComponent(s.termId)}`
-        : `/api/terminal-sessions/container/${encodeURIComponent(s.containerId ?? '')}/${encodeURIComponent(s.termId)}`,
+        : s.kind === 'ssh'
+          ? `/api/terminal-sessions/ssh/${encodeURIComponent(s.containerId ?? '')}/${encodeURIComponent(s.termId)}`
+          : `/api/terminal-sessions/container/${encodeURIComponent(s.containerId ?? '')}/${encodeURIComponent(s.termId)}`,
     { method: 'DELETE' },
   ) as Promise<{ ok: true }>
+
+// —— SSH 终端目标（server/sshTerminal.ts；存 sidecar，UI 可增删）——
+export interface SshTargetView {
+  name: string
+  host: string // ssh 目的地：host / user@host / ~/.ssh/config 别名（凭据全走宿主 ssh）
+  user?: string
+  port?: number
+  createdAt?: string
+}
+export interface SshConfigHost {
+  name: string
+  host?: string
+  user?: string
+  port?: number
+}
+export const listSshTargets = () => api('/api/ssh/targets') as Promise<{ targets: SshTargetView[] }>
+export const addSshTarget = (t: { name: string; host: string; user?: string; port?: number }) =>
+  api('/api/ssh/targets', { method: 'POST', body: JSON.stringify(t) }) as Promise<{ ok: true; target: SshTargetView }>
+export const deleteSshTarget = (name: string) =>
+  api(`/api/ssh/targets/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<{ ok: true }>
+export const listSshConfigHosts = () =>
+  api('/api/ssh/config-hosts') as Promise<{ hosts: SshConfigHost[] }>
 
 // —— 终端输出活动（「无输出提醒」）——
 // 后端 TermActivityView（server/activity.ts）：服务端周期扫 tmux 尾部输出，

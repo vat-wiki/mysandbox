@@ -189,12 +189,15 @@ LXC 容器用到的数据库/缓存等服务，由 mysandbox 在宿主 docker �
 - **管理边界**：mysandbox 只管理自己创建的服务（docker label 标记），宿主上其他容器（如 compose 起的）永不触碰。密码等 env 值只存本地 sidecar（`0600`），API 不回传。
 - docker 不可达时面板降级提示（容器管理不受影响），`/api/health` 的 `services.available` 反映可用性。
 
-## 宿主终端
+## 终端（本机 + SSH 主机）
 
-侧栏顶部固定「宿主」条目：开一个由 server 自己管理 PTY 的宿主 shell（cwd = 宿主 home）。
-交互形态与容器终端一致（tmux 会话保留：断开 60s 内刷新重连恢复；点 ✕ 真杀）。
+侧栏底部「终端」区：**本机**条目开一个由 server 自己管理 PTY 的宿主 shell（cwd = 宿主 home）；
+下方可添加 **SSH 主机**，直接进远程主机的终端。交互形态与容器终端一致（tmux 会话保留：
+断开 60s 内刷新重连恢复；点 ✕ 真杀）。
 
-实现：宿主 tmux 走专用 socket `-L mysandbox-host`（不碰你自己的 tmux server），`script(1)` 提供 PTY。仅支持 Linux。⚠️ 安全上注意：token 本就等价宿主用户（uid 1000 直通），宿主终端不扩大权限面，只是把宿主 shell 摆上了 UI——不要把服务暴露到非受控网络。
+- **本机**：宿主 tmux 走专用 socket `-L mysandbox-host`（不碰你自己的 tmux server），`script(1)` 提供 PTY。仅支持 Linux。
+- **SSH 主机**：会话本体在**远端** tmux 的专用 socket `-L mysandbox-ssh` 上，跨本机/远端重启存活；凭据全走本机 ssh（密钥 / agent / `~/.ssh/config` 别名含跳板机），面板只存「怎么连」不存密码。远程主机只是终端的延伸，**不是被管理对象**——没有文件面板、批量操作、hosts 注入这些容器能力。
+- ⚠️ 安全上注意：token 本就等价宿主用户（uid 1000 直通），本机与 SSH 终端都不扩大权限面（拿着 token 本就能 ssh 到任何可达主机）——不要把服务暴露到非受控网络。
 
 ## 容器桌面
 
@@ -245,6 +248,7 @@ server/        TypeScript 后端（fastify + lxc-* CLI）
   batch.ts       批量 git/ssh/claude/exec（p-limit 并发）
   terminal.ts    /ws/terminal（lxc-attach PTY）
   hostTerminal.ts /ws/host-terminal（宿主 PTY）
+  sshTerminal.ts /ws/ssh-terminal（SSH 主机终端，目标存 sidecar）
   routes.ts      REST 路由
   base.ts        /api/base*（模板操作）+ CLI base 命令
   docker.ts      docker CLI 客户端（服务层用，label 过滤）

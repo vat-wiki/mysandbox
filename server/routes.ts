@@ -17,6 +17,7 @@ import { setMeta, getMeta, deleteMeta } from './state.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
+import { listSshSessions, killSshSession } from './sshTerminal.js';
 import { terminalActivity } from './activity.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
@@ -115,6 +116,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     sessions.push(...(await listHostSessions()));
     // 服务终端会话（docker exec 挂宿主 tmux，见 hostTerminal.ts）：同 socket 不同前缀。
     sessions.push(...(await listServiceSessions()));
+    // SSH 目标会话（会话本体在远端 tmux，见 sshTerminal.ts）：逐目标并行、失败降级为 0。
+    sessions.push(...(await listSshSessions()));
     return { sessions };
   });
 
@@ -138,6 +141,13 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const { termId } = req.params as { termId: string };
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
     await killServiceSession(termId);
+    return { ok: true };
+  });
+
+  app.delete('/api/terminal-sessions/ssh/:name/:termId', async (req) => {
+    const { name, termId } = req.params as { name: string; termId: string };
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    await killSshSession(name, termId);
     return { ok: true };
   });
 
