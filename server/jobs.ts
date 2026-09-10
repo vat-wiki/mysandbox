@@ -95,6 +95,13 @@ export function releaseJobIp(ip: string): void {
   reservedIps.delete(ip);
 }
 
+// 该名字是否有进行中任务（create/update/rebuild 共用预占集合）。requireService 的孤儿
+// meta 清理用它豁免 rm→create 窗口——那几秒容器真的不在 ps 列表里，但 meta 已在任务
+// 开始时捕获、收尾由 update/rebuild 回写，绝不能在窗口期被判孤儿清掉。
+export function hasJobName(name: string): boolean {
+  return reservedNames.has(name);
+}
+
 function appendLine(job: JobRec, line: string): void {
   job.lines.push(line);
   if (job.lines.length > LOG_CAP) job.lines.splice(0, job.lines.length - LOG_CAP);

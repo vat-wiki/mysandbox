@@ -404,6 +404,17 @@ export async function inspectServiceSnapshot(name: string): Promise<ServiceSnaps
   }
 }
 
+// 容器是否存在的三态判定：true=在 / false=确认无（no such object）/ null=查询失败不可判定。
+// `docker ps -a` 失败会被 listServiceContainers 吞成空列表（daemon 忙碌/重启时的既定降级），
+// 但「列表为空」在 requireService 的孤儿 meta 清理语境下不可信——删 meta 前用它单容器
+// 直查二次确认，防把瞬时故障当成永久消失（2026-09-10 myapikey meta 事故：宿主 build
+// 收尾瞬间 ps 失败，活着的容器被误判孤儿、meta 被清，重建从此 409）。
+export async function containerExists(name: string): Promise<boolean | null> {
+  const r = await dockerExec(['container', 'inspect', '--format', '{{.Name}}', name], 5_000);
+  if (r.ok) return r.stdout.trim().length > 0;
+  return /no such/i.test(r.stderr) ? false : null;
+}
+
 export async function startContainer(name: string): Promise<void> {
   const r = await dockerExec(['start', name], 60_000);
   if (!r.ok) throw new Error(`docker start failed: ${r.stderr.trim() || 'no output'}`);

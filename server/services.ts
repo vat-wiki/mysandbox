@@ -27,6 +27,7 @@ import {
   createServiceContainer,
   containerIpamIp,
   containerPid,
+  containerExists,
   imageId,
   containerImageId,
   containerImageIds,
@@ -62,6 +63,7 @@ import {
 import {
   reservedServiceIps,
   tryReserveJobName,
+  hasJobName,
   releaseJobName,
   reserveJobIp,
   releaseJobIp,
@@ -671,6 +673,8 @@ export async function runServiceUpdate(cfg: Config, name: string, ctx: JobCtx): 
   } catch (e) {
     throw new Error(`重建失败（旧容器已移除，数据卷无损，可重试更新）：${e instanceof Error ? e.message : String(e)}`);
   }
+  // meta 自愈：同 runServiceRebuild——容器已按 m 的形状复刻完成，回写即恢复登记。
+  await setServiceMeta(name, { ...m, ip });
   if (wasRunning) {
     ctx.status(`启动 ${name}`);
     await startContainer(name);
@@ -724,6 +728,9 @@ export async function runServiceRebuild(cfg: Config, name: string, ctx: JobCtx):
   } catch (e) {
     throw new Error(`重建失败（旧容器已移除，数据卷无损，可重试重建）：${e instanceof Error ? e.message : String(e)}`);
   }
+  // meta 自愈：rm→create 窗口里若 meta 意外被清（requireService 的孤儿清理已被任务
+  // 预占豁免挡住，这里兜底万一），容器已按 m 的形状复刻完成——回写即恢复登记。
+  await setServiceMeta(name, { ...m, ip });
   if (wasRunning) {
     ctx.status(`启动 ${name}`);
     await startContainer(name);
@@ -928,6 +935,10 @@ export async function unadoptService(cfg: Config, name: string): Promise<void> {
 // :name 的统一前置：名字合法 + label 集 ∪ 收编集里存在——未收编的外部容器结构性 404。
 // 容器没了但 meta 还在（外部 docker rm / 上次删除中途失败）→ 顺手清孤儿 meta 再 404，
 // 不然 state.json 里会积累指向不存在容器的条目。
+// ⚠️ 「ps 列表里没有」≠「真没了」：ps 失败被吞成空列表（daemon 忙碌/重启的瞬时故障，
+// 见 listServiceContainers），更新/重建任务还有 rm→create 的真窗口——盲删会把瞬时故障
+// 变成不可逆的 meta 丢失（2026-09-10 myapikey 事故）。所以：任务占用期一律不删；其余
+// 情形单容器直查二次确认——在（ps 瞬时失败）照常放行，确认无才清，查询失败 409 拒判。
 async function requireService(name: string): Promise<void> {
   const m = await getServiceMeta(name);
   // 收编容器名允许 `_`（compose 惯例），仅以 adopted meta 为凭证放宽。
@@ -936,9 +947,15 @@ async function requireService(name: string): Promise<void> {
   }
   const rows = await listServiceContainers(m?.adopted ? [name] : []);
   if (!rows.some((r) => rowName(r.Names) === name)) {
-    if (m) {
-      await deleteServiceMeta(name);
-      log.info({ name }, 'service meta orphaned (container gone) — cleaned');
+    if (m && !hasJobName(name)) {
+      const exists = await containerExists(name);
+      if (exists) return; // ps 瞬时失败，容器其实在——按存在放行
+      if (exists === false) {
+        await deleteServiceMeta(name);
+        log.info({ name }, 'service meta orphaned (container gone) — cleaned');
+      } else {
+        throw conflict(`docker daemon 暂不可达，无法确认服务 "${name}" 是否存在，请稍后重试`);
+      }
     }
     throw notFound(`service "${name}" not found`);
   }
