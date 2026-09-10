@@ -27,6 +27,7 @@ import {
   type GitChange,
   type GitBranchesView,
   type GitWorktreesView,
+  type GitRestoreTarget,
 } from '@/lib/api'
 import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
@@ -122,6 +123,7 @@ watch(
     collapsedDirs.value = new Set()
     seenDirs.clear()
     armed.value = new Set()
+    armedAll.value = false
     void fetchStatus()
   },
 )
@@ -171,29 +173,39 @@ function openChange(c: GitChange) {
   })
 }
 
-// —— 撤销变更：单文件恢复到 HEAD（VSCode「放弃更改」同语义）——
-// tracked（M/D/R/T/冲突）一键：丢 index+工作区改动、D 复活、R = 恢复旧路径+移除新路径。
-// untracked 的撤销 = 删整个文件（不可挽回），首击只把按钮点成红色确认态、再击才执行
-//（同 worktree 强制移除的两段式，无弹窗），path/容器切换时复位。R/C 条目由服务端对
-// 新旧两路径各归其位，前端只管把 oldFile 带上。
+// —— 撤销变更：单文件/目录/整体，恢复到 HEAD（VSCode「放弃更改」同语义）——
+// file：tracked（M/D/R/T/冲突）一键（丢 index+工作区改动、D 复活、R = 恢复旧路径+移除新
+// 路径）；untracked 的撤销 = 删整个文件，首击只把按钮点成红色确认态、再击才执行。
+// dir / all 是批量有损动作（未跟踪文件/目录一并删除），一律两击确认（首击亮红，无弹窗）。
+// key：file 用相对路径、dir 用树节点路径（带尾 /，与文件天然不撞）、all 单独布尔位。
 const restoring = ref(new Set<string>()) // 行级进行中（防重复点击）
-const armed = ref(new Set<string>()) // untracked 已进入待确认态的行
+const armed = ref(new Set<string>()) // 已进入待确认态的行
+const restoringAll = ref(false)
+const armedAll = ref(false)
 const isUntracked = (c: GitChange) => c.x === '?' && c.y === '?'
 function revertTitle(c: GitChange): string {
   if (armed.value.has(c.file)) return '再次点击：删除未跟踪文件'
   return isUntracked(c) ? '撤销（删除未跟踪文件）' : '撤销变更（恢复到 HEAD，未提交改动会丢失）'
 }
-async function revertChange(c: GitChange) {
-  if (restoring.value.has(c.file)) return
-  if (isUntracked(c) && !armed.value.has(c.file)) {
-    armed.value = new Set([...armed.value, c.file])
+function dirTitle(d: TreeNode): string {
+  if (armed.value.has(d.path)) return '再次点击：撤销目录下全部变更'
+  return d.allUntracked ? '撤销（删除目录下全部未跟踪文件）' : '撤销目录下全部变更（未提交改动丢失，未跟踪文件删除）'
+}
+const allTitle = computed(() =>
+  armedAll.value ? '再次点击：撤销全部变更' : '撤销全部变更（未提交改动丢失，未跟踪文件删除）',
+)
+// file/dir 共用执行体：needArm 的目标首击只点亮确认态
+async function restoreByKey(key: string, needArm: boolean, target: GitRestoreTarget) {
+  if (restoring.value.has(key)) return
+  if (needArm && !armed.value.has(key)) {
+    armed.value = new Set([...armed.value, key])
     return
   }
-  restoring.value = new Set([...restoring.value, c.file])
+  restoring.value = new Set([...restoring.value, key])
   try {
-    await gitRestore(props.containerId, props.path, c.file, c.oldFile)
+    await gitRestore(props.containerId, props.path, target)
     const a = new Set(armed.value)
-    a.delete(c.file)
+    a.delete(key)
     armed.value = a
     refresh() // 变更列表即时跟新（不等 8s 轮询）
   } catch (e) {
@@ -201,8 +213,32 @@ async function revertChange(c: GitChange) {
     toast.error(e instanceof Error ? e.message : String(e))
   } finally {
     const n = new Set(restoring.value)
-    n.delete(c.file)
+    n.delete(key)
     restoring.value = n
+  }
+}
+function revertChange(c: GitChange) {
+  void restoreByKey(c.file, isUntracked(c), c.oldFile ? { file: c.file, oldFile: c.oldFile } : { file: c.file })
+}
+function revertDir(d: TreeNode) {
+  void restoreByKey(d.path, true, { dir: d.path.replace(/\/+$/, '') })
+}
+async function revertAll() {
+  if (restoringAll.value) return
+  if (!armedAll.value) {
+    armedAll.value = true
+    return
+  }
+  restoringAll.value = true
+  try {
+    await gitRestore(props.containerId, props.path, { all: true })
+    armedAll.value = false
+    refresh()
+  } catch (e) {
+    if (e instanceof Unauthorized) return
+    toast.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    restoringAll.value = false
   }
 }
 
@@ -741,6 +777,17 @@ watch(view, (v) => {
       <span class="shrink-0 rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
         {{ view.truncated ? '999+' : (view.changes?.length ?? 0) }}
       </span>
+      <!-- 撤销全部：批量有损动作，两击确认（首击亮红，无弹窗） -->
+      <button
+        v-if="view.changes?.length"
+        class="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground disabled:pointer-events-none"
+        :class="armedAll ? 'text-destructive' : ''"
+        :title="allTitle"
+        :disabled="restoringAll"
+        @click="revertAll()"
+      >
+        <Undo2 class="size-3" />
+      </button>
       <!-- worktree 入口：与分支菜单平级（分支改当前工作树的状态，worktree 管工作树本体） -->
       <Popover v-model:open="wtOpen">
         <PopoverTrigger as-child>
@@ -967,24 +1014,36 @@ watch(view, (v) => {
             </button>
           </div>
         </template>
-        <!-- 目录树：目录行聚合子树计数、点击折叠；文件行只显段名、点行开对比（完整路径进 title） -->
+        <!-- 目录树：目录行聚合子树计数、点击折叠（折叠钮与撤销钮之间不能嵌套 button，
+             拆外层 div + 内层折叠钮）；文件行只显段名、点行开对比（完整路径进 title） -->
         <template v-else>
           <template v-for="r in rows" :key="r.key">
-            <button
+            <div
               v-if="r.dir"
-              class="flex w-full items-center gap-1.5 py-1 pr-2.5 text-left hover:bg-accent/50"
+              class="group flex items-center pr-2.5 hover:bg-accent/50"
               :style="{ paddingLeft: 8 + r.depth * 12 + 'px' }"
               :title="`${r.dir.fileCount} 个变更文件${r.dir.allUntracked ? '（全部未跟踪）' : ''}`"
-              @click="toggleDir(r.dir.path)"
             >
-              <component
-                :is="collapsedDirs.has(r.dir.path) ? ChevronRight : ChevronDown"
-                class="size-3 shrink-0 text-muted-foreground"
-              />
-              <Folder class="size-3 shrink-0 text-muted-foreground" />
-              <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.dir.name }}</span>
-              <span class="shrink-0 font-mono text-[10px] text-muted-foreground/70">{{ r.dir.fileCount }}</span>
-            </button>
+              <button class="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left" @click="toggleDir(r.dir.path)">
+                <component
+                  :is="collapsedDirs.has(r.dir.path) ? ChevronRight : ChevronDown"
+                  class="size-3 shrink-0 text-muted-foreground"
+                />
+                <Folder class="size-3 shrink-0 text-muted-foreground" />
+                <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.dir.name }}</span>
+                <span class="shrink-0 font-mono text-[10px] text-muted-foreground/70">{{ r.dir.fileCount }}</span>
+              </button>
+              <!-- 撤销目录：批量有损动作，两击确认（首击亮红，无弹窗） -->
+              <button
+                class="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:pointer-events-none"
+                :class="armed.has(r.dir.path) ? 'text-destructive opacity-100' : ''"
+                :title="dirTitle(r.dir)"
+                :disabled="restoring.has(r.dir.path)"
+                @click.stop="revertDir(r.dir)"
+              >
+                <Undo2 class="size-3" />
+              </button>
+            </div>
             <div
               v-else
               class="group flex cursor-pointer items-center gap-1.5 py-1 pr-2.5 hover:bg-accent/50"

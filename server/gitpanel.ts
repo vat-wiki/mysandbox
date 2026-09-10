@@ -180,14 +180,15 @@ export function assertBranchName(name: unknown): string {
   return n;
 }
 
-// 相对仓库根的路径校验（git/restore 的 file/oldFile 共用；restore 对「HEAD 里没有的路径」
-// 会落到 rm 删文件，路径面必须自己守住）。拒绝空 / 绝对 / - 开头（git 选项注入）/
-// . 或 .. 段（越出 toplevel）/ \0 / 超长；返回原名（不 trim——文件名可含首尾空格）。
+// 相对仓库根的路径校验（git/restore 的 file/oldFile/dir 共用；restore 对「HEAD 里没有的
+// 路径」会落到 rm/clean 删内容，路径面必须自己守住）。拒绝空 / 绝对 / - 开头（git 选项
+// 注入）/ . 或 .. 段（越出 toplevel）/ 空段（尾斜杠等未规整形状）/ \0 / 超长；返回原名
+//（不 trim——文件名可含首尾空格）。
 export function assertGitRelPath(raw: unknown, field = 'file'): string {
   if (typeof raw !== 'string' || !raw || raw.startsWith('/') || raw.startsWith('-') || raw.includes('\0') || raw.length > 4096) {
     throw badRequest(`${field} 路径不合法`);
   }
-  if (raw.split('/').some((seg) => seg === '.' || seg === '..')) throw badRequest(`${field} 路径不合法`);
+  if (raw.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) throw badRequest(`${field} 路径不合法`);
   return raw;
 }
 

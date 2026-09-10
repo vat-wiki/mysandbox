@@ -454,14 +454,20 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     return { ok: true };
   });
 
-  // —— 撤销单文件变更（与容器侧 files.ts 一比一对齐，解析/校验单源 gitpanel.ts）——
-  // HEAD 里有该路径 -> checkout HEAD -- 恢复 index+工作区；HEAD 里没有（A 新增/?? 未跟踪）
-  // -> reset 出暂存区（unborn/未跟踪失败容忍）+ rm 删工作区文件。R/C 传 oldFile 一并恢复。
+  // —— 撤销变更（与容器侧 files.ts 一比一对齐，解析/校验单源 gitpanel.ts）——
+  // 三种目标互斥：file（+可选 oldFile）/ dir（目录下全部）/ all（整个工作区）。批量 =
+  // index 归 HEAD -> 从 HEAD 恢复登记路径 -> git clean -f -d 清 untracked（不带 -x，
+  // ignored 恒不动）；unborn 走 read-tree --empty。详版注释见 files.ts 同名端点。
   app.post('/api/host-terminal/git/restore', async (req): Promise<{ ok: true }> => {
-    const body = (req.body as { path?: unknown; file?: unknown; oldFile?: unknown }) || {};
+    const body =
+      (req.body as { path?: unknown; file?: unknown; oldFile?: unknown; dir?: unknown; all?: unknown }) || {};
     const path = cleanPath(body.path);
-    const file = assertGitRelPath(body.file);
+    const all = body.all === true;
+    const file = body.file == null ? '' : assertGitRelPath(body.file);
+    const dir = body.dir == null ? '' : assertGitRelPath(body.dir, 'dir');
     const oldFile = body.oldFile == null ? '' : assertGitRelPath(body.oldFile, 'oldFile');
+    if ((all ? 1 : 0) + (file ? 1 : 0) + (dir ? 1 : 0) !== 1) throw badRequest('file / dir / all 三选一');
+    if (oldFile && !file) throw badRequest('oldFile 仅随 file 使用');
     let top: string;
     try {
       top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
@@ -469,6 +475,49 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       if (e instanceof HttpError) throw e;
       throw badRequest('目标目录不在 git 仓库内');
     }
+    // git 动作统一包装：真错误直传（git_missing），git 校验/冲突以 stderr 原话回 400
+    const run = async (args: string[], fallback: string): Promise<void> => {
+      try {
+        await gitExec(args);
+      } catch (e) {
+        if (e instanceof HttpError) throw e;
+        throw badRequest(stderrOf(e) || fallback);
+      }
+    };
+    // 有 HEAD 吗（unborn -> false；git 未装 -> git_missing 400）
+    const hasHead = await gitExec(['-C', top, 'rev-parse', '-q', '--verify', 'HEAD']).then(
+      () => true,
+      (e) => {
+        if (e instanceof HttpError) throw e;
+        return false;
+      },
+    );
+    const lit = (p: string) => `:(literal)${p}`; // 文件名含 []*? 时裸 pathspec 是 glob，会误伤同名模式的其他文件
+    if (all) {
+      await run(
+        hasHead ? ['-C', top, 'reset', '-q', '--hard', 'HEAD'] : ['-C', top, 'read-tree', '--empty'],
+        '撤销全部变更失败',
+      );
+      await run(['-C', top, 'clean', '-q', '-f', '-d'], '清理未跟踪文件失败');
+      return { ok: true };
+    }
+    if (dir) {
+      if (hasHead) {
+        try {
+          await gitExec(['-C', top, 'reset', '-q', 'HEAD', '--', lit(dir)]);
+        } catch {
+          /* 无从 reset 的形状容忍，后面的 checkout/clean 才是正题 */
+        }
+        // 有登记才 checkout HEAD（目录整体 untracked 时 pathspec 无匹配，checkout 会报错）
+        const tracked = (await gitExec(['-C', top, 'ls-files', '--', lit(dir)])).trim();
+        if (tracked) await run(['-C', top, 'checkout', '-q', 'HEAD', '--', lit(dir)], '撤销变更失败（git checkout 失败）');
+      } else {
+        await run(['-C', top, 'read-tree', '--empty'], '撤销变更失败');
+      }
+      await run(['-C', top, 'clean', '-q', '-f', '-d', '--', lit(dir)], '清理未跟踪文件失败');
+      return { ok: true };
+    }
+    // 单文件：cat-file 探 HEAD 定夺——在则 checkout HEAD -- 恢复，不在则 reset 出暂存区 + rm
     const restoreOne = async (rel: string): Promise<void> => {
       const inHead = await gitExec(['-C', top, 'cat-file', '-e', `HEAD:${rel}`]).then(
         () => true,
@@ -478,16 +527,11 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
         },
       );
       if (inHead) {
-        try {
-          await gitExec(['-C', top, 'checkout', '-q', 'HEAD', '--', rel]);
-        } catch (e) {
-          if (e instanceof HttpError) throw e;
-          throw badRequest(stderrOf(e) || '撤销变更失败（git checkout 失败）');
-        }
+        await run(['-C', top, 'checkout', '-q', 'HEAD', '--', lit(rel)], '撤销变更失败（git checkout 失败）');
         return;
       }
       try {
-        await gitExec(['-C', top, 'reset', '-q', 'HEAD', '--', rel]);
+        await gitExec(['-C', top, 'reset', '-q', 'HEAD', '--', lit(rel)]);
       } catch {
         /* 未跟踪/unborn 时 reset 无从谈起，容忍；删文件才是正题 */
       }

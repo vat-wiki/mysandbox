@@ -875,43 +875,86 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     return { ok: true };
   });
 
-  // —— 撤销单文件变更（restore 到 HEAD；面板变更列表行内按钮）——
-  // 按路径分派（porcelain 状态在请求间隙可能已过期，不按状态列猜，探测 HEAD 定夺）：
-  // HEAD 里有该路径 -> checkout HEAD -- 恢复 index+工作区（M/D/R/T/冲突全覆盖，D 复活）；
-  // HEAD 里没有（A 新增/?? 未跟踪）-> reset 出暂存区（unborn/未跟踪时失败容忍）+ rm 删工作区
-  // 文件。R/C 条目传 oldFile 一并恢复旧路径、新路径走删除，撤销重命名 = 双路径各归其位。
-  // exit 20 = checkout HEAD 恢复失败（stderr 已捕获，回给人话）。
+  // —— 撤销变更（restore 到 HEAD；面板变更列表行内/目录行/整体按钮）——
+  // 三种目标互斥：file（+可选 oldFile，单文件）/ dir（目录下全部）/ all（整个工作区）。
+  // 批量模式（dir/all）= index 归 HEAD（新增出暂存区）-> 从 HEAD 恢复 index 里仍有的路径
+  //（D 复活/M 还原/冲突复位）-> git clean -f -d 清 untracked（原新增/重命名新路径，-d 连
+  // untracked 目录整棵删；不带 -x，ignored 恒不动）。unborn（无提交）走 read-tree --empty
+  // 出暂存区（reset/checkout 依赖 HEAD，通通跳过）。全模式 pathspec 用 :(literal)——文件
+  // 名含 []*? 时裸 pathspec 是 glob，会误伤同名模式的其他文件。
+  // exit 20 = 恢复失败 / exit 21 = clean 失败（stderr 已捕获，回给人话）。
+  const restoreMode = (body: { file?: unknown; oldFile?: unknown; dir?: unknown; all?: unknown }) => {
+    const all = body.all === true;
+    const file = body.file == null ? '' : assertGitRelPath(body.file);
+    const dir = body.dir == null ? '' : assertGitRelPath(body.dir, 'dir');
+    const oldFile = body.oldFile == null ? '' : assertGitRelPath(body.oldFile, 'oldFile');
+    if ((all ? 1 : 0) + (file ? 1 : 0) + (dir ? 1 : 0) !== 1) throw badRequest('file / dir / all 三选一');
+    if (oldFile && !file) throw badRequest('oldFile 仅随 file 使用');
+    return { all, file, dir, oldFile };
+  };
+
   app.post('/api/containers/:id/git/restore', async (req): Promise<{ ok: true }> => {
     const r = await resolveRunning(cfg, (req.params as { id: string }).id);
-    const body = (req.body as { path?: unknown; file?: unknown; oldFile?: unknown }) || {};
+    const body = (req.body as { path?: unknown; file?: unknown; oldFile?: unknown; dir?: unknown; all?: unknown }) || {};
     const path = cleanPath(body.path);
-    const file = assertGitRelPath(body.file);
-    const oldFile = body.oldFile == null ? '' : assertGitRelPath(body.oldFile, 'oldFile');
+    const { all, file, dir, oldFile } = restoreMode(body);
+    // 单文件：porcelain 状态在请求间隙可能已过期，不按状态列猜，cat-file 探 HEAD 定夺——
+    // 在则 checkout HEAD -- 恢复 index+工作区，不在（A 新增/?? 未跟踪）则 reset 出暂存区 +
+    // rm 删工作区文件。R/C 传 oldFile 一并恢复旧路径，撤销重命名 = 双路径各归其位。
+    const fileSh = [
+      'p="$1"; f="$2"; o="$3"',
+      't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+      'r1() {',
+      '  if git -C "$t" cat-file -e "HEAD:$1" 2>/dev/null; then',
+      '    git -C "$t" checkout -q HEAD -- ":(literal)$1" || exit 20',
+      '  else',
+      '    git -C "$t" reset -q HEAD -- ":(literal)$1" 2>/dev/null',
+      '    rm -f -- "$t/$1"',
+      '  fi',
+      '}',
+      'r1 "$f"',
+      '[ -n "$o" ] && r1 "$o"',
+      // 无 oldFile 时上一行短路成 exit 1，会走 mapGitExit 报「failed (exit 1)」——补显式成功退出
+      'exit 0',
+    ].join('\n');
+    // 目录：reset（index 归 HEAD，unborn 失败容忍）后 ls-files 探测——有登记才 checkout
+    // HEAD（目录整体 untracked 时 pathspec 无匹配，checkout 会报错，跳过即可）
+    const dirSh = [
+      'p="$1"; d="$2"',
+      't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+      'if git -C "$t" rev-parse -q --verify HEAD >/dev/null 2>&1; then',
+      '  git -C "$t" reset -q HEAD -- ":(literal)$d" 2>/dev/null',
+      '  if [ -n "$(git -C "$t" ls-files -- ":(literal)$d" | head -n 1)" ]; then',
+      '    git -C "$t" checkout -q HEAD -- ":(literal)$d" || exit 20',
+      '  fi',
+      'else',
+      '  git -C "$t" read-tree --empty || exit 20',
+      'fi',
+      'git -C "$t" clean -q -f -d -- ":(literal)$d" || exit 21',
+      'exit 0',
+    ].join('\n');
+    // 整体：reset --hard（顺带清 merge 态）+ clean 全仓
+    const allSh = [
+      'p="$1"',
+      't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+      'if git -C "$t" rev-parse -q --verify HEAD >/dev/null 2>&1; then',
+      '  git -C "$t" reset -q --hard HEAD || exit 20',
+      'else',
+      '  git -C "$t" read-tree --empty || exit 20',
+      'fi',
+      'git -C "$t" clean -q -f -d || exit 21',
+      'exit 0',
+    ].join('\n');
     const res = await execRun(cfg, r.id, {
       Cmd: [
-        'sh', '-c',
-        [
-          'p="$1"; f="$2"; o="$3"',
-          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
-          'r1() {',
-          '  if git -C "$t" cat-file -e "HEAD:$1" 2>/dev/null; then',
-          '    git -C "$t" checkout -q HEAD -- "$1" || exit 20',
-          '  else',
-          '    git -C "$t" reset -q HEAD -- "$1" 2>/dev/null',
-          '    rm -f -- "$t/$1"',
-          '  fi',
-          '}',
-          'r1 "$f"',
-          '[ -n "$o" ] && r1 "$o"',
-          // 无 oldFile 时上一行短路成 exit 1，会走 mapGitExit 报「failed (exit 1)」——补显式成功退出
-          'exit 0',
-        ].join('\n'),
-        'sh', path, file, oldFile,
+        'sh', '-c', all ? allSh : dir ? dirSh : fileSh,
+        'sh', path, ...(all ? [] : dir ? [dir] : [file, oldFile]),
       ],
       User: '1000:1000', Tty: false, timeoutMs: 15_000,
     });
     if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
     if (res.exitCode === 20) throw badRequest(res.stderr.trim() || '撤销变更失败（git checkout 失败）');
+    if (res.exitCode === 21) throw badRequest(res.stderr.trim() || '撤销变更失败（清理未跟踪文件出错）');
     const err = mapGitExit(res, '撤销变更');
     if (err) throw err;
     return { ok: true };
