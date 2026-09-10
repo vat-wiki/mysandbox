@@ -136,9 +136,12 @@ if (leaf.value && props.group.kind !== 'ssh') {
       <span class="shrink-0 text-muted-foreground" :title="leaf.termId">
         {{ ops.groupLabel(group) }}<span v-if="total > 1"> #{{ ordinal + 1 }}</span>
       </span>
+      <!-- 动态标题（人读文本）不用 font-mono：mono 栈无 CJK，回退字体与标签 sans 栈的
+           回退度量不一致（实测用户 Chrome 里 CJK 偏高 ~2px），同栈才与「组名 #序号」对齐；
+           cwd 是路径（机器串）保留 mono。 -->
       <span
-        class="min-w-0 flex-1 truncate font-mono"
-        :class="paneTitle ? 'text-foreground/75' : 'text-muted-foreground/80'"
+        class="min-w-0 flex-1 truncate"
+        :class="paneTitle ? 'text-foreground/75' : 'font-mono text-muted-foreground/80'"
         :title="paneTitle || cwd"
       >
         {{ paneTitle || (cwd ? '· ' + cwd : '· …') }}
