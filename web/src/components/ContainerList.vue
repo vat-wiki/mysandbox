@@ -72,12 +72,13 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Inbox } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
+import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
 import TermLayoutNode from '@/components/TermLayoutNode.vue'
 import FilePanel from '@/components/FilePanel.vue'
@@ -1627,6 +1628,13 @@ watch(
         pendingSvcUnadopt.value = ''
         await svcOp(name, () => unadoptService(name))
       }
+      // 收编入口（分区头 Inbox，与抽屉头部同款对话框）：外部 docker 容器纳入服务层。
+      // ContainerList 自挂对话框（TermSessionsDialog 同模式）；成功 toast + 即时刷侧栏。
+      const showSvcAdopt = ref(false)
+      function onSvcAdopted(name: string) {
+        toast.success(`已收编 ${name}，LXC 容器内按名字可达`)
+        void refreshServices()
+      }
       // 重命名 = 改显示名（meta.displayName）：侧栏卡片/终端 tab 用它，不动容器真名，
       // 随时可改。成功后同步已开服务终端组的名字快照（与容器 doRename 同语义）。
       const svcRenameTarget = ref<ServiceView | null>(null)
@@ -2409,6 +2417,14 @@ onUnmounted(() => {
           <Button
             variant="ghost"
             size="icon-xs"
+            title="收编外部容器"
+            @click="showSvcAdopt = true"
+          >
+            <Inbox />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
             title="新建服务"
             @click="emit('open-services', true)"
           >
@@ -3125,5 +3141,12 @@ onUnmounted(() => {
     @adopt="adoptSessions"
     @close="showSessions = false"
     @unauthorized="emit('unauthorized')"
+  />
+
+  <!-- 收编外部容器（应用容器分区头 Inbox 入口）：外部 docker 容器纳入服务层 -->
+  <AdoptServiceDialog
+    v-if="showSvcAdopt"
+    @adopted="onSvcAdopted"
+    @close="showSvcAdopt = false"
   />
 </template>
