@@ -240,6 +240,20 @@ function refit() {
     if (term && term.options.fontSize !== fs) term.options.fontSize = fs
     try {
       fit?.fit()
+      // 强制重算 xterm 内部滚动区（切回 tab 后「滚动不到最下面」的修复）。
+      // xterm 5.5 的 Viewport._innerRefresh 直接读 viewport 的 offsetHeight，而
+      // display:none 期间该值是 0——隐藏 tab 收到会推进外层 buffer 的输出（首载
+      // 恢复多组 tab 时的历史回填、断线时的 ">> 已断开" writeln 等）时滚动区高度
+      // 被算短整整一个视口，最底一行屏永远够不着；且 tmux 原地重绘不滚外层 buffer、
+      // 尺寸也没变，syncScrollArea 之后不再被调用，错误一直留到刷新页面。fit 对
+      // 「尺寸没变」是纯 no-op，救不了；这里在可见路径上强制 immediate 重算一次，
+      // 健康态下是幂等写、零副作用。
+      const vp = (
+        term as unknown as {
+          _core?: { viewport?: { syncScrollArea?: (immediate?: boolean) => void } }
+        }
+      )._core?.viewport
+      vp?.syncScrollArea?.(true)
       // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
       // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
       if (!pasteFallback.value) term?.focus()
@@ -693,8 +707,10 @@ onMounted(async () => {
   // rAF fit 完再撑回真实尺寸（shrink-then-grow），且 rAF 的那次 resize 会打断 tmux attach 的
   // 重绘字节流、触发 xterm reflow -> 光标与提示符行解耦、刷新后光标窜到下一行（按回车才复位）。
   // 同步 fit 后 URL 带真实尺寸、后端首帧即 resize 到位，rAF refit 发现尺寸未变不再 reflow。
+  // ⚠️ 仅在可见时 fit：恢复多个 tab 时非激活组是 display:none 挂载，这里量到的是 NaN/0 尺寸，
+  // 别把垃圾值喂给 resize/URL——等激活 refit 或 ResizeObserver 兜底。
   try {
-    fit?.fit()
+    if (el.value.clientWidth > 0) fit?.fit()
   } catch {
     /* noop */
   }
