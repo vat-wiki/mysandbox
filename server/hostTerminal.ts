@@ -165,6 +165,8 @@ async function hostTmux(
 // -e COLORTERM=truecolor：外层 xterm.js 支持真彩，而 update-environment 不含 COLORTERM、
 // exec env 进不了已运行 server 的 pane——claude 等按它判色深，缺了就降级 256 色发淡。
 // -e 落 session env、首 pane 起就有（terminal.ts 同款，那边还有注释详版）。
+// -e CLAUDE_CODE_TMUX_TRUECOLOR=1：claude 检测到 tmux 会把色深压回 256（官方开关才放行），
+// 两侧一并注入保证一致（terminal.ts 同款）。
 async function ensureTmuxSession(
   session: string,
   cols: number,
@@ -179,6 +181,8 @@ async function ensureTmuxSession(
     '-d',
     '-e',
     'COLORTERM=truecolor',
+    '-e',
+    'CLAUDE_CODE_TMUX_TRUECOLOR=1',
     '-s',
     session,
     '-x',
@@ -627,7 +631,7 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         stdio: ['pipe', 'pipe', 'pipe'],
         // SHELL 必须压成 /bin/sh：script 用 $SHELL 跑 -c 命令串，用户登录 zsh 会做 =word
         // 展开，把 attach 目标 "=mysandbox-host-xxx" 当命令路径查找（zsh:1: not found）——实测踩坑。
-        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', MYSANDBOX_WEB: '1', SHELL: '/bin/sh' },
+        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', CLAUDE_CODE_TMUX_TRUECOLOR: '1', MYSANDBOX_WEB: '1', SHELL: '/bin/sh' },
         cwd: useTmux ? undefined : cwd, // 无 tmux 降级时 shell 直接落在镜像目录
       });
       children.add(child);
