@@ -298,6 +298,12 @@ function fmtDate(v: string): string {
   return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false })
 }
 
+// 镜像身份一行：本地 tag（版本语义）+ 短 ID（build 语义）——「跑的是哪份」一眼可读。
+function fmtImage(tags: string[] | undefined, id: string): string {
+  const short = id.replace(/^sha256:/, '').slice(0, 12)
+  return tags?.length ? `${tags.join(' ')} · ${short}` : short
+}
+
 async function copyVal(v: string) {
   try {
     await navigator.clipboard.writeText(v)
@@ -414,6 +420,12 @@ onUnmounted(() => {
               <div class="flex min-w-0 flex-wrap items-center gap-2">
                 <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.displayName || sel.name }}</h3>
                 <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset === 'adopted' ? '收编' : sel.preset }}</Badge>
+                <span
+                  v-if="sel.imageDrift === true"
+                  class="shrink-0 text-amber-600"
+                  title="容器现用镜像 ≠ 本地 ref 指向——本地 build 过新版，点「重建」收编（详情看凭据与镜像身份）"
+                  >⚠ 本地有新镜像</span
+                >
                 <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复">⚠</span>
                 <span class="shrink-0 text-xs" :class="stateCls(sel)" :title="sel.status">{{ stateLabel(sel.state) }}</span>
               </div>
@@ -566,7 +578,28 @@ onUnmounted(() => {
                 </div>
                 <div class="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1 text-xs">
                   <span class="text-muted-foreground">镜像</span>
-                  <span class="min-w-0 truncate font-mono" :title="sel.image">{{ sel.image }}</span>
+                  <span class="flex min-w-0 items-center gap-2">
+                    <span class="min-w-0 truncate font-mono" :title="sel.image">{{ sel.image }}</span>
+                    <span
+                      v-if="sel.imageDrift === true"
+                      class="shrink-0 text-amber-600"
+                      title="容器现用镜像与本地 ref 当前指向不同——本地 build 过新版，点「重建」收编"
+                      >⚠ 本地有新镜像</span
+                    >
+                  </span>
+                  <!-- 镜像身份（自建服务）：ref 只是名字，跑的是哪份 build 看 tag/短 ID -->
+                  <template v-if="sel.runningImageId">
+                    <span class="text-muted-foreground">容器现用</span>
+                    <span class="min-w-0 truncate font-mono" :title="sel.runningImageId">{{
+                      fmtImage(sel.runningImageTags, sel.runningImageId)
+                    }}</span>
+                  </template>
+                  <template v-if="sel.imageDrift === true && sel.localImageId">
+                    <span class="text-muted-foreground">本地指向</span>
+                    <span class="min-w-0 truncate font-mono" :title="sel.localImageId">{{
+                      fmtImage(sel.localImageTags, sel.localImageId)
+                    }}</span>
+                  </template>
                   <span class="text-muted-foreground">数据卷</span>
                   <span class="min-w-0 truncate font-mono" :title="sel.volume ?? '无数据卷'">{{ sel.volume ?? '—' }}</span>
                   <template v-if="sel.createdAt">

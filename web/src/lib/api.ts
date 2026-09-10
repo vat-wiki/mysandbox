@@ -415,6 +415,12 @@ export interface ServiceView {
   command?: string[]
   metaMissing?: boolean
   adopted?: boolean // 收编的外部容器：无删除/更新，只可取消收编
+  // —— 镜像身份（仅自建服务带；ref 只是名字，跑的是哪份 build 要看 ID）——
+  runningImageId?: string // 容器现用镜像 ID（sha256:…）
+  runningImageTags?: string[] // 现用镜像在本地的全部 tag——「跑的是哪个版本」
+  localImageId?: string // meta.image 当前本地指向的 ID
+  localImageTags?: string[] // 同上镜像的 tag 集
+  imageDrift?: boolean // true = 本地 ref 已指向别的 build（可「重建」收编）；false = 容器即本地最新
 }
 
 export interface ServicesStatus {

@@ -2482,6 +2482,13 @@ onUnmounted(() => {
                     <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
                       s.description || s.image
                     }}</span>
+                    <!-- 本地镜像有新 build（容器未跟上）：一眼提示，右键「重建（本地镜像）」收编 -->
+                    <span
+                      v-if="s.imageDrift === true"
+                      class="shrink-0 text-amber-600"
+                      title="本地镜像有新 build——右键「重建（本地镜像）」收编"
+                      >新</span
+                    >
                     <!-- 收编的外部容器：身份标记常驻（操作边界不同——无删除/更新，只有取消收编） -->
                     <Badge
                       v-if="s.adopted"

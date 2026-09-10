@@ -29,6 +29,8 @@ import {
   containerPid,
   imageId,
   containerImageId,
+  containerImageIds,
+  imageIndex,
   inspectServiceSnapshot,
   startContainer,
   stopContainer,
@@ -184,6 +186,12 @@ export interface ServiceView {
   command?: string[];
   metaMissing?: boolean; // label 在但 sidecar 缺（state.json 被清过）——前端提示重建元数据
   adopted?: boolean; // 收编的外部容器（无 label，凭证在 sidecar）——前端区分卡片与操作边界
+  // —— 镜像身份（仅自建服务带；ref 只是名字，跑的是哪份 build 要看 ID）——
+  runningImageId?: string; // 容器现用镜像 ID（sha256:…）
+  runningImageTags?: string[]; // 现用镜像在本地的全部 tag——「跑的是哪个版本」的人话
+  localImageId?: string; // meta.image 当前本地指向的 ID
+  localImageTags?: string[]; // 同上镜像的 tag 集
+  imageDrift?: boolean; // true = 本地 ref 已指向别的 build（有新版可重建）；false = 容器即本地最新
 }
 
 export interface ServicesStatus {
@@ -257,6 +265,30 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
     });
   }
   items.sort((a, b) => a.name.localeCompare(b.name));
+  // —— 镜像身份补全（自建服务）——
+  // ref 只是个名字：myapikey:latest 背后可能是任意一版 build。两次批量调用（容器一次、
+  // 镜像一次，与个数无关）补全「容器现用 ID/tag vs 本地 ref 指向」+ 漂移标记——本地
+  // build 过新版时前端直接亮出来，不用点重建才知道。adopted 生命周期归外部编排方，不参与。
+  const selfItems = items.filter((v) => !v.adopted);
+  if (selfItems.length) {
+    // 先取容器侧 ID，再把「meta ref ∪ 容器现用 ID」并进镜像索引——漂移态下容器跑的
+    // 旧镜像不在 meta ref 的 inspect 结果里，不并入的话 runningImageTags 是空。
+    const runIds = await containerImageIds(selfItems.map((v) => v.name));
+    const idx = await imageIndex([...selfItems.map((v) => v.image), ...runIds.values()]);
+    for (const v of selfItems) {
+      const run = runIds.get(v.name);
+      const local = idx.byRef.get(v.image);
+      if (run) {
+        v.runningImageId = run;
+        v.runningImageTags = idx.byId.get(run) ?? [];
+      }
+      if (local) {
+        v.localImageId = local;
+        v.localImageTags = idx.byId.get(local) ?? [];
+      }
+      if (run && local) v.imageDrift = run !== local;
+    }
+  }
   return { items, status };
 }
 

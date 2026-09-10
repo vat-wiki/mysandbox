@@ -330,6 +330,53 @@ export async function containerImageId(name: string): Promise<string | null> {
   return id || null;
 }
 
+// 批量查容器现用镜像 ID：{{.Name}}={{.Image}} 每容器一行（{{.Name}} 带 / 前缀，剥掉）。
+// docker 对缺失项打 stderr 并 exit 1，stdout 里查到的照常输出——按行解析、缺失不进 map。
+// 服务列表的镜像身份展示用（一次 exec 覆盖全部服务，与个数无关）。
+export async function containerImageIds(names: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (!names.length) return map;
+  const r = await dockerExec(['container', 'inspect', '--format', '{{.Name}}={{.Image}}', ...names], 10_000);
+  for (const line of r.stdout.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq <= 1) continue;
+    const name = line.slice(1, eq);
+    const id = line.slice(eq + 1).trim();
+    if (name && id.startsWith('sha256:')) map.set(name, id);
+  }
+  return map;
+}
+
+export interface ImageIndex {
+  byRef: Map<string, string>; // ref → 本地镜像 ID（查不到的 ref 不进）
+  byId: Map<string, string[]>; // ID → RepoTags（悬空镜像无 tag 不进）
+}
+
+// 本地镜像索引：一次 image inspect 建两张映射——ref→ID 判漂移，ID→RepoTags 回答
+// 「跑的是哪个版本」（myapikey:latest 背后可能是任意一版 build）。两个 ref 指同一
+// 镜像自然落到同一 ID；RepoTags 是 JSON 紧凑串无空格，按第一个空格切开解析。
+export async function imageIndex(refs: string[]): Promise<ImageIndex> {
+  const idx: ImageIndex = { byRef: new Map(), byId: new Map() };
+  const unique = [...new Set(refs.filter(Boolean))];
+  if (!unique.length) return idx;
+  const r = await dockerExec(['image', 'inspect', '--format', '{{json .RepoTags}} {{.Id}}', ...unique], 10_000);
+  for (const line of r.stdout.split('\n')) {
+    const sp = line.indexOf(' ');
+    if (sp <= 0) continue;
+    let tags: unknown;
+    try {
+      tags = JSON.parse(line.slice(0, sp));
+    } catch {
+      continue;
+    }
+    const id = line.slice(sp + 1).trim();
+    if (!id.startsWith('sha256:') || !Array.isArray(tags)) continue;
+    if (tags.length) idx.byId.set(id, tags as string[]);
+    for (const t of tags) if (unique.includes(t)) idx.byRef.set(t, id);
+  }
+  return idx;
+}
+
 // 重建前的现场快照：运行态 + labels + 命名卷的容器内挂载点。更新（拉新镜像后按原
 // 形状重建容器）要复刻创建时的全部形状——env/command 在 meta 里，卷挂载点 meta 没记
 // （只有卷名），labels（含 preset/created-at）也在容器身上，inspect 是权威。
