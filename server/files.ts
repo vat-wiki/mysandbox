@@ -26,6 +26,7 @@ import {
   parseWorktreeListZ,
   mapGitExit,
   assertBranchName,
+  assertGitRelPath,
   assertWorktreeDir,
   type GitStatusView,
   type GitDiffView,
@@ -870,6 +871,48 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
     if (res.exitCode === 9) throw badRequest('分支名不合法');
     const err = mapGitExit(res, '分支切换');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  // —— 撤销单文件变更（restore 到 HEAD；面板变更列表行内按钮）——
+  // 按路径分派（porcelain 状态在请求间隙可能已过期，不按状态列猜，探测 HEAD 定夺）：
+  // HEAD 里有该路径 -> checkout HEAD -- 恢复 index+工作区（M/D/R/T/冲突全覆盖，D 复活）；
+  // HEAD 里没有（A 新增/?? 未跟踪）-> reset 出暂存区（unborn/未跟踪时失败容忍）+ rm 删工作区
+  // 文件。R/C 条目传 oldFile 一并恢复旧路径、新路径走删除，撤销重命名 = 双路径各归其位。
+  // exit 20 = checkout HEAD 恢复失败（stderr 已捕获，回给人话）。
+  app.post('/api/containers/:id/git/restore', async (req): Promise<{ ok: true }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const body = (req.body as { path?: unknown; file?: unknown; oldFile?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const file = assertGitRelPath(body.file);
+    const oldFile = body.oldFile == null ? '' : assertGitRelPath(body.oldFile, 'oldFile');
+    const res = await execRun(cfg, r.id, {
+      Cmd: [
+        'sh', '-c',
+        [
+          'p="$1"; f="$2"; o="$3"',
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          'r1() {',
+          '  if git -C "$t" cat-file -e "HEAD:$1" 2>/dev/null; then',
+          '    git -C "$t" checkout -q HEAD -- "$1" || exit 20',
+          '  else',
+          '    git -C "$t" reset -q HEAD -- "$1" 2>/dev/null',
+          '    rm -f -- "$t/$1"',
+          '  fi',
+          '}',
+          'r1 "$f"',
+          '[ -n "$o" ] && r1 "$o"',
+          // 无 oldFile 时上一行短路成 exit 1，会走 mapGitExit 报「failed (exit 1)」——补显式成功退出
+          'exit 0',
+        ].join('\n'),
+        'sh', path, file, oldFile,
+      ],
+      User: '1000:1000', Tty: false, timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
+    if (res.exitCode === 20) throw badRequest(res.stderr.trim() || '撤销变更失败（git checkout 失败）');
+    const err = mapGitExit(res, '撤销变更');
     if (err) throw err;
     return { ok: true };
   });

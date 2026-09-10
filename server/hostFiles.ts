@@ -30,6 +30,7 @@ import {
   parseRemoteBranches,
   parseWorktreeListZ,
   assertBranchName,
+  assertGitRelPath,
   assertWorktreeDir,
   type GitStatusView,
   type GitDiffView,
@@ -450,6 +451,54 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
       throw badRequest(stderrOf(e) || '分支切换失败');
     }
+    return { ok: true };
+  });
+
+  // —— 撤销单文件变更（与容器侧 files.ts 一比一对齐，解析/校验单源 gitpanel.ts）——
+  // HEAD 里有该路径 -> checkout HEAD -- 恢复 index+工作区；HEAD 里没有（A 新增/?? 未跟踪）
+  // -> reset 出暂存区（unborn/未跟踪失败容忍）+ rm 删工作区文件。R/C 传 oldFile 一并恢复。
+  app.post('/api/host-terminal/git/restore', async (req): Promise<{ ok: true }> => {
+    const body = (req.body as { path?: unknown; file?: unknown; oldFile?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const file = assertGitRelPath(body.file);
+    const oldFile = body.oldFile == null ? '' : assertGitRelPath(body.oldFile, 'oldFile');
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest('目标目录不在 git 仓库内');
+    }
+    const restoreOne = async (rel: string): Promise<void> => {
+      const inHead = await gitExec(['-C', top, 'cat-file', '-e', `HEAD:${rel}`]).then(
+        () => true,
+        (e) => {
+          if (e instanceof HttpError) throw e; // git_missing
+          return false; // 不在 HEAD（含 unborn 无 HEAD）= 走删除分支
+        },
+      );
+      if (inHead) {
+        try {
+          await gitExec(['-C', top, 'checkout', '-q', 'HEAD', '--', rel]);
+        } catch (e) {
+          if (e instanceof HttpError) throw e;
+          throw badRequest(stderrOf(e) || '撤销变更失败（git checkout 失败）');
+        }
+        return;
+      }
+      try {
+        await gitExec(['-C', top, 'reset', '-q', 'HEAD', '--', rel]);
+      } catch {
+        /* 未跟踪/unborn 时 reset 无从谈起，容忍；删文件才是正题 */
+      }
+      try {
+        await rm(join(top, rel), { force: true });
+      } catch (e) {
+        throw mapErr(e);
+      }
+    };
+    await restoreOne(file);
+    if (oldFile) await restoreOne(oldFile);
     return { ok: true };
   });
 

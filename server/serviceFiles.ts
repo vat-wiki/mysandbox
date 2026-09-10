@@ -42,6 +42,7 @@ import {
   parseWorktreeListZ,
   mapGitExit,
   assertBranchName,
+  assertGitRelPath,
   assertWorktreeDir,
   type GitStatusView,
   type GitDiffView,
@@ -581,6 +582,47 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
     if (res.exitCode === 7 || res.exitCode === 127) throw badRequest('目标目录不在 git 仓库内');
     if (res.exitCode === 9) throw badRequest('分支名不合法');
     const err = mapGitExit(res, '分支切换');
+    if (err) throw err;
+    return { ok: true };
+  });
+
+  // —— 撤销单文件变更（脚本与 files.ts 同一形状；127 = 镜像没 git 按非仓库回）——
+  // HEAD 里有该路径 -> checkout HEAD -- 恢复；没有（A/??）-> reset 出暂存区 + rm 删文件。
+  // R/C 传 oldFile 一并恢复旧路径。详版注释见 files.ts 同名端点。
+  app.post('/api/services/:name/git/restore', async (req): Promise<{ ok: true }> => {
+    const name = (req.params as { name: string }).name;
+    await requireServiceRunning(name);
+    const body = (req.body as { path?: unknown; file?: unknown; oldFile?: unknown }) || {};
+    const path = cleanPath(body.path);
+    const file = assertGitRelPath(body.file);
+    const oldFile = body.oldFile == null ? '' : assertGitRelPath(body.oldFile, 'oldFile');
+    const res = await svcExec(
+      name,
+      [
+        'sh', '-c',
+        [
+          'p="$1"; f="$2"; o="$3"',
+          't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+          'r1() {',
+          '  if git -C "$t" cat-file -e "HEAD:$1" 2>/dev/null; then',
+          '    git -C "$t" checkout -q HEAD -- "$1" || exit 20',
+          '  else',
+          '    git -C "$t" reset -q HEAD -- "$1" 2>/dev/null',
+          '    rm -f -- "$t/$1"',
+          '  fi',
+          '}',
+          'r1 "$f"',
+          '[ -n "$o" ] && r1 "$o"',
+          // 无 oldFile 时上一行短路成 exit 1，会走 mapGitExit 报「failed (exit 1)」——补显式成功退出
+          'exit 0',
+        ].join('\n'),
+        'sh', path, file, oldFile,
+      ],
+      15_000,
+    );
+    if (res.exitCode === 7 || res.exitCode === 127) throw badRequest('目标目录不在 git 仓库内');
+    if (res.exitCode === 20) throw badRequest(res.stderr.trim() || '撤销变更失败（git checkout 失败）');
+    const err = mapGitExit(res, '撤销变更');
     if (err) throw err;
     return { ok: true };
   });

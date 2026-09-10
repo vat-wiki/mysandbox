@@ -17,6 +17,7 @@ import {
   gitPull,
   gitPush,
   gitBranchDelete,
+  gitRestore,
   getGitWorktrees,
   gitWorktreeAdd,
   gitWorktreeRemove,
@@ -27,10 +28,11 @@ import {
   type GitBranchesView,
   type GitWorktreesView,
 } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock } from 'lucide-vue-next'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
+import { toast } from 'vue-sonner'
 
 const props = defineProps<{
   containerId: string
@@ -119,6 +121,7 @@ watch(
     notRepoKey = ''
     collapsedDirs.value = new Set()
     seenDirs.clear()
+    armed.value = new Set()
     void fetchStatus()
   },
 )
@@ -166,6 +169,41 @@ function openChange(c: GitChange) {
     path: absOf(c.file),
     ...(c.oldFile ? { headPath: absOf(c.oldFile) } : {}),
   })
+}
+
+// —— 撤销变更：单文件恢复到 HEAD（VSCode「放弃更改」同语义）——
+// tracked（M/D/R/T/冲突）一键：丢 index+工作区改动、D 复活、R = 恢复旧路径+移除新路径。
+// untracked 的撤销 = 删整个文件（不可挽回），首击只把按钮点成红色确认态、再击才执行
+//（同 worktree 强制移除的两段式，无弹窗），path/容器切换时复位。R/C 条目由服务端对
+// 新旧两路径各归其位，前端只管把 oldFile 带上。
+const restoring = ref(new Set<string>()) // 行级进行中（防重复点击）
+const armed = ref(new Set<string>()) // untracked 已进入待确认态的行
+const isUntracked = (c: GitChange) => c.x === '?' && c.y === '?'
+function revertTitle(c: GitChange): string {
+  if (armed.value.has(c.file)) return '再次点击：删除未跟踪文件'
+  return isUntracked(c) ? '撤销（删除未跟踪文件）' : '撤销变更（恢复到 HEAD，未提交改动会丢失）'
+}
+async function revertChange(c: GitChange) {
+  if (restoring.value.has(c.file)) return
+  if (isUntracked(c) && !armed.value.has(c.file)) {
+    armed.value = new Set([...armed.value, c.file])
+    return
+  }
+  restoring.value = new Set([...restoring.value, c.file])
+  try {
+    await gitRestore(props.containerId, props.path, c.file, c.oldFile)
+    const a = new Set(armed.value)
+    a.delete(c.file)
+    armed.value = a
+    refresh() // 变更列表即时跟新（不等 8s 轮询）
+  } catch (e) {
+    if (e instanceof Unauthorized) return
+    toast.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    const n = new Set(restoring.value)
+    n.delete(c.file)
+    restoring.value = n
+  }
 }
 
 // —— 分支菜单（低频操作刻意收进 popover，平时不占面板注意力）——
@@ -908,7 +946,7 @@ watch(view, (v) => {
           <div
             v-for="c in view.changes"
             :key="c.file"
-            class="flex cursor-pointer items-center gap-1.5 px-2.5 py-1 hover:bg-accent/50"
+            class="group flex cursor-pointer items-center gap-1.5 px-2.5 py-1 hover:bg-accent/50"
             :title="`${kindTitle(c)} · 点击查看对比`"
             @click="openChange(c)"
           >
@@ -918,6 +956,15 @@ watch(view, (v) => {
             <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="c.oldFile ? `${c.oldFile} → ${c.file}` : c.file">
               <template v-if="c.oldFile">{{ c.oldFile }} →</template> {{ c.file }}
             </span>
+            <button
+              class="mr-0.5 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:pointer-events-none"
+              :class="armed.has(c.file) ? 'text-destructive opacity-100' : ''"
+              :title="revertTitle(c)"
+              :disabled="restoring.has(c.file)"
+              @click.stop="revertChange(c)"
+            >
+              <Undo2 class="size-3" />
+            </button>
           </div>
         </template>
         <!-- 目录树：目录行聚合子树计数、点击折叠；文件行只显段名、点行开对比（完整路径进 title） -->
@@ -940,7 +987,7 @@ watch(view, (v) => {
             </button>
             <div
               v-else
-              class="flex cursor-pointer items-center gap-1.5 py-1 pr-2.5 hover:bg-accent/50"
+              class="group flex cursor-pointer items-center gap-1.5 py-1 pr-2.5 hover:bg-accent/50"
               :style="{ paddingLeft: 8 + r.depth * 12 + 'px' }"
               :title="
                 r.change
@@ -958,6 +1005,16 @@ watch(view, (v) => {
                 {{ r.change ? badgeOf(r.change).text : '' }}
               </span>
               <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.change ? fileNameOf(r.change.file) : '' }}</span>
+              <button
+                v-if="r.change"
+                class="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:pointer-events-none"
+                :class="armed.has(r.change.file) ? 'text-destructive opacity-100' : ''"
+                :title="revertTitle(r.change)"
+                :disabled="restoring.has(r.change.file)"
+                @click.stop="revertChange(r.change)"
+              >
+                <Undo2 class="size-3" />
+              </button>
             </div>
           </template>
         </template>

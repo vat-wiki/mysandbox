@@ -791,6 +791,10 @@ export const gitPush = (id: string, path: string) =>
   postJson(`${filesBase(id)}/git/push`, { path }, GIT_NET_TIMEOUT) as Promise<{ ok: true }>
 export const gitBranchDelete = (id: string, path: string, name: string) =>
   postJson(`${filesBase(id)}/git/branch-delete`, { path, name }) as Promise<{ ok: true }>
+// 撤销单文件变更（恢复到 HEAD）：tracked 丢 index+工作区改动、D 复活；untracked = 删除
+// 文件（前端二次确认）；R/C 条目传 oldFile，撤销重命名 = 恢复旧路径 + 移除新路径
+export const gitRestore = (id: string, path: string, file: string, oldFile?: string) =>
+  postJson(`${filesBase(id)}/git/restore`, { path, file, ...(oldFile ? { oldFile } : {}) }) as Promise<{ ok: true }>
 
 // —— worktree 管理（容器/宿主双端同哨兵；类型与 server/gitpanel.ts 对齐）——
 export interface GitWorktree {

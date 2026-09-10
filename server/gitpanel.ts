@@ -180,6 +180,17 @@ export function assertBranchName(name: unknown): string {
   return n;
 }
 
+// 相对仓库根的路径校验（git/restore 的 file/oldFile 共用；restore 对「HEAD 里没有的路径」
+// 会落到 rm 删文件，路径面必须自己守住）。拒绝空 / 绝对 / - 开头（git 选项注入）/
+// . 或 .. 段（越出 toplevel）/ \0 / 超长；返回原名（不 trim——文件名可含首尾空格）。
+export function assertGitRelPath(raw: unknown, field = 'file'): string {
+  if (typeof raw !== 'string' || !raw || raw.startsWith('/') || raw.startsWith('-') || raw.includes('\0') || raw.length > 4096) {
+    throw badRequest(`${field} 路径不合法`);
+  }
+  if (raw.split('/').some((seg) => seg === '.' || seg === '..')) throw badRequest(`${field} 路径不合法`);
+  return raw;
+}
+
 // 容器侧脚本退出码 -> HttpError（null = 正常，继续处理 stdout）。
 // exit 7（非仓库）由路由层组装 {repo:false}，不走这里。
 export function mapGitExit(r: { exitCode: number; stderr: string }, ctx: string): HttpError | null {
