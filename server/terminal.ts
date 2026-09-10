@@ -451,10 +451,17 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   //      命令铺路——前者标记 web 环境（exec 的 Env 到不了 tmux server 起的 shell，故挂 server
   //      全局环境，脚本用 show-environment -g 运行时探测）；后者放行 DCS passthrough，否则
   //      tmux 吞掉脚本打的 OSC 7677（tmux 只转发认识的 OSC）。
-  //      set-environment -g LANG C.UTF-8：tmux server 是守护进程、全局环境在首次启动时冻结
-  //     （update-environment 默认不含 LANG），之后 exec 带的 LANG 传不进已运行的 server——
-  //     修复前起的 server 其新 pane 仍会落在 C locale（提示符 » 显示成 _、编辑残留幽灵字符，
-  //     见 engine/lxc.ts attachArgs 的 locale 注释），每次 attach 钉一次补漏。
+//      set-environment -g LANG C.UTF-8：tmux server 是守护进程、全局环境在首次启动时冻结
+//     （update-environment 默认不含 LANG），之后 exec 带的 LANG 传不进已运行的 server——
+//     修复前起的 server 其新 pane 仍会落在 C locale（提示符 » 显示成 _、编辑残留幽灵字符，
+//     见 engine/lxc.ts attachArgs 的 locale 注释），每次 attach 钉一次补漏。
+//      new-session -e COLORTERM=truecolor：claude 等 TUI 按 COLORTERM 判色深（truecolor
+//     vs 256 色，后者配色被吸附到 256 色板、明显发淡），而 web 链路外层 xterm.js 本就支持
+//     真彩。不能靠 exec Env 直传（update-environment 不含 COLORTERM，进不了已运行 server
+//     的 pane），也不能照抄 set-environment -g（它在本脚本里排在 new-session 之后，新建
+//     会话的首个 pane 已按旧全局环境快照落 env、恰好漏掉）——-e 落在 session env 上，
+//     首 pane 起就有，会话内所有 pane/窗口全继承。Env 数组里的同名值是给非 tmux 兜底
+//     shell 和「server 首启继承」用的。
   //      set -as terminal-overrides Ms + set -g set-clipboard on：打通 OSC 52（剪贴板）转发。
   //     TUI 应用（opencode 等）在容器内没有 X/Wayland，xclip/wl-copy 全失败，唯一的复制通道
   //     是「请终端代写剪贴板」的 OSC 52——但 tmux 默认不转发它（terminfo 无 Ms 能力时直接
@@ -493,7 +500,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   const cmd = useTmux
     ? [
         'sh', '-c',
-        'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; tmux set -t "=$1:" status off 2>/dev/null; exec tmux attach -t "$1"',
+        'echo $$ > "$3"; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -e COLORTERM=truecolor -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; tmux set -t "=$1:" status off 2>/dev/null; exec tmux attach -t "$1"',
         'sh', session, shell, pidfile, oldSession, splitCwd,
       ]
     : [shell];
@@ -557,7 +564,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
         Cmd: cmd,
         User: '1000:1000',
         WorkingDir: '/home/dev',
-        Env: ['TERM=xterm-256color', 'MYSANDBOX_WEB=1'],
+        Env: ['TERM=xterm-256color', 'COLORTERM=truecolor', 'MYSANDBOX_WEB=1'],
       });
       const stream = exec.stream;
       execStream = stream;

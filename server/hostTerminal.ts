@@ -162,6 +162,9 @@ async function hostTmux(
 // new-session 即可，不会重复拉起 server。
 // opts.cwd：宿主会话的起始目录；opts.command：窗口命令（服务终端 = docker exec），
 // 缺省 = 会话默认 shell。命令词均为常量或正则校验值，无注入面。
+// -e COLORTERM=truecolor：外层 xterm.js 支持真彩，而 update-environment 不含 COLORTERM、
+// exec env 进不了已运行 server 的 pane——claude 等按它判色深，缺了就降级 256 色发淡。
+// -e 落 session env、首 pane 起就有（terminal.ts 同款，那边还有注释详版）。
 async function ensureTmuxSession(
   session: string,
   cols: number,
@@ -174,6 +177,8 @@ async function ensureTmuxSession(
   const argv = [
     'new-session',
     '-d',
+    '-e',
+    'COLORTERM=truecolor',
     '-s',
     session,
     '-x',
@@ -622,7 +627,7 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
         stdio: ['pipe', 'pipe', 'pipe'],
         // SHELL 必须压成 /bin/sh：script 用 $SHELL 跑 -c 命令串，用户登录 zsh 会做 =word
         // 展开，把 attach 目标 "=mysandbox-host-xxx" 当命令路径查找（zsh:1: not found）——实测踩坑。
-        env: { ...process.env, TERM: 'xterm-256color', MYSANDBOX_WEB: '1', SHELL: '/bin/sh' },
+        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', MYSANDBOX_WEB: '1', SHELL: '/bin/sh' },
         cwd: useTmux ? undefined : cwd, // 无 tmux 降级时 shell 直接落在镜像目录
       });
       children.add(child);
