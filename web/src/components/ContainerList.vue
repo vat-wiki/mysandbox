@@ -72,7 +72,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Inbox } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown, Import } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1628,7 +1628,7 @@ watch(
         pendingSvcUnadopt.value = ''
         await svcOp(name, () => unadoptService(name))
       }
-      // 收编入口（分区头 Inbox，与抽屉头部同款对话框）：外部 docker 容器纳入服务层。
+      // 收编入口（分区头 Import，与抽屉头部同款对话框）：外部 docker 容器纳入服务层。
       // ContainerList 自挂对话框（TermSessionsDialog 同模式）；成功 toast + 即时刷侧栏。
       const showSvcAdopt = ref(false)
       function onSvcAdopted(name: string) {
@@ -2420,7 +2420,7 @@ onUnmounted(() => {
             title="收编外部容器"
             @click="showSvcAdopt = true"
           >
-            <Inbox />
+            <Import />
           </Button>
           <Button
             variant="ghost"
@@ -3143,7 +3143,7 @@ onUnmounted(() => {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- 收编外部容器（应用容器分区头 Inbox 入口）：外部 docker 容器纳入服务层 -->
+  <!-- 收编外部容器（应用容器分区头 Import 入口）：外部 docker 容器纳入服务层 -->
   <AdoptServiceDialog
     v-if="showSvcAdopt"
     @adopted="onSvcAdopted"

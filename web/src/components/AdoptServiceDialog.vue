@@ -4,7 +4,7 @@
 // 动作（秒级），不走 job；成功后行消失（已被收编），父级经 changed 即时刷侧栏。
 // 布局照抄 TermSessionsDialog 的「拉列表 + 行操作 + loading/err」模式。
 import { ref, onMounted } from 'vue'
-import { RefreshCw, Inbox } from 'lucide-vue-next'
+import { RefreshCw, Import } from 'lucide-vue-next'
 import { listAdoptables, adoptService, Unauthorized, type AdoptableContainerView } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -64,7 +64,7 @@ async function doAdopt(row: AdoptableContainerView) {
     <DialogContent class="max-w-lg">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
-          <Inbox class="size-4" /> 收编外部容器
+          <Import class="size-4" /> 收编外部容器
         </DialogTitle>
       </DialogHeader>
 

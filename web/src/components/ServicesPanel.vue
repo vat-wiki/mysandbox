@@ -43,7 +43,7 @@ import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, Di
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
-import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight, Inbox } from 'lucide-vue-next'
+import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight, Import } from 'lucide-vue-next'
 
 // initialSelect：侧栏卡片点击带来的服务名——打开或已打开时定位到该服务。
 const props = defineProps<{ initialSelect?: string }>()
@@ -344,7 +344,7 @@ onUnmounted(() => {
         <div class="flex shrink-0 items-center gap-2.5 border-b px-4 py-3">
           <img src="/docker.svg" alt="" class="size-4 shrink-0" />
           <DialogTitle class="min-w-0 flex-1 text-sm leading-tight font-semibold">应用容器</DialogTitle>
-          <Button variant="ghost" size="icon-xs" title="收编外部容器" @click="showAdopt = true"><Inbox /></Button>
+          <Button variant="ghost" size="icon-xs" title="收编外部容器" @click="showAdopt = true"><Import /></Button>
           <Button variant="ghost" size="icon-xs" title="新建服务" @click="showCreate = true"><Plus /></Button>
           <DialogClose as-child>
             <Button variant="ghost" size="icon-xs" title="关闭"><X /></Button>
