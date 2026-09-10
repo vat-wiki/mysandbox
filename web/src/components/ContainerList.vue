@@ -52,7 +52,7 @@ import {
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
-import { isPhone } from '@/composables/useDevice'
+import { isPhone, isCoarse } from '@/composables/useDevice'
 import { extOf, previewKind } from '@/lib/preview'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -489,6 +489,83 @@ watch(collapsed, (v) => {
   }
 })
 
+// —— 收起态悬停即展（桌面鼠标形态 only）——
+// rail 上停留片刻自动临时展开，划走立即收回。hoverExpand 是纯内存的临时态，不写
+// localStorage——记住的「收起」偏好不变，松手即回 rail。展开/收回走 aside 既有的
+// md:transition-[width] 宽度动画；展开中给直接子元素统一钉 md:[&>*]:w-64 终宽 +
+// aside md:overflow-hidden，宽度动画期间内容按终宽布局、只做「揭示」，不逐帧重排
+// （逐帧改断行/截断观感发抖）。要点：
+// - 进栏延时 200ms 才展开：路过左缘/扫一下不弹；划出走即时收。
+// - 显式点「收起侧栏」后压制一次悬停展开（鼠标还停在栏内，不压会刚收起又被撑开），
+//   划走即解除。
+// - 栏内来源的右键菜单/下拉（portal 在 body，DOM 上不属于 aside）：移入菜单会触发
+//   aside 的 mouseleave——此刻不能收（收起会卸载触发元、弄丢菜单），挂起待全局
+//   click/keydown（选中/Esc/点别处）再真正收回；期间鼠标回到栏内则取消挂起保持展开。
+//   菜单开着时也不启动展开定时（展开同样会卸载 rail 触发元）。
+const hoverExpand = ref(false)
+const railMode = computed(() => collapsed.value && !isPhone.value && !hoverExpand.value)
+const HOVER_EXPAND_DELAY = 200
+let hoverTimer: ReturnType<typeof setTimeout> | null = null
+let hoverSuppress = false
+let hoverPendingOff: (() => void) | null = null
+// 栏内打开、portal 到 body 的菜单/下拉（reka-ui 的 data-state=open 约定）
+function sidebarMenuOpen(): Element | null {
+  return document.querySelector('[role="menu"][data-state="open"],[role="listbox"][data-state="open"]')
+}
+function disarmHoverPending(keepOpen: boolean) {
+  hoverPendingOff?.()
+  hoverPendingOff = null
+  if (!keepOpen) {
+    hoverExpand.value = false
+    hoverSuppress = false
+  }
+}
+function armHoverPending() {
+  if (hoverPendingOff) return
+  const onDoc = () => disarmHoverPending(false)
+  document.addEventListener('click', onDoc, true)
+  document.addEventListener('keydown', onDoc, true)
+  hoverPendingOff = () => {
+    document.removeEventListener('click', onDoc, true)
+    document.removeEventListener('keydown', onDoc, true)
+  }
+}
+function clearHoverTimer() {
+  if (hoverTimer) {
+    clearTimeout(hoverTimer)
+    hoverTimer = null
+  }
+}
+function asideMouseEnter() {
+  disarmHoverPending(true) // 回到栏内：挂起的收起作废，保持展开
+  if (isPhone.value || isCoarse.value || !collapsed.value || hoverSuppress || sidebarMenuOpen()) return
+  clearHoverTimer()
+  hoverTimer = setTimeout(() => {
+    hoverTimer = null
+    if (!collapsed.value || hoverSuppress || sidebarMenuOpen()) return
+    hoverExpand.value = true
+  }, HOVER_EXPAND_DELAY)
+}
+function asideMouseLeave() {
+  clearHoverTimer()
+  if (!hoverExpand.value) {
+    hoverSuppress = false
+    return
+  }
+  if (sidebarMenuOpen()) {
+    armHoverPending()
+    return
+  }
+  disarmHoverPending(false)
+}
+function collapseSidebar() {
+  disarmHoverPending(false)
+  clearHoverTimer()
+  collapsed.value = true
+  hoverExpand.value = false
+  hoverSuppress = true
+}
+
 // ---- 分屏树的动作与拖拽 ----
 // 树操作纯函数在 lib/termlayout.ts；这里经 TERM_OPS 注入给递归的 TermLayoutNode 上抛动作。
 // 分隔条拖动只调相邻两块 grows：dragstart 快照，move 把像素位移换算成 grow 增量
@@ -651,7 +728,7 @@ function onFilesDragStart(_g: unknown, pIdx: number, parentWidth: number) {
 // 侧栏桌面恒 w-64（popout 无侧栏）；手机侧栏是抽屉不占位，且拖宽本来就不渲染。
 // 侧栏宽度（像素）：展开 256（md:w-64），收起 rail 48（md:w-12）——文件面板拖宽的
 // 可用宽上限随之联动，rail 时文件面板能拖得更宽。
-const FILES_SIDEBAR_W = computed(() => (props.popout ? 0 : collapsed.value ? 48 : 256))
+const FILES_SIDEBAR_W = computed(() => (props.popout ? 0 : railMode.value ? 48 : 256))
 function onFilesDrag(dx: number) {
   // 面板在右侧：向左拖（负 dx）变宽
   const w = filesDragStartW - dx
@@ -2211,6 +2288,8 @@ onUnmounted(() => {
   if (actTimer) clearInterval(actTimer)
   document.removeEventListener('keydown', onEscCloseFile)
   document.removeEventListener('visibilitychange', onVisChange)
+  clearHoverTimer()
+  disarmHoverPending(false)
 })
 </script>
 
@@ -2232,14 +2311,17 @@ onUnmounted(() => {
     <aside
       v-if="!props.popout"
       ref="asideRef"
-      class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:transition-[width] md:duration-200"
-      :class="[drawerOpen ? '' : 'max-md:-translate-x-full', collapsed && !isPhone ? 'md:w-12' : 'md:w-64']"
+      class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:overflow-hidden md:transition-[width] md:duration-200"
+      :class="[drawerOpen ? '' : 'max-md:-translate-x-full', railMode ? 'md:w-12' : 'md:w-64 md:[&>*]:w-64']"
+      @mouseenter="asideMouseEnter"
+      @mouseleave="asideMouseLeave"
     >
       <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：只留导航骨架——
             logo（点击展开，收缩后品牌仍在） / ＋ 新建 / 容器首字图标列（容器色淡染，
             title 带全名·状态·IP，右键 = 展开态卡片同款菜单）/ 底部环境区（配置菜单 ·
-            宿主 · 服务 · 展开键）。列表异常给一枚提示点，点击展开并重试。 -->
-      <template v-if="collapsed && !isPhone">
+            宿主 · 服务 · 展开键）。列表异常给一枚提示点，点击展开并重试。
+            悬停 rail 停留片刻自动临时展开（hoverExpand），划走即收回。 -->
+      <template v-if="railMode">
         <div class="flex h-10 shrink-0 items-center justify-center border-b border-border">
           <button
             type="button"
@@ -2992,7 +3074,7 @@ onUnmounted(() => {
         type="button"
         class="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground"
         title="收起侧栏（窄边）"
-        @click="collapsed = true"
+        @click="collapseSidebar"
       >
         <PanelLeftClose class="size-3.5 shrink-0" />
         <span class="min-w-0 flex-1 truncate text-xs">收起侧栏</span>
