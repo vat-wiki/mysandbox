@@ -414,6 +414,7 @@ export interface ServiceView {
   createdAt?: string
   command?: string[]
   metaMissing?: boolean
+  adopted?: boolean // 收编的外部容器：无删除/更新，只可取消收编
 }
 
 export interface ServicesStatus {
@@ -486,6 +487,23 @@ export const updateService = (name: string) =>
 // 失败（重名/池尽/缺必填）4xx 内联显示在对话框。
 export const createService = (input: CreateServiceInput) =>
   postJson('/api/services', input) as Promise<{ jobId: string }>
+
+// —— 收编外部容器 ——
+// 宿主上非 mysandbox 管理的 docker 容器（无 label）纳入服务层：sidecar 登记 + 接入
+// 服务网络（LXC 按名字可达）。收编是同步动作，不走 job。
+export interface AdoptableContainerView {
+  name: string
+  image: string
+  state: string
+  status: string
+  networks: string
+  onServiceNetwork: boolean // 已在服务网络（adopt 复用现 IP，不再 connect）
+  ip: string | null
+}
+export const listAdoptables = () =>
+  api('/api/services/adoptables') as Promise<{ items: AdoptableContainerView[]; enabled: boolean }>
+export const adoptService = (name: string) => postJson('/api/services/adopt', { name }) as Promise<ServiceView>
+export const unadoptService = (name: string) => postJson(`/api/services/${name}/unadopt`)
 
 // —— 服务创建任务 ——
 export interface ServiceJobView {

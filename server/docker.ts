@@ -14,9 +14,11 @@
 //   - 权限：宿主用户在 docker 组（免 sudo 直连 /var/run/docker.sock）。systemd user service
 //     里同样可用——group 成员在 user manager 启动时快照，后加组需 daemon-restart。
 //
-// 管理边界（结构性，不靠约定）：所有针对「我们的服务」的操作都带 SERVICE_FILTER（label
-// mysandbox.kind=service）。宿主上其它 docker 容器（如 dener-*）没有该 label，永远不进列表、
-// 对它们的服务操作只会 404。
+// 管理边界（结构性，不靠约定）：受管服务 = label mysandbox.kind=service + mysandbox.managed-by。
+// docker 不能给既有容器后补 label，收编的外部容器（无 label）走 sidecar（state.json
+// services.adopted）纳管——所以列表/事件等过滤点都要**双源**：label 集 ∪ 调用方传入的
+// 收编名集（extraNames，由 state 的 adopted meta 得出）。未收编的外部容器（dener-* 等）
+// 依然永远不进列表、对它们的服务操作只会 404。
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
@@ -28,10 +30,6 @@ const execFileAsync = promisify(execFile);
 // label 方案（与被删的 docker 引擎同款 managed-by，加 kind 区分服务）。
 export const MANAGED_LABEL = 'mysandbox.managed-by'; // 值恒 'mysandbox'
 export const KIND_LABEL = 'mysandbox.kind'; // 值恒 'service'
-export const SERVICE_FILTER = [
-  '--filter', `label=${MANAGED_LABEL}=mysandbox`,
-  '--filter', `label=${KIND_LABEL}=service`,
-];
 
 export function serviceVolumeName(name: string): string {
   return `mysandbox-svc-${name}`;
@@ -163,7 +161,9 @@ export interface DockerContainerRow {
   State: string; // running / exited / restarting…
   Status: string; // 人话状态（Up 2 hours / Restarting (1) 3s ago…）
   CreatedAt: string;
-  Labels: Record<string, string>;
+  // ⚠️ docker ps 的 {{json .}} 里这是逗号拼接串（"k=v,k2=v2"）不是对象——读具体
+  // label 一律走 rowLabels()（实测踩过：当对象用恒 undefined，受管判定全部失效）。
+  Labels: string;
   Networks: string;
 }
 
@@ -171,11 +171,46 @@ function rowName(row: DockerContainerRow): string {
   return row.Names.split(',')[0].replace(/^\//, '');
 }
 
+// Labels 拼接串 → 对象。值里的逗号 docker 不转义（拼接格式固有损失），自家 label
+// 无逗号，够用；容器 inspect（dockerJson）里的 Labels 才是真对象（如 328 行）。
+export function rowLabels(row: Pick<DockerContainerRow, 'Labels'>): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof row.Labels !== 'string') return out;
+  for (const pair of row.Labels.split(',')) {
+    const i = pair.indexOf('=');
+    if (i > 0) out[pair.slice(0, i)] = pair.slice(i + 1);
+  }
+  return out;
+}
+
 // ⚠️ network inspect 只列 running 端点：停机服务的静态 IP 不在这里——占用判定必须
 // 并上 state.services 里登记的 IP（见 services.ts allocateServiceIp）。
-export async function listServiceContainers(): Promise<DockerContainerRow[]> {
+//
+// 双源（见文件头「管理边界」）：label 命中的受管服务 ∪ extraNames 里无 label 的收编
+// 容器（精确名匹配，extraNames 来自 state 的 adopted meta）。一次无过滤 `ps -a` 在 JS
+// 分区——宿主容器量级（几十）下比 N 条 `--filter name=` 便宜，且 name 过滤是子串匹配
+// 不能直接用。
+export async function listServiceContainers(extraNames: string[] = []): Promise<DockerContainerRow[]> {
   try {
-    return await dockerJsonLines<DockerContainerRow>(['ps', '-a', ...SERVICE_FILTER]);
+    const rows = await dockerJsonLines<DockerContainerRow>(['ps', '-a']);
+    const extra = new Set(extraNames);
+    return rows.filter((r) => {
+      const labels = rowLabels(r);
+      const managed = labels[MANAGED_LABEL] === 'mysandbox' && labels[KIND_LABEL] === 'service';
+      return managed || (extra.has(rowName(r)) && labels[MANAGED_LABEL] !== 'mysandbox');
+    });
+  } catch (e) {
+    log.warn({ err: String(e) }, 'docker ps failed');
+    return [];
+  }
+}
+
+// 非 mysandbox 管理的容器全集（收编候选列表用）。已收编的也在（无 label 无法区分），
+// 由业务层对着 state 的 adopted meta 排除。
+export async function listExternalContainers(): Promise<DockerContainerRow[]> {
+  try {
+    const rows = await dockerJsonLines<DockerContainerRow>(['ps', '-a']);
+    return rows.filter((r) => rowLabels(r)[MANAGED_LABEL] !== 'mysandbox');
   } catch (e) {
     log.warn({ err: String(e) }, 'docker ps failed');
     return [];
@@ -217,6 +252,38 @@ export async function createServiceContainer(args: CreateServiceArgs): Promise<v
   const r = await dockerExec(argv, 60_000);
   if (!r.ok) {
     throw new Error(`docker create failed: ${r.stderr.trim() || 'no output'}`);
+  }
+}
+
+// 把既有容器接入用户网络（收编用）：running 容器热加第二块网卡，停机容器 start 时生效。
+// 带 --ip 落静态 IP（进 IPAMConfig，停机也在）；不带则动态分配（只存在于运行时 IPAddress）。
+export async function connectServiceNetwork(name: string, network: string, ip?: string): Promise<void> {
+  const argv = ['network', 'connect'];
+  if (ip) argv.push('--ip', ip);
+  argv.push(network, name);
+  const r = await dockerExec(argv, 15_000);
+  if (!r.ok) throw new Error(`docker network connect failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+// 从用户网络摘除（取消收编的还原动作）。失败原样抛——调用方决定是否忽略。
+export async function disconnectServiceNetwork(name: string, network: string): Promise<void> {
+  const r = await dockerExec(['network', 'disconnect', network, name], 15_000);
+  if (!r.ok) throw new Error(`docker network disconnect failed: ${r.stderr.trim() || 'no output'}`);
+}
+
+// 容器在某网络上的 IP：静态优先（IPAMConfig，停机也在），运行时 IPAddress 兜底
+// （network connect 不带 --ip 的动态分配不在 IPAMConfig 里）。
+export async function containerNetIp(name: string, network: string): Promise<string | null> {
+  try {
+    const raw = await dockerJson<{
+      NetworkSettings?: {
+        Networks?: Record<string, { IPAMConfig?: { IPv4Address?: string }; IPAddress?: string }>;
+      };
+    }>(['container', 'inspect', name]);
+    const n = raw.NetworkSettings?.Networks?.[network];
+    return n?.IPAMConfig?.IPv4Address ?? n?.IPAddress ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -527,9 +594,12 @@ export interface ServiceEventSubscription {
 }
 
 // start/die/destroy：服务起来了/停了/没了，三种都影响 hosts 里的服务行。
+// 不带 label 过滤：收编容器（无 label）的事件也要进来。受管与否在回调里给
+// （Actor.Attributes 自带容器 label），过滤判定由调用方做——外部容器 churning
+// 时调用方拿收编名集一挡就静默返回，不触发扫描。
 // closed 在流 end/close/error 任一时 resolve（error 吞掉，调用方退避重连）。
 export function subscribeServiceEvents(
-  onEvent: (ev: { name: string; action: string }) => void,
+  onEvent: (ev: { name: string; action: string; managed: boolean }) => void,
 ): ServiceEventSubscription {
   const child: ChildProcess = spawn('docker', [
     'events',
@@ -537,7 +607,6 @@ export function subscribeServiceEvents(
     '--filter', 'event=start',
     '--filter', 'event=die',
     '--filter', 'event=destroy',
-    ...SERVICE_FILTER,
     '--format', '{{json .}}',
   ], { stdio: ['ignore', 'pipe', 'ignore'] });
 
@@ -559,10 +628,16 @@ export function subscribeServiceEvents(
       try {
         const ev = JSON.parse(line) as {
           Action?: string;
-          Actor?: { Attributes?: { name?: string } };
+          Actor?: { Attributes?: { name?: string; 'mysandbox.managed-by'?: string } };
         };
         const name = ev.Actor?.Attributes?.name;
-        if (ev.Action && name) onEvent({ name, action: ev.Action });
+        if (ev.Action && name) {
+          onEvent({
+            name,
+            action: ev.Action,
+            managed: ev.Actor?.Attributes?.['mysandbox.managed-by'] === 'mysandbox',
+          });
+        }
       } catch {
         // 坏行丢弃
       }
@@ -585,10 +660,13 @@ export function subscribeServiceEvents(
 // running 的服务容器 → [{name, ip}]。这是 hosts 块的唯一事实源（applyHostsToContainers /
 // lifecycle 初始 hosts 都经它）。docker 不可达返回 []：hosts 路径永不因 docker 挂掉而 500，
 // 等价于「没有服务」，容器里旧的服务行下次 docker 恢复后被追平。
-export async function listServiceEndpoints(cfg: Config): Promise<{ name: string; ip: string }[]> {
+export async function listServiceEndpoints(
+  cfg: Config,
+  extraNames: string[] = [],
+): Promise<{ name: string; ip: string }[]> {
   const net = await inspectNetwork(cfg.services.network);
   if (!net) return [];
-  const rows = await listServiceContainers();
+  const rows = await listServiceContainers(extraNames);
   const running = new Set(rows.filter((r) => r.State === 'running').map(rowName));
   return net.endpoints
     .filter((e) => running.has(e.name))

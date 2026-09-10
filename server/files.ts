@@ -17,6 +17,7 @@ import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { listServiceContainers } from './docker.js';
+import { getServiceMeta } from './state.js';
 import { TERMID_RE, sessionName } from './terminal.js';
 import {
   parsePorcelainZ,
@@ -476,8 +477,8 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (!srcC || !dstC) throw badRequest('srcContainer and dstContainer are required');
     if (srcPath === '/') throw badRequest('cannot copy /');
 
-    // 服务侧探测/操作小助手（docker exec，数组参数无 shell 注入面；受管边界 = label
-    // 过滤的 listServiceContainers，非 mysandbox 容器结构性查不到）。
+    // 服务侧探测/操作小助手（docker exec，数组参数无 shell 注入面；受管边界 = 双源的
+    // listServiceContainers——label 集 ∪ 收编名集，非 mysandbox 且未收编的容器结构性查不到）。
     async function svcTest(sname: string, script: string, p: string): Promise<boolean> {
       try {
         await execFileAsync('docker', ['exec', sname, 'sh', '-c', script, 'sh', p], { timeout: 8_000 });
@@ -487,7 +488,8 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
       }
     }
     async function svcRow(sname: string): Promise<boolean> {
-      const rows = await listServiceContainers();
+      const adopted = !!(await getServiceMeta(sname))?.adopted;
+      const rows = await listServiceContainers(adopted ? [sname] : []);
       return rows.some((r) => r.Names.split(',')[0].replace(/^\//, '') === sname);
     }
 

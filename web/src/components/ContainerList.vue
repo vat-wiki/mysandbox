@@ -18,6 +18,7 @@ import {
   stopService,
   restartService,
   deleteService,
+  unadoptService,
   updateServiceMeta,
   listTermActivity,
   termSessionKey,
@@ -1617,6 +1618,15 @@ watch(
           deleteService(p.name, { deleteData: p.deleteData, confirmName: p.deleteData ? p.name : undefined }),
         )
       }
+      // 取消收编（收编容器没有删除项，右键菜单以此替代）：还原网络接入 + 清登记，
+      // 容器本体不动。普通确认即可——不删任何东西，语义与删除的输名确认区分开。
+      const pendingSvcUnadopt = ref('')
+      async function doSvcUnadopt() {
+        const name = pendingSvcUnadopt.value
+        if (!name) return
+        pendingSvcUnadopt.value = ''
+        await svcOp(name, () => unadoptService(name))
+      }
       // 重命名 = 改显示名（meta.displayName）：侧栏卡片/终端 tab 用它，不动容器真名，
       // 随时可改。成功后同步已开服务终端组的名字快照（与容器 doRename 同语义）。
       const svcRenameTarget = ref<ServiceView | null>(null)
@@ -2456,6 +2466,14 @@ onUnmounted(() => {
                     <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
                       s.description || s.image
                     }}</span>
+                    <!-- 收编的外部容器：身份标记常驻（操作边界不同——无删除/更新，只有取消收编） -->
+                    <Badge
+                      v-if="s.adopted"
+                      variant="outline"
+                      class="shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground"
+                      title="收编的外部容器：原编排方仍管它的生命周期，这里只提供终端/文件/网络可达"
+                      >收编</Badge
+                    >
                   </div>
                 </div>
               </ContextMenuTrigger>
@@ -2505,16 +2523,22 @@ onUnmounted(() => {
                   </ContextMenuSub>
                 </template>
                 <ContextMenuSeparator />
-                <ContextMenuItem @click="requestServiceUpdate(s)">更新</ContextMenuItem>
+                <ContextMenuItem v-if="!s.adopted" @click="requestServiceUpdate(s)">更新</ContextMenuItem>
                 <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
                 <ContextMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</ContextMenuItem>
                 <ContextMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</ContextMenuItem>
-                <!-- 删除：留数据卷 / 连数据双入口，文案与确认语义同服务抽屉操作行 -->
+                <!-- 删除：留数据卷 / 连数据双入口，文案与确认语义同服务抽屉操作行；
+                     收编容器不可删，给「取消收编」（还原网络 + 清登记，本体不动）。 -->
                 <ContextMenuSeparator />
-                <ContextMenuItem @click="pendingSvcDelete = { name: s.name, deleteData: false }">删除（留数据卷）</ContextMenuItem>
-                <ContextMenuItem class="text-destructive" @click="pendingSvcDelete = { name: s.name, deleteData: true }"
-                  >删除（连数据）</ContextMenuItem
-                >
+                <template v-if="s.adopted">
+                  <ContextMenuItem class="text-destructive" @click="pendingSvcUnadopt = s.name">取消收编</ContextMenuItem>
+                </template>
+                <template v-else>
+                  <ContextMenuItem @click="pendingSvcDelete = { name: s.name, deleteData: false }">删除（留数据卷）</ContextMenuItem>
+                  <ContextMenuItem class="text-destructive" @click="pendingSvcDelete = { name: s.name, deleteData: true }"
+                    >删除（连数据）</ContextMenuItem
+                  >
+                </template>
               </ContextMenuContent>
             </ContextMenu>
             <p v-if="!svcItems.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
@@ -3067,6 +3091,17 @@ onUnmounted(() => {
     :input="pendingSvcDelete.deleteData ? { placeholder: '输入服务名确认', confirmCue: pendingSvcDelete.name } : undefined"
     @confirm="doSvcDelete"
     @close="pendingSvcDelete = null"
+  />
+
+  <!-- 应用容器取消收编（收编容器的右键菜单入口）：不删本体，普通确认即可 -->
+  <ConfirmDialog
+    v-if="pendingSvcUnadopt"
+    :title="`取消收编 ${pendingSvcUnadopt}`"
+    description="将把该容器移出服务网络并清除登记，恢复为普通外部容器（容器本体与数据不动，LXC 内按名字解析随之消失）。"
+    confirm-text="取消收编"
+    variant="destructive"
+    @confirm="doSvcUnadopt"
+    @close="pendingSvcUnadopt = ''"
   />
 
   <BatchDialog

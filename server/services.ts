@@ -3,8 +3,9 @@
 // 形态（v1，刻意收窄）：一服务 = 单容器 + 固定 IP（mysandbox-lan 上 --ip）+ 命名卷
 // mysandbox-svc-<name>；不发布端口到宿主——与 LXC 容器同语义（固定 IP 直连、无 NAT），
 // LXC 容器里 `psql -h <服务名>` 的通路靠 hosts 注入（hosts-sync 组合 listServiceEndpoints）。
-// 管理边界结构性隔离：一切操作带 SERVICE_FILTER（label mysandbox.kind=service），
-// 宿主上其它 docker 容器（dener-* 等）没有该 label，永远不进列表、操作只会 404。
+// 管理边界结构性隔离：判定集 = label（mysandbox.managed-by + mysandbox.kind=service）
+// ∪ 收编 meta（adoptedServiceNames——外部容器无 label，收编走 sidecar，见 adoptService）。
+// 未收编的外部容器（dener-* 等）永远不进列表、操作只会 404。
 //
 // docker 原语在 docker.ts（CLI 客户端）；这里只有业务编排。对标 base.ts 的「路由薄 + 实现厚」。
 import type { FastifyInstance } from 'fastify';
@@ -33,16 +34,22 @@ import {
   restartContainer,
   removeContainer,
   containerLogs,
+  containerNetIp,
   imageExistsLocal,
   listImages,
+  listExternalContainers,
   pullImageStream,
   registryMirrors,
+  rowLabels,
   createNetwork,
+  connectServiceNetwork,
+  disconnectServiceNetwork,
   ensureVolume,
   removeVolume,
   subscribeServiceEvents,
 } from './docker.js';
 import {
+  adoptedServiceNames,
   getAllServiceMeta,
   getServiceMeta,
   setServiceMeta,
@@ -64,6 +71,11 @@ import {
 } from './jobs.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
+
+// 收编容器名：docker 名语义的收窄版（外部容器名改不了，收编时校验、过不了明确拒绝）。
+// 比 NAME_RE 宽出的 `_` 是 compose 命名惯例；不含 `.`（vhost 域名分隔符吃不下）、
+// 不含大写（浏览器发 Host 头会小写化，大写名在 vhost 门面匹配不上）。
+const ADOPT_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
 // —— 预设表（代码即配置；新预设就是加一行） ——
 export interface ServicePreset {
@@ -170,6 +182,7 @@ export interface ServiceView {
   createdAt?: string;
   command?: string[];
   metaMissing?: boolean; // label 在但 sidecar 缺（state.json 被清过）——前端提示重建元数据
+  adopted?: boolean; // 收编的外部容器（无 label，凭证在 sidecar）——前端区分卡片与操作边界
 }
 
 export interface ServicesStatus {
@@ -209,14 +222,18 @@ function rowName(names: string): string {
 export async function listServices(cfg: Config): Promise<{ items: ServiceView[]; status: ServicesStatus }> {
   const status = await servicesStatus(cfg);
   if (!status.reachable) return { items: [], status };
-  const rows = await listServiceContainers();
   const meta = await getAllServiceMeta();
+  const rows = await listServiceContainers(adoptedServiceNames(meta));
   const items: ServiceView[] = [];
   for (const row of rows) {
     const name = rowName(row.Names);
     const m = meta[name];
-    const presetKey = m?.preset ?? row.Labels['mysandbox.service-preset'] ?? 'custom';
-    const ip = (await containerIpamIp(name)) ?? m?.ip ?? null;
+    const presetKey = m?.preset ?? rowLabels(row)['mysandbox.service-preset'] ?? 'custom';
+    // 收编容器可能挂着多个网络（compose 网 + 我们的）：IP 必须取 mysandbox-lan 上的——
+    // containerIpamIp 遍历全网络可能先命中 compose 网的静态 IP。
+    const ip = m?.adopted
+      ? (await containerNetIp(name, cfg.services.network)) ?? m?.ip ?? null
+      : (await containerIpamIp(name)) ?? m?.ip ?? null;
     items.push({
       name,
       preset: presetKey,
@@ -235,6 +252,7 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
       createdAt: m?.createdAt ?? row.CreatedAt,
       command: m?.command,
       metaMissing: !m,
+      adopted: !!m?.adopted,
     });
   }
   items.sort((a, b) => a.name.localeCompare(b.name));
@@ -695,16 +713,144 @@ export async function deleteService(
   return { ok: true, dataRemoved, name };
 }
 
+// —— 收编外部容器 ——
+// docker 不能给既有容器补 label，收编 = sidecar 登记（adopted meta）+ 接入服务网络。
+// 不动容器本体：不重建、不改 env、不断原网络（compose 栈原样活着），只给它一条
+// mysandbox-lan 上的静态 IP——LXC 容器按名字可达（hosts 注入），面板获得全套管理。
+export interface AdoptableRow {
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  networks: string;
+  onServiceNetwork: boolean; // 已在服务网络（compose external 等手工挂过）——adopt 复用现 IP
+  ip: string | null;
+}
+
+// 收编候选：宿主上非 mysandbox 管理的容器（无 label），排除已收编。
+export async function listAdoptables(cfg: Config): Promise<AdoptableRow[]> {
+  const adopted = new Set(adoptedServiceNames(await getAllServiceMeta()));
+  const rows = await listExternalContainers();
+  const net = await inspectNetwork(cfg.services.network);
+  const onNet = new Map(net?.endpoints.map((e) => [e.name, e.ip]));
+  const items: AdoptableRow[] = [];
+  for (const row of rows) {
+    const name = rowName(row.Names);
+    if (adopted.has(name)) continue;
+    items.push({
+      name,
+      image: row.Image,
+      state: row.State,
+      status: row.Status,
+      networks: row.Networks,
+      onServiceNetwork: onNet.has(name),
+      ip: onNet.get(name) ?? null,
+    });
+  }
+  items.sort((a, b) => a.name.localeCompare(b.name));
+  return items;
+}
+
+// 收编动作。名字校验在路由层（ADOPT_NAME_RE）。
+export async function adoptService(cfg: Config, name: string): Promise<ServiceView> {
+  await ensureServiceNetwork(cfg);
+  // 已受管（label 命中）不是收编对象；已收编的也不能重复收编（会覆盖用户改过的
+  // displayName 等元数据）。与进行中任务撞名也要挡——任务预占的容器还没建出来，
+  // ps 查不到。试占名兜底，finally 释放。
+  const prev = await getServiceMeta(name);
+  if (prev?.adopted) throw conflict(`"${name}" 已收编`);
+  const managed = await listServiceContainers();
+  if (managed.some((r) => rowName(r.Names) === name)) throw conflict(`"${name}" 已是受管服务`);
+  if (!tryReserveJobName(name)) throw conflict(`同名任务「${name}」进行中`);
+  try {
+    const row = (await listExternalContainers()).find((r) => rowName(r.Names) === name);
+    if (!row) throw notFound(`docker 容器 "${name}" 不存在（或已受管）`);
+
+    // 网络：已在服务网络 → 复用现 IP；否则从池里取空闲静态 IP 接入（--ip 进 IPAMConfig，
+    // 停机也在，与自建服务同一套占用记账）。
+    const net = await inspectNetwork(cfg.services.network);
+    let ip = net?.endpoints.find((e) => e.name === name)?.ip ?? null;
+    if (!ip) {
+      ip = await allocateServiceIp(cfg);
+      await connectServiceNetwork(name, cfg.services.network, ip);
+    }
+
+    const meta: ServiceMeta = {
+      preset: 'adopted',
+      image: row.Image,
+      env: {},
+      volume: null,
+      ip,
+      ports: [],
+      adopted: true,
+      description: '外部容器收编（原配置不动）',
+      createdAt: new Date().toISOString(),
+    };
+    await setServiceMeta(name, meta);
+
+    // hosts 尾块追平；失败不回滚收编——下次事件/轮询自然补上。
+    try {
+      await applyServicesBlock(cfg);
+    } catch (e) {
+      log.warn({ err: String(e), name }, 'hosts re-apply after adopt failed');
+    }
+    log.info({ name, ip, image: row.Image }, 'docker container adopted');
+
+    return {
+      name,
+      preset: meta.preset,
+      image: row.Image,
+      ip,
+      state: row.State,
+      status: row.Status,
+      running: row.State === 'running',
+      volume: null,
+      ports: [],
+      envKeys: [],
+      env: {},
+      connect: [],
+      adopted: true,
+      description: meta.description,
+      createdAt: meta.createdAt,
+    };
+  } finally {
+    releaseJobName(name);
+  }
+}
+
+// 取消收编：摘网络（还原）+ 清 meta + 追平 hosts。容器本体不动。
+export async function unadoptService(cfg: Config, name: string): Promise<void> {
+  const m = await getServiceMeta(name);
+  if (!m?.adopted) throw conflict(`"${name}" 不是收编容器——删除请走 DELETE /api/services/${name}`);
+  try {
+    await disconnectServiceNetwork(name, cfg.services.network);
+  } catch (e) {
+    // 摘不掉不拦取消收编（容器可能已被外部删掉；hosts 反正要追平）
+    log.warn({ err: String(e), name }, 'unadopt: network disconnect failed (ignored)');
+  }
+  await deleteServiceMeta(name);
+  try {
+    await applyServicesBlock(cfg);
+  } catch (e) {
+    log.warn({ err: String(e) }, 'hosts re-apply after unadopt failed');
+  }
+  log.info({ name }, 'docker service unadopted');
+}
+
 // —— 路由 ——
 
-// :name 的统一前置：NAME_RE + label 过滤集里存在——dener-* 等外部容器结构性 404。
+// :name 的统一前置：名字合法 + label 集 ∪ 收编集里存在——未收编的外部容器结构性 404。
 // 容器没了但 meta 还在（外部 docker rm / 上次删除中途失败）→ 顺手清孤儿 meta 再 404，
 // 不然 state.json 里会积累指向不存在容器的条目。
 async function requireService(name: string): Promise<void> {
-  if (!NAME_RE.test(name)) throw badRequest('invalid service name');
-  const rows = await listServiceContainers();
+  const m = await getServiceMeta(name);
+  // 收编容器名允许 `_`（compose 惯例），仅以 adopted meta 为凭证放宽。
+  if (!NAME_RE.test(name) && !(m?.adopted && ADOPT_NAME_RE.test(name))) {
+    throw badRequest('invalid service name');
+  }
+  const rows = await listServiceContainers(m?.adopted ? [name] : []);
   if (!rows.some((r) => rowName(r.Names) === name)) {
-    if (await getServiceMeta(name)) {
+    if (m) {
       await deleteServiceMeta(name);
       log.info({ name }, 'service meta orphaned (container gone) — cleaned');
     }
@@ -735,6 +881,22 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
       }))
       .sort((a, b) => a.ref.localeCompare(b.ref));
     return { images };
+  });
+
+  // —— 收编外部容器 ——
+  app.get('/api/services/adoptables', async () => {
+    if (!cfg.services.enabled) return { items: [], enabled: false };
+    return { items: await listAdoptables(cfg), enabled: true };
+  });
+
+  app.post('/api/services/adopt', async (req) => {
+    const body = (req.body as { name?: unknown } | null) || {};
+    const name = String(body.name ?? '').trim();
+    if (!ADOPT_NAME_RE.test(name)) {
+      throw badRequest('容器名须为 1–63 位小写字母/数字/连字符/下划线（含 . 或大写的外部容器暂不支持收编）');
+    }
+    if (!cfg.services.enabled) throw badRequest('services 层未启用（config services.enabled）');
+    return adoptService(cfg, name);
   });
 
   // 创建：快校验 + 预占通过即返回 jobId，拉镜像/建容器在后台 job 跑（jobs.ts）。
@@ -817,8 +979,20 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
   app.delete<{ Params: { name: string } }>('/api/services/:name', async (req) => {
     const name = req.params.name;
     await requireService(name);
+    const am = await getServiceMeta(name);
+    if (am?.adopted) {
+      throw conflict(`"${name}" 是收编的外部容器，不能删除——请用「取消收编」（POST /api/services/${name}/unadopt）`);
+    }
     const body = (req.body as { deleteData?: boolean; confirmName?: string } | null) || {};
     return deleteService(cfg, name, { deleteData: !!body.deleteData, confirmName: body.confirmName });
+  });
+
+  // 取消收编：还原网络接入 + 清 meta，容器本体不动（与删除的分界，见 unadoptService）。
+  app.post<{ Params: { name: string } }>('/api/services/:name/unadopt', async (req) => {
+    const name = req.params.name;
+    await requireService(name);
+    await unadoptService(cfg, name);
+    return { ok: true, name };
   });
 
   app.get<{ Params: { name: string } }>('/api/services/:name/logs', async (req) => {
@@ -847,7 +1021,11 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
       (a, b) => a - b,
     );
     if (!ports.length) return { ports, web: [] };
-    const ip = (await containerIpamIp(name)) ?? null;
+    // 收编容器的探测 IP 必须在 mysandbox-lan 上（可能与 compose 网并存，见 listServices）。
+    const am = await getServiceMeta(name);
+    const ip = am?.adopted
+      ? await containerNetIp(name, cfg.services.network)
+      : (await containerIpamIp(name)) ?? null;
     if (!ip) return { ports, web: [] };
     const marks = await Promise.all(ports.map((p) => probeHtmlPort(ip, p)));
     const web = ports.filter((_, i) => marks[i]);
@@ -862,6 +1040,10 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     await requireService(name);
     const m = await getServiceMeta(name);
     if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法更新——删除后重新创建一次即可`);
+    if (m.adopted) {
+      // 更新 = rm 后按 mysandbox 形状重建——会抹掉外部容器自己的挂载/端口/网络配置。
+      throw conflict(`"${name}" 是收编的外部容器，不支持原地更新（更新归它自己的编排方管）`);
+    }
     if (!tryReserveJobName(name)) throw conflict(`「${name}」已有任务进行中`);
     const ip = (await containerIpamIp(name)) ?? m.ip;
     reserveJobIp(ip);
@@ -880,16 +1062,28 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
 
 // —— 服务事件 → hosts 追平 ——
 // 服务容器 start/die/destroy（含 mysandbox 之外的手工 docker stop/restart）都会改变
-// hosts 里的服务行。2s trailing debounce 合并 crash-loop 的 die→start 风暴；断流
-// （docker daemon 重启会杀掉 events 子进程）指数退避重连 + 重连后全量补刷一次。
-// 骨架照抄 hosts-sync 的 startHostsEventSync。
+// hosts 里的服务行。订阅不带 label 过滤（收编容器也要进来）：受管事件直接扫描，非受管
+// 事件拿收编名集一挡——外部容器 churning 只是一次 state 内存读，不触发扫描。
+// 2s trailing debounce 合并 crash-loop 的 die→start 风暴；断流（docker daemon 重启会杀掉
+// events 子进程）指数退避重连 + 重连后全量补刷一次。骨架照抄 hosts-sync 的 startHostsEventSync。
 export function startServicesEventSync(cfg: Config): void {
   if (!cfg.services.enabled) return;
   void (async () => {
     let delay = 1_000;
     for (;;) {
       try {
-        const sub = await subscribeServiceEvents(() => {
+        const sub = await subscribeServiceEvents((ev) => {
+          if (!ev.managed) {
+            void getServiceMeta(ev.name)
+              .then((m) => {
+                if (!m?.adopted) return;
+                scheduleSweep(cfg);
+                if (ev.action === 'start') void healAdopted(cfg, ev.name);
+                if (ev.action === 'destroy') scheduleAdoptedOrphanCheck(cfg, ev.name);
+              })
+              .catch(() => {});
+            return;
+          }
           scheduleSweep(cfg);
         });
         delay = 1_000;
@@ -903,6 +1097,55 @@ export function startServicesEventSync(cfg: Config): void {
       delay = Math.min(delay * 2, 30_000);
     }
   })();
+}
+
+// 收编容器被外部重建（compose down/up：同名新容器、不带我们的网络接入）→ start 事件
+// 自动重连，self-heal。meta.ip 已被占（重建窗口期 docker IPAM 不认我们的记账，可能被
+// 别家动态拿走）就重新分配并回写 meta。
+async function healAdopted(cfg: Config, name: string): Promise<void> {
+  try {
+    const m = await getServiceMeta(name);
+    if (!m?.adopted) return;
+    await ensureServiceNetwork(cfg);
+    const net = await inspectNetwork(cfg.services.network);
+    if (net?.endpoints.some((e) => e.name === name)) return; // 已在网，无需要
+    let ip = m.ip;
+    try {
+      await connectServiceNetwork(name, cfg.services.network, ip);
+    } catch {
+      ip = await allocateServiceIp(cfg); // 旧 IP 在 meta 记账里算占用，allocate 天然避开
+      await connectServiceNetwork(name, cfg.services.network, ip);
+    }
+    if (ip !== m.ip) await setServiceMeta(name, { ...m, ip });
+    log.info({ name, ip }, 'adopted container re-connected to service network');
+    scheduleSweep(cfg);
+  } catch (e) {
+    log.warn({ err: String(e), name }, 'adopted container heal failed');
+  }
+}
+
+// 收编容器被外部 destroy：meta 先留着——compose force-recreate 是 destroy→create→start，
+// 立刻清会弄丢自愈。延迟确认容器真没了（没有同名重建）才清 meta + 追平。
+const orphanTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function scheduleAdoptedOrphanCheck(cfg: Config, name: string): void {
+  const prev = orphanTimers.get(name);
+  if (prev) clearTimeout(prev);
+  orphanTimers.set(
+    name,
+    setTimeout(() => {
+      orphanTimers.delete(name);
+      void (async () => {
+        // 传 [name]：无 label 的同名重建容器也要能看到（否则误判「没了」清掉 meta）
+        const rows = await listServiceContainers([name]);
+        if (rows.some((r) => rowName(r.Names) === name)) return; // 同名重建了
+        const m = await getServiceMeta(name);
+        if (!m?.adopted) return;
+        await deleteServiceMeta(name);
+        log.info({ name }, 'adopted container gone — meta cleaned');
+        scheduleSweep(cfg);
+      })().catch((e) => log.warn({ err: String(e), name }, 'adopted orphan check failed'));
+    }, 60_000),
+  );
 }
 
 let sweepTimer: ReturnType<typeof setTimeout> | null = null;

@@ -23,6 +23,7 @@ import type { FastifyInstance } from 'fastify';
 import { listServiceContainers } from './docker.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE } from './terminal.js';
+import { getServiceMeta } from './state.js';
 import {
   MAX_BYTES,
   LIST_SCRIPT,
@@ -52,6 +53,8 @@ const execFileAsync = promisify(execFile);
 
 // 与 services.ts 创建侧的 NAME_RE 同规则（服务名的唯一权威形态）。
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
+// 收编容器名（与 services.ts ADOPT_NAME_RE 同规则）：比 NAME_RE 宽出的 `_` 是 compose 惯例。
+const ADOPT_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
 // —— docker exec 基元 ——
 
@@ -114,16 +117,20 @@ function svcFeed(
 
 // —— 前置检查 ——
 
-// 受管服务查找：listServiceContainers 本身带 label 过滤（管理边界靠 label，结构性隔离——
-// 非 mysandbox 容器即使同名也结构性进不来）。返回 null = 404。
+// 受管服务查找：listServiceContainers 双源（label 集 ∪ 收编名集，收编凭证在 adopted
+// meta——非 mysandbox 且未收编的容器即使同名也结构性进不来）。返回 null = 404。
 async function lookupService(name: string): Promise<{ running: boolean } | null> {
-  const rows = await listServiceContainers();
+  const adopted = !!(await getServiceMeta(name))?.adopted;
+  const rows = await listServiceContainers(adopted ? [name] : []);
   const row = rows.find((r) => r.Names.split(',')[0].replace(/^\//, '') === name);
   return row ? { running: row.State === 'running' } : null;
 }
 
 async function requireServiceRunning(name: string): Promise<void> {
-  if (!NAME_RE.test(name)) throw badRequest('invalid service name');
+  // 收编容器名允许 `_`（compose 惯例），仅以 adopted meta 为凭证放宽。
+  if (!NAME_RE.test(name) && !((await getServiceMeta(name))?.adopted && ADOPT_NAME_RE.test(name))) {
+    throw badRequest('invalid service name');
+  }
   const svc = await lookupService(name);
   if (!svc) throw notFound(`service "${name}" not found`);
   if (!svc.running) throw conflict('service not running');

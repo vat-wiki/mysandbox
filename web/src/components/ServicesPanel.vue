@@ -15,6 +15,7 @@ import {
   stopService,
   restartService,
   deleteService,
+  unadoptService,
   getServiceLogs,
   getServiceListenPorts,
   listServiceJobs,
@@ -41,7 +42,8 @@ import {
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogClose } from 'reka-ui'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
-import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight } from 'lucide-vue-next'
+import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
+import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight, Inbox } from 'lucide-vue-next'
 
 // initialSelect：侧栏卡片点击带来的服务名——打开或已打开时定位到该服务。
 const props = defineProps<{ initialSelect?: string }>()
@@ -54,7 +56,10 @@ const err = ref('')
 const copied = ref('')
 // 创建表单：抽屉头部 ＋ 与空态按钮触发（侧栏 ＋ 由 App 直开表单，不经抽屉）。
 const showCreate = ref(false)
+// 收编：抽屉头部入口（外部容器纳入管理，见 AdoptServiceDialog）。
+const showAdopt = ref(false)
 const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
+const pendingUnadopt = ref('')
 
 // —— 选中服务（单一；侧栏卡片是切换器，props 变化即跟随）——
 const selService = ref(props.initialSelect ?? '')
@@ -234,6 +239,26 @@ async function confirmDelete() {
   )
 }
 
+// 取消收编：还原网络接入 + 清 meta，容器本体不动（收编容器没有删除操作）。
+function askUnadopt() {
+  const s = sel.value
+  if (s?.adopted) pendingUnadopt.value = s.name
+}
+
+async function confirmUnadopt() {
+  const name = pendingUnadopt.value
+  if (!name) return
+  pendingUnadopt.value = ''
+  await op(name, () => unadoptService(name))
+}
+
+// 收编完成后：定位到新收编的服务并让侧栏即时跟上。
+function onAdopted(name: string) {
+  selService.value = name
+  void refresh()
+  emit('changed')
+}
+
 // 打开服务端口：跟随控制台口径——IP/localhost 口径直连服务 IP，基域名口径经面板
 // Web 代理（见 lib/proxy.ts 与 server/proxy.ts）。
 function openServicePort(s: ServiceView, port: number) {
@@ -319,6 +344,7 @@ onUnmounted(() => {
         <div class="flex shrink-0 items-center gap-2.5 border-b px-4 py-3">
           <img src="/docker.svg" alt="" class="size-4 shrink-0" />
           <DialogTitle class="min-w-0 flex-1 text-sm leading-tight font-semibold">应用容器</DialogTitle>
+          <Button variant="ghost" size="icon-xs" title="收编外部容器" @click="showAdopt = true"><Inbox /></Button>
           <Button variant="ghost" size="icon-xs" title="新建服务" @click="showCreate = true"><Plus /></Button>
           <DialogClose as-child>
             <Button variant="ghost" size="icon-xs" title="关闭"><X /></Button>
@@ -386,7 +412,7 @@ onUnmounted(() => {
             <div class="space-y-2">
               <div class="flex min-w-0 flex-wrap items-center gap-2">
                 <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.displayName || sel.name }}</h3>
-                <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset }}</Badge>
+                <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset === 'adopted' ? '收编' : sel.preset }}</Badge>
                 <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复">⚠</span>
                 <span class="shrink-0 text-xs" :class="stateCls(sel)" :title="sel.status">{{ stateLabel(sel.state) }}</span>
               </div>
@@ -412,8 +438,9 @@ onUnmounted(() => {
                 >
                 <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
                 <!-- 更新：拉新镜像，ID 变了才按原配置重建（latest 标签追新）；无数据卷的
-                     custom 由 requestServiceUpdate 先给可行动的警告。任务进顶部横幅。 -->
-                <Button variant="outline" size="sm" :disabled="!!busyName" @click="sel && requestServiceUpdate(sel)">更新</Button>
+                     custom 由 requestServiceUpdate 先给可行动的警告。任务进顶部横幅。
+                     收编容器不支持原地更新（rm 重建会抹掉它自己的编排配置），不显示。 -->
+                <Button v-if="!sel.adopted" variant="outline" size="sm" :disabled="!!busyName" @click="sel && requestServiceUpdate(sel)">更新</Button>
                 <!-- 打开：端口表来自实测监听扫描（3s 跟刷，全预设通用），未扫到时回退
                      custom 手工登记端口。非 HTTP 端口浏览器打不开无妨（尽力而为）。 -->
                 <Button
@@ -425,7 +452,18 @@ onUnmounted(() => {
                 >
                   <Globe class="size-3.5" /> 打开 {{ p }}
                 </Button>
-                <DropdownMenu>
+                <!-- 收编容器不能删（不是我们的对象）：取消收编 = 还原网络 + 清登记，
+                     容器本体不动；自建服务保持删除下拉。 -->
+                <Button
+                  v-if="sel.adopted"
+                  variant="ghost"
+                  size="sm"
+                  class="ml-auto text-destructive hover:text-destructive"
+                  :disabled="!!busyName"
+                  @click="askUnadopt"
+                  >取消收编</Button
+                >
+                <DropdownMenu v-else>
                   <DropdownMenuTrigger as-child>
                     <Button
                       variant="ghost"
@@ -580,7 +618,19 @@ onUnmounted(() => {
           @close="pendingDelete = null"
         />
 
+        <ConfirmDialog
+          v-if="pendingUnadopt"
+          :title="`取消收编 ${pendingUnadopt}`"
+          description="将把该容器移出服务网络并清除登记，恢复为普通外部容器（容器本体与数据不动，LXC 内按名字解析随之消失）。"
+          confirm-text="取消收编"
+          variant="destructive"
+          @confirm="confirmUnadopt"
+          @close="pendingUnadopt = ''"
+        />
+
         <ServiceCreateDialog v-if="showCreate" @created="showCreate = false; refreshJobs(); refresh()" @close="showCreate = false" />
+
+        <AdoptServiceDialog v-if="showAdopt" @adopted="onAdopted" @close="showAdopt = false" />
       </DialogContent>
     </DialogPortal>
   </DialogRoot>

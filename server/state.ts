@@ -21,16 +21,26 @@ export interface ContainerMeta {
 // ⚠️ env 含密码：state.json 本就 0600；列表 API 回全量 env（token = 宿主完整权限，
 // 鉴权边界在 token 上收住，UI 需展示连接凭据）。
 export interface ServiceMeta {
-  preset: string; // 'postgres' | 'redis' | 'mysql' | 'custom'
+  preset: string; // 'postgres' | 'redis' | 'mysql' | 'custom' | 'adopted'（收编外部容器）
   image: string;
   env: Record<string, string>;
   command?: string[];
-  volume: string | null; // 'mysandbox-svc-<name>' | null（custom 可无卷）
-  ip: string; // 创建时分配的静态 IP（权威在 docker IPAMConfig，此处为停机占用记录）
+  volume: string | null; // 'mysandbox-svc-<name>' | null（custom/收编无卷）
+  ip: string; // 创建/收编时分配的静态 IP（权威在 docker IPAMConfig，此处为停机占用记录）
   ports?: number[];
   displayName?: string; // 显示名（侧栏卡片/终端 tab），不动容器真名——与容器 meta.displayName 同语义
   description?: string;
   createdAt: string;
+  // 收编的外部容器：无 label（docker 不能后补），纳管凭证就是这条 meta——所有按
+  // label 过滤的判定点都要并上 adoptedServiceNames(meta)（双源，见 docker.ts 文件头）。
+  adopted?: boolean;
+}
+
+// 收编容器名集：listServiceContainers 等双源过滤点的第二源。
+export function adoptedServiceNames(meta: Record<string, ServiceMeta>): string[] {
+  return Object.entries(meta)
+    .filter(([, m]) => m.adopted)
+    .map(([n]) => n);
 }
 
 // AI 网关（myapikey 等）最近一次批量下发的配置存档。形状同 aiconfig.ts 的

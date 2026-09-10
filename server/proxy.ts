@@ -56,12 +56,15 @@ import replyFrom from '@fastify/reply-from';
 import type { Config } from './config.js';
 import { listManaged, startContainer } from './engine/index.js';
 import { containerIpamIp, listServiceContainers } from './docker.js';
-import { getAllServiceMeta } from './state.js';
+import { adoptedServiceNames, getAllServiceMeta } from './state.js';
 import { log } from './logger.js';
 import { badRequest, notFound } from './errors.js';
 import { COOKIE_NAME } from './auth.js';
 
-const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
+// 代理 URL 解析的预过滤（白名单 map 才是权威，这里只挡明显不是目标名的串）：
+// 比 services.ts 创建侧的 NAME_RE 宽——`_` 放行（compose 收编容器名惯例）、长度放宽
+// 到 docker 名上限；c 段顺带覆盖 LXC 侧收编容器名。不含 `.`/大写（vhost 门面吃不下）。
+const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const TARGET_TTL_MS = 3_000;
 
 // —— 目标白名单（精确集合缓存） ——
@@ -94,12 +97,14 @@ async function refreshTargets(cfg: Config): Promise<void> {
       /* 引擎不可用：容器段空，服务段照常 */
     }
     // 服务段：state.services 是停机也可解析的权威；running 实测补状态与 state 缺失的孤儿。
+    // 列表双源（label 集 ∪ 收编名集）——收编容器的 running 标志才立得住，否则代理恒 502。
     try {
-      for (const [name, m] of Object.entries(await getAllServiceMeta())) {
+      const meta = await getAllServiceMeta();
+      for (const [name, m] of Object.entries(meta)) {
         if (!m.ip) continue;
         map.set(`s/${name}`, { kind: 's', name, ip: m.ip, running: false });
       }
-      for (const row of await listServiceContainers()) {
+      for (const row of await listServiceContainers(adoptedServiceNames(meta))) {
         const name = rowNameOf(row.Names);
         const t = map.get(`s/${name}`);
         if (t) {

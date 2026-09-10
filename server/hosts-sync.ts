@@ -12,6 +12,7 @@ import { readFile } from 'node:fs/promises';
 import pLimit from 'p-limit';
 import { composeHostsContent, stripServicesBlock, serviceBlockLines } from './hosts.js';
 import { listServiceEndpoints } from './docker.js';
+import { adoptedServiceNames, getAllServiceMeta } from './state.js';
 import { DOCKER_API_HOSTNAME } from './dockerApi.js';
 import { gatewayOf } from './network.js';
 import { log } from './logger.js';
@@ -27,7 +28,11 @@ async function currentSvcLines(cfg: Config): Promise<string[]> {
   // 与 docker 服务行同走一个 services 尾块——同一套读-改-写/事件追平/启动补刷，块被剥
   // 一起剥。域名固定不随 ipPool 变：改池子只动这一行，容器内 DOCKER_HOST 永不重配。
   if (cfg.dockerApi.enabled) endpoints.push({ name: DOCKER_API_HOSTNAME, ip: gatewayOf(cfg) });
-  if (cfg.services.enabled) endpoints.push(...(await listServiceEndpoints(cfg)));
+  if (cfg.services.enabled) {
+    // 收编容器无 label（docker 不能后补），服务事实源要双源：label 集 ∪ adopted meta。
+    const adopted = adoptedServiceNames(await getAllServiceMeta());
+    endpoints.push(...(await listServiceEndpoints(cfg, adopted)));
+  }
   return serviceBlockLines(endpoints);
 }
 

@@ -19,8 +19,8 @@ import { getEngine, listManaged } from './engine/index.js';
 import type { ContainerView } from './engine/index.js';
 import { lxcPath, configPath, configValue } from './engine/lxc.js';
 import { HOST_SOCKET } from './hostTerminal.js';
-import { dockerStatus, listServiceContainers, listManagedVolumes } from './docker.js';
-import { getAllMeta, getAllServiceMeta } from './state.js';
+import { dockerStatus, listServiceContainers, listManagedVolumes, rowLabels } from './docker.js';
+import { getAllMeta, getAllServiceMeta, adoptedServiceNames } from './state.js';
 import { getVersion } from './version.js';
 
 const execFileAsync = promisify(execFile);
@@ -96,9 +96,9 @@ async function collectServices(): Promise<StatusReport['docker']> {
   if (!d.reachable) {
     return { reachable: false, error: d.error, services: [], volumes: [], orphanVolumes: [] };
   }
-  const [rows, meta, volumes] = await Promise.all([
-    listServiceContainers(),
-    getAllServiceMeta(),
+  const meta = await getAllServiceMeta();
+  const [rows, volumes] = await Promise.all([
+    listServiceContainers(adoptedServiceNames(meta)),
     listManagedVolumes().catch(() => [] as { name: string }[]),
   ]);
   const services = rows.map((row) => {
@@ -107,7 +107,7 @@ async function collectServices(): Promise<StatusReport['docker']> {
     return {
       name,
       state: row.State,
-      preset: row.Labels['mysandbox.service-preset'] ?? m?.preset ?? '?',
+      preset: rowLabels(row)['mysandbox.service-preset'] ?? m?.preset ?? '?',
       image: row.Image,
       ip: m?.ip,
       ports: m?.ports,
