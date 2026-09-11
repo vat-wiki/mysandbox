@@ -454,6 +454,20 @@ export interface ServiceView {
   adopted?: boolean // 收编的外部容器：无删除/改配置，只可取消收编（接管式收编完成后转正，此标志清位）
   hasCompose?: boolean // compose 底账在（可改配置可应用）；managed 而无文件 = 旧版创建 → 迁移入口
   container?: string // 实际容器名（目录注册表服务 compose 项目名 ≠ 容器名时不同）
+  // —— 多容器项目（1 目录/1 栈 = N 服务；卡片锚在入口，其余折叠在抽屉）——
+  stackServices?: StackServiceView[]
+  stackFile?: string | null // adopted 栈的原 compose 文件（配置页只读展示）
+  externalStack?: boolean // adopted 栈：配置只读、启停 compose 驱动、删除 409
+  stackProject?: string // 「加入列表」升格卡片的所属项目
+}
+
+export interface StackServiceView {
+  name: string // compose service key
+  container: string
+  state: string
+  running: boolean
+  entry: boolean
+  listed: boolean // 已加入列表（独立卡片）
 }
 
 export interface ServicesStatus {
@@ -528,6 +542,7 @@ export interface ServiceConfigView {
   hash: string | null // 当前文件 hash（compose config --hash）
   appliedHash: string | null // 容器 label 里最后一次 up 的 hash
   drift: boolean // 改了文件还没应用（或应用失败）
+  readonly?: boolean // adopted 栈：文件在原处（别人的底账）——只读展示，无编辑/应用
 }
 export const getServiceConfig = (name: string) =>
   api(`/api/services/${name}/config`) as Promise<ServiceConfigView>
@@ -555,13 +570,24 @@ export interface AdoptableContainerView {
   compose: boolean // compose 栈容器（有 project label）——只能只读收编，底账在原编排方
   ip: string | null
 }
+
+// compose 栈（多容器项目）的收编候选：一行一个项目。
+export interface AdoptableStackView {
+  project: string
+  file: string | null
+  containers: { name: string; state: string }[]
+  running: number
+}
 export const listAdoptables = () =>
-  api('/api/services/adoptables') as Promise<{ items: AdoptableContainerView[]; enabled: boolean }>
-// 只读收编：sidecar 登记 + 接入服务网络，本体不动（同步返回 ServiceView）。
-// takeover = 接管式收编（裸容器专用）：复刻启动方式进 compose 底账并重建容器
-// （可写层数据丢失，卷无损），走后台 job——响应附 jobId 供任务横幅挂进度。
-export const adoptService = (name: string, takeover = false) =>
-  postJson('/api/services/adopt', { name, takeover }) as Promise<ServiceView & { jobId?: string }>
+  api('/api/services/adoptables') as Promise<{ items: AdoptableContainerView[]; stacks: AdoptableStackView[]; enabled: boolean }>
+// 只读收编：sidecar 登记 + 接入服务网络，本体不动（同步返回 ServiceView）。栈收编
+// 传 stack: true（name = 项目名，全体成员纳管、单入口展示）。takeover = 接管式收编
+// （裸容器专用）：复刻启动方式进 compose 底账并重建容器，走后台 job——响应附 jobId。
+export const adoptService = (name: string, opts: { takeover?: boolean; stack?: boolean } = {}) =>
+  postJson('/api/services/adopt', { name, ...opts }) as Promise<ServiceView & { jobId?: string }>
+// 多容器项目展示策展：listed = 「加入列表」升格独立卡片；entry = 换卡片锚点。
+export const stackServiceAction = (name: string, service: string, patch: { listed?: boolean; entry?: boolean }) =>
+  postJson(`/api/services/${name}/stack`, { service, ...patch })
 export const unadoptService = (name: string) => postJson(`/api/services/${name}/unadopt`)
 
 // —— 服务任务 ——

@@ -176,7 +176,26 @@ export interface ParsedCompose {
   build: boolean;
 }
 
-function parseComposeDoc(yaml: string): { serviceKey: string; svc: Record<string, unknown> } | null {
+// 项目级解析（1 目录 = 1 项目 = N 服务）：多服务文件是 compose 原生形状，单服务是
+// N=1 特例。每个服务带 key（compose service 名）/container_name/端口——入口服务
+// 选择与卡片锚定靠这些。
+export interface ParsedProjectService {
+  key: string;
+  containerName?: string;
+  image?: string;
+  env: Record<string, string>;
+  command?: string[];
+  volumes: string[];
+  ip?: string;
+  ports: number[]; // 发布的容器端口（entry 选择用）
+  build: boolean;
+}
+
+export interface ParsedProject {
+  services: ParsedProjectService[];
+}
+
+function parseComposeServices(yaml: string): ParsedProjectService[] | null {
   let doc: unknown;
   try {
     doc = yamlLoad(yaml);
@@ -186,49 +205,76 @@ function parseComposeDoc(yaml: string): { serviceKey: string; svc: Record<string
   if (!doc || typeof doc !== 'object') return null;
   const services = (doc as Record<string, unknown>).services;
   if (!services || typeof services !== 'object') return null;
-  const entry = Object.entries(services as Record<string, unknown>)[0];
-  if (!entry || !entry[1] || typeof entry[1] !== 'object') return null;
-  return { serviceKey: entry[0], svc: entry[1] as Record<string, unknown> };
+  const out: ParsedProjectService[] = [];
+  for (const [key, raw] of Object.entries(services as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const svc = raw as Record<string, unknown>;
+    const env: Record<string, string> = {};
+    if (svc.environment && typeof svc.environment === 'object') {
+      for (const [k, v] of Object.entries(svc.environment as Record<string, unknown>)) {
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') env[k] = String(v);
+      }
+    }
+    const volumes = Array.isArray(svc.volumes) ? (svc.volumes as unknown[]) : [];
+    const volSources = volumes.filter((v): v is string => typeof v === 'string' && v.includes(':')).map((v) => v.split(':')[0]);
+    let ip: string | undefined;
+    const networks = svc.networks && typeof svc.networks === 'object' ? (svc.networks as Record<string, unknown>) : {};
+    for (const net of Object.values(networks)) {
+      if (net && typeof net === 'object' && typeof (net as Record<string, unknown>).ipv4_address === 'string') {
+        ip = (net as Record<string, unknown>).ipv4_address as string;
+        break;
+      }
+    }
+    const ports: number[] = [];
+    if (Array.isArray(svc.ports)) {
+      for (const p of svc.ports as unknown[]) {
+        const s = typeof p === 'string' ? p : typeof p === 'object' && p ? String((p as Record<string, unknown>).target ?? '') : '';
+        const m = /^\d+/.exec(s.trim());
+        if (m) ports.push(Number(m[0].split(':')[0]));
+      }
+    }
+    out.push({
+      key,
+      containerName: typeof svc.container_name === 'string' ? svc.container_name : undefined,
+      image: typeof svc.image === 'string' ? svc.image : undefined,
+      env,
+      command: Array.isArray(svc.command) ? (svc.command as unknown[]).map(String) : undefined,
+      volumes: volSources,
+      ip,
+      ports,
+      build: svc.build != null,
+    });
+  }
+  return out.length ? out : null;
 }
 
-export async function readComposeService(name: string): Promise<ParsedCompose | null> {
+export async function readComposeProject(name: string): Promise<ParsedProject | null> {
   let yaml: string;
   try {
     yaml = await readFile(composeFileOf(name), 'utf8');
   } catch {
     return null;
   }
-  const parsed = parseComposeDoc(yaml);
-  if (!parsed) return null;
-  const { serviceKey, svc } = parsed;
-  const env: Record<string, string> = {};
-  if (svc.environment && typeof svc.environment === 'object') {
-    for (const [k, v] of Object.entries(svc.environment as Record<string, unknown>)) {
-      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') env[k] = String(v);
-    }
-  }
-  const volumes = Array.isArray(svc.volumes) ? (svc.volumes as unknown[]) : [];
-  const volStrs = volumes.filter((v): v is string => typeof v === 'string' && v.includes(':'));
-  const volSources = volStrs.map((v) => v.split(':')[0]);
-  const networks = svc.networks && typeof svc.networks === 'object' ? (svc.networks as Record<string, unknown>) : {};
-  // ip 取第一个带 ipv4_address 的网络（我们的发射器把 mysandbox-lan 放首位）
-  let ip: string | undefined;
-  for (const net of Object.values(networks)) {
-    if (net && typeof net === 'object' && typeof (net as Record<string, unknown>).ipv4_address === 'string') {
-      ip = (net as Record<string, unknown>).ipv4_address as string;
-      break;
-    }
-  }
+  const services = parseComposeServices(yaml);
+  return services ? { services } : null;
+}
+
+// 单服务 accessor（兼容既有调用：env 展示/连接命令/漂移 hash 的 serviceKey）。
+// 多服务项目取第一个——调用方要全量请走 readComposeProject。
+export async function readComposeService(name: string): Promise<ParsedCompose | null> {
+  const project = await readComposeProject(name);
+  if (!project) return null;
+  const svc = project.services[0];
   return {
-    serviceKey,
-    containerName: typeof svc.container_name === 'string' ? svc.container_name : undefined,
-    image: typeof svc.image === 'string' ? svc.image : undefined,
-    env,
-    command: Array.isArray(svc.command) ? (svc.command as unknown[]).map(String) : undefined,
-    volume: volSources[0] ?? null,
-    volumes: volSources,
-    ip,
-    build: svc.build != null,
+    serviceKey: svc.key,
+    containerName: svc.containerName,
+    image: svc.image,
+    env: svc.env,
+    command: svc.command,
+    volume: svc.volumes[0] ?? null,
+    volumes: svc.volumes,
+    ip: svc.ip,
+    build: svc.build,
   };
 }
 
@@ -277,12 +323,12 @@ function validateComposeFile(file: string): Promise<string | null> {
 export async function composeFileHash(name: string): Promise<string | null> {
   const yaml = await readComposeYaml(name);
   if (!yaml) return null;
-  const parsed = parseComposeDoc(yaml);
-  if (!parsed) return null;
+  const parsed = parseComposeServices(yaml);
+  if (!parsed?.length) return null;
   try {
     const { stdout } = await execFileAsync(
       'docker',
-      ['compose', '-f', composeFileOf(name), 'config', '--hash', parsed.serviceKey],
+      ['compose', '-f', composeFileOf(name), 'config', '--hash', parsed[0].key],
       { timeout: 10_000 },
     );
     const hash = stdout.trim().split(/\s+/)[1] ?? '';
@@ -386,6 +432,31 @@ export async function composeDown(name: string): Promise<void> {
 // 删除服务目录（文件随服务走：服务没了底账也没了）。
 export async function removeComposeDir(name: string): Promise<void> {
   await rm(composeDir(name), { recursive: true, force: true });
+}
+
+// —— 外部栈的 compose 驱动启停（管理不拥有：用它自己的底账操作它）——
+// 只读收编的 compose 栈：底账在原处（meta.stack.file），启停/重启必须走原文件——
+// `docker compose -f <原文件> stop/start/restart`，绝不 docker stop 逐容器（那会把
+// restart policy 与依赖顺序绕掉）。
+async function composeFileAction(
+  file: string,
+  workdir: string | null,
+  action: 'start' | 'stop' | 'restart',
+): Promise<void> {
+  const args = ['compose', '-f', file, action];
+  await execFileAsync('docker', args, { timeout: 120_000, cwd: workdir ?? undefined });
+}
+
+export function composeStackStart(file: string, workdir: string | null): Promise<void> {
+  return composeFileAction(file, workdir, 'start');
+}
+
+export function composeStackStop(file: string, workdir: string | null): Promise<void> {
+  return composeFileAction(file, workdir, 'stop');
+}
+
+export function composeStackRestart(file: string, workdir: string | null): Promise<void> {
+  return composeFileAction(file, workdir, 'restart');
 }
 
 // 首启兜底：compose 根目录建出来（服务面板至少能列路径）。

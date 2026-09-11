@@ -31,7 +31,6 @@ import {
   serviceNameExists,
   containerIpamIp,
   containerPid,
-  containerExists,
   inspectServiceSnapshot,
   startContainer,
   stopContainer,
@@ -50,6 +49,7 @@ import {
   removeVolume,
   subscribeServiceEvents,
   containerComposeHash,
+  containerPublishedPorts,
   inspectContainerShape,
   inspectImageDefaults,
   listComposeProjectContainers,
@@ -57,31 +57,39 @@ import {
 } from './docker.js';
 import {
   adoptedServiceNames,
+  adoptedContainerNames,
+  stackMetaOfContainer,
   getAllServiceMeta,
   getServiceMeta,
   setServiceMeta,
   deleteServiceMeta,
   type ServiceMeta,
+  type StackServiceRef,
 } from './state.js';
 import {
   buildComposeYaml,
+  composeDir,
   composeDown,
   composeFileExists,
   composeFileHash,
   composeFileOf,
+  composeStackRestart,
+  composeStackStart,
+  composeStackStop,
   composeUp,
   isManagedComposeProject,
   listComposeDirServices,
+  readComposeProject,
   readComposeService,
   readComposeYaml,
   removeComposeDir,
   writeCompose,
   type ComposeServiceDef,
+  type ParsedProjectService,
 } from './serviceCompose.js';
 import {
   reservedServiceIps,
   tryReserveJobName,
-  hasJobName,
   releaseJobName,
   reserveJobIp,
   releaseJobIp,
@@ -208,6 +216,20 @@ export interface ServiceView {
   adopted?: boolean; // 收编的外部容器（无 label，凭证在 sidecar）——前端区分卡片与操作边界
   hasCompose?: boolean; // compose 底账在（可改配置可应用）；managed 而无文件 = 旧版创建，前端出迁移入口
   container?: string; // 实际容器名（目录注册表服务 compose 项目名 ≠ 容器名时用于 docker 操作）
+  // —— 多容器项目（1 目录 = 1 项目 = N 服务；adopted 栈同理）——
+  stackServices?: StackServiceView[]; // 项目全部成员（>1 时卡片锚在入口，其余折叠在抽屉）
+  stackFile?: string | null; // adopted 栈的原 compose 文件（配置页只读展示）
+  externalStack?: boolean; // adopted 栈：file 在原处，配置只读、启停 compose 驱动、删除 409
+  stackProject?: string; // 「加入列表」升格卡片的所属项目
+}
+
+export interface StackServiceView {
+  name: string; // compose service key
+  container: string; // 容器名（docker 操作锚点）
+  state: string;
+  running: boolean;
+  entry: boolean;
+  listed: boolean; // 已加入列表（独立卡片）
 }
 
 export interface ServicesStatus {
@@ -244,12 +266,40 @@ function rowName(names: string): string {
   return names.split(',')[0].replace(/^\//, '');
 }
 
+// 服务在项目内的容器名：container_name 钉了用之；否则 compose 默认命名
+// <project>-<service>-1（rsuffix 数字可能 >1，用 ps 的 project+service label 精确命中）。
+function containerOfService(
+  rowByService: Map<string, DockerContainerRow>,
+  dirName: string,
+  svc: { key: string; containerName?: string },
+): { container: string; row: DockerContainerRow | null } {
+  const row = rowByService.get(svc.key) ?? null;
+  const container = svc.containerName ?? row?.Names.split(',')[0].replace(/^\//, '') ?? `${dirName}-${svc.key}-1`;
+  return { container, row };
+}
+
+// 入口服务选择：meta 里用户指认的优先；否则带发布端口的服务；再否则第一个。
+function pickEntryIndex(
+  services: ParsedProjectService[],
+  meta: ServiceMeta | undefined,
+  refByContainer: Map<string, StackServiceRef>,
+): number {
+  const flagged = meta?.stack?.services.findIndex((s) => s.entry) ?? -1;
+  if (flagged >= 0) {
+    const idx = services.findIndex((s) => s.key === meta!.stack!.services[flagged].name);
+    if (idx >= 0) return idx;
+  }
+  const withPorts = services.findIndex((s) => s.ports.length > 0);
+  if (withPorts >= 0) return withPorts;
+  void refByContainer;
+  return 0;
+}
+
 export async function listServices(cfg: Config): Promise<{ items: ServiceView[]; status: ServicesStatus }> {
   const status = await servicesStatus(cfg);
   if (!status.reachable) return { items: [], status };
   const meta = await getAllServiceMeta();
-  const adoptedNames = adoptedServiceNames(meta);
-  const rows = await listServiceContainers(adoptedNames);
+  const rows = await listServiceContainers(adoptedContainerNames(meta));
   // 目录注册表：compose/<名>/ 本身就是服务清单（agent/用户直接放文件 + up）。
   // 行 → 目录名的映射走 com.docker.compose.project（agent 文件的容器名是
   // <project>-<service>-1 形状，project 才等于目录名）。
@@ -257,43 +307,219 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
   for (const prow of await listComposeProjectContainers([...dirNames])) {
     if (!rows.some((r) => rowName(r.Names) === rowName(prow.Names))) rows.push(prow);
   }
-  const rowByDir = new Map<string, DockerContainerRow>();
-  const coveredRows = new Set<DockerContainerRow>();
-  for (const row of rows) {
-    const proj = rowLabels(row)['com.docker.compose.project'];
-    if (proj && dirNames.has(proj)) {
-      rowByDir.set(proj, row);
-      coveredRows.add(row);
-    }
-  }
   const items: ServiceView[] = [];
-  // —— 目录服务（含正在运行的容器行）——
+  const coveredRows = new Set<DockerContainerRow>();
+
+  // —— 目录项目（1 目录 = 1 项目 = N 服务；N=1 是特例，行为与旧版一致）——
   for (const dirName of dirNames) {
-    const row = rowByDir.get(dirName);
-    const comp = await readComposeService(dirName);
-    const envVals = comp?.env ?? {};
-    const name = row ? rowName(row.Names) : dirName;
+    const project = await readComposeProject(dirName);
+    const dirMeta = meta[dirName];
+    if (!project) {
+      // 坏文件/空文件：按单服务旧形态出卡（absent），不炸列表
+      items.push({
+        name: dirName,
+        preset: 'custom',
+        image: '',
+        ip: null,
+        state: 'absent',
+        status: 'compose.yaml 解析失败',
+        running: false,
+        volume: null,
+        ports: [],
+        envKeys: [],
+        env: {},
+        connect: [],
+        metaMissing: false,
+        hasCompose: true,
+      });
+      continue;
+    }
+    // 项目成员行：project label 命中，按 compose service label 分桶
+    const rowByService = new Map<string, DockerContainerRow>();
+    for (const row of rows) {
+      const labels = rowLabels(row);
+      if (labels['com.docker.compose.project'] === dirName) {
+        rowByService.set(labels['com.docker.compose.service'] ?? '', row);
+        coveredRows.add(row);
+      }
+    }
+    const refByContainer = new Map<string, StackServiceRef>(
+      (dirMeta?.stack?.services ?? []).map((s) => [s.container, s]),
+    );
+    const services = project.services;
+    if (services.length <= 1) {
+      // —— 单服务（N=1 特例，与旧版行为一致）——
+      const svc = services[0];
+      const { container, row } = containerOfService(rowByService, dirName, svc);
+      const ip = svc.ip ?? (row ? (await containerIpamIp(container)) ?? null : null);
+      items.push({
+        name: dirName,
+        container: container !== dirName ? container : undefined,
+        preset: 'custom',
+        image: svc.image ?? row?.Image ?? '',
+        ip,
+        state: row?.State ?? 'absent',
+        status: row?.Status ?? '未创建（docker compose up 启动）',
+        running: row?.State === 'running',
+        volume: svc.volumes[0] ?? null,
+        ports: [],
+        envKeys: Object.keys(svc.env),
+        env: svc.env,
+        connect: [],
+        createdAt: row?.CreatedAt,
+        command: svc.command,
+        metaMissing: !dirMeta && !!row,
+        hasCompose: true,
+      });
+      continue;
+    }
+    // —— 多服务项目：一张卡锚在入口服务，其余折叠在抽屉（listed 的升格成独立卡）——
+    const entryIdx = pickEntryIndex(services, dirMeta, refByContainer);
+    const stackServices: StackServiceView[] = [];
+    for (let i = 0; i < services.length; i++) {
+      const svc = services[i];
+      const { container, row } = containerOfService(rowByService, dirName, svc);
+      const ref = refByContainer.get(container);
+      stackServices.push({
+        name: svc.key,
+        container,
+        state: row?.State ?? 'absent',
+        running: row?.State === 'running',
+        entry: i === entryIdx,
+        listed: ref?.listed === true,
+      });
+    }
+    const entrySvc = services[entryIdx];
+    const entryView = stackServices[entryIdx];
     items.push({
       name: dirName,
-      container: name !== dirName ? name : undefined,
+      container: entryView.container,
       preset: 'custom',
-      image: comp?.image ?? row?.Image ?? '',
-      ip: comp?.ip ?? (row ? (await containerIpamIp(name)) ?? null : null),
-      state: row?.State ?? 'absent', // 文件在、容器还没 up = 未创建
-      status: row?.Status ?? '未创建（docker compose up 启动）',
-      running: row?.State === 'running',
-      volume: comp?.volume ?? null,
-      ports: [],
-      envKeys: Object.keys(envVals),
-      env: envVals,
+      image: entrySvc.image ?? '',
+      ip: entrySvc.ip ?? null,
+      state: entryView.state,
+      status: entryView.running ? entryView.state : `项目 · ${services.length} 个服务（入口 ${entrySvc.key}）`,
+      running: entryView.running,
+      volume: entrySvc.volumes[0] ?? null,
+      ports: entrySvc.ports,
+      envKeys: Object.keys(entrySvc.env),
+      env: entrySvc.env,
       connect: [],
-      createdAt: row?.CreatedAt,
-      command: comp?.command,
-      metaMissing: !meta[dirName] && !!row,
+      createdAt: rowByService.get(entrySvc.key)?.CreatedAt,
+      command: entrySvc.command,
+      metaMissing: !dirMeta,
       hasCompose: true,
+      stackServices,
     });
+    // listed 成员升格为独立卡片（name = 容器名，唯一且可直接操作）
+    for (let i = 0; i < services.length; i++) {
+      if (i === entryIdx) continue;
+      const s = stackServices[i];
+      if (!s.listed) continue;
+      const svc = services[i];
+      const row = rowByService.get(svc.key) ?? null;
+      items.push({
+        name: s.container,
+        preset: 'custom',
+        image: svc.image ?? row?.Image ?? '',
+        ip: svc.ip ?? (row ? (await containerIpamIp(s.container)) ?? null : null),
+        state: s.state,
+        status: s.state === 'absent' ? '未创建（docker compose up 启动）' : (row?.Status ?? ''),
+        running: s.running,
+        volume: svc.volumes[0] ?? null,
+        ports: svc.ports,
+        envKeys: Object.keys(svc.env),
+        env: svc.env,
+        connect: [],
+        createdAt: row?.CreatedAt,
+        command: svc.command,
+        metaMissing: false,
+        hasCompose: true,
+        stackProject: dirName,
+        stackServices,
+      });
+    }
   }
-  // —— label 管理的行 + 收编行（未被目录覆盖的）——
+
+  // —— adopted 栈（meta 以项目名为 key，成员容器逐一锚定）——
+  for (const [key, m] of Object.entries(meta)) {
+    if (!m.adopted || !m.stack) continue;
+    const rowByContainer = new Map<string, DockerContainerRow>();
+    for (const row of rows) {
+      const n = rowName(row.Names);
+      if (m.stack.services.some((s) => s.container === n)) {
+        rowByContainer.set(n, row);
+        coveredRows.add(row);
+      }
+    }
+    const entryRef = m.stack.services.find((s) => s.entry) ?? m.stack.services[0];
+    const stackServices: StackServiceView[] = m.stack.services.map((s) => {
+      const row = rowByContainer.get(s.container);
+      return {
+        name: s.name,
+        container: s.container,
+        state: row?.State ?? 'absent',
+        running: row?.State === 'running',
+        entry: s.entry === true || s.container === entryRef.container,
+        listed: s.listed === true,
+      };
+    });
+    const entryState = stackServices.find((s) => s.entry) ?? stackServices[0];
+    items.push({
+      name: key,
+      container: entryRef.container,
+      preset: m.preset,
+      image: m.image,
+      ip: entryRef.ip ?? null,
+      state: entryState.state,
+      status: entryState.running ? entryState.state : `栈 · ${m.stack.services.length} 个服务（入口 ${entryRef.name}）`,
+      running: entryState.running,
+      volume: null,
+      ports: [],
+      envKeys: [],
+      env: {},
+      connect: [],
+      displayName: m.displayName,
+      description: m.description,
+      createdAt: m.createdAt,
+      metaMissing: false,
+      adopted: true,
+      hasCompose: false,
+      stackServices,
+      stackFile: m.stack.file,
+      externalStack: true,
+    });
+    // listed 成员升格
+    for (const s of stackServices) {
+      if (s.entry || !s.listed) continue;
+      const row = rowByContainer.get(s.container);
+      items.push({
+        name: s.container,
+        preset: m.preset,
+        image: row?.Image ?? '',
+        ip: m.stack.services.find((x) => x.container === s.container)?.ip ?? null,
+        state: s.state,
+        status: row?.Status ?? '',
+        running: s.running,
+        volume: null,
+        ports: [],
+        envKeys: [],
+        env: {},
+        connect: [],
+        displayName: s.name,
+        createdAt: m.createdAt,
+        metaMissing: false,
+        adopted: true,
+        hasCompose: false,
+        stackProject: key,
+        stackServices,
+        stackFile: m.stack.file,
+        externalStack: true,
+      });
+    }
+  }
+
+  // —— 剩余行（label 管理的旧形态 ∪ 非栈收编）——
   for (const row of rows) {
     if (coveredRows.has(row)) continue;
     const name = rowName(row.Names);
@@ -414,7 +640,11 @@ async function servicePoolView(
       if (e.ip.startsWith(`${prefix}.`)) used.add(e.ip);
     }
   }
-  for (const m of Object.values(await getAllServiceMeta())) used.add(m.ip);
+  for (const m of Object.values(await getAllServiceMeta())) {
+    used.add(m.ip);
+    // 栈成员的静态 IP 也是占用（停机成员不进 network 端点）
+    if (m.stack) for (const s of m.stack.services) if (s.ip) used.add(s.ip);
+  }
   // 底账文件里的静态 IP 也是占用（停机/未创建的目录服务不进 network 端点，
   // meta 可能为空——agent 自放文件的服务根本没 meta）。
   for (const dirName of await listComposeDirServices()) {
@@ -830,11 +1060,15 @@ export async function deleteService(
   }
   let dataRemoved = false;
   if (opts.deleteData) {
-    // 卷清单以底账为准（接管式服务可有多卷），meta.volume 兜底旧形态。meta 里
+    // 卷清单以底账为准（项目文件可能是多服务多卷），meta.volume 兜底旧形态。meta 里
     // volume 为 null 表示该服务没有数据卷（custom 可无卷）——不能兜底硬造卷名，
     // 否则对无卷服务删除会报 no such volume（实测踩到）。
-    const parsed = await readComposeService(name);
-    const volumes = parsed?.volumes.filter((v) => !v.startsWith('/')) ?? (m?.volume ? [m.volume] : []);
+    const project = await readComposeProject(name);
+    const volumes = project
+      ? [...new Set(project.services.flatMap((s) => s.volumes))].filter((v) => !v.startsWith('/'))
+      : m?.volume
+        ? [m.volume]
+        : [];
     for (const volume of volumes) {
       await removeVolume(volume); // 卷被别的容器占用等失败原样抛，不假装成功
       dataRemoved = true;
@@ -859,28 +1093,54 @@ export interface ServiceConfigView {
   path: string; // compose.yaml 绝对路径（终端手改的入口指引）
   yaml: string | null; // null = 无文件（旧版创建 → 前端出迁移入口；收编容器被路由挡）
   hasBuild: boolean; // 文件带 build: ——前端给「构建并应用」
-  hash: string | null; // 当前文件的 compose hash（config --hash）
+  hash: string | null; // 当前文件的 compose hash（config --hash，按首个/入口服务）
   appliedHash: string | null; // 容器 label 里最后一次 up 的 hash
   drift: boolean; // hash 与 appliedHash 不一致 = 改了没应用
+  readonly?: boolean; // adopted 栈：文件在原处（别人的底账），只读展示不提供编辑/应用
 }
 
 export async function getServiceConfig(cfg: Config, name: string): Promise<ServiceConfigView> {
+  const t = await resolveTarget(name);
+  // adopted 栈：底账在原编排方——只读展示原文件，不提供编辑/应用（双真相是红线）
+  if (t.externalStack && t.stack) {
+    const yaml = t.stack.file ? await readFile(t.stack.file, 'utf8').catch(() => null) : null;
+    return {
+      name,
+      path: t.stack.file ?? '',
+      yaml,
+      hasBuild: false,
+      hash: null,
+      appliedHash: null,
+      drift: false,
+      readonly: true,
+    };
+  }
   const m = await getServiceMeta(name);
-  if (m?.adopted) throw conflict('收编容器没有 compose 底账（生命周期归它自己的编排方管）');
+  if (m?.adopted && !m.stack) throw conflict('收编容器没有 compose 底账（生命周期归它自己的编排方管）');
+  if (t.project) name = t.project; // 升格卡片 → 项目文件
   const yaml = await readComposeYaml(name);
   if (!yaml) {
     return { name, path: composeFilePath(name), yaml: null, hasBuild: false, hash: null, appliedHash: null, drift: false };
   }
-  const parsed = await readComposeService(name);
-  const [hash, appliedHash] = await Promise.all([composeFileHash(name), containerComposeHash(name)]);
+  // 多服务项目：hash 逐服务比对（任一成员不一致即 drift；容器缺席 = 未应用）。
+  // spawn 有成本——config 页是懒加载场景，N 个服务的量级可接受。
+  const project = await readComposeProject(name);
+  const keys = project?.services.map((s) => s.key) ?? [];
+  const file = composeFileOf(name);
+  const anchor = keys[0] ?? name;
+  void anchor;
+  const [hash, appliedHash] = await Promise.all([composeFileHash(name), containerComposeHash(t.container)]);
+  // 多服务项目的漂移以入口容器 hash 代表（成员 hash 同源于同一次 up，入口一致基本
+  // 全员一致）；绝对精确可后续按需逐服务 `config --hash` 比对（每服务一次 spawn）。
+  const drift = hash != null && hash !== appliedHash;
   return {
     name,
-    path: composeFilePath(name),
+    path: file,
     yaml,
-    hasBuild: parsed?.build ?? false,
+    hasBuild: project?.services.some((s) => s.build) ?? false,
     hash,
     appliedHash,
-    drift: hash != null && hash !== appliedHash,
+    drift,
   };
 }
 
@@ -903,17 +1163,49 @@ export interface AdoptableRow {
   ip: string | null;
 }
 
+// compose 栈（多容器项目）的收编候选：一行一个项目。
+export interface AdoptableStack {
+  project: string;
+  file: string | null; // 原 compose 文件（从容器 label 拿——docker 替我们记好了）
+  containers: { name: string; state: string }[];
+  running: number;
+}
+
 // 收编候选：宿主上非 mysandbox 管理的容器（无 label），排除已收编。
-// running 在前（收编的对象通常活着；Exited 试验残留靠「显示已停止」展开）。
-export async function listAdoptables(cfg: Config): Promise<AdoptableRow[]> {
-  const adopted = new Set(adoptedServiceNames(await getAllServiceMeta()));
-  const rows = await listExternalContainers();
+// 裸容器逐个一行；compose 容器按 project 聚合成栈一行。running 优先（Exited 试验
+// 残留是头号噪声）。
+export async function listAdoptables(cfg: Config): Promise<{ items: AdoptableRow[]; stacks: AdoptableStack[] }> {
+  const all = await getAllServiceMeta();
+  const adopted = new Set([...adoptedServiceNames(all), ...adoptedContainerNames(all)]);
+  // 目录注册表项目的成员不是收编候选（已经是服务了——project 命中即排除）
+  const dirSet = new Set(await listComposeDirServices());
+  const rows = (await listExternalContainers()).filter(
+    (r) => !(dirSet.has(rowLabels(r)['com.docker.compose.project'] ?? '') || adopted.has(rowName(r.Names))),
+  );
   const net = await inspectNetwork(cfg.services.network);
   const onNet = new Map(net?.endpoints.map((e) => [e.name, e.ip]));
   const items: AdoptableRow[] = [];
+  const stackMap = new Map<string, AdoptableStack>();
   for (const row of rows) {
     const name = rowName(row.Names);
     if (adopted.has(name)) continue;
+    const labels = rowLabels(row);
+    const project = labels['com.docker.compose.project'];
+    if (project) {
+      let st = stackMap.get(project);
+      if (!st) {
+        st = {
+          project,
+          file: labels['com.docker.compose.project.config_files'] ?? null,
+          containers: [],
+          running: 0,
+        };
+        stackMap.set(project, st);
+      }
+      st.containers.push({ name, state: row.State });
+      if (row.State === 'running') st.running++;
+      continue;
+    }
     items.push({
       name,
       image: row.Image,
@@ -921,16 +1213,16 @@ export async function listAdoptables(cfg: Config): Promise<AdoptableRow[]> {
       status: row.Status,
       networks: row.Networks,
       onServiceNetwork: onNet.has(name),
-      compose: !!rowLabels(row)['com.docker.compose.project'],
+      compose: false,
       ip: onNet.get(name) ?? null,
     });
   }
-  items.sort((a, b) => {
-    const ra = a.state === 'running' ? 0 : 1;
-    const rb = b.state === 'running' ? 0 : 1;
-    return ra !== rb ? ra - rb : a.name.localeCompare(b.name);
-  });
-  return items;
+  const rank = (s: string): number => (s === 'running' ? 0 : 1);
+  items.sort((a, b) => rank(a.state) - rank(b.state) || a.name.localeCompare(b.name));
+  const stacks = [...stackMap.values()].sort(
+    (a, b) => rank(a.containers[0]?.state ?? '') - rank(b.containers[0]?.state ?? '') || a.project.localeCompare(b.project),
+  );
+  return { items, stacks };
 }
 
 // 收编动作。名字校验在路由层（ADOPT_NAME_RE）。
@@ -952,11 +1244,19 @@ export async function adoptService(cfg: Config, name: string, opts: { takeover?:
   // 是异步的，这里 finally 释放会架空互斥）；只读路径是同步动作，路径尾部自己释放。
   let releaseHere = true;
   try {
-    const row = (await listExternalContainers()).find((r) => rowName(r.Names) === name);
+    const externals = await listExternalContainers();
+    let row = externals.find((r) => rowName(r.Names) === name);
+    if (!row) row = externals.find((r) => rowLabels(r)['com.docker.compose.project'] === name);
     if (!row) throw notFound(`docker 容器 "${name}" 不存在（或已受管）`);
     const composeProject = rowLabels(row)['com.docker.compose.project'];
-    if (opts.takeover && composeProject) {
-      throw conflict(`"${name}" 是 compose 栈容器（项目 ${composeProject}）——底账在原编排方，不做接管，请用只读收编`);
+
+    // —— compose 栈（多容器项目）→ 栈级只读收编：全量纳管、单入口展示 ——
+    if (composeProject) {
+      if (opts.takeover) {
+        throw conflict(`"${composeProject}" 是 compose 栈——底账在原编排方，只做只读收编（栈级），不做接管`);
+      }
+      const members = externals.filter((r) => rowLabels(r)['com.docker.compose.project'] === composeProject);
+      return await adoptStack(cfg, composeProject, members);
     }
 
     // —— 接管式：生成底账 → rm 裸容器 → compose up（后台 job，进度/取消走任务面）——
@@ -1052,23 +1352,92 @@ export async function adoptService(cfg: Config, name: string, opts: { takeover?:
   }
 }
 
-// 取消收编：摘网络（还原）+ 清 meta + 追平 hosts。容器本体不动。
-export async function unadoptService(cfg: Config, name: string): Promise<void> {
-  const m = await getServiceMeta(name);
-  if (!m?.adopted) throw conflict(`"${name}" 不是收编容器——删除请走 DELETE /api/services/${name}`);
-  try {
-    await disconnectServiceNetwork(name, cfg.services.network);
-  } catch (e) {
-    // 摘不掉不拦取消收编（容器可能已被外部删掉；hosts 反正要追平）
-    log.warn({ err: String(e), name }, 'unadopt: network disconnect failed (ignored)');
+// 栈级只读收编：项目全体成员接入服务网络（已在网复用现 IP）+ 项目 meta（原文件
+// 路径从 compose label 拿——docker 早就记好了）+ 入口锚定（有发布端口的容器）。
+// 不碰容器本体、不碰原文件——管理不拥有。
+async function adoptStack(cfg: Config, project: string, members: DockerContainerRow[]): Promise<ServiceView> {
+  await ensureServiceNetwork(cfg);
+  const net = await inspectNetwork(cfg.services.network);
+  const first = members[0];
+  const file = rowLabels(first)['com.docker.compose.project.config_files'] ?? null;
+  const workdir = rowLabels(first)['com.docker.compose.project.working_dir'] ?? null;
+  const services: StackServiceRef[] = [];
+  for (const r of members) {
+    const cname = rowName(r.Names);
+    const svcKey = rowLabels(r)['com.docker.compose.service'] ?? cname;
+    let ip = net?.endpoints.find((e) => e.name === cname)?.ip ?? null;
+    if (!ip) {
+      ip = await allocateServiceIp(cfg);
+      await connectServiceNetwork(cname, cfg.services.network, ip);
+    }
+    services.push({ name: svcKey, container: cname, ip });
   }
-  await deleteServiceMeta(name);
+  // 入口锚定：有发布端口的容器优先（对外入口）；没有就第一个
+  for (const s of services) {
+    if ((await containerPublishedPorts(s.container)).length > 0) s.entry = true;
+  }
+  if (!services.some((s) => s.entry)) services[0].entry = true;
+
+  const meta: ServiceMeta = {
+    preset: 'adopted',
+    image: first.Image,
+    env: {},
+    volume: null,
+    ip: '',
+    ports: [],
+    adopted: true,
+    description: `compose 栈收编（${services.length} 个服务，原底账不动）`,
+    createdAt: new Date().toISOString(),
+    stack: { file, workdir, services },
+  };
+  await setServiceMeta(project, meta);
+  try {
+    await applyServicesBlock(cfg);
+  } catch (e) {
+    log.warn({ err: String(e), name: project }, 'hosts re-apply after stack adopt failed');
+  }
+  log.info({ project, members: services.length }, 'compose stack adopted');
+  return (await listServices(cfg)).items.find((x) => x.name === project) ?? {
+    name: project,
+    preset: 'adopted',
+    image: first.Image,
+    ip: null,
+    state: first.State,
+    status: first.Status,
+    running: first.State === 'running',
+    volume: null,
+    ports: [],
+    envKeys: [],
+    env: {},
+    connect: [],
+    adopted: true,
+    description: meta.description,
+    createdAt: meta.createdAt,
+  };
+}
+
+// 取消收编：摘网络（还原）+ 清 meta + 追平 hosts。容器本体不动。栈 = 全体成员一起
+// 摘（meta 以项目名为 key；name 传项目名或任一成员容器名都行）。
+export async function unadoptService(cfg: Config, name: string): Promise<void> {
+  const all = await getAllServiceMeta();
+  const hit = all[name]?.adopted ? { key: name, meta: all[name] } : stackMetaOfContainer(all, name);
+  if (!hit?.meta.adopted) throw conflict(`"${name}" 不是收编容器——删除请走 DELETE /api/services/${name}`);
+  const members = hit.meta.stack?.services ?? [{ name: hit.key, container: hit.key }];
+  for (const s of members) {
+    try {
+      await disconnectServiceNetwork(s.container, cfg.services.network);
+    } catch (e) {
+      // 摘不掉不拦取消收编（容器可能已被外部删掉；hosts 反正要追平）
+      log.warn({ err: String(e), name: s.container }, 'unadopt: network disconnect failed (ignored)');
+    }
+  }
+  await deleteServiceMeta(hit.key);
   try {
     await applyServicesBlock(cfg);
   } catch (e) {
     log.warn({ err: String(e) }, 'hosts re-apply after unadopt failed');
   }
-  log.info({ name }, 'docker service unadopted');
+  log.info({ name: hit.key }, 'docker service unadopted');
 }
 
 // —— 路由 ——
@@ -1082,27 +1451,20 @@ export async function unadoptService(cfg: Config, name: string): Promise<void> {
 // 情形单容器直查二次确认——在（ps 瞬时失败）照常放行，确认无才清，查询失败 409 拒判。
 async function requireService(name: string): Promise<void> {
   // 目录注册表服务（agent 自放的 compose 文件）可能带 `_`（compose 惯例），放宽到收编名规格。
-  const m = await getServiceMeta(name);
   if (!NAME_RE.test(name) && !ADOPT_NAME_RE.test(name)) {
     throw badRequest('invalid service name');
   }
-  // 底账存在即服务（目录是注册表）：容器在不在由具体操作自己面对（compose down/up
-  // 对缺席容器天然幂等）。孤儿 meta 清理只对「无底账」的旧形态有意义。
+  // 底账存在即服务（目录是注册表）；项目 meta（adopted 栈以项目名为 key）与栈成员
+  // 容器名（「加入列表」升格卡片）同样合法。容器在不在由具体操作自己面对——compose
+  // 对缺席容器幂等；孤儿 meta 清理已退役（栈时代没有可保护的 rm→create 窗口）。
   if (await composeFileExists(name)) return;
-  const rows = await listServiceContainers(m?.adopted ? [name] : []);
-  if (!rows.some((r) => rowName(r.Names) === name)) {
-    if (m && !hasJobName(name)) {
-      const exists = await containerExists(name);
-      if (exists) return; // ps 瞬时失败，容器其实在——按存在放行
-      if (exists === false) {
-        await deleteServiceMeta(name);
-        log.info({ name }, 'service meta orphaned (container gone) — cleaned');
-      } else {
-        throw conflict(`docker daemon 暂不可达，无法确认服务 "${name}" 是否存在，请稍后重试`);
-      }
-    }
-    throw notFound(`service "${name}" not found`);
-  }
+  const all = await getAllServiceMeta();
+  if (all[name] || stackMetaOfContainer(all, name)) return;
+  // 无 meta 无文件：label 管理的旧形态——ps 确认存在（daemon 瞬时故障会被吞成空列表，
+  // 这里宁可 404 也不误伤）
+  const rows = await listServiceContainers(adoptedContainerNames(all));
+  if (rows.some((r) => rowName(r.Names) === name)) return;
+  throw notFound(`service "${name}" not found`);
 }
 
 // 服务名 → 实际容器名：目录注册表服务 compose 项目名 ≠ container_name 时（agent 自放
@@ -1111,6 +1473,85 @@ async function requireService(name: string): Promise<void> {
 async function resolveContainerName(name: string): Promise<string> {
   const parsed = await readComposeService(name);
   return parsed?.containerName ?? name;
+}
+
+// 多容器项目的 meta（懒创建 + 从文件补水）：目录项目补 compose/<名>/ 的形状，adopted
+// 栈的 meta 已带 stack（file 指原文件）——只补新增服务。保留用户已勾的 listed/entry。
+async function ensureProjectStackMeta(name: string): Promise<ServiceMeta> {
+  const prev = await getServiceMeta(name);
+  let services: StackServiceRef[];
+  let file: string | null;
+  let workdir: string | null;
+  if (prev?.stack) {
+    // adopted 栈：形状以 meta 为准（file 在原处，ps 反查可能不在）
+    file = prev.stack.file;
+    workdir = prev.stack.workdir ?? null;
+    services = prev.stack.services;
+  } else {
+    const project = await readComposeProject(name);
+    if (!project) throw conflict(`"${name}" 的 compose 文件解析失败，无法管理项目成员`);
+    file = composeFileOf(name);
+    workdir = composeDir(name);
+    services = project.services.map((s) => ({
+      name: s.key,
+      container: s.containerName ?? `${name}-${s.key}-1`,
+      ip: s.ip,
+    }));
+  }
+  const base: ServiceMeta = prev ?? {
+    preset: 'custom',
+    image: '',
+    env: {},
+    volume: null,
+    ip: '',
+    createdAt: new Date().toISOString(),
+  };
+  // 文件里新增的服务补水进清单（保留既有 ref 的用户标记）
+  const merged = services.map((s) => {
+    const p = prev?.stack?.services.find((x) => x.name === s.name);
+    return { ...s, entry: p?.entry, listed: p?.listed };
+  });
+  const next: ServiceMeta = { ...base, stack: { file, workdir, services: merged } };
+  await setServiceMeta(name, next);
+  return next;
+}
+
+// 操作目标解析：API 的 :name 可能是 项目名（目录项目 / adopted 栈）或 栈成员容器名
+// （「加入列表」的升格卡片）。返回 docker 操作锚点 + 项目上下文（外部栈走 compose 驱动）。
+interface ServiceTarget {
+  container: string; // docker 操作锚点
+  project: string | null; // 所属项目（= name 或反查得到）
+  stack: ServiceMeta['stack'] | null;
+  externalStack: boolean; // true = adopted 栈：启停 compose 驱动（原文件）、配置只读
+}
+
+async function resolveTarget(name: string): Promise<ServiceTarget> {
+  // 1) 目录项目（含多服务）：入口容器
+  if (await composeFileExists(name)) {
+    const project = await readComposeProject(name);
+    const dirMeta = await getServiceMeta(name);
+    let target: ParsedProjectService | undefined;
+    if (project) {
+      const idx = pickEntryIndex(project.services, dirMeta, new Map());
+      target = project.services[idx];
+    }
+    const container = target?.containerName ?? target?.key ?? (await resolveContainerName(name));
+    return { container, project: name, stack: dirMeta?.stack ?? null, externalStack: false };
+  }
+  // 2) 项目 meta（adopted 栈以项目名为 key）
+  const m = await getServiceMeta(name);
+  if (m?.stack) {
+    const entry = m.stack.services.find((s) => s.entry) ?? m.stack.services[0];
+    return { container: entry.container, project: name, stack: m.stack, externalStack: !!m.adopted };
+  }
+  // 3) 栈成员容器名（升格卡片）
+  const all = await getAllServiceMeta();
+  const hit = stackMetaOfContainer(all, name);
+  if (hit) {
+    return { container: name, project: hit.key, stack: hit.meta.stack ?? null, externalStack: !!hit.meta.adopted };
+  }
+  // 4) 单容器收编 / 旧形态 / 单服务目录
+  return { container: await resolveContainerName(name), project: null, stack: null, externalStack: false };
 }
 
 export function registerServices(app: FastifyInstance, cfg: Config): void {
@@ -1140,8 +1581,9 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
 
   // —— 收编外部容器 ——
   app.get('/api/services/adoptables', async () => {
-    if (!cfg.services.enabled) return { items: [], enabled: false };
-    return { items: await listAdoptables(cfg), enabled: true };
+    if (!cfg.services.enabled) return { items: [], stacks: [], enabled: false };
+    const v = await listAdoptables(cfg);
+    return { ...v, enabled: true };
   });
 
   app.post('/api/services/adopt', async (req) => {
@@ -1215,21 +1657,54 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
 
   app.post<{ Params: { name: string } }>('/api/services/:name/start', async (req) => {
     await requireService(req.params.name);
-    await startContainer(await resolveContainerName(req.params.name));
+    const t = await resolveTarget(req.params.name);
+    if (t.stack) await composeStackStart(stackFileOf(t), t.stack.workdir ?? null);
+    else await startContainer(t.container);
     await applyServicesBlock(cfg);
     return { ok: true };
   });
 
   app.post<{ Params: { name: string } }>('/api/services/:name/stop', async (req) => {
     await requireService(req.params.name);
-    await stopContainer(await resolveContainerName(req.params.name));
+    const t = await resolveTarget(req.params.name);
+    if (t.stack) await composeStackStop(stackFileOf(t), t.stack.workdir ?? null);
+    else await stopContainer(t.container);
     return { ok: true };
   });
 
   app.post<{ Params: { name: string } }>('/api/services/:name/restart', async (req) => {
     await requireService(req.params.name);
-    await restartContainer(await resolveContainerName(req.params.name));
+    const t = await resolveTarget(req.params.name);
+    if (t.stack) await composeStackRestart(stackFileOf(t), t.stack.workdir ?? null);
+    else await restartContainer(t.container);
     await applyServicesBlock(cfg);
+    return { ok: true };
+  });
+
+  // 栈的 compose 驱动启停用原文件（adopted 栈）；目录项目就是我们目录里的文件。
+  function stackFileOf(t: ServiceTarget): string {
+    if (t.stack?.file) return t.stack.file;
+    if (t.project) return composeFileOf(t.project);
+    throw conflict('该服务没有 compose 文件可供驱动（裸收编容器请用容器级启停）');
+  }
+
+  // —— 「加入列表」/「设为入口」（多容器项目的展示策展）——
+  // listed = 升格为独立卡片；entry = 卡片锚点换人。meta 懒创建并从文件补水（目录项目
+  // 默认无 meta；补水保留用户已勾的 listed/entry，文件新增服务自动进清单）。
+  app.post<{ Params: { name: string } }>('/api/services/:name/stack', async (req) => {
+    const name = req.params.name;
+    await requireService(name);
+    const body = (req.body as { service?: unknown; listed?: unknown; entry?: unknown } | null) || {};
+    const svc = String(body.service ?? '');
+    if (!svc) throw badRequest('缺少 service');
+    const m = await ensureProjectStackMeta(name);
+    const ref = m.stack?.services.find((s) => s.name === svc);
+    if (!ref) throw notFound(`项目 "${name}" 里没有服务 "${svc}"`);
+    if (body.entry === true) {
+      for (const s of m.stack!.services) s.entry = s.name === svc;
+    }
+    if (typeof body.listed === 'boolean') ref.listed = body.listed;
+    await setServiceMeta(name, m);
     return { ok: true };
   });
 
@@ -1239,6 +1714,9 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     const am = await getServiceMeta(name);
     if (am?.adopted) {
       throw conflict(`"${name}" 是收编的外部容器，不能删除——请用「取消收编」（POST /api/services/${name}/unadopt）`);
+    }
+    if (am?.stack) {
+      throw conflict(`"${name}" 是多容器项目——删除请直接删 compose 目录（或先删文件再等列表刷新）`);
     }
     const body = (req.body as { deleteData?: boolean; confirmName?: string } | null) || {};
     return deleteService(cfg, name, { deleteData: !!body.deleteData, confirmName: body.confirmName });
@@ -1256,7 +1734,14 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     await requireService(req.params.name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const tail = Math.min(Math.max(Number(q.tail) || 200, 1), 2000);
-    return { logs: await containerLogs(await resolveContainerName(req.params.name), tail) };
+    // 栈成员可指定 service 看单容器日志；缺省 = 入口/目标容器
+    const t = await resolveTarget(req.params.name);
+    let container = t.container;
+    if (q.service && t.stack) {
+      const ref = t.stack.services.find((s) => s.name === q.service);
+      if (ref) container = ref.container;
+    }
+    return { logs: await containerLogs(container, tail) };
   });
 
   // —— 服务内监听端口（应用端口直达，对齐 /api/containers/:id/listen）——
@@ -1268,7 +1753,8 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
   app.get<{ Params: { name: string } }>('/api/services/:name/listen', async (req): Promise<{ ports: number[]; web: number[] }> => {
     const name = req.params.name;
     await requireService(name);
-    const cname = await resolveContainerName(name);
+    const t = await resolveTarget(name);
+    const cname = t.container;
     const pid = await containerPid(cname);
     if (!pid) throw conflict('service not running');
     const texts = await Promise.allSettled([
@@ -1395,23 +1881,35 @@ export function startServicesEventSync(cfg: Config): void {
 }
 
 // 收编容器被外部重建（compose down/up：同名新容器、不带我们的网络接入）→ start 事件
-// 自动重连，self-heal。meta.ip 已被占（重建窗口期 docker IPAM 不认我们的记账，可能被
-// 别家动态拿走）就重新分配并回写 meta。
+// 自动重连，self-heal。栈成员：ip 记账在项目 meta 的 stack.services 里。meta.ip 已被
+// 占（重建窗口期 docker IPAM 不认我们的记账，可能被别家动态拿走）就重新分配并回写。
 async function healAdopted(cfg: Config, name: string): Promise<void> {
   try {
-    const m = await getServiceMeta(name);
-    if (!m?.adopted) return;
+    const all = await getAllServiceMeta();
+    const hit = all[name]?.adopted ? { key: name, meta: all[name] } : stackMetaOfContainer(all, name);
+    if (!hit?.meta.adopted) return;
     await ensureServiceNetwork(cfg);
     const net = await inspectNetwork(cfg.services.network);
     if (net?.endpoints.some((e) => e.name === name)) return; // 已在网，无需要
-    let ip = m.ip;
+    const ref = hit.meta.stack?.services.find((s) => s.container === name);
+    let ip: string;
+    if (ref?.ip) ip = ref.ip;
+    else if (!hit.meta.stack) ip = hit.meta.ip;
+    else ip = '';
     try {
-      await connectServiceNetwork(name, cfg.services.network, ip);
+      await connectServiceNetwork(name, cfg.services.network, ip || undefined);
     } catch {
-      ip = await allocateServiceIp(cfg); // 旧 IP 在 meta 记账里算占用，allocate 天然避开
+      ip = await allocateServiceIp(cfg); // 旧 IP 在记账里算占用，allocate 天然避开
       await connectServiceNetwork(name, cfg.services.network, ip);
     }
-    if (ip !== m.ip) await setServiceMeta(name, { ...m, ip });
+    if (hit.meta.stack && ref) {
+      if (ip !== ref.ip) {
+        ref.ip = ip;
+        await setServiceMeta(hit.key, hit.meta);
+      }
+    } else if (ip !== hit.meta.ip) {
+      await setServiceMeta(hit.key, { ...hit.meta, ip });
+    }
     log.info({ name, ip }, 'adopted container re-connected to service network');
     scheduleSweep(cfg);
   } catch (e) {
@@ -1420,7 +1918,8 @@ async function healAdopted(cfg: Config, name: string): Promise<void> {
 }
 
 // 收编容器被外部 destroy：meta 先留着——compose force-recreate 是 destroy→create→start，
-// 立刻清会弄丢自愈。延迟确认容器真没了（没有同名重建）才清 meta + 追平。
+// 立刻清会弄丢自愈。延迟确认容器真没了（没有同名重建）才清 meta + 追平。栈：全体成员
+// 都没了才清项目 meta（个别成员重建是常规操作）。
 const orphanTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function scheduleAdoptedOrphanCheck(cfg: Config, name: string): void {
   const prev = orphanTimers.get(name);
@@ -1430,13 +1929,15 @@ function scheduleAdoptedOrphanCheck(cfg: Config, name: string): void {
     setTimeout(() => {
       orphanTimers.delete(name);
       void (async () => {
-        // 传 [name]：无 label 的同名重建容器也要能看到（否则误判「没了」清掉 meta）
-        const rows = await listServiceContainers([name]);
-        if (rows.some((r) => rowName(r.Names) === name)) return; // 同名重建了
-        const m = await getServiceMeta(name);
-        if (!m?.adopted) return;
-        await deleteServiceMeta(name);
-        log.info({ name }, 'adopted container gone — meta cleaned');
+        const all = await getAllServiceMeta();
+        const hit = all[name]?.adopted ? { key: name, meta: all[name] } : stackMetaOfContainer(all, name);
+        if (!hit?.meta.adopted) return;
+        const members = hit.meta.stack?.services.map((s) => s.container) ?? [hit.key];
+        // 传成员名集：无 label 的同名重建容器也要能看到（否则误判「没了」清掉 meta）
+        const rows = await listServiceContainers(members);
+        if (rows.some((r) => members.includes(rowName(r.Names)))) return; // 有成员活着/重建了
+        await deleteServiceMeta(hit.key);
+        log.info({ name: hit.key }, 'adopted container gone — meta cleaned');
         scheduleSweep(cfg);
       })().catch((e) => log.warn({ err: String(e), name }, 'adopted orphan check failed'));
     }, 60_000),

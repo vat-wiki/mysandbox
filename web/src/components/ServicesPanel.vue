@@ -23,6 +23,7 @@ import {
   getServiceListenPorts,
   getServiceConfig,
   applyServiceConfig,
+  stackServiceAction,
   listServiceJobs,
   getServiceJob,
   cancelServiceJob,
@@ -80,6 +81,7 @@ watch(
 watch(selService, () => {
   openInfo.value = false
   openCfg.value = false
+  openStack.value = false
   openLog.value = false
   cfg.value = null
   cfgYaml.value = ''
@@ -89,6 +91,7 @@ watch(selService, () => {
 // —— 分层折叠态 ——
 const openInfo = ref(false)
 const openCfg = ref(false)
+const openStack = ref(false)
 const openLog = ref(false)
 const envCount = computed(() => (sel.value ? Object.keys(sel.value.env).length : 0))
 
@@ -138,6 +141,28 @@ async function applyCfg(build = false) {
     cfgErr.value = e instanceof Error ? e.message : String(e) // 坏 yaml 的校验报错，内联回显
   } finally {
     applying.value = false
+  }
+}
+
+// —— 多容器项目的成员策展（加入列表 / 设为入口）——
+const stackBusy = ref('')
+async function stackAction(service: string, patch: { listed?: boolean; entry?: boolean }) {
+  const name = selService.value
+  if (!name || stackBusy.value) return
+  stackBusy.value = service
+  err.value = ''
+  try {
+    await stackServiceAction(name, service, patch)
+    await refresh()
+    emit('changed')
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    stackBusy.value = ''
   }
 }
 
@@ -524,7 +549,7 @@ onUnmounted(() => {
                   <Globe class="size-3.5" /> 打开 {{ p }}
                 </Button>
                 <!-- 收编容器不能删（不是我们的对象）：取消收编 = 还原网络 + 清登记，
-                     容器本体不动；自建服务保持删除下拉。 -->
+                     容器本体不动（adopted 栈也走这里——整栈一起摘）。 -->
                 <Button
                   v-if="sel.adopted"
                   variant="ghost"
@@ -554,8 +579,7 @@ onUnmounted(() => {
 
             <!-- 一层：连接（服务的第一用法，直接给） -->
             <div class="space-y-1.5">
-              <p class="text-[11px] font-medium text-muted-foreground">连接</p>
-              <div v-if="sel.connect.length" class="space-y-1">
+              <p class="text-[11px] font-medium text-muted-foreground">连接</p>              <div v-if="sel.connect.length" class="space-y-1">
                 <button
                   v-for="c in sel.connect"
                   :key="c"
@@ -580,6 +604,53 @@ onUnmounted(() => {
                   {{ copied === sel.ip ? '已复制' : sel.ip }}
                 </button>
                 <span v-else>—</span>
+              </div>
+            </div>
+
+            <!-- 一点五层：多容器项目成员（默认收）——入口/加入列表/成员状态 -->
+            <div v-if="sel.stackServices && sel.stackServices.length > 1" class="border-t pt-2">
+              <button
+                type="button"
+                class="flex w-full items-center gap-1.5 py-1 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                @click="openStack = !openStack"
+              >
+                <ChevronRight class="size-3.5 shrink-0 transition-transform" :class="openStack ? 'rotate-90' : ''" />
+                项目成员（{{ sel.stackServices.length }}）
+                <span class="font-normal text-muted-foreground/60">入口 {{ sel.stackServices.find((s) => s.entry)?.name }}</span>
+              </button>
+              <div v-if="openStack" class="divide-y rounded-md border">
+                <div
+                  v-for="s in sel.stackServices"
+                  :key="s.container"
+                  class="flex items-center gap-2 px-3 py-1.5"
+                >
+                  <span
+                    class="size-1.5 shrink-0 rounded-full"
+                    :class="s.running ? 'bg-emerald-500' : 'bg-muted-foreground/30'"
+                  />
+                  <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="s.container">{{ s.name }}</span>
+                  <span class="shrink-0 text-[10px]" :class="s.running ? 'text-emerald-600' : 'text-muted-foreground'">
+                    {{ stateLabel(s.state) }}
+                  </span>
+                  <Button
+                    v-if="!s.entry"
+                    variant="ghost"
+                    size="xs"
+                    class="shrink-0 text-[11px]"
+                    :disabled="!!stackBusy"
+                    title="把这张卡片的锚点（终端/文件/日志/端口）换到这个服务上"
+                    @click="stackAction(s.name, { entry: true })"
+                  >设为入口</Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    class="shrink-0 text-[11px]"
+                    :class="s.listed ? 'text-muted-foreground' : ''"
+                    :disabled="!!stackBusy"
+                    :title="s.listed ? '从侧栏列表移出（管理关系保留）' : '在侧栏为它单开一张卡片'"
+                    @click="stackAction(s.name, { listed: !s.listed })"
+                  >{{ s.listed ? '移出列表' : '加入列表' }}</Button>
+                </div>
               </div>
             </div>
 
@@ -650,8 +721,25 @@ onUnmounted(() => {
                 </Button>
               </div>
 
+              <!-- adopted 栈：原文件只读展示（编辑/应用归原编排方）——必须在 adopted 分支前 -->
+              <div v-if="openCfg && cfg && cfg.readonly" class="space-y-2 pt-1.5">
+                <p class="text-xs text-muted-foreground">
+                  这是收编的 compose 栈——底账在原编排方：
+                  <span class="font-mono">{{ cfg.path }}</span
+                  >。要改配置请回原文件改（改完在这里重启栈即可生效），面板不做第二份可编辑副本。
+                </p>
+                <p v-if="cfgLoading" class="py-6 text-center text-xs text-muted-foreground">读取中…</p>
+                <CodeEditor
+                  v-else
+                  :model-value="cfgYaml"
+                  language="yaml"
+                  class="h-72 rounded-md border"
+                  :options="{ readOnly: true }"
+                />
+              </div>
+
               <!-- 收编容器没有底账（生命周期归它自己的编排方） -->
-              <p v-if="openCfg && sel.adopted" class="pt-1.5 text-xs text-muted-foreground">
+              <p v-else-if="openCfg && sel.adopted" class="pt-1.5 text-xs text-muted-foreground">
                 收编容器没有 compose 底账——它的配置归原来的编排方（compose 栈 / docker run）管。
               </p>
 

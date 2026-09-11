@@ -296,6 +296,22 @@ export async function containerPid(name: string): Promise<number | null> {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
+// 容器发布的容器侧端口（PortBindings 的 key：'80/tcp' → 80）。栈收编时选「入口容器」
+// 用（有发布的那个是对外入口）。
+export async function containerPublishedPorts(name: string): Promise<number[]> {
+  const r = await dockerExec(['container', 'inspect', '--format', '{{json .HostConfig.PortBindings}}', name], 5_000);
+  if (!r.ok) return [];
+  try {
+    const bindings = JSON.parse(r.stdout) as Record<string, unknown> | null;
+    if (!bindings) return [];
+    return Object.keys(bindings)
+      .map((k) => Number(k.split('/')[0]))
+      .filter((n) => Number.isFinite(n));
+  } catch {
+    return [];
+  }
+}
+
 // 迁移前的现场快照：运行态 + labels + 命名卷的容器内挂载点。旧版（docker create）
 // 服务迁移到 compose 文件时要从这里复刻形状——env/command 在 meta 里，卷挂载点
 // meta 没记（只有卷名），labels（含 preset/created-at）在容器身上，inspect 是权威。
@@ -649,11 +665,18 @@ export async function listServiceEndpoints(
   if (composeProjects.length) {
     const projRows = await listComposeProjectContainers(composeProjects);
     rows.push(...projRows);
-    // compose 默认命名的容器（<project>-<service>-1）≠ 服务名：hosts 行要用服务名（项目名）
+    // compose 默认命名的容器（<project>-<service>-1）≠ 服务名：单服务项目的 hosts 行
+    // 要用项目名（用户连接的名字）。多服务项目不 rename——成员各用容器名（唯一），
+    // 想要短名的在文件里 pin container_name（rename 会把 N 个成员挤成同一个名字）。
+    const countByProject = new Map<string, number>();
+    for (const r of projRows) {
+      const p = rowLabels(r)['com.docker.compose.project'];
+      if (p) countByProject.set(p, (countByProject.get(p) ?? 0) + 1);
+    }
     for (const r of projRows) {
       const proj = rowLabels(r)['com.docker.compose.project'];
       const cname = rowName(r);
-      if (proj && cname !== proj) {
+      if (proj && cname !== proj && countByProject.get(proj) === 1) {
         if (!renames) renames = new Map();
         renames.set(cname, proj);
       }

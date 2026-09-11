@@ -13,7 +13,7 @@ import pLimit from 'p-limit';
 import { composeHostsContent, stripServicesBlock, serviceBlockLines } from './hosts.js';
 import { listServiceEndpoints } from './docker.js';
 import { listComposeDirServices } from './serviceCompose.js';
-import { adoptedServiceNames, getAllServiceMeta } from './state.js';
+import { adoptedContainerNames, getAllServiceMeta } from './state.js';
 import { DOCKER_API_HOSTNAME } from './dockerApi.js';
 import { gatewayOf } from './network.js';
 import { log } from './logger.js';
@@ -30,9 +30,9 @@ async function currentSvcLines(cfg: Config): Promise<string[]> {
   // 一起剥。域名固定不随 ipPool 变：改池子只动这一行，容器内 DOCKER_HOST 永不重配。
   if (cfg.dockerApi.enabled) endpoints.push({ name: DOCKER_API_HOSTNAME, ip: gatewayOf(cfg) });
   if (cfg.services.enabled) {
-    // 服务事实源三源并集：label 集 ∪ adopted meta（收编无 label）∪ compose 目录
-    // 注册表（agent 自放文件的服务容器同样无我们的 label，靠 project 命中）。
-    const adopted = adoptedServiceNames(await getAllServiceMeta());
+    // 服务事实源三源并集：label 集 ∪ adopted meta（收编无 label；栈按成员容器名展开）
+    // ∪ compose 目录注册表（agent 自放文件的服务容器同样无我们的 label，靠 project 命中）。
+    const adopted = adoptedContainerNames(await getAllServiceMeta());
     const dirs = await listComposeDirServices();
     endpoints.push(...(await listServiceEndpoints(cfg, adopted, dirs)));
   }

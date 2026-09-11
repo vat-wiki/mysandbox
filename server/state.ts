@@ -20,6 +20,17 @@ export interface ContainerMeta {
 // 与停机时也必须保留的 IP 记录（network inspect 只列 running 端点，静态 IP 占用判定靠它）。
 // ⚠️ env 含密码：state.json 本就 0600；列表 API 回全量 env（token = 宿主完整权限，
 // 鉴权边界在 token 上收住，UI 需展示连接凭据）。
+// compose 文件原生是多服务（1 文件 = 1 项目 = N 容器）：多容器栈收编时 meta 以
+// 项目名为 key，stack.services 记全量成员（容器名/服务名/入口/是否加入列表）；
+// 单容器服务没有 stack（key 即容器名），展示层规则「一张卡 = 入口」对两者一致。
+export interface StackServiceRef {
+  name: string; // compose service key（显示用）
+  container: string; // 实际容器名（docker 操作锚点，唯一）
+  ip?: string; // 服务网络上的静态 IP（停机占用记账）
+  entry?: boolean; // 入口容器：栈卡片的锚（终端/文件/日志默认开在这里）
+  listed?: boolean; // 用户「加入列表」的服务——升格为独立卡片
+}
+
 export interface ServiceMeta {
   preset: string; // 'postgres' | 'redis' | 'mysql' | 'custom' | 'adopted'（收编外部容器）
   image: string;
@@ -34,13 +45,35 @@ export interface ServiceMeta {
   // 收编的外部容器：无 label（docker 不能后补），纳管凭证就是这条 meta——所有按
   // label 过滤的判定点都要并上 adoptedServiceNames(meta)（双源，见 docker.ts 文件头）。
   adopted?: boolean;
+  // 多容器栈（adopted 收编的原生 compose 栈 / 多服务目录项目）：
+  // file = 项目 compose 文件（adopted 栈在原处；目录项目 = 我们目录里的文件）
+  stack?: { file: string | null; workdir?: string | null; services: StackServiceRef[] };
 }
 
-// 收编容器名集：listServiceContainers 等双源过滤点的第二源。
+// 收编容器名集：listServiceContainers 等双源过滤点的第二源。栈按成员容器名展开
+// （ps 过滤按容器名匹配），项目 key 本身不是容器名——两个都要。
 export function adoptedServiceNames(meta: Record<string, ServiceMeta>): string[] {
   return Object.entries(meta)
     .filter(([, m]) => m.adopted)
     .map(([n]) => n);
+}
+
+export function adoptedContainerNames(meta: Record<string, ServiceMeta>): string[] {
+  const out: string[] = [];
+  for (const [key, m] of Object.entries(meta)) {
+    if (!m.adopted) continue;
+    if (m.stack) for (const s of m.stack.services) out.push(s.container);
+    else out.push(key);
+  }
+  return out;
+}
+
+// 反查：容器名 → 所在栈的 meta key（adopted 栈成员的事件自愈/操作路由用）。
+export function stackMetaOfContainer(meta: Record<string, ServiceMeta>, container: string): { key: string; meta: ServiceMeta } | null {
+  for (const [key, m] of Object.entries(meta)) {
+    if (m.stack?.services.some((s) => s.container === container)) return { key, meta: m };
+  }
+  return null;
 }
 
 // AI 网关（myapikey 等）最近一次批量下发的配置存档。形状同 aiconfig.ts 的

@@ -20,7 +20,7 @@ import type { ContainerView } from './engine/index.js';
 import { lxcPath, configPath, configValue } from './engine/lxc.js';
 import { HOST_SOCKET } from './hostTerminal.js';
 import { dockerStatus, listServiceContainers, listManagedVolumes, rowLabels } from './docker.js';
-import { getAllMeta, getAllServiceMeta, adoptedServiceNames } from './state.js';
+import { getAllMeta, getAllServiceMeta, adoptedContainerNames } from './state.js';
 import { getVersion } from './version.js';
 
 const execFileAsync = promisify(execFile);
@@ -98,7 +98,7 @@ async function collectServices(): Promise<StatusReport['docker']> {
   }
   const meta = await getAllServiceMeta();
   const [rows, volumes] = await Promise.all([
-    listServiceContainers(adoptedServiceNames(meta)),
+    listServiceContainers(adoptedContainerNames(meta)),
     listManagedVolumes().catch(() => [] as { name: string }[]),
   ]);
   const services = rows.map((row) => {
