@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // 新建 docker 服务：预设（postgres/redis/mysql）或自定义镜像。
-// 提交走后台任务：POST 只做快校验 + 预占，拿到 jobId 即关窗——拉镜像进度、取消、
-// 完成通知都在服务面板的任务区与全局 toast（lib/serviceJobs.ts），对话框不再等待。
+// 提交走后台任务：POST 只做快校验 + 预占，拿到 jobId 即关窗——后端生成 compose
+// 底账再 compose up，进度、取消、完成通知都在服务面板的任务区与全局 toast
+// （lib/serviceJobs.ts），对话框不再等待。
 import { ref, computed, watch, onMounted } from 'vue'
 import {
   getServicePresets,
@@ -232,7 +233,8 @@ async function submit() {
       <DialogHeader>
         <DialogTitle>新建应用容器</DialogTitle>
         <DialogDescription>
-          单容器 + 固定 IP，不发布端口——容器内按服务名直连（hosts 自动注入）；数据卷预设自动带，自定义可选。
+          单容器 + 固定 IP，不发布端口——容器内按服务名直连（hosts 自动注入）。创建即生成 compose 配置底账
+          （~/.config/mysandbox/compose/&lt;名&gt;/compose.yaml），改配置随时在服务面板「配置」页编辑 + 应用。
         </DialogDescription>
       </DialogHeader>
 

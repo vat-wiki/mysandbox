@@ -14,12 +14,14 @@ import { log } from './logger.js';
 import type { ServiceView } from './services.js';
 
 export type JobState = 'running' | 'done' | 'error' | 'canceled';
-export type JobKind = 'create' | 'update' | 'rebuild';
+// create = 新建服务（写 compose 文件 + up）；apply = 配置页保存应用（up -d）；
+// migrate = 旧版（docker create）服务迁移到 compose 文件。三者最终都是 compose up。
+export type JobKind = 'create' | 'apply' | 'migrate';
 
 // 任务对 run thunk 暴露的全部控制面。log/status 追加进环形缓冲（status 同时更新
 // statusText——列表未展开时前端只显示这一行）；setCancellable 标记当前阶段可否取消
-// （只有 pull 阶段 true：docker create/start 是 execFile 杀不掉）；signal 在取消时触发，
-// pullImageStream 监听它 SIGKILL 子进程。
+// （compose up 全程可取消：SIGKILL CLI 即可，半途状态由下一次 up 幂等收敛）；
+// signal 在取消时触发，composeUp 监听它 SIGKILL 子进程。
 export interface JobCtx {
   log(line: string): void;
   status(text: string): void;
@@ -40,7 +42,7 @@ export interface ServicePlan {
 // 全量日志走 GET /jobs/:id 按需拉。
 export interface ServiceJobView {
   id: string;
-  kind: JobKind; // create = 新建服务；update = 更新（拉新镜像重建容器）；rebuild = 重建（本地镜像，不碰 registry）——前端横幅/toast 文案据此区分
+  kind: JobKind; // create = 新建服务；apply = 配置保存应用；migrate = 旧服务迁移到 compose——前端横幅/toast 文案据此区分
   name: string;
   image: string;
   ip: string;
@@ -153,7 +155,7 @@ export function startServiceJob(
       rec.view.state = 'done';
       rec.view.updatedAt = Date.now();
     } catch (e) {
-      // 取消路径的 reject 带 aborted 标记（pullImageStream 的约定），归为 canceled 而非 error。
+      // 取消路径的 reject 带 aborted 标记（composeUp 的约定），归为 canceled 而非 error。
       const canceled = rec.controller.signal.aborted || (e as { canceled?: boolean })?.canceled === true;
       rec.view.state = canceled ? 'canceled' : 'error';
       rec.view.error = e instanceof Error ? e.message : String(e);
@@ -203,8 +205,8 @@ export function getServiceJob(id: string): { job: ServiceJobView; log: string[] 
   return { job: toView(rec, 0), log: [...rec.lines] };
 }
 
-// 仅 pull 阶段（cancellable=true）可取消；之后的 docker create/start 是 execFile
-// 杀不掉，「点了取消但任务照样建出来」比不能取消更糟——直接 409 说清当前阶段。
+// compose up 全程可取消（SIGKILL CLI，半途状态由下一次 up 幂等收敛），任务一律
+// cancellable=true——409 分支留作未来出现不可杀阶段的兜底。
 export function cancelServiceJob(id: string): void {
   const rec = jobs.get(id);
   if (!rec) throw notFound(`job "${id}" not found`);

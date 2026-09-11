@@ -45,7 +45,8 @@ services:
     from: 10.88.0.200
     to: 10.88.0.240
     reserved: []
-  # 镜像拉取硬超时（毫秒；默认 30 分钟）。正常卡死会被 5 分钟无输出看门狗先拦下。
+  # compose up 硬顶超时（毫秒；默认 30 分钟，创建/应用/迁移共用）。正常卡死会被
+  # 5 分钟无输出看门狗先拦下（见 serviceCompose.ts composeUp）。
   pullTimeoutMs: 1800000
 
 # 宿主 ~/.ssh 源，以只读挂到容器 /mnt/host/.ssh，供首启 seed 与批量 reseed。

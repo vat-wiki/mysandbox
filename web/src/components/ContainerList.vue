@@ -36,7 +36,7 @@ import {
   type TermSessionView,
   type TermActivityView,
 } from '@/lib/api'
-import { trackServiceJobs, requestServiceUpdate, requestServiceRebuild } from '@/lib/serviceJobs'
+import { trackServiceJobs } from '@/lib/serviceJobs'
 import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
   lastTermNotableOutput,
@@ -2756,7 +2756,7 @@ onUnmounted(() => {
            配套，默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数（容器分区头同款，
            无状态点），整行点击展开/收起；收起时补一行摘要文案（任务进行中/不可达时
            要紧，不可达红字）。点击卡片进服务终端（与容器「点击即进」同语义），IP 点击
-             复制，右键菜单收详情（服务抽屉）/连接命令/代理地址二级菜单/检查更新/本地重建/启停重启。
+             复制，右键菜单收详情（服务抽屉）/连接命令/代理地址二级菜单/启停重启。
             列表高度可拖拽（顶部细把手，maxHeight 上限记忆 localStorage），卡片可拖拽排序。 -->
       <div class="shrink-0 border-t border-border">
         <div
@@ -2868,13 +2868,6 @@ onUnmounted(() => {
                     <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
                       s.description || s.image
                     }}</span>
-                    <!-- 本地镜像有新 build（容器未跟上）：一眼提示，右键「重建（本地镜像）」收编 -->
-                    <span
-                      v-if="s.imageDrift === true"
-                      class="shrink-0 text-amber-600"
-                      title="本地镜像有新 build——右键「重建（本地镜像）」收编"
-                      >新</span
-                    >
                     <!-- 收编的外部容器：身份标记常驻（操作边界不同——无删除/更新，只有取消收编） -->
                     <Badge
                       v-if="s.adopted"
@@ -2887,7 +2880,8 @@ onUnmounted(() => {
                 </div>
               </ContextMenuTrigger>
               <!-- 右键菜单（触屏长按同款，与容器卡片同款交互）：详情 / 复制连接命令 /
-                   代理地址二级菜单 / 检查更新 / 本地重建 / 启停重启。原 ⋯ 按钮退役。 -->
+                   代理地址二级菜单 / 启停重启。原 ⋯ 按钮退役。改配置/追新镜像在服务
+                   抽屉「配置」页（compose 底账编辑 + 应用）。 -->
               <ContextMenuContent>
                 <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                 <ContextMenuItem @click="svcRenameTarget = s">重命名</ContextMenuItem>
@@ -2932,9 +2926,6 @@ onUnmounted(() => {
                   </ContextMenuSub>
                 </template>
                 <ContextMenuSeparator />
-                <ContextMenuItem v-if="!s.adopted" @click="requestServiceUpdate(s)">检查更新</ContextMenuItem>
-                <!-- 本地重建：用本地镜像，不碰 registry——本地 build 迭代服务的对口入口 -->
-                <ContextMenuItem v-if="!s.adopted" @click="requestServiceRebuild(s)">本地重建</ContextMenuItem>
                 <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
                 <ContextMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</ContextMenuItem>
                 <ContextMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</ContextMenuItem>

@@ -1,13 +1,18 @@
 // docker 服务层：配套服务（数据库等）的预设、编排与路由。
 //
-// 形态（v1，刻意收窄）：一服务 = 单容器 + 固定 IP（mysandbox-lan 上 --ip）+ 命名卷
+// 形态（v2，compose 底账）：一服务 = <CONFIG_DIR>/compose/<名>/compose.yaml（唯一配置
+// 真相，见 serviceCompose.ts）+ 固定 IP（mysandbox-lan 上 ipv4_address）+ 命名卷
 // mysandbox-svc-<name>；不发布端口到宿主——与 LXC 容器同语义（固定 IP 直连、无 NAT），
 // LXC 容器里 `psql -h <服务名>` 的通路靠 hosts 注入（hosts-sync 组合 listServiceEndpoints）。
+// 创建 = 生成首版文件 + compose up；改配置 = 编辑文件 + up（面板配置页或终端，等价）；
+// 删除 = compose down（+ 删卷 + 删目录）。旧版 update/rebuild 任务链随声明式底账退役——
+// 「追新镜像」= 改 image 版本 + 应用，「本地 build 迭代」= 构建并应用（up -d --build）。
 // 管理边界结构性隔离：判定集 = label（mysandbox.managed-by + mysandbox.kind=service）
 // ∪ 收编 meta（adoptedServiceNames——外部容器无 label，收编走 sidecar，见 adoptService）。
 // 未收编的外部容器（dener-* 等）永远不进列表、操作只会 404。
 //
-// docker 原语在 docker.ts（CLI 客户端）；这里只有业务编排。对标 base.ts 的「路由薄 + 实现厚」。
+// docker 原语在 docker.ts（CLI 客户端），compose 文件层在 serviceCompose.ts；这里只有
+// 业务编排。对标 base.ts 的「路由薄 + 实现厚」。
 import type { FastifyInstance } from 'fastify';
 import { readFile } from 'node:fs/promises';
 import type { Config } from './config.js';
@@ -24,14 +29,9 @@ import {
   inspectNetwork,
   listServiceContainers,
   serviceNameExists,
-  createServiceContainer,
   containerIpamIp,
   containerPid,
   containerExists,
-  imageId,
-  containerImageId,
-  containerImageIds,
-  imageIndex,
   inspectServiceSnapshot,
   startContainer,
   stopContainer,
@@ -39,10 +39,8 @@ import {
   removeContainer,
   containerLogs,
   containerNetIp,
-  imageExistsLocal,
   listImages,
   listExternalContainers,
-  pullImageStream,
   registryMirrors,
   rowLabels,
   createNetwork,
@@ -51,6 +49,7 @@ import {
   ensureVolume,
   removeVolume,
   subscribeServiceEvents,
+  containerComposeHash,
 } from './docker.js';
 import {
   adoptedServiceNames,
@@ -60,6 +59,19 @@ import {
   deleteServiceMeta,
   type ServiceMeta,
 } from './state.js';
+import {
+  buildComposeYaml,
+  composeDown,
+  composeFileExists,
+  composeFileHash,
+  composeFileOf,
+  composeUp,
+  readComposeService,
+  readComposeYaml,
+  removeComposeDir,
+  writeCompose,
+  type ComposeServiceDef,
+} from './serviceCompose.js';
 import {
   reservedServiceIps,
   tryReserveJobName,
@@ -168,7 +180,7 @@ function composeConnect(presetKey: string, name: string, env: Record<string, str
 
 // —— 视图 ——
 // env 全量回值（含密码）：token = 宿主完整权限，鉴权边界已在 token 上收住，
-// UI 需要直接展示连接凭据（state.json 落盘 0600 不变）。
+// UI 需要直接展示连接凭据（compose.yaml 落盘 0600 不变）。
 export interface ServiceView {
   name: string;
   preset: string;
@@ -180,20 +192,15 @@ export interface ServiceView {
   volume: string | null;
   ports: number[];
   envKeys: string[];
-  env: Record<string, string>; // 全量 env（含密码值），供 UI 展示/复制
+  env: Record<string, string>; // 全量 env（含密码值），供 UI 展示/复制（真相在 compose 文件）
   connect: string[]; // 预设感知的现成连接命令（容器内服务名口径）
   displayName?: string; // 显示名（侧栏卡片/终端 tab），不动容器真名
   description?: string;
   createdAt?: string;
   command?: string[];
-  metaMissing?: boolean; // label 在但 sidecar 缺（state.json 被清过）——前端提示重建元数据
+  metaMissing?: boolean; // label 在但 sidecar 缺（state.json 被清过）
   adopted?: boolean; // 收编的外部容器（无 label，凭证在 sidecar）——前端区分卡片与操作边界
-  // —— 镜像身份（仅自建服务带；ref 只是名字，跑的是哪份 build 要看 ID）——
-  runningImageId?: string; // 容器现用镜像 ID（sha256:…）
-  runningImageTags?: string[]; // 现用镜像在本地的全部 tag——「跑的是哪个版本」的人话
-  localImageId?: string; // meta.image 当前本地指向的 ID
-  localImageTags?: string[]; // 同上镜像的 tag 集
-  imageDrift?: boolean; // true = 本地 ref 已指向别的 build（有新版可重建）；false = 容器即本地最新
+  hasCompose?: boolean; // compose 底账在（可改配置可应用）；managed 而无文件 = 旧版创建，前端出迁移入口
 }
 
 export interface ServicesStatus {
@@ -245,52 +252,33 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
     const ip = m?.adopted
       ? (await containerNetIp(name, cfg.services.network)) ?? m?.ip ?? null
       : (await containerIpamIp(name)) ?? m?.ip ?? null;
+    // compose 底账：managed 服务读文件（配置真相）；读不到/没有文件回退 meta（旧版服务）。
+    // 坏文件 readComposeService 返回 null——env 降级 meta，列表不炸。
+    const comp = m?.adopted ? null : await readComposeService(name);
+    const envVals = comp ? comp.env : m?.env ?? {};
     items.push({
       name,
       preset: presetKey,
-      image: m?.image ?? row.Image,
-      ip,
+      image: comp?.image ?? m?.image ?? row.Image,
+      ip: comp?.ip ?? ip,
       state: row.State,
       status: row.Status,
       running: row.State === 'running',
-      volume: m?.volume ?? null,
+      volume: comp?.volume ?? m?.volume ?? null,
       ports: m?.ports ?? [],
-      envKeys: m ? Object.keys(m.env) : [],
-      env: m ? m.env : {},
-      connect: m ? composeConnect(presetKey, name, m.env, m.ports ?? []) : [],
+      envKeys: Object.keys(envVals),
+      env: envVals,
+      connect: m ? composeConnect(presetKey, name, envVals, m.ports ?? []) : [],
       displayName: m?.displayName,
       description: m?.description,
       createdAt: m?.createdAt ?? row.CreatedAt,
-      command: m?.command,
+      command: comp?.command ?? m?.command,
       metaMissing: !m,
       adopted: !!m?.adopted,
+      hasCompose: !m?.adopted && (await composeFileExists(name)),
     });
   }
   items.sort((a, b) => a.name.localeCompare(b.name));
-  // —— 镜像身份补全（自建服务）——
-  // ref 只是个名字：myapikey:latest 背后可能是任意一版 build。两次批量调用（容器一次、
-  // 镜像一次，与个数无关）补全「容器现用 ID/tag vs 本地 ref 指向」+ 漂移标记——本地
-  // build 过新版时前端直接亮出来，不用点重建才知道。adopted 生命周期归外部编排方，不参与。
-  const selfItems = items.filter((v) => !v.adopted);
-  if (selfItems.length) {
-    // 先取容器侧 ID，再把「meta ref ∪ 容器现用 ID」并进镜像索引——漂移态下容器跑的
-    // 旧镜像不在 meta ref 的 inspect 结果里，不并入的话 runningImageTags 是空。
-    const runIds = await containerImageIds(selfItems.map((v) => v.name));
-    const idx = await imageIndex([...selfItems.map((v) => v.image), ...runIds.values()]);
-    for (const v of selfItems) {
-      const run = runIds.get(v.name);
-      const local = idx.byRef.get(v.image);
-      if (run) {
-        v.runningImageId = run;
-        v.runningImageTags = idx.byId.get(run) ?? [];
-      }
-      if (local) {
-        v.localImageId = local;
-        v.localImageTags = idx.byId.get(local) ?? [];
-      }
-      if (run && local) v.imageDrift = run !== local;
-    }
-  }
   return { items, status };
 }
 
@@ -485,93 +473,81 @@ export async function prepareServiceCreate(cfg: Config, input: CreateServiceInpu
   };
 }
 
-// 创建段二（慢，后台 job 跑）：拉镜像 → 建卷 → 建容器 → 启动 → 落盘 meta → 追平 hosts。
-// 取消只对 pull 阶段生效（ctx.setCancellable 包住——docker create/start 是 execFile
-// 杀不掉）；abort 落在 pull 之后则在各边界检查 signal、带着半成品清理退出。
-export async function runServiceCreate(cfg: Config, plan: CreateServicePlan, ctx: JobCtx): Promise<ServiceView> {
-  const { name, preset, image, env, command, ip, volume } = plan;
-  const bailIfCanceled = (): void => {
-    if (ctx.signal.aborted) {
-      const e = new Error(`已取消创建 ${name}`) as Error & { canceled?: boolean };
-      e.canceled = true;
-      throw e;
-    }
+// —— 编排共用：def（compose 服务定义）拼装 ——
+// 创建走 plan，迁移走 meta+快照——两条路最终都落成同一份 compose 文件形状。
+
+function defFromPlan(plan: CreateServicePlan, network: string): ComposeServiceDef {
+  return {
+    name: plan.name,
+    image: plan.image,
+    env: plan.env,
+    command: plan.command,
+    volume: plan.volume,
+    ip: plan.ip,
+    network,
+    labels: {
+      [MANAGED_LABEL]: 'mysandbox',
+      [KIND_LABEL]: 'service',
+      'mysandbox.service-preset': plan.preset?.key ?? 'custom',
+      'mysandbox.created-at': new Date().toISOString(),
+    },
   };
+}
+
+// 旧版（docker create）服务迁移用：meta 是 env/command/volume/ip 的记录，快照补
+// labels（preset/created-at 在容器身上）与卷挂载点（meta 只记卷名）。meta 缺失无法
+// 复刻形状——调用方挡（migrateService 路由 + requireService 已保证 meta 在）。
+function defFromMeta(m: ServiceMeta, name: string, network: string, snap: { labels: Record<string, string>; volumeTarget: string | null } | null): ComposeServiceDef {
+  const volume = m.volume && snap?.volumeTarget ? { source: m.volume, target: snap.volumeTarget } : null;
+  const labels = { ...(snap?.labels ?? {}) };
+  // 我们的身份 label 以 meta/常量为准写死（快照里万一被改过也纠正回来）；compose 自己
+  // 的 com.docker.compose.* label 不带进文件——up 时 compose 会按自己的语义重打。
+  labels[MANAGED_LABEL] = 'mysandbox';
+  labels[KIND_LABEL] = 'service';
+  for (const k of Object.keys(labels)) if (k.startsWith('com.docker.compose.')) delete labels[k];
+  return {
+    name,
+    image: m.image,
+    env: m.env,
+    command: m.command,
+    volume,
+    ip: m.ip,
+    network,
+    labels,
+  };
+}
+
+// 创建段二（慢，后台 job 跑）：生成 compose 文件 → 预建 external 卷 → compose up →
+// 落盘 meta → 追平 hosts。取消全程有效（SIGKILL compose CLI，半途状态由再次 up 收敛）。
+export async function runServiceCreate(cfg: Config, plan: CreateServicePlan, ctx: JobCtx): Promise<ServiceView> {
+  const { name, ip, volume } = plan;
+  const def = defFromPlan(plan, cfg.services.network);
 
   // prepare 之后网络可能又被删（prune 等）——job 起步再兜一次底。
   await ensureServiceNetwork(cfg);
 
-  if (await imageExistsLocal(image)) {
-    ctx.status(`镜像 ${image} 已在本地，跳过拉取`);
-  } else {
-    ctx.status(`拉取镜像 ${image}`);
-    ctx.setCancellable(true);
-    try {
-      await pullImageStream(image, (line) => ctx.log(line), {
-        timeoutMs: cfg.services.pullTimeoutMs,
-        signal: ctx.signal,
-      });
-    } catch (e) {
-      // 网络/registry 类失败且 daemon 没配 mirror 时，给人话提示（本环境实测：直连
-      // Docker Hub 在 fake-ip 网络下 auth.docker.io 直接 EOF）。
-      if (!(e as { canceled?: boolean })?.canceled) {
-        const mirrors = await cachedRegistryMirrors();
-        if (mirrors !== null && mirrors.length === 0) {
-          throw new Error(
-            `${e instanceof Error ? e.message : String(e)}（未配置 registry-mirrors，Docker Hub 直连常失败；` +
-              '可在 /etc/docker/daemon.json 配置 registry-mirrors 后重启 docker）',
-          );
-        }
-      }
-      throw e;
-    } finally {
-      ctx.setCancellable(false);
-    }
+  ctx.status(`写入 compose 配置（${def.image}）`);
+  await writeCompose(name, buildComposeYaml(def));
+
+  if (volume) {
+    // external 卷必须在 up 前存在（文件里 external: true，compose 不会代建）。
+    ctx.status(`创建数据卷 ${volume.source}`);
+    await ensureVolume(volume.source);
   }
-  bailIfCanceled();
 
-  ctx.status(volume ? `创建数据卷 ${volume.source}` : '创建容器');
-  if (volume) await ensureVolume(volume.source);
-  bailIfCanceled();
-
-  await createServiceContainer({
-    name,
-    image,
-    ip,
-    network: cfg.services.network,
-    labels: {
-      [MANAGED_LABEL]: 'mysandbox',
-      [KIND_LABEL]: 'service',
-      'mysandbox.service-preset': preset?.key ?? 'custom',
-      'mysandbox.created-at': new Date().toISOString(),
-    },
-    env,
-    volume,
-    command,
-  });
-
-  ctx.status(`启动 ${name}（${ip}）`);
-  try {
-    await startContainer(name);
-  } catch (e) {
-    // 半成品清理：刚创建、无用户数据，连容器带卷一起删；清理失败只 log（原始错误优先）。
-    try {
-      await removeContainer(name);
-      if (volume) await removeVolume(volume.source);
-    } catch (e2) {
-      log.warn({ err: String(e2), name }, 'service create cleanup failed');
-    }
-    throw e;
-  }
+  ctx.setCancellable(true);
+  ctx.status(`compose up（${ip}）`);
+  await composeUp(name, { onLine: (l) => ctx.log(l), signal: ctx.signal, hardTimeoutMs: cfg.services.pullTimeoutMs });
+  ctx.setCancellable(false);
 
   const meta: ServiceMeta = {
-    preset: preset?.key ?? 'custom',
-    image,
-    env,
-    command,
+    preset: plan.preset?.key ?? 'custom',
+    image: plan.image,
+    env: plan.env,
+    command: plan.command,
     volume: volume?.source ?? null,
     ip,
-    ports: preset?.ports ?? [],
+    ports: plan.preset?.ports ?? [],
     description: plan.description,
     createdAt: new Date().toISOString(),
   };
@@ -582,176 +558,11 @@ export async function runServiceCreate(cfg: Config, plan: CreateServicePlan, ctx
   await applyServicesBlock(cfg);
 
   ctx.status(`服务 ${name} 就绪（${ip}）`);
-  return {
-    name,
-    preset: meta.preset,
-    image,
-    ip,
-    state: 'running',
-    status: 'just created',
-    running: true,
-    volume: meta.volume,
-    ports: meta.ports ?? [],
-    envKeys: Object.keys(env),
-    env,
-    connect: composeConnect(meta.preset, name, env, meta.ports ?? []),
-    description: meta.description,
-    createdAt: meta.createdAt,
-    command,
-  };
-}
-
-// —— 更新（latest 标签追新）——
-// 拉新镜像 → 镜像 ID 没变就是「已是最新」（不动容器）；变了才按创建时的形状重建：
-// env/command 取 meta（创建时登记），IP/labels/卷挂载点取现容器 inspect 快照（meta
-// 没记卷 target，容器身上的是权威）。停机更新保持停机，不顺手开机。
-// 取消只对 pull 阶段生效；rm 之后失败不自动回滚（数据在卷里无损，再点一次更新即可）。
-// 无数据卷的服务重建会丢可写层数据——风险提示在前端（requestServiceUpdate）。
-export async function runServiceUpdate(cfg: Config, name: string, ctx: JobCtx): Promise<ServiceView> {
-  const m = await getServiceMeta(name);
-  if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法更新——删除后重新创建一次即可`);
-  const snap = await inspectServiceSnapshot(name);
-  if (!snap) throw notFound(`service "${name}" not found`);
-  const ip = (await containerIpamIp(name)) ?? m.ip;
-  const wasRunning = snap.running;
-  const volume = m.volume && snap.volumeTarget ? { source: m.volume, target: snap.volumeTarget } : null;
-
-  const bailIfCanceled = (): void => {
-    if (ctx.signal.aborted) {
-      const e = new Error(`已取消更新 ${name}`) as Error & { canceled?: boolean };
-      e.canceled = true;
-      throw e;
-    }
-  };
-
-  const before = await imageId(m.image);
-  ctx.status(`拉取镜像 ${m.image}（检查更新）`);
-  ctx.setCancellable(true);
-  try {
-    await pullImageStream(m.image, (line) => ctx.log(line), {
-      timeoutMs: cfg.services.pullTimeoutMs,
-      signal: ctx.signal,
-    });
-  } catch (e) {
-    // 同创建路径：registry 类失败且 daemon 没配 mirror 时给人话提示。
-    if (!(e as { canceled?: boolean })?.canceled) {
-      const mirrors = await cachedRegistryMirrors();
-      if (mirrors !== null && mirrors.length === 0) {
-        throw new Error(
-          `${e instanceof Error ? e.message : String(e)}（未配置 registry-mirrors，Docker Hub 直连常失败；` +
-            '可在 /etc/docker/daemon.json 配置 registry-mirrors 后重启 docker）',
-        );
-      }
-    }
-    throw e;
-  } finally {
-    ctx.setCancellable(false);
-  }
-  bailIfCanceled(); // 取消必须落在 rm 之前——半途放弃不能把老容器删了
-
-  const after = await imageId(m.image);
-  if (before && after && before === after) {
-    ctx.status(`镜像已是最新（${m.image}），无需重建`);
-    const { items } = await listServices(cfg);
-    return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
-  }
-
-  ctx.status(`镜像有更新，重建 ${name}（${ip}）`);
-  if (wasRunning) await stopContainer(name);
-  await removeContainer(name);
-  try {
-    await createServiceContainer({
-      name,
-      image: m.image,
-      ip,
-      network: cfg.services.network,
-      labels: snap.labels, // 原样复刻（含 service-preset / created-at——创建时间不因更新而重置）
-      env: m.env,
-      volume,
-      command: m.command,
-    });
-  } catch (e) {
-    throw new Error(`重建失败（旧容器已移除，数据卷无损，可重试更新）：${e instanceof Error ? e.message : String(e)}`);
-  }
-  // meta 自愈：同 runServiceRebuild——容器已按 m 的形状复刻完成，回写即恢复登记。
-  await setServiceMeta(name, { ...m, ip });
-  if (wasRunning) {
-    ctx.status(`启动 ${name}`);
-    await startContainer(name);
-  }
-
-  ctx.status('追平容器 hosts（服务名解析）');
-  await applyServicesBlock(cfg);
-
-  ctx.status(wasRunning ? `服务 ${name} 已更新（${ip}）` : `镜像已更新（${name} 保持停机）`);
-  const { items } = await listServices(cfg);
-  return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
-}
-
-// —— 重建（本地镜像）——
-// 与更新共用 rm → 按原形状重建的编排，差别只在镜像来源：不碰 registry，直接用本地
-// m.image 的当前 ID。为本地 build 迭代的服务准备（build 完点一下，服务就跑上新镜像）；
-// registry 追新走 runServiceUpdate。容器现用镜像 ID 与本地相同 = 没事发生（防误点）。
-// 无 pull 阶段故不可取消；rm 之后失败不自动回滚（数据在卷里无损，再点一次重建即可）。
-export async function runServiceRebuild(cfg: Config, name: string, ctx: JobCtx): Promise<ServiceView> {
-  const m = await getServiceMeta(name);
-  if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法重建——删除后重新创建一次即可`);
-  const snap = await inspectServiceSnapshot(name);
-  if (!snap) throw notFound(`service "${name}" not found`);
-  const ip = (await containerIpamIp(name)) ?? m.ip;
-  const wasRunning = snap.running;
-  const volume = m.volume && snap.volumeTarget ? { source: m.volume, target: snap.volumeTarget } : null;
-
-  const local = await imageId(m.image);
-  if (!local) throw badRequest(`本地没有镜像 ${m.image}——先 build/tag，或走「更新」从 registry 拉取`);
-  const current = await containerImageId(name);
-  if (current && current === local) {
-    ctx.status(`容器已在用本地镜像（${m.image}），无需重建`);
-    const { items } = await listServices(cfg);
-    return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
-  }
-
-  ctx.status(`用本地镜像重建 ${name}（${ip}）`);
-  if (wasRunning) await stopContainer(name);
-  await removeContainer(name);
-  try {
-    await createServiceContainer({
-      name,
-      image: m.image,
-      ip,
-      network: cfg.services.network,
-      labels: snap.labels, // 原样复刻（含 service-preset / created-at——创建时间不因重建而重置）
-      env: m.env,
-      volume,
-      command: m.command,
-    });
-  } catch (e) {
-    throw new Error(`重建失败（旧容器已移除，数据卷无损，可重试重建）：${e instanceof Error ? e.message : String(e)}`);
-  }
-  // meta 自愈：rm→create 窗口里若 meta 意外被清（requireService 的孤儿清理已被任务
-  // 预占豁免挡住，这里兜底万一），容器已按 m 的形状复刻完成——回写即恢复登记。
-  await setServiceMeta(name, { ...m, ip });
-  if (wasRunning) {
-    ctx.status(`启动 ${name}`);
-    await startContainer(name);
-  }
-
-  ctx.status('追平容器 hosts（服务名解析）');
-  await applyServicesBlock(cfg);
-
-  ctx.status(wasRunning ? `服务 ${name} 已重建（${ip}）` : `容器已重建（${name} 保持停机）`);
-  const { items } = await listServices(cfg);
-  return items.find((x) => x.name === name) ?? (await currentServiceView(cfg, name, m, ip, wasRunning));
+  return (await listServices(cfg)).items.find((x) => x.name === name) ?? viewFallback(name, meta, ip, true);
 }
 
 // listServices 没找到（极端竞态）时的兜底视图：用 meta 拼一个，不让任务死在收尾。
-async function currentServiceView(
-  _cfg: Config,
-  name: string,
-  m: ServiceMeta,
-  ip: string,
-  running: boolean,
-): Promise<ServiceView> {
+function viewFallback(name: string, m: ServiceMeta, ip: string, running: boolean): ServiceView {
   return {
     name,
     preset: m.preset,
@@ -768,7 +579,74 @@ async function currentServiceView(
     description: m.description,
     createdAt: m.createdAt,
     command: m.command,
+    hasCompose: true,
   };
+}
+
+// —— 应用（配置页保存）：文件已由路由层校验并写盘，这里只做收敛 ——
+// up -d 幂等：配置没变 = 无事发生；变了 = 只重建受影响的容器。带 build 时顺带重建
+// 本地镜像（自研服务迭代循环 = 改代码 → 构建并应用）。收尾按文件回写 meta.ip
+// （用户改过 ipv4_address 时池记账要跟上）。
+export async function runServiceApply(cfg: Config, name: string, build: boolean, ctx: JobCtx): Promise<ServiceView> {
+  ctx.setCancellable(true);
+  ctx.status(build ? '构建并应用（compose up -d --build）' : '应用配置（compose up -d）');
+  await composeUp(name, { build, onLine: (l) => ctx.log(l), signal: ctx.signal, hardTimeoutMs: cfg.services.pullTimeoutMs });
+  ctx.setCancellable(false);
+
+  const comp = await readComposeService(name);
+  const m = await getServiceMeta(name);
+  if (m && comp?.ip && comp.ip !== m.ip) {
+    await setServiceMeta(name, { ...m, ip: comp.ip });
+  }
+
+  ctx.status('追平容器 hosts（服务名解析）');
+  await applyServicesBlock(cfg);
+
+  ctx.status(`配置已应用：${name}`);
+  return (await listServices(cfg)).items.find((x) => x.name === name) ?? (m ? viewFallback(name, m, comp?.ip ?? m.ip, true) : (throwNotFound(name)));
+}
+
+// 极端竞态兜底（meta 也在瞬间消失）：让任务以 404 形状失败而不是编译期撒谎。
+function throwNotFound(name: string): never {
+  throw notFound(`service "${name}" not found`);
+}
+
+// —— 迁移（旧版 docker create 服务 → compose 底账）——
+// 从 meta + 快照复刻形状生成文件 → rm 旧容器（compose 与既有裸容器同名冲突）→
+// up。数据在命名卷里无损；无卷的 custom 服务 = 可写层会换新容器——风险提示在前端
+// 入口（requestServiceMigrate）。rm 之后失败不自动回滚：声明式底账下再点一次迁移/
+// 应用，compose 幂等收敛到同一形状（与旧 update/rebuild 同契约）。
+export async function runServiceMigrate(cfg: Config, name: string, ctx: JobCtx): Promise<ServiceView> {
+  const m = await getServiceMeta(name);
+  if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法迁移——删除后重新创建即可`);
+  const snap = await inspectServiceSnapshot(name);
+  if (!snap) throw notFound(`service "${name}" not found`);
+  const ip = (await containerIpamIp(name)) ?? m.ip;
+
+  ctx.status('生成 compose 配置（按现容器形状复刻）');
+  await writeCompose(name, buildComposeYaml(defFromMeta({ ...m, ip }, name, cfg.services.network, snap)));
+
+  ctx.setCancellable(true);
+  ctx.status(`compose up（${ip}）`);
+  // 同名冲突挡路：旧容器是 docker create 的裸容器，compose up 接管不了它，先移除
+  // （数据在卷里；文件已生成，失败后重试幂等收敛）。
+  await removeContainer(name);
+  try {
+    await composeUp(name, { onLine: (l) => ctx.log(l), signal: ctx.signal, hardTimeoutMs: cfg.services.pullTimeoutMs });
+  } catch (e) {
+    throw new Error(
+      `迁移失败（旧容器已被移除，数据卷无损；文件已生成——再点一次「迁移」或「应用」即按 compose 幂等收敛）：` +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+  ctx.setCancellable(false);
+
+  await setServiceMeta(name, { ...m, ip });
+  ctx.status('追平容器 hosts（服务名解析）');
+  await applyServicesBlock(cfg);
+
+  ctx.status(`已迁移到 compose 底账：${name}（${ip}）`);
+  return (await listServices(cfg)).items.find((x) => x.name === name) ?? viewFallback(name, { ...m, ip }, ip, true);
 }
 
 // 路由层已确保 name 在 label 过滤集里（requireService）。
@@ -784,7 +662,18 @@ export async function deleteService(
       throw conflict(`删除数据需输入服务名确认（${name}）`);
     }
   }
-  await removeContainer(name);
+  // 容器移除走 compose down（底账在时）——compose 管的容器由 compose 摘除才干净；
+  // 文件坏/缺失回退裸 rm（down 解析失败不能挡删除）。external 网络/卷 compose 不会动。
+  if (await composeFileExists(name)) {
+    try {
+      await composeDown(name);
+    } catch (e) {
+      log.warn({ err: String(e), name }, 'compose down failed — fallback to docker rm');
+      await removeContainer(name);
+    }
+  } else {
+    await removeContainer(name);
+  }
   let dataRemoved = false;
   if (opts.deleteData) {
     // meta 里 volume 为 null 表示该服务没有数据卷（custom 可无卷）——不能兜底硬造卷名，
@@ -795,6 +684,8 @@ export async function deleteService(
       dataRemoved = true;
     }
   }
+  // 底账随服务走：目录一并移除（服务没了文件留着只会变成误导性孤儿）。
+  await removeComposeDir(name).catch((e) => log.warn({ err: String(e), name }, 'compose dir cleanup failed'));
   await deleteServiceMeta(name);
   // hosts 里的服务行要消失：追平一次（hash-skip）。
   try {
@@ -804,6 +695,41 @@ export async function deleteService(
   }
   log.info({ name, dataRemoved }, 'docker service deleted');
   return { ok: true, dataRemoved, name };
+}
+
+// —— 配置底账（服务抽屉「配置」页的后端面） ——
+export interface ServiceConfigView {
+  name: string;
+  path: string; // compose.yaml 绝对路径（终端手改的入口指引）
+  yaml: string | null; // null = 无文件（旧版创建 → 前端出迁移入口；收编容器被路由挡）
+  hasBuild: boolean; // 文件带 build: ——前端给「构建并应用」
+  hash: string | null; // 当前文件的 compose hash（config --hash）
+  appliedHash: string | null; // 容器 label 里最后一次 up 的 hash
+  drift: boolean; // hash 与 appliedHash 不一致 = 改了没应用
+}
+
+export async function getServiceConfig(cfg: Config, name: string): Promise<ServiceConfigView> {
+  const m = await getServiceMeta(name);
+  if (m?.adopted) throw conflict('收编容器没有 compose 底账（生命周期归它自己的编排方管）');
+  const yaml = await readComposeYaml(name);
+  if (!yaml) {
+    return { name, path: composeFilePath(name), yaml: null, hasBuild: false, hash: null, appliedHash: null, drift: false };
+  }
+  const parsed = await readComposeService(name);
+  const [hash, appliedHash] = await Promise.all([composeFileHash(name), containerComposeHash(name)]);
+  return {
+    name,
+    path: composeFilePath(name),
+    yaml,
+    hasBuild: parsed?.build ?? false,
+    hash,
+    appliedHash,
+    drift: hash != null && hash !== appliedHash,
+  };
+}
+
+function composeFilePath(name: string): string {
+  return composeFileOf(name);
 }
 
 // —— 收编外部容器 ——
@@ -1002,10 +928,10 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     return adoptService(cfg, name);
   });
 
-  // 创建：快校验 + 预占通过即返回 jobId，拉镜像/建容器在后台 job 跑（jobs.ts）。
+  // 创建：快校验 + 预占通过即返回 jobId，写 compose 文件 + up 在后台 job 跑（jobs.ts）。
   // 校验失败（重名/池尽/缺必填）照旧抛 HttpError → 4xx，对话框内联显示。
   // ⚠️ 同步预占名再进 await：serviceNameExists 查不到「还没建容器」的进行中任务，
-  // 不锁名的话两个同名任务会双双通过查重、后一个死在 docker create（Node 单线程，
+  // 不锁名的话两个同名任务会双双通过查重、后一个死在 compose up（Node 单线程，
   // 同步段无竞态）。IP 预占同理；两条的释放兜在 jobs.ts run() 的 finally。
   app.post('/api/services', async (req) => {
     const input = (req.body as CreateServiceInput | null) || ({} as CreateServiceInput);
@@ -1135,50 +1061,56 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     return { ports, web };
   });
 
-  // —— 更新（latest 标签追新）：快校验 + 预占名/IP 后进后台任务，拉镜像可取消。
-  // 预占复用创建任务的机制（同名任务互斥、池视图把预占算占用）；IP 已被现容器持有，
-  // 但重建窗口期网络端点会消失，预占兜住并发创建的二次分配。
-  app.post<{ Params: { name: string } }>('/api/services/:name/update', async (req) => {
+  // —— 配置底账视图（服务抽屉「配置」页）——
+  app.get<{ Params: { name: string } }>('/api/services/:name/config', async (req) => {
+    await requireService(req.params.name);
+    return getServiceConfig(cfg, req.params.name);
+  });
+
+  // —— 应用（配置页保存 = 写文件 + compose up）：校验/写盘在路由同步段（坏文件
+  // 4xx 内联回显，绝不落盘），up 在后台 job（可取消，输出进任务日志）。写盘后 job
+  // 失败也无碍——文件是真相，修好再点一次应用即收敛。
+  app.post<{ Params: { name: string } }>('/api/services/:name/apply', async (req) => {
     const name = req.params.name;
     await requireService(name);
     const m = await getServiceMeta(name);
-    if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法更新——删除后重新创建一次即可`);
-    if (m.adopted) {
-      // 更新 = rm 后按 mysandbox 形状重建——会抹掉外部容器自己的挂载/端口/网络配置。
-      throw conflict(`"${name}" 是收编的外部容器，不支持原地更新（更新归它自己的编排方管）`);
+    if (m?.adopted) throw conflict('收编容器没有 compose 底账（生命周期归它自己的编排方管）');
+    const body = (req.body as { yaml?: unknown; build?: unknown } | null) || {};
+    if (typeof body.yaml !== 'string' || !body.yaml.trim()) throw badRequest('缺少 yaml 内容');
+    // 校验不通过 → 400 内联回显（文件不落盘）；compose 的人话报错前端直接展示。
+    try {
+      await writeCompose(name, body.yaml);
+    } catch (e) {
+      throw badRequest(e instanceof Error ? e.message : String(e));
     }
     if (!tryReserveJobName(name)) throw conflict(`「${name}」已有任务进行中`);
-    const ip = (await containerIpamIp(name)) ?? m.ip;
-    reserveJobIp(ip);
     try {
-      const job = startServiceJob({ name, image: m.image, ip, kind: 'update' }, (ctx) =>
-        runServiceUpdate(cfg, name, ctx),
+      const job = startServiceJob({ name, image: '', ip: '', kind: 'apply' }, (ctx) =>
+        runServiceApply(cfg, name, body.build === true, ctx),
       );
       return { jobId: job.id };
     } catch (e) {
       releaseJobName(name);
-      releaseJobIp(ip);
       throw e;
     }
   });
 
-  // —— 重建（本地镜像）：不碰 registry，直接用本地 m.image 重建容器——本地 build
-  // 迭代服务的对口入口（registry 追新走上面的 /update）。快校验/预占与 update 同构。
-  app.post<{ Params: { name: string } }>('/api/services/:name/rebuild', async (req) => {
+  // —— 迁移（旧版 docker create 服务 → compose 底账）：无文件的自建服务唯一入口。
+  // 与旧 rebuild 同风险面（rm 后按原形状重建，数据在卷里无损），前端入口对无卷
+  // custom 给可行动警告。job 视图的 image/ip 填 meta 现值（纯展示）。
+  app.post<{ Params: { name: string } }>('/api/services/:name/migrate', async (req) => {
     const name = req.params.name;
     await requireService(name);
     const m = await getServiceMeta(name);
-    if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法重建——删除后重新创建一次即可`);
-    if (m.adopted) {
-      // 重建同样 = rm 后按 mysandbox 形状重建——会抹掉外部容器自己的挂载/端口/网络配置。
-      throw conflict(`"${name}" 是收编的外部容器，不支持原地重建（生命周期归它自己的编排方管）`);
-    }
+    if (!m) throw conflict(`缺少 "${name}" 的登记元数据（state.json），无法迁移——删除后重新创建即可`);
+    if (m.adopted) throw conflict(`"${name}" 是收编的外部容器，没有 compose 底账可迁移`);
+    if (await composeFileExists(name)) throw conflict(`"${name}" 已有 compose 底账，无需迁移（改配置请用「应用」）`);
     if (!tryReserveJobName(name)) throw conflict(`「${name}」已有任务进行中`);
     const ip = (await containerIpamIp(name)) ?? m.ip;
     reserveJobIp(ip);
     try {
-      const job = startServiceJob({ name, image: m.image, ip, kind: 'rebuild' }, (ctx) =>
-        runServiceRebuild(cfg, name, ctx),
+      const job = startServiceJob({ name, image: m.image, ip, kind: 'migrate' }, (ctx) =>
+        runServiceMigrate(cfg, name, ctx),
       );
       return { jobId: job.id };
     } catch (e) {

@@ -224,37 +224,6 @@ export async function serviceNameExists(name: string): Promise<boolean> {
   return rows.some((r) => r.Names.split(',')[0].replace(/^\//, '') === name);
 }
 
-export interface CreateServiceArgs {
-  name: string;
-  image: string;
-  ip: string;
-  network: string;
-  labels: Record<string, string>;
-  env: Record<string, string>;
-  volume?: { source: string; target: string } | null;
-  command?: string[];
-}
-
-export async function createServiceContainer(args: CreateServiceArgs): Promise<void> {
-  const argv = [
-    'create',
-    '--name', args.name,
-    '--hostname', args.name,
-    '--network', args.network,
-    '--ip', args.ip,
-    '--restart', 'unless-stopped',
-  ];
-  for (const [k, v] of Object.entries(args.labels)) argv.push('--label', `${k}=${v}`);
-  if (args.volume) argv.push('--mount', `source=${args.volume.source},target=${args.volume.target}`);
-  for (const [k, v] of Object.entries(args.env)) argv.push('--env', `${k}=${v}`);
-  argv.push(args.image);
-  if (args.command?.length) argv.push(...args.command);
-  const r = await dockerExec(argv, 60_000);
-  if (!r.ok) {
-    throw new Error(`docker create failed: ${r.stderr.trim() || 'no output'}`);
-  }
-}
-
 // 把既有容器接入用户网络（收编用）：running 容器热加第二块网卡，停机容器 start 时生效。
 // 带 --ip 落静态 IP（进 IPAMConfig，停机也在）；不带则动态分配（只存在于运行时 IPAddress）。
 export async function connectServiceNetwork(name: string, network: string, ip?: string): Promise<void> {
@@ -312,74 +281,9 @@ export async function containerPid(name: string): Promise<number | null> {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
-// 镜像的本地 ID（sha256:…；查不到 = null）。服务更新用它判断 pull 前后镜像是否变化
-// ——变了才值得重建容器，没变就是「已是最新」。
-export async function imageId(ref: string): Promise<string | null> {
-  const r = await dockerExec(['image', 'inspect', '--format', '{{.Id}}', ref], 5_000);
-  if (!r.ok) return null;
-  const id = r.stdout.trim();
-  return id || null;
-}
-
-// 容器现用镜像的 ID（sha256:…；查不到 = null）。服务重建用它对比本地 m.image 的当前
-// ID——相同 = 容器已跑在本地这份镜像上，重建无事发生（防误点白重建）。
-export async function containerImageId(name: string): Promise<string | null> {
-  const r = await dockerExec(['container', 'inspect', '--format', '{{.Image}}', name], 5_000);
-  if (!r.ok) return null;
-  const id = r.stdout.trim();
-  return id || null;
-}
-
-// 批量查容器现用镜像 ID：{{.Name}}={{.Image}} 每容器一行（{{.Name}} 带 / 前缀，剥掉）。
-// docker 对缺失项打 stderr 并 exit 1，stdout 里查到的照常输出——按行解析、缺失不进 map。
-// 服务列表的镜像身份展示用（一次 exec 覆盖全部服务，与个数无关）。
-export async function containerImageIds(names: string[]): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
-  if (!names.length) return map;
-  const r = await dockerExec(['container', 'inspect', '--format', '{{.Name}}={{.Image}}', ...names], 10_000);
-  for (const line of r.stdout.split('\n')) {
-    const eq = line.indexOf('=');
-    if (eq <= 1) continue;
-    const name = line.slice(1, eq);
-    const id = line.slice(eq + 1).trim();
-    if (name && id.startsWith('sha256:')) map.set(name, id);
-  }
-  return map;
-}
-
-export interface ImageIndex {
-  byRef: Map<string, string>; // ref → 本地镜像 ID（查不到的 ref 不进）
-  byId: Map<string, string[]>; // ID → RepoTags（悬空镜像无 tag 不进）
-}
-
-// 本地镜像索引：一次 image inspect 建两张映射——ref→ID 判漂移，ID→RepoTags 回答
-// 「跑的是哪个版本」（myapikey:latest 背后可能是任意一版 build）。两个 ref 指同一
-// 镜像自然落到同一 ID；RepoTags 是 JSON 紧凑串无空格，按第一个空格切开解析。
-export async function imageIndex(refs: string[]): Promise<ImageIndex> {
-  const idx: ImageIndex = { byRef: new Map(), byId: new Map() };
-  const unique = [...new Set(refs.filter(Boolean))];
-  if (!unique.length) return idx;
-  const r = await dockerExec(['image', 'inspect', '--format', '{{json .RepoTags}} {{.Id}}', ...unique], 10_000);
-  for (const line of r.stdout.split('\n')) {
-    const sp = line.indexOf(' ');
-    if (sp <= 0) continue;
-    let tags: unknown;
-    try {
-      tags = JSON.parse(line.slice(0, sp));
-    } catch {
-      continue;
-    }
-    const id = line.slice(sp + 1).trim();
-    if (!id.startsWith('sha256:') || !Array.isArray(tags)) continue;
-    if (tags.length) idx.byId.set(id, tags as string[]);
-    for (const t of tags) if (unique.includes(t)) idx.byRef.set(t, id);
-  }
-  return idx;
-}
-
-// 重建前的现场快照：运行态 + labels + 命名卷的容器内挂载点。更新（拉新镜像后按原
-// 形状重建容器）要复刻创建时的全部形状——env/command 在 meta 里，卷挂载点 meta 没记
-// （只有卷名），labels（含 preset/created-at）也在容器身上，inspect 是权威。
+// 迁移前的现场快照：运行态 + labels + 命名卷的容器内挂载点。旧版（docker create）
+// 服务迁移到 compose 文件时要从这里复刻形状——env/command 在 meta 里，卷挂载点
+// meta 没记（只有卷名），labels（含 preset/created-at）在容器身上，inspect 是权威。
 export interface ServiceSnapshot {
   running: boolean;
   labels: Record<string, string>;
@@ -402,6 +306,19 @@ export async function inspectServiceSnapshot(name: string): Promise<ServiceSnaps
   } catch {
     return null;
   }
+}
+
+// compose 漂移检测的容器侧：最后一次 up 时 compose 按配置算出的 hash（label）。非
+// compose 管的容器（旧版 docker create / 收编）label 缺席 = 空串 → 调用方按「未应用/
+// 待迁移」理解。与 composeFileHash 同一算法来源，逐字节可比。
+export async function containerComposeHash(name: string): Promise<string | null> {
+  const r = await dockerExec(
+    ['container', 'inspect', '--format', '{{index .Config.Labels "com.docker.compose.config-hash"}}', name],
+    5_000,
+  );
+  if (!r.ok) return null;
+  const v = r.stdout.trim();
+  return v || null;
 }
 
 // 容器是否存在的三态判定：true=在 / false=确认无（no such object）/ null=查询失败不可判定。
@@ -455,12 +372,6 @@ export async function listImages(): Promise<DockerImageRow[]> {
   return dockerJsonLines<DockerImageRow>(['images']);
 }
 
-// 镜像是否已在本地（按引用名查，tag 或 digest 均可）。
-export async function imageExistsLocal(image: string): Promise<boolean> {
-  const r = await dockerExec(['image', 'inspect', image], 5_000);
-  return r.ok;
-}
-
 // daemon 的全局 registry-mirrors（daemon.json 的 registry-mirrors）。拉 docker.io 走它；
 // 为空 = 直连，国内网络/代理环境下常超时（本机实测：daemon.json 无 mirrors 且宿主在
 // fake-ip 网络下时 auth.docker.io 直接 EOF）。返回 null = 探测失败（调用方省略字段，不猜）。
@@ -475,152 +386,6 @@ export async function registryMirrors(): Promise<string[] | null> {
   } catch {
     return null;
   }
-}
-
-export interface PullOpts {
-  timeoutMs?: number; // 硬超时（默认 30min）：到点 SIGKILL——兜底防呆，正常该先被 idle 看门狗拦下
-  idleMs?: number; // 无输出看门狗（默认 5min）：TLS 握手卡死的 pull 完全静默，等硬超时纯属干等
-  signal?: AbortSignal; // 取消：SIGKILL 子进程，以带 canceled 标记的错误 reject
-}
-
-// docker pull 的流式进度。无 TTY 下 docker CLI 输出 JSON 行，逐行解析后聚合：
-//   - {status} 无 id/progress（Pulling from / Digest / Status / Verifying Checksum…）→ 立即透传
-//   - {id, progressDetail} → 层进度聚合，每 2s flush 一行摘要（原始每层 ~500ms 一条
-//     带 [===>] 进度条的行，直接透传全是垃圾）
-//   - {error} → 记为致命错误
-// JSON.parse 失败的行原样透传（防 CLI 混入非 JSON 输出）。
-// 镜像已在本地时调用方跳过（imageExistsLocal 判定）：pull 对本地已有的 tag 也会去
-// registry 校验 manifest——离线/网络受限环境下白白失败（实测 docker 29）。
-export async function pullImageStream(image: string, onLine: (line: string) => void, opts: PullOpts = {}): Promise<void> {
-  const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
-  const idleMs = opts.idleMs ?? 5 * 60_000;
-  await new Promise<void>((resolveP, rejectP) => {
-    const child = spawn('docker', ['pull', image], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let err = '';
-    let done = false; // close 只处理一次（超时/取消先 kill，close 跟着触发）
-    let hardTimer: ReturnType<typeof setTimeout> | null = null;
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    let killReason: 'timeout' | 'idle' | 'cancel' | null = null;
-
-    const finish = (fn: () => void): void => {
-      if (done) return;
-      done = true;
-      if (hardTimer) clearTimeout(hardTimer);
-      if (idleTimer) clearTimeout(idleTimer);
-      fn();
-    };
-
-    // —— 层进度聚合 ——
-    const layers = new Map<string, { current: number; total: number }>();
-    let lastSummary = '';
-    const flushSummary = (): void => {
-      let cur = 0;
-      let total = 0;
-      for (const l of layers.values()) {
-        if (l.total > 0) {
-          cur += l.current;
-          total += l.total;
-        }
-      }
-      if (total === 0) return;
-      const mb = (n: number): string => `${(n / 1024 / 1024).toFixed(1)}MB`;
-      const pct = Math.floor((cur / total) * 100);
-      const s = `层进度：${layers.size} 层 · ${mb(cur)}/${mb(total)}（${pct}%）`;
-      if (s !== lastSummary) {
-        // 数字没变（卡住）就不重复刷行——停滞靠 idle 看门狗报，不靠刷屏
-        lastSummary = s;
-        onLine(s);
-      }
-    };
-    const summaryTimer = setInterval(flushSummary, 2_000);
-
-    const armIdle = (): void => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        killReason = 'idle';
-        child.kill('SIGKILL');
-      }, idleMs);
-    };
-    hardTimer = setTimeout(() => {
-      killReason = 'timeout';
-      child.kill('SIGKILL');
-    }, timeoutMs);
-    armIdle();
-
-    interface PullEvent {
-      status?: string;
-      id?: string;
-      progress?: string; // 带进度条的层事件（[===> ] 12.3MB/43.2MB）——聚合，不透传
-      progressDetail?: { current?: number; total?: number };
-      error?: string;
-      errorDetail?: { message?: string };
-    }
-    const feed = (buf: Buffer): void => {
-      armIdle(); // 任何输出都算「活着」
-      for (const rawLine of buf.toString('utf8').split('\n')) {
-        const s = rawLine.trim();
-        if (!s) continue;
-        let ev: PullEvent;
-        try {
-          ev = JSON.parse(s) as PullEvent;
-        } catch {
-          onLine(s); // 非 JSON 输出原样透传
-          continue;
-        }
-        if (ev.error || ev.errorDetail?.message) {
-          err += `${ev.error ?? ev.errorDetail?.message}\n`;
-          continue;
-        }
-        if (ev.id && ev.progressDetail) {
-          layers.set(ev.id, {
-            current: ev.progressDetail.current ?? 0,
-            total: ev.progressDetail.total ?? 0,
-          });
-          continue;
-        }
-        if (ev.status && !ev.progress) onLine(ev.status);
-      }
-    };
-
-    child.stdout?.on('data', feed);
-    child.stderr?.on('data', (b: Buffer) => {
-      feed(b);
-      err += b.toString('utf8');
-    });
-    child.on('error', (e) => {
-      clearInterval(summaryTimer);
-      finish(() => rejectP(e));
-    });
-    child.on('close', (code) => {
-      clearInterval(summaryTimer);
-      if (code === 0) {
-        flushSummary(); // 收尾刷最后一行（层全部完成后）
-        finish(resolveP);
-        return;
-      }
-      finish(() => {
-        if (killReason === 'cancel' || opts.signal?.aborted) {
-          rejectP(Object.assign(new Error(`已取消拉取 ${image}`), { canceled: true }));
-        } else if (killReason === 'timeout') {
-          rejectP(new Error(`拉取超时（${Math.round(timeoutMs / 60_000)} 分钟）——镜像 ${image}`));
-        } else if (killReason === 'idle') {
-          rejectP(new Error(`拉取停滞（${Math.round(idleMs / 60_000)} 分钟无输出）——网络受限或 registry 不可达，镜像 ${image}`));
-        } else {
-          rejectP(new Error(err.trim().split('\n').pop() || `docker pull exited ${code}`));
-        }
-      });
-    });
-    if (opts.signal) {
-      opts.signal.addEventListener(
-        'abort',
-        () => {
-          killReason = 'cancel';
-          child.kill('SIGKILL');
-        },
-        { once: true },
-      );
-    }
-  });
 }
 
 // —— 卷 ——

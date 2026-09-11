@@ -1,17 +1,17 @@
-// 服务任务的状态跟踪 + 完成通知 + 更新/重建入口（模块级单例）。
+// 服务任务的状态跟踪 + 完成通知 + 迁移入口（模块级单例）。
 // ServicesPanel（3s）与侧栏（15s/3s 自适应）两个轮询器都把最新任务表喂进来：
 // - 按 jobId 记住上一次 state，只有「见过 running 且落到终态」的跳变才发 toast——
 //   两个轮询器命中同一次跳变天然只发一条，页面刷新/首拉不会对已完成任务补发通知；
 // - canceled 是用户自己点的，不通知；
-// - create / update / rebuild 三种任务的文案分支（update = 拉新镜像重建，rebuild = 用
-//   本地镜像重建，详见 services.ts）。
+// - create / apply / migrate 三种任务的文案分支（apply = 配置保存应用，migrate =
+//   旧服务迁移到 compose 底账，详见 services.ts / serviceCompose.ts）。
 import { toast } from 'vue-sonner'
 import type { ServiceJobView, ServiceView } from '@/lib/api'
-import { rebuildService, updateService } from './api'
+import { migrateService } from './api'
 
 const lastStates = new Map<string, string>()
 
-const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', update: '更新', rebuild: '重建' }
+const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', migrate: '迁移' }
 
 // 喂入一次轮询快照，返回 running 数（轮询器据此自适应间隔/摘要条展示）。
 export function trackServiceJobs(jobs: ServiceJobView[]): number {
@@ -29,10 +29,10 @@ export function trackServiceJobs(jobs: ServiceJobView[]): number {
       if (j.state === 'done') {
         if (j.kind === 'create') {
           toast.success(`应用容器 ${j.name} 就绪（${j.ip}）`, {
-            description: '容器内可直接按服务名连接（hosts 已注入）。',
+            description: '容器内可直接按服务名连接（hosts 已注入）；配置底账在 ~/.config/mysandbox/compose/。',
           })
         } else {
-          // statusText 携带收尾叙事：「镜像已是最新，无需重建」/「服务 xx 已更新/已重建」
+          // statusText 携带收尾叙事：「配置已应用」「已迁移到 compose 底账」等
           toast.success(`应用容器 ${j.name} ${kindLabel[j.kind]}完成`, { description: j.statusText })
         }
       } else if (j.state === 'error') {
@@ -48,35 +48,21 @@ export function trackServiceJobs(jobs: ServiceJobView[]): number {
   return running
 }
 
-// 更新/重建共用的入口壳：无数据卷的服务动作 = 重建容器，可写层数据（容器内非挂载
-// 路径）会丢——先给可行动的警告，确认才动手；其余直接开。启动失败（同名任务进行中 /
-// meta 缺失）toast 展示，不弹窗打断。
-function requestServiceMutation(s: ServiceView, warn: string, go: () => void): void {
+// 迁移入口（服务面板「配置」页，旧版无底账服务专用）：rm 后按原形状经 compose
+// 重建接管——数据在命名卷里无损；无数据卷的 custom 服务可写层会换新容器，先给
+// 可行动的警告，确认才动手。启动失败（同名任务进行中 / meta 缺失）toast 展示。
+export function requestServiceMigrate(s: ServiceView): void {
+  const go = () => {
+    migrateService(s.name)
+      .then(() => toast.info(`已开始迁移 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
+      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
+  }
   if (s.preset === 'custom' && !s.volume) {
-    toast.warning(warn, {
-      action: { label: '仍要执行', onClick: go },
+    toast.warning(`「${s.name}」没有数据卷——迁移会重建容器，可写层里的数据将丢失`, {
+      action: { label: '仍要迁移', onClick: go },
       duration: 10_000,
     })
     return
   }
   go()
-}
-
-// 检查更新入口（侧栏卡片右键菜单 / 服务面板按钮共用）：registry latest 追新——
-// 去 registry 拉新镜像，ID 变了才重建。文案挑明「去 registry」，与本地重建区分。
-export function requestServiceUpdate(s: ServiceView): void {
-  requestServiceMutation(s, `「${s.name}」没有数据卷——检查更新若拉到新版会重建容器，可写层里的数据将丢失`, () => {
-    updateService(s.name)
-      .then(() => toast.info(`已开始检查更新 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
-      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
-  })
-}
-
-// 本地重建入口（同上）：用本地镜像重建，不碰 registry——本地 build 迭代服务的对口入口。
-export function requestServiceRebuild(s: ServiceView): void {
-  requestServiceMutation(s, `「${s.name}」没有数据卷——本地重建会删掉现容器重做，可写层里的数据将丢失`, () => {
-    rebuildService(s.name)
-      .then(() => toast.info(`已开始本地重建 ${s.name}（进度见任务横幅 / 侧栏摘要）`))
-      .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
-  })
 }

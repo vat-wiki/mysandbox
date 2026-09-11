@@ -5,10 +5,12 @@
 // 信息分层展示（一口气全铺开心智负担太重）：
 //   一层（常看）= 名称/状态/操作 + 连接命令 + IP，直接给；
 //   二层（偶看）= 环境变量凭据 + 元信息，折叠默认收；
+//   二点五层（改配置）= compose 底账（CodeEditor + 应用）——文件是唯一配置真相，
+//     保存即 compose up -d（与终端手改等价）；无底账的旧版服务出迁移入口；
 //   三层（排障）= 日志，折叠默认收，点开才拉取、开着才跟刷（顺带省轮询）。
 // 创建任务以顶部横幅出现（仅进行中/失败/取消可见，点开看日志/取消），完成自动选中
 // 产出的服务。创建表单仍是 ServiceCreateDialog；完成 toast 由 lib/serviceJobs.ts 去重。
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import {
   listServices,
   startService,
@@ -18,15 +20,18 @@ import {
   unadoptService,
   getServiceLogs,
   getServiceListenPorts,
+  getServiceConfig,
+  applyServiceConfig,
   listServiceJobs,
   getServiceJob,
   cancelServiceJob,
   Unauthorized,
   type ServiceView,
   type ServicesStatus,
+  type ServiceConfigView,
   type ServiceJobView,
 } from '@/lib/api'
-import { trackServiceJobs, requestServiceUpdate, requestServiceRebuild } from '@/lib/serviceJobs'
+import { trackServiceJobs, requestServiceMigrate } from '@/lib/serviceJobs'
 import { serviceUrl } from '@/lib/proxy'
 import { stateLabel } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -44,6 +49,9 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
 import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight, Import } from 'lucide-vue-next'
+
+// Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
+const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
 
 // initialSelect：侧栏卡片点击带来的服务名——打开或已打开时定位到该服务。
 const props = defineProps<{ initialSelect?: string }>()
@@ -70,17 +78,70 @@ watch(
     if (v && v !== selService.value) selService.value = v
   },
 )
-// 换服务：折叠层归位（日志懒加载随之失效，不预取）；监听端口立即重扫。
+// 换服务：折叠层归位（日志/配置懒加载随之失效，不预取）；监听端口立即重扫。
 watch(selService, () => {
   openInfo.value = false
+  openCfg.value = false
   openLog.value = false
+  cfg.value = null
+  cfgYaml.value = ''
   void refreshListen()
 })
 
 // —— 分层折叠态 ——
 const openInfo = ref(false)
+const openCfg = ref(false)
 const openLog = ref(false)
 const envCount = computed(() => (sel.value ? Object.keys(sel.value.env).length : 0))
+
+// —— 配置底账（compose.yaml）：文件是唯一配置真相 ——
+// 展开才拉取（省轮询）；应用 = 把编辑器内容 POST 回去（后端校验写盘 + compose up）。
+// dirty（编辑未保存）与 drift（文件与容器不一致）分开提示；Ctrl+S 走 CodeEditor 的 save 事件。
+const cfg = ref<ServiceConfigView | null>(null)
+const cfgYaml = ref('')
+const cfgErr = ref('')
+const cfgLoading = ref(false)
+const applying = ref(false)
+const cfgDirty = computed(() => cfg.value != null && cfgYaml.value !== cfg.value.yaml)
+watch([selService, openCfg], ([name, open]) => {
+  if (open && name) void loadCfg(name)
+})
+async function loadCfg(name: string) {
+  cfgLoading.value = true
+  cfgErr.value = ''
+  try {
+    const v = await getServiceConfig(name)
+    cfg.value = v
+    cfgYaml.value = v.yaml ?? ''
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    cfgErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    cfgLoading.value = false
+  }
+}
+async function applyCfg(build = false) {
+  const name = selService.value
+  if (!name || applying.value || cfg.value?.yaml == null) return
+  applying.value = true
+  cfgErr.value = ''
+  try {
+    await applyServiceConfig(name, cfgYaml.value, build)
+    // 文件已被后端落盘（应用校验通过）：以编辑器内容为新基准，drift 等任务完成后由刷新归零。
+    cfg.value = { ...cfg.value, yaml: cfgYaml.value, drift: true }
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    cfgErr.value = e instanceof Error ? e.message : String(e) // 坏 yaml 的校验报错，内联回显
+  } finally {
+    applying.value = false
+  }
+}
 
 // —— 日志：懒加载（点开才拉）+ 开着才 3s 跟刷；缓存按服务名留着，重开免拉 ——
 const logs = ref<Record<string, string>>({})
@@ -133,7 +194,7 @@ async function refresh() {
 
 // —— 创建任务横幅：进行中/失败/取消才出现（done 由自动选中承接）——
 const jobs = ref<ServiceJobView[]>([])
-const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', update: '更新', rebuild: '重建' }
+const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', migrate: '迁移' }
 const activeJobs = computed(() =>
   jobs.value.filter((j) => j.state === 'running' || j.state === 'error' || j.state === 'canceled').slice(0, 3),
 )
@@ -150,6 +211,12 @@ async function refreshJobs() {
     const fresh = [...doneIds].filter((id) => !seenDoneIds.has(id))
     if (seenDoneIds.size > 0 && fresh.length) {
       await refresh()
+      // 选中服务的任务落定（创建/应用/迁移都改容器或底账）→ 配置页开着就重载（drift 归零）。
+      const touchedSel = fresh.some((id) => {
+        const j = v.jobs.find((x) => x.id === id)
+        return j && j.name === selService.value && j.state === 'done'
+      })
+      if (touchedSel && openCfg.value) void loadCfg(selService.value)
       for (const id of fresh) {
         const j = v.jobs.find((x) => x.id === id)
         if (j?.state === 'done' && j.result) {
@@ -298,12 +365,6 @@ function fmtDate(v: string): string {
   return isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-// 镜像身份一行：本地 tag（版本语义）+ 短 ID（build 语义）——「跑的是哪份」一眼可读。
-function fmtImage(tags: string[] | undefined, id: string): string {
-  const short = id.replace(/^sha256:/, '').slice(0, 12)
-  return tags?.length ? `${tags.join(' ')} · ${short}` : short
-}
-
 async function copyVal(v: string) {
   try {
     await navigator.clipboard.writeText(v)
@@ -421,12 +482,12 @@ onUnmounted(() => {
                 <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.displayName || sel.name }}</h3>
                 <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset === 'adopted' ? '收编' : sel.preset }}</Badge>
                 <span
-                  v-if="sel.imageDrift === true"
+                  v-if="sel.adopted === false && sel.hasCompose === false"
                   class="shrink-0 text-amber-600"
-                  title="容器现用镜像 ≠ 本地 ref 指向——本地 build 过新版，点「本地重建」收编（详情看凭据与镜像身份）"
-                  >⚠ 本地有新镜像</span
+                  title="旧版创建、没有 compose 底账——配置页可一键迁移"
+                  >旧版 · 待迁移</span
                 >
-                <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？），重建可恢复">⚠</span>
+                <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？）">⚠</span>
                 <span class="shrink-0 text-xs" :class="stateCls(sel)" :title="sel.status">{{ stateLabel(sel.state) }}</span>
               </div>
               <p v-if="sel.description" class="text-xs text-muted-foreground">{{ sel.description }}</p>
@@ -450,29 +511,8 @@ onUnmounted(() => {
                   >停止</Button
                 >
                 <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
-                <!-- 检查更新：去 registry 拉新镜像，ID 变了才按原配置重建（latest 追新）；
-                     本地重建：不联网，直接用本地镜像（本地 build 迭代服务的对口入口）。
-                     两者文案把「镜像来源」挑明，避免「更新≠吃本地 build」的误点（实测踩过）。
-                     无数据卷的 custom 由 serviceJobs 的入口先给可行动的警告。任务进顶部横幅。
-                     收编容器不支持原地动作（rm 重建会抹掉它自己的编排配置），不显示。 -->
-                <Button
-                  v-if="!sel.adopted"
-                  variant="outline"
-                  size="sm"
-                  :disabled="!!busyName"
-                  title="从 registry 拉最新镜像，镜像 ID 变了才重建（latest 追新）"
-                  @click="sel && requestServiceUpdate(sel)"
-                  >检查更新</Button
-                >
-                <Button
-                  v-if="!sel.adopted"
-                  variant="outline"
-                  size="sm"
-                  :disabled="!!busyName"
-                  title="不联网：直接用本地镜像按原配置重建容器（本地 build 迭代用）"
-                  @click="sel && requestServiceRebuild(sel)"
-                  >本地重建</Button
-                >
+                <!-- 更新/重建已退役：追新镜像 = 配置页改 image 版本 + 应用；本地 build 迭代 =
+                     构建并应用（up -d --build）。compose 幂等收敛，没有「镜像身份漂移」心智。 -->
                 <!-- 打开：端口表来自实测监听扫描（3s 跟刷，全预设通用），未扫到时回退
                      custom 手工登记端口。非 HTTP 端口浏览器打不开无妨（尽力而为）。 -->
                 <Button
@@ -578,28 +618,7 @@ onUnmounted(() => {
                 </div>
                 <div class="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1 text-xs">
                   <span class="text-muted-foreground">镜像</span>
-                  <span class="flex min-w-0 items-center gap-2">
-                    <span class="min-w-0 truncate font-mono" :title="sel.image">{{ sel.image }}</span>
-                    <span
-                      v-if="sel.imageDrift === true"
-                      class="shrink-0 text-amber-600"
-                      title="容器现用镜像与本地 ref 当前指向不同——本地 build 过新版，点「本地重建」收编"
-                      >⚠ 本地有新镜像</span
-                    >
-                  </span>
-                  <!-- 镜像身份（自建服务）：ref 只是名字，跑的是哪份 build 看 tag/短 ID -->
-                  <template v-if="sel.runningImageId">
-                    <span class="text-muted-foreground">容器现用</span>
-                    <span class="min-w-0 truncate font-mono" :title="sel.runningImageId">{{
-                      fmtImage(sel.runningImageTags, sel.runningImageId)
-                    }}</span>
-                  </template>
-                  <template v-if="sel.imageDrift === true && sel.localImageId">
-                    <span class="text-muted-foreground">本地指向</span>
-                    <span class="min-w-0 truncate font-mono" :title="sel.localImageId">{{
-                      fmtImage(sel.localImageTags, sel.localImageId)
-                    }}</span>
-                  </template>
+                  <span class="min-w-0 truncate font-mono" :title="sel.image">{{ sel.image }}</span>
                   <span class="text-muted-foreground">数据卷</span>
                   <span class="min-w-0 truncate font-mono" :title="sel.volume ?? '无数据卷'">{{ sel.volume ?? '—' }}</span>
                   <template v-if="sel.createdAt">
@@ -612,6 +631,61 @@ onUnmounted(() => {
                   </template>
                 </div>
               </div>
+            </div>
+
+            <!-- 二点五层：配置底账（compose.yaml）——文件是唯一配置真相，默认收 -->
+            <div class="border-t pt-2">
+              <div class="flex items-center">
+                <button
+                  type="button"
+                  class="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  @click="openCfg = !openCfg"
+                >
+                  <ChevronRight class="size-3.5 shrink-0 transition-transform" :class="openCfg ? 'rotate-90' : ''" />
+                  配置（compose.yaml）
+                  <span v-if="cfgDirty" class="shrink-0 font-normal text-amber-600">未保存</span>
+                  <span v-else-if="cfg?.drift" class="shrink-0 font-normal text-amber-600">待应用</span>
+                </button>
+                <Button v-if="openCfg" variant="ghost" size="icon-xs" title="重新读取文件" @click="selService && loadCfg(selService)">
+                  <RefreshCw class="size-3.5" />
+                </Button>
+              </div>
+
+              <!-- 收编容器没有底账（生命周期归它自己的编排方） -->
+              <p v-if="openCfg && sel.adopted" class="pt-1.5 text-xs text-muted-foreground">
+                收编容器没有 compose 底账——它的配置归原来的编排方（compose 栈 / docker run）管。
+              </p>
+
+              <!-- 旧版创建（无底账）：迁移入口 -->
+              <div v-else-if="openCfg && cfg && cfg.yaml == null" class="space-y-2 pt-1.5">
+                <p class="text-xs text-muted-foreground">
+                  这个服务是旧版创建的，还没有 compose 底账——改配置/追新镜像都走不了「编辑 + 应用」。
+                  迁移会按当前容器形状生成 <span class="font-mono">{{ cfg.path }}</span
+                  >，然后由 compose 接管（数据卷无损，容器会重建一次）。
+                </p>
+                <Button size="sm" :disabled="!!busyName || applying" @click="sel && requestServiceMigrate(sel)">迁移到 compose 底账</Button>
+              </div>
+
+              <!-- 编辑 + 应用 -->
+              <div v-else-if="openCfg && cfg && cfg.yaml != null" class="space-y-2 pt-1.5">
+                <p class="truncate text-[11px] text-muted-foreground" :title="cfg.path">
+                  <span class="font-mono">{{ cfg.path }}</span>
+                  <span class="ml-1.5 text-muted-foreground/60">终端手改此文件 + docker compose up -d 等价</span>
+                </p>
+                <p v-if="cfgLoading" class="py-6 text-center text-xs text-muted-foreground">读取中…</p>
+                <CodeEditor v-else v-model="cfgYaml" language="yaml" class="h-72 rounded-md border" @save="applyCfg(false)" />
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <Button size="sm" :disabled="applying || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
+                    <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 应用
+                  </Button>
+                  <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying" @click="applyCfg(true)">
+                    <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 构建并应用
+                  </Button>
+                  <span v-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
+                  <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
+                </div>
+              </div>
+              <p v-if="openCfg && cfgErr" class="pt-1.5 text-xs text-destructive">{{ cfgErr }}</p>
             </div>
 
             <!-- 三层：日志（默认收，点开才拉、开着才跟刷） -->

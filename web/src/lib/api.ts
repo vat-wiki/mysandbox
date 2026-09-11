@@ -451,13 +451,8 @@ export interface ServiceView {
   createdAt?: string
   command?: string[]
   metaMissing?: boolean
-  adopted?: boolean // 收编的外部容器：无删除/更新，只可取消收编
-  // —— 镜像身份（仅自建服务带；ref 只是名字，跑的是哪份 build 要看 ID）——
-  runningImageId?: string // 容器现用镜像 ID（sha256:…）
-  runningImageTags?: string[] // 现用镜像在本地的全部 tag——「跑的是哪个版本」
-  localImageId?: string // meta.image 当前本地指向的 ID
-  localImageTags?: string[] // 同上镜像的 tag 集
-  imageDrift?: boolean // true = 本地 ref 已指向别的 build（可「重建」收编）；false = 容器即本地最新
+  adopted?: boolean // 收编的外部容器：无删除/改配置，只可取消收编
+  hasCompose?: boolean // compose 底账在（可改配置可应用）；managed 而无文件 = 旧版创建 → 迁移入口
 }
 
 export interface ServicesStatus {
@@ -523,13 +518,24 @@ export const getServiceLogs = (name: string, tail = 200) =>
 // 端口（回环监听已剔除），web = 其中实测返回 HTML 的（可点开）。
 export const getServiceListenPorts = (name: string) =>
   api(`/api/services/${name}/listen`) as Promise<{ ports: number[]; web: number[] }>
-// 更新（latest 追新）：后台任务——拉新镜像，ID 变了才按原配置重建容器。
-export const updateService = (name: string) =>
-  postJson(`/api/services/${name}/update`) as Promise<{ jobId: string }>
-// 重建（本地镜像）：不碰 registry，直接用本地镜像按原配置重建容器——本地 build
-// 迭代的服务用这个让改动生效；容器已在用本地镜像时无事发生。
-export const rebuildService = (name: string) =>
-  postJson(`/api/services/${name}/rebuild`) as Promise<{ jobId: string }>
+// —— 配置底账（compose.yaml）：文件是唯一配置真相 ——
+export interface ServiceConfigView {
+  name: string
+  path: string // compose.yaml 绝对路径（终端手改入口）
+  yaml: string | null // null = 无文件（旧版创建 → 迁移入口；收编容器无底账）
+  hasBuild: boolean // 文件带 build: → 给「构建并应用」
+  hash: string | null // 当前文件 hash（compose config --hash）
+  appliedHash: string | null // 容器 label 里最后一次 up 的 hash
+  drift: boolean // 改了文件还没应用（或应用失败）
+}
+export const getServiceConfig = (name: string) =>
+  api(`/api/services/${name}/config`) as Promise<ServiceConfigView>
+// 应用 = 写文件（后端先校验）+ compose up -d（后台 job，build=true 时带 --build）。
+export const applyServiceConfig = (name: string, yaml: string, build = false) =>
+  postJson(`/api/services/${name}/apply`, { yaml, build }) as Promise<{ jobId: string }>
+// 迁移（旧版 docker create 服务 → compose 底账）：按现容器形状生成文件后接管。
+export const migrateService = (name: string) =>
+  postJson(`/api/services/${name}/migrate`) as Promise<{ jobId: string }>
 // 创建走后台任务：POST 只做快校验 + 预占，成功返回 jobId（进度看 jobs 轮询），
 // 失败（重名/池尽/缺必填）4xx 内联显示在对话框。
 export const createService = (input: CreateServiceInput) =>
@@ -552,10 +558,10 @@ export const listAdoptables = () =>
 export const adoptService = (name: string) => postJson('/api/services/adopt', { name }) as Promise<ServiceView>
 export const unadoptService = (name: string) => postJson(`/api/services/${name}/unadopt`)
 
-// —— 服务创建任务 ——
+// —— 服务任务 ——
 export interface ServiceJobView {
   id: string
-  kind: 'create' | 'update' | 'rebuild'
+  kind: 'create' | 'apply' | 'migrate'
   name: string
   image: string
   ip: string
