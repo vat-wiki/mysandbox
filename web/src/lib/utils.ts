@@ -22,6 +22,7 @@ export function stateLabel(state: string): string {
     paused: '已暂停',
     created: '已创建',
     restarting: '重启中',
+    absent: '未创建',
   }
   return m[state] ?? state
 }

@@ -17,7 +17,7 @@
 //
 // 权限：目录 0700、compose.yaml 0600——env 含密码（与 state.json 同一泄露面）。
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { load as yamlLoad } from 'js-yaml';
@@ -48,10 +48,19 @@ export interface ComposeServiceDef {
   image: string;
   env: Record<string, string>;
   command?: string[];
-  volume: { source: string; target: string } | null;
+  volumes: { source: string; target: string }[]; // named 卷进顶层 external 声明；bind（source 以 / 开头）只进挂载列表
   ip: string;
   network: string;
   labels: Record<string, string>;
+  // —— 接管式收编补全（创建/迁移路径不涉及，缺省即省略）——
+  restart?: string; // 缺省 unless-stopped；'no' 须引号（yaml 布尔字面量），发射时处理
+  entrypoint?: string[];
+  user?: string;
+  workingDir?: string;
+  ports?: { host: string; container: number; proto?: string }[]; // 裸容器原有发布端口，原样保留
+  healthcheck?: { test: string[]; interval?: string; timeout?: string; retries?: number; startPeriod?: string } | null;
+  extraNetworks?: { name: string; ipv4?: string; aliases?: string[] }[]; // 容器原有自定义网络（external 原样保留——tl-db 的 tl-test 不能丢）
+  networkMode?: string; // 'host' 等特殊模式：设了就不进 mysandbox-lan（ip 留空）
 }
 
 export function buildComposeYaml(def: ComposeServiceDef): string {
@@ -66,36 +75,81 @@ export function buildComposeYaml(def: ComposeServiceDef): string {
   L.push(`    image: ${q(def.image)}`);
   L.push(`    container_name: ${q(def.name)}`);
   L.push(`    hostname: ${q(def.name)}`);
-  L.push(`    restart: ${q('unless-stopped')}`);
-  L.push('    networks:');
-  L.push(`      ${def.network}:`);
-  L.push(`        ipv4_address: ${q(def.ip)}`);
-  if (Object.keys(def.env).length) {
-    L.push('    environment:');
-    for (const [k, v] of Object.entries(def.env)) L.push(`      ${k}: ${q(v)}`);
+  if (def.entrypoint?.length) {
+    L.push('    entrypoint:');
+    for (const e of def.entrypoint) L.push(`      - ${q(e)}`);
   }
   if (def.command?.length) {
     L.push('    command:');
     for (const c of def.command) L.push(`      - ${q(c)}`);
   }
-  if (def.volume) {
+  if (def.user) L.push(`    user: ${q(def.user)}`);
+  if (def.workingDir) L.push(`    working_dir: ${q(def.workingDir)}`);
+  L.push(`    restart: ${q(def.restart ?? 'unless-stopped')}`);
+  if (def.networkMode) {
+    // host 等特殊模式：没有服务网络 IP 一说（LXC 按名字不可达是 host 网络的固有语义）
+    L.push(`    network_mode: ${q(def.networkMode)}`);
+  } else {
+    L.push('    networks:');
+    L.push(`      ${def.network}:`);
+    L.push(`        ipv4_address: ${q(def.ip)}`);
+    for (const n of def.extraNetworks ?? []) {
+      L.push(`      ${n.name}:`);
+      if (n.ipv4) L.push(`        ipv4_address: ${q(n.ipv4)}`);
+      if (n.aliases?.length) {
+        L.push('        aliases:');
+        for (const a of n.aliases) L.push(`          - ${q(a)}`);
+      }
+    }
+  }
+  if (def.ports?.length) {
+    L.push('    ports:');
+    for (const p of def.ports) {
+      L.push(`      - ${q(`${p.host}:${p.container}${p.proto && p.proto !== 'tcp' ? `/${p.proto}` : ''}`)}`);
+    }
+  }
+  if (Object.keys(def.env).length) {
+    L.push('    environment:');
+    for (const [k, v] of Object.entries(def.env)) L.push(`      ${k}: ${q(v)}`);
+  }
+  if (def.healthcheck) {
+    L.push('    healthcheck:');
+    L.push('      test:');
+    for (const t of def.healthcheck.test) L.push(`        - ${q(t)}`);
+    if (def.healthcheck.interval) L.push(`      interval: ${q(def.healthcheck.interval)}`);
+    if (def.healthcheck.timeout) L.push(`      timeout: ${q(def.healthcheck.timeout)}`);
+    if (def.healthcheck.retries != null) L.push(`      retries: ${def.healthcheck.retries}`);
+    if (def.healthcheck.startPeriod) L.push(`      start_period: ${q(def.healthcheck.startPeriod)}`);
+  }
+  if (def.volumes.length) {
     L.push('    volumes:');
-    L.push(`      - ${q(`${def.volume.source}:${def.volume.target}`)}`);
+    for (const v of def.volumes) L.push(`      - ${q(`${v.source}:${v.target}`)}`);
   }
   if (Object.keys(def.labels).length) {
     L.push('    labels:');
     for (const [k, v] of Object.entries(def.labels)) L.push(`      ${k}: ${q(v)}`);
   }
-  if (def.volume) {
-    L.push('volumes:');
-    L.push(`  ${def.volume.source}:`);
-    L.push('    external: true');
-    L.push(`    name: ${q(def.volume.source)}`);
+  // —— 顶层 external 声明：卷 + 网络（host 模式两者皆无）——
+  if (!def.networkMode) {
+    const namedVols = def.volumes.filter((v) => !v.source.startsWith('/'));
+    if (namedVols.length) {
+      L.push('volumes:');
+      for (const v of namedVols) {
+        L.push(`  ${v.source}:`);
+        L.push('    external: true');
+        L.push(`    name: ${q(v.source)}`);
+      }
+    }
+    L.push('networks:');
+    const seen = new Set<string>();
+    for (const n of [def.network, ...(def.extraNetworks ?? []).map((x) => x.name)]) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      L.push(`  ${n}:`);
+      L.push('    external: true');
+      L.push(`    name: ${q(n)}`);
+    }
   }
-  L.push('networks:');
-  L.push(`  ${def.network}:`);
-  L.push('    external: true');
-  L.push(`    name: ${q(def.network)}`);
   const header = [
     `# mysandbox 服务 ${def.name} 的唯一配置真相（首版由 mysandbox 生成，之后归你）。`,
     '# 面板「配置」页保存即应用（docker compose up -d）；终端改完本文件后',
@@ -112,10 +166,12 @@ export function buildComposeYaml(def: ComposeServiceDef): string {
 // 用户改过 service key 时 hash 校验要对得上他改后的形状。
 export interface ParsedCompose {
   serviceKey: string;
+  containerName?: string;
   image?: string;
   env: Record<string, string>;
   command?: string[];
   volume?: string | null;
+  volumes: string[]; // 文件声明的全部命名卷（删除时连数据一起删用）
   ip?: string;
   build: boolean;
 }
@@ -152,19 +208,25 @@ export async function readComposeService(name: string): Promise<ParsedCompose | 
     }
   }
   const volumes = Array.isArray(svc.volumes) ? (svc.volumes as unknown[]) : [];
-  const volStr = volumes.find((v): v is string => typeof v === 'string' && v.includes(':'));
+  const volStrs = volumes.filter((v): v is string => typeof v === 'string' && v.includes(':'));
+  const volSources = volStrs.map((v) => v.split(':')[0]);
   const networks = svc.networks && typeof svc.networks === 'object' ? (svc.networks as Record<string, unknown>) : {};
-  const net = Object.values(networks)[0];
-  const ip =
-    net && typeof net === 'object' && typeof (net as Record<string, unknown>).ipv4_address === 'string'
-      ? ((net as Record<string, unknown>).ipv4_address as string)
-      : undefined;
+  // ip 取第一个带 ipv4_address 的网络（我们的发射器把 mysandbox-lan 放首位）
+  let ip: string | undefined;
+  for (const net of Object.values(networks)) {
+    if (net && typeof net === 'object' && typeof (net as Record<string, unknown>).ipv4_address === 'string') {
+      ip = (net as Record<string, unknown>).ipv4_address as string;
+      break;
+    }
+  }
   return {
     serviceKey,
+    containerName: typeof svc.container_name === 'string' ? svc.container_name : undefined,
     image: typeof svc.image === 'string' ? svc.image : undefined,
     env,
     command: Array.isArray(svc.command) ? (svc.command as unknown[]).map(String) : undefined,
-    volume: volStr ? volStr.split(':')[0] : null,
+    volume: volSources[0] ?? null,
+    volumes: volSources,
     ip,
     build: svc.build != null,
   };
@@ -333,4 +395,30 @@ export function ensureComposeRoot(): void {
       log.warn({ err: String(e) }, 'compose root mkdir failed'),
     );
   }
+}
+
+// —— 目录注册表 ——
+// compose/<名>/ 目录本身就是服务清单：agent/用户直接放一份 compose.yaml + up，
+// 面板即出现该服务，不需要过任何表单。目录名即服务名（compose 项目名约定）。
+const DIR_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
+export async function listComposeDirServices(): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(`${CONFIG_DIR}/compose`);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const e of entries) {
+    if (!DIR_NAME_RE.test(e)) continue;
+    if (existsSync(composeFileOf(e))) out.push(e);
+  }
+  return out.sort();
+}
+
+// docker events 的 compose project label 是否命中我们的目录（agent 自放文件的服务，
+// 容器没有我们的 label——启停追平 hosts 靠这条判定）。事件频率低，readdir 足够便宜。
+export async function isManagedComposeProject(project: string): Promise<boolean> {
+  return existsSync(composeDir(project));
 }

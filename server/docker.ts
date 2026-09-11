@@ -217,6 +217,21 @@ export async function listExternalContainers(): Promise<DockerContainerRow[]> {
   }
 }
 
+// 目录注册表服务的容器行：compose project label ∈ 我们目录名集的容器（agent 自放
+// compose 文件起的服务没有我们的 label，靠 project 命中）。业务层拿它和 label 管理的
+// 行做并集/去重（我们生成的文件同样带 project label，两端都会命中）。
+export async function listComposeProjectContainers(projects: string[]): Promise<DockerContainerRow[]> {
+  if (!projects.length) return [];
+  try {
+    const rows = await dockerJsonLines<DockerContainerRow>(['ps', '-a']);
+    const set = new Set(projects);
+    return rows.filter((r) => set.has(rowLabels(r)['com.docker.compose.project'] ?? ''));
+  } catch (e) {
+    log.warn({ err: String(e) }, 'docker ps failed');
+    return [];
+  }
+}
+
 export async function serviceNameExists(name: string): Promise<boolean> {
   // 全量查重（含 dener-* 等外部容器）：docker 容器名全局唯一，撞名 create 会失败，
   // 与其让 create 报晦涩错误不如前置给 409。
@@ -302,6 +317,135 @@ export async function inspectServiceSnapshot(name: string): Promise<ServiceSnaps
       running: raw.State?.Running === true,
       labels: raw.Config?.Labels ?? {},
       volumeTarget: vol?.Destination ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// —— 接管式收编的形状复刻原料 ——
+// 外部裸容器（无 compose label、docker run 起家）没有底账可抄，inspect 是唯一事实。
+// 这里只取「操作者加的形状」：env 要减掉镜像默认值（调用方对 image inspect 做 diff）、
+// 端口/卷/网络/健康检查/restart 原样带回。host 网络模式原样报告（compose network_mode: host）。
+export interface ContainerShape {
+  image: string;
+  env: Record<string, string>;
+  entrypoint: string[];
+  cmd: string[];
+  user: string | null;
+  workingDir: string | null;
+  labels: Record<string, string>;
+  restart: string | null; // 'no' | 'always' | 'unless-stopped' | 'on-failure'
+  networkMode: string | null; // 'bridge' | 'host' | 'none' | <自定义网络名>
+  ports: { host: string; container: number; proto: string }[];
+  networks: { name: string; ipv4: string | null; aliases: string[] }[];
+  volumes: { type: string; name: string | null; source: string | null; destination: string }[];
+  healthcheck: { test: string[]; interval?: string; timeout?: string; retries?: number; startPeriod?: string } | null;
+}
+
+type ShapeRaw = {
+  Config?: {
+    Image?: string;
+    Env?: string[];
+    Entrypoint?: string[] | null;
+    Cmd?: string[] | null;
+    User?: string | null;
+    WorkingDir?: string | null;
+    Labels?: Record<string, string>;
+    Healthcheck?: { Test?: string[]; Interval?: number; Timeout?: number; Retries?: number; StartPeriod?: number } | null;
+  };
+  HostConfig?: {
+    RestartPolicy?: { Name?: string };
+    NetworkMode?: string;
+    PortBindings?: Record<string, { HostIp?: string; HostPort?: string }[] | null>;
+    Binds?: string[] | null;
+  };
+  NetworkSettings?: { Networks?: Record<string, { IPAMConfig?: { IPv4Address?: string } | null; Aliases?: string[] | null }> };
+  Mounts?: { Type?: string; Name?: string; Source?: string; Destination?: string }[];
+};
+
+export async function inspectContainerShape(name: string): Promise<ContainerShape | null> {
+  let raw: ShapeRaw | null = null;
+  try {
+    raw = await dockerJson<ShapeRaw>(['container', 'inspect', name]);
+  } catch {
+    return null;
+  }
+  if (!raw?.Config) return null;
+  const env: Record<string, string> = {};
+  for (const e of raw.Config.Env ?? []) {
+    const i = e.indexOf('=');
+    if (i > 0) env[e.slice(0, i)] = e.slice(i + 1);
+  }
+  const ports: ContainerShape['ports'] = [];
+  for (const [key, binds] of Object.entries(raw.HostConfig?.PortBindings ?? {})) {
+    const [cPort, cProto] = key.split('/');
+    for (const b of binds ?? []) {
+      if (b.HostPort) ports.push({ host: b.HostPort, container: Number(cPort), proto: cProto ?? 'tcp' });
+    }
+  }
+  const networks: ContainerShape['networks'] = [];
+  for (const [nname, n] of Object.entries(raw.NetworkSettings?.Networks ?? {})) {
+    networks.push({ name: nname, ipv4: n.IPAMConfig?.IPv4Address ?? null, aliases: (n.Aliases ?? []).filter(Boolean) });
+  }
+  const ns = (s: number | undefined): string | undefined =>
+    s == null ? undefined : `${Math.round(s / 1e9)}s`; // Go 纳秒时长 → compose 的 "10s"
+  const hc = raw.Config.Healthcheck;
+  return {
+    image: raw.Config.Image ?? '',
+    env,
+    entrypoint: raw.Config.Entrypoint ?? [],
+    cmd: raw.Config.Cmd ?? [],
+    user: raw.Config.User || null,
+    workingDir: raw.Config.WorkingDir || null,
+    labels: raw.Config.Labels ?? {},
+    restart: raw.HostConfig?.RestartPolicy?.Name ?? null,
+    networkMode: raw.HostConfig?.NetworkMode ?? null,
+    ports,
+    networks,
+    volumes: (raw.Mounts ?? [])
+      .filter((m): m is { Type: string; Name?: string; Source?: string; Destination: string } =>
+        (m.Type === 'volume' || m.Type === 'bind') && !!m.Destination)
+      .map((m) => ({ type: m.Type, name: m.Name ?? null, source: m.Source ?? null, destination: m.Destination })),
+    healthcheck:
+      hc && hc.Test?.length
+        ? {
+            test: hc.Test,
+            interval: ns(hc.Interval),
+            timeout: ns(hc.Timeout),
+            retries: hc.Retries,
+            startPeriod: ns(hc.StartPeriod),
+          }
+        : null,
+  };
+}
+
+// 镜像默认形状（env/entrypoint/cmd/working_dir/user）：容器形状减镜像默认 = 操作者加的东西。
+export interface ImageDefaults {
+  env: Record<string, string>;
+  entrypoint: string[];
+  cmd: string[];
+  workingDir: string | null;
+  user: string | null;
+}
+
+export async function inspectImageDefaults(ref: string): Promise<ImageDefaults | null> {
+  try {
+    const raw = await dockerJson<{
+      Config?: { Env?: string[]; Entrypoint?: string[] | null; Cmd?: string[] | null; WorkingDir?: string | null; User?: string | null };
+    }>(['image', 'inspect', ref]);
+    if (!raw?.Config) return null;
+    const env: Record<string, string> = {};
+    for (const e of raw.Config.Env ?? []) {
+      const i = e.indexOf('=');
+      if (i > 0) env[e.slice(0, i)] = e.slice(i + 1);
+    }
+    return {
+      env,
+      entrypoint: raw.Config.Entrypoint ?? [],
+      cmd: raw.Config.Cmd ?? [],
+      workingDir: raw.Config.WorkingDir || null,
+      user: raw.Config.User || null,
     };
   } catch {
     return null;
@@ -431,7 +575,7 @@ export interface ServiceEventSubscription {
 // 时调用方拿收编名集一挡就静默返回，不触发扫描。
 // closed 在流 end/close/error 任一时 resolve（error 吞掉，调用方退避重连）。
 export function subscribeServiceEvents(
-  onEvent: (ev: { name: string; action: string; managed: boolean }) => void,
+  onEvent: (ev: { name: string; action: string; managed: boolean; composeProject?: string }) => void,
 ): ServiceEventSubscription {
   const child: ChildProcess = spawn('docker', [
     'events',
@@ -460,7 +604,7 @@ export function subscribeServiceEvents(
       try {
         const ev = JSON.parse(line) as {
           Action?: string;
-          Actor?: { Attributes?: { name?: string; 'mysandbox.managed-by'?: string } };
+          Actor?: { Attributes?: { name?: string; 'mysandbox.managed-by'?: string; 'com.docker.compose.project'?: string } };
         };
         const name = ev.Actor?.Attributes?.name;
         if (ev.Action && name) {
@@ -468,6 +612,7 @@ export function subscribeServiceEvents(
             name,
             action: ev.Action,
             managed: ev.Actor?.Attributes?.['mysandbox.managed-by'] === 'mysandbox',
+            composeProject: ev.Actor?.Attributes?.['com.docker.compose.project'],
           });
         }
       } catch {
@@ -495,13 +640,28 @@ export function subscribeServiceEvents(
 export async function listServiceEndpoints(
   cfg: Config,
   extraNames: string[] = [],
+  composeProjects: string[] = [], // 目录注册表服务的 project 名（agent 自放文件的服务无我们的 label）
 ): Promise<{ name: string; ip: string }[]> {
   const net = await inspectNetwork(cfg.services.network);
   if (!net) return [];
   const rows = await listServiceContainers(extraNames);
+  let renames: Map<string, string> | null = null;
+  if (composeProjects.length) {
+    const projRows = await listComposeProjectContainers(composeProjects);
+    rows.push(...projRows);
+    // compose 默认命名的容器（<project>-<service>-1）≠ 服务名：hosts 行要用服务名（项目名）
+    for (const r of projRows) {
+      const proj = rowLabels(r)['com.docker.compose.project'];
+      const cname = rowName(r);
+      if (proj && cname !== proj) {
+        if (!renames) renames = new Map();
+        renames.set(cname, proj);
+      }
+    }
+  }
   const running = new Set(rows.filter((r) => r.State === 'running').map(rowName));
   return net.endpoints
     .filter((e) => running.has(e.name))
-    .map((e) => ({ name: e.name, ip: e.ip }))
+    .map((e) => ({ name: renames?.get(e.name) ?? e.name, ip: e.ip }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }

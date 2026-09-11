@@ -15,8 +15,9 @@ import type { ServiceView } from './services.js';
 
 export type JobState = 'running' | 'done' | 'error' | 'canceled';
 // create = 新建服务（写 compose 文件 + up）；apply = 配置页保存应用（up -d）；
-// migrate = 旧版（docker create）服务迁移到 compose 文件。三者最终都是 compose up。
-export type JobKind = 'create' | 'apply' | 'migrate';
+// migrate = 旧版（docker create）服务迁移到 compose 文件；adopt = 接管式收编
+// （复刻裸容器启动方式进底账 + rm + up）。最终都是 compose up 收敛。
+export type JobKind = 'create' | 'apply' | 'migrate' | 'adopt';
 
 // 任务对 run thunk 暴露的全部控制面。log/status 追加进环形缓冲（status 同时更新
 // statusText——列表未展开时前端只显示这一行）；setCancellable 标记当前阶段可否取消

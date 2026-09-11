@@ -9,7 +9,8 @@
 //     保存即 compose up -d（与终端手改等价）；无底账的旧版服务出迁移入口；
 //   三层（排障）= 日志，折叠默认收，点开才拉取、开着才跟刷（顺带省轮询）。
 // 创建任务以顶部横幅出现（仅进行中/失败/取消可见，点开看日志/取消），完成自动选中
-// 产出的服务。创建表单仍是 ServiceCreateDialog；完成 toast 由 lib/serviceJobs.ts 去重。
+// 产出的服务。创建表单已退役（AI 时代服务经 compose 目录/agent 产生），完成 toast 由
+// lib/serviceJobs.ts 去重。
 import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import {
   listServices,
@@ -46,9 +47,8 @@ import {
 // 全面相悖，反覆盖不如直接自绘；焦点陷阱/Esc/遮罩点击关等 a11y 行为由原语自带。
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogClose } from 'reka-ui'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import ServiceCreateDialog from '@/components/ServiceCreateDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
-import { LoaderCircle, Check, X, Ban, RefreshCw, Plus, Globe, ChevronRight, Import } from 'lucide-vue-next'
+import { LoaderCircle, Check, X, Ban, RefreshCw, Globe, ChevronRight, Import } from 'lucide-vue-next'
 
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
@@ -62,8 +62,6 @@ const status = ref<ServicesStatus | null>(null)
 const busyName = ref('')
 const err = ref('')
 const copied = ref('')
-// 创建表单：抽屉头部 ＋ 与空态按钮触发（侧栏 ＋ 由 App 直开表单，不经抽屉）。
-const showCreate = ref(false)
 // 收编：抽屉头部入口（外部容器纳入管理，见 AdoptServiceDialog）。
 const showAdopt = ref(false)
 const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
@@ -194,7 +192,7 @@ async function refresh() {
 
 // —— 创建任务横幅：进行中/失败/取消才出现（done 由自动选中承接）——
 const jobs = ref<ServiceJobView[]>([])
-const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', migrate: '迁移' }
+const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', migrate: '迁移', adopt: '收编接管' }
 const activeJobs = computed(() =>
   jobs.value.filter((j) => j.state === 'running' || j.state === 'error' || j.state === 'canceled').slice(0, 3),
 )
@@ -413,7 +411,6 @@ onUnmounted(() => {
           <img src="/docker.svg" alt="" class="size-4 shrink-0" />
           <DialogTitle class="min-w-0 flex-1 text-sm leading-tight font-semibold">应用容器</DialogTitle>
           <Button variant="ghost" size="icon-xs" title="收编外部容器" @click="showAdopt = true"><Import /></Button>
-          <Button variant="ghost" size="icon-xs" title="新建服务" @click="showCreate = true"><Plus /></Button>
           <DialogClose as-child>
             <Button variant="ghost" size="icon-xs" title="关闭"><X /></Button>
           </DialogClose>
@@ -470,8 +467,12 @@ onUnmounted(() => {
           <div v-else-if="!sel" class="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
             <img src="/docker.svg" alt="" class="size-8 opacity-30" />
             <p class="text-sm text-muted-foreground">暂无应用容器</p>
-            <p class="text-xs text-muted-foreground/60">起个 postgres，容器里 psql -h pg 即通</p>
-            <Button size="sm" class="mt-2" @click="showCreate = true">新建服务</Button>
+            <p class="max-w-xs text-xs leading-relaxed text-muted-foreground/60">
+              服务来自两处：往 <span class="font-mono">~/.config/mysandbox/compose/&lt;名&gt;/</span> 放一份
+              compose.yaml 再 <span class="font-mono">docker compose up -d</span>（agent 干这事最顺手），
+              或收编宿主上现成的容器。
+            </p>
+            <Button size="sm" class="mt-2" @click="showAdopt = true">收编外部容器</Button>
           </div>
 
           <!-- 服务详情（分层） -->
@@ -492,8 +493,12 @@ onUnmounted(() => {
               </div>
               <p v-if="sel.description" class="text-xs text-muted-foreground">{{ sel.description }}</p>
               <div class="flex flex-wrap items-center gap-1.5">
+                <!-- 未创建（目录里只有 compose.yaml 还没 up）：起停无意义，提示为主 -->
+                <span v-if="sel.state === 'absent'" class="text-xs text-muted-foreground">
+                  底账在、容器未创建——终端 <span class="font-mono">docker compose -f {{ sel.name }}/compose.yaml up -d</span> 或配置页应用一次
+                </span>
                 <Button
-                  v-if="!sel.running"
+                  v-else-if="!sel.running"
                   variant="outline"
                   size="sm"
                   :disabled="!!busyName"
@@ -501,16 +506,10 @@ onUnmounted(() => {
                   @click="svcAction('start')"
                   >启动</Button
                 >
-                <Button
-                  v-else
-                  variant="outline"
-                  size="sm"
-                  :disabled="!!busyName"
-                  :title="busyName === sel.name ? '处理中…' : ''"
-                  @click="svcAction('stop')"
+                <Button v-else variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('stop')"
                   >停止</Button
                 >
-                <Button variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
+                <Button v-if="sel.state !== 'absent'" variant="outline" size="sm" :disabled="!!busyName" @click="svcAction('restart')">重启</Button>
                 <!-- 更新/重建已退役：追新镜像 = 配置页改 image 版本 + 应用；本地 build 迭代 =
                      构建并应用（up -d --build）。compose 幂等收敛，没有「镜像身份漂移」心智。 -->
                 <!-- 打开：端口表来自实测监听扫描（3s 跟刷，全预设通用），未扫到时回退
@@ -754,8 +753,6 @@ onUnmounted(() => {
           @confirm="confirmUnadopt"
           @close="pendingUnadopt = ''"
         />
-
-        <ServiceCreateDialog v-if="showCreate" @created="showCreate = false; refreshJobs(); refresh()" @close="showCreate = false" />
 
         <AdoptServiceDialog v-if="showAdopt" @adopted="onAdopted" @close="showAdopt = false" />
       </DialogContent>

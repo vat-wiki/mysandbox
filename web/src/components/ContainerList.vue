@@ -2797,14 +2797,6 @@ onUnmounted(() => {
           >
             <Import />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            title="新建服务"
-            @click="emit('open-services', true)"
-          >
-            <Plus />
-          </Button>
         </div>
         <div
           v-if="svcExpanded"

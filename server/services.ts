@@ -50,6 +50,10 @@ import {
   removeVolume,
   subscribeServiceEvents,
   containerComposeHash,
+  inspectContainerShape,
+  inspectImageDefaults,
+  listComposeProjectContainers,
+  type DockerContainerRow,
 } from './docker.js';
 import {
   adoptedServiceNames,
@@ -66,6 +70,8 @@ import {
   composeFileHash,
   composeFileOf,
   composeUp,
+  isManagedComposeProject,
+  listComposeDirServices,
   readComposeService,
   readComposeYaml,
   removeComposeDir,
@@ -201,6 +207,7 @@ export interface ServiceView {
   metaMissing?: boolean; // label 在但 sidecar 缺（state.json 被清过）
   adopted?: boolean; // 收编的外部容器（无 label，凭证在 sidecar）——前端区分卡片与操作边界
   hasCompose?: boolean; // compose 底账在（可改配置可应用）；managed 而无文件 = 旧版创建，前端出迁移入口
+  container?: string; // 实际容器名（目录注册表服务 compose 项目名 ≠ 容器名时用于 docker 操作）
 }
 
 export interface ServicesStatus {
@@ -241,9 +248,54 @@ export async function listServices(cfg: Config): Promise<{ items: ServiceView[];
   const status = await servicesStatus(cfg);
   if (!status.reachable) return { items: [], status };
   const meta = await getAllServiceMeta();
-  const rows = await listServiceContainers(adoptedServiceNames(meta));
-  const items: ServiceView[] = [];
+  const adoptedNames = adoptedServiceNames(meta);
+  const rows = await listServiceContainers(adoptedNames);
+  // 目录注册表：compose/<名>/ 本身就是服务清单（agent/用户直接放文件 + up）。
+  // 行 → 目录名的映射走 com.docker.compose.project（agent 文件的容器名是
+  // <project>-<service>-1 形状，project 才等于目录名）。
+  const dirNames = new Set(await listComposeDirServices());
+  for (const prow of await listComposeProjectContainers([...dirNames])) {
+    if (!rows.some((r) => rowName(r.Names) === rowName(prow.Names))) rows.push(prow);
+  }
+  const rowByDir = new Map<string, DockerContainerRow>();
+  const coveredRows = new Set<DockerContainerRow>();
   for (const row of rows) {
+    const proj = rowLabels(row)['com.docker.compose.project'];
+    if (proj && dirNames.has(proj)) {
+      rowByDir.set(proj, row);
+      coveredRows.add(row);
+    }
+  }
+  const items: ServiceView[] = [];
+  // —— 目录服务（含正在运行的容器行）——
+  for (const dirName of dirNames) {
+    const row = rowByDir.get(dirName);
+    const comp = await readComposeService(dirName);
+    const envVals = comp?.env ?? {};
+    const name = row ? rowName(row.Names) : dirName;
+    items.push({
+      name: dirName,
+      container: name !== dirName ? name : undefined,
+      preset: 'custom',
+      image: comp?.image ?? row?.Image ?? '',
+      ip: comp?.ip ?? (row ? (await containerIpamIp(name)) ?? null : null),
+      state: row?.State ?? 'absent', // 文件在、容器还没 up = 未创建
+      status: row?.Status ?? '未创建（docker compose up 启动）',
+      running: row?.State === 'running',
+      volume: comp?.volume ?? null,
+      ports: [],
+      envKeys: Object.keys(envVals),
+      env: envVals,
+      connect: [],
+      createdAt: row?.CreatedAt,
+      command: comp?.command,
+      metaMissing: !meta[dirName] && !!row,
+      hasCompose: true,
+    });
+  }
+  // —— label 管理的行 + 收编行（未被目录覆盖的）——
+  for (const row of rows) {
+    if (coveredRows.has(row)) continue;
     const name = rowName(row.Names);
     const m = meta[name];
     const presetKey = m?.preset ?? rowLabels(row)['mysandbox.service-preset'] ?? 'custom';
@@ -363,6 +415,12 @@ async function servicePoolView(
     }
   }
   for (const m of Object.values(await getAllServiceMeta())) used.add(m.ip);
+  // 底账文件里的静态 IP 也是占用（停机/未创建的目录服务不进 network 端点，
+  // meta 可能为空——agent 自放文件的服务根本没 meta）。
+  for (const dirName of await listComposeDirServices()) {
+    const parsed = await readComposeService(dirName);
+    if (parsed?.ip) used.add(parsed.ip);
+  }
   for (const ip of reservedServiceIps()) used.add(ip);
   const assigned: string[] = [];
   const free: string[] = [];
@@ -482,7 +540,7 @@ function defFromPlan(plan: CreateServicePlan, network: string): ComposeServiceDe
     image: plan.image,
     env: plan.env,
     command: plan.command,
-    volume: plan.volume,
+    volumes: plan.volume ? [plan.volume] : [],
     ip: plan.ip,
     network,
     labels: {
@@ -510,10 +568,64 @@ function defFromMeta(m: ServiceMeta, name: string, network: string, snap: { labe
     image: m.image,
     env: m.env,
     command: m.command,
-    volume,
+    volumes: volume ? [volume] : [],
     ip: m.ip,
     network,
     labels,
+  };
+}
+
+// 接管式收编：从外部裸容器的 inspect 复刻「操作者加的形状」。env 减镜像默认值、
+// entrypoint/command 只在与镜像默认不同才写（写了一样语义但文件变噪声）、原自定义
+// 网络原样 external 保留（tl-db 的 tl-test 断了 tl-app 就瞎了）、host 网络模式原样
+// network_mode: host（没有服务网络 IP 一说）。
+function defFromShape(
+  name: string,
+  shape: NonNullable<Awaited<ReturnType<typeof inspectContainerShape>>>,
+  img: Awaited<ReturnType<typeof inspectImageDefaults>>,
+  cfg: Config,
+  ip: string | null,
+): ComposeServiceDef {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(shape.env)) {
+    if (img?.env[k] !== v) env[k] = v;
+  }
+  const eq = (a: string[] | undefined, b: string[] | undefined): boolean => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+  const hostMode = shape.networkMode === 'host';
+  const extras = hostMode
+    ? []
+    : shape.networks
+        .filter((n) => n.name !== 'bridge' && n.name !== cfg.services.network && n.name !== 'none')
+        .map((n) => ({
+          name: n.name,
+          ipv4: n.ipv4 ?? undefined,
+          aliases: n.aliases.filter((a) => a !== name) ?? undefined,
+        }));
+  return {
+    name,
+    image: shape.image,
+    env,
+    entrypoint: eq(shape.entrypoint, img?.entrypoint) || !shape.entrypoint.length ? undefined : shape.entrypoint,
+    command: eq(shape.cmd, img?.cmd) || !shape.cmd.length ? undefined : shape.cmd,
+    volumes: shape.volumes.map((v) => ({
+      source: v.type === 'bind' ? (v.source ?? '') : (v.name ?? ''),
+      target: v.destination,
+    })).filter((v) => v.source),
+    ip: ip ?? '',
+    network: cfg.services.network,
+    labels: {
+      [MANAGED_LABEL]: 'mysandbox',
+      [KIND_LABEL]: 'service',
+      'mysandbox.service-preset': 'adopted',
+      'mysandbox.created-at': new Date().toISOString(),
+    },
+    restart: shape.restart && shape.restart !== 'no' ? shape.restart : undefined,
+    user: shape.user && shape.user !== img?.user ? shape.user : undefined,
+    workingDir: shape.workingDir && shape.workingDir !== img?.workingDir ? shape.workingDir : undefined,
+    ports: shape.ports.length ? shape.ports : undefined,
+    healthcheck: shape.healthcheck ?? undefined,
+    extraNetworks: extras.length ? extras : undefined,
+    networkMode: hostMode ? 'host' : undefined,
   };
 }
 
@@ -649,6 +761,48 @@ export async function runServiceMigrate(cfg: Config, name: string, ctx: JobCtx):
   return (await listServices(cfg)).items.find((x) => x.name === name) ?? viewFallback(name, { ...m, ip }, ip, true);
 }
 
+// —— 接管式收编（后台 job）：写底账 → rm 裸容器 → compose up ——
+// 与 migrate 同构（rm 后失败不回滚，再点一次收敛）；差别只在 def 来源是 inspect 复刻
+// 而非我们的 meta，且收编 meta 写成「自有服务」形状（adopted 清位——从此按 label +
+// 底账双凭证管理，删除/改配置全解锁）。
+export async function runServiceAdopt(cfg: Config, name: string, def: ComposeServiceDef, ctx: JobCtx): Promise<ServiceView> {
+  ctx.status(`复刻启动方式 → ${composeFileOf(name)}`);
+  await writeCompose(name, buildComposeYaml(def));
+
+  ctx.setCancellable(true);
+  ctx.status('移除裸容器，由 compose 接管');
+  await removeContainer(name); // compose 接管不了同名裸容器；数据在卷里
+  try {
+    await composeUp(name, { onLine: (l) => ctx.log(l), signal: ctx.signal, hardTimeoutMs: cfg.services.pullTimeoutMs });
+  } catch (e) {
+    throw new Error(
+      `接管失败（原容器已移除；底账已生成——再点一次「应用」即按 compose 幂等收敛）：` +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+  ctx.setCancellable(false);
+
+  const named = def.volumes.filter((v) => !v.source.startsWith('/'));
+  const meta: ServiceMeta = {
+    preset: 'adopted',
+    image: def.image,
+    env: def.env,
+    command: def.command,
+    volume: named[0]?.source ?? null,
+    ip: def.networkMode ? '' : def.ip,
+    ports: (def.ports ?? []).map((p) => p.container),
+    description: '接管式收编（启动方式复刻自原容器）',
+    createdAt: new Date().toISOString(),
+  };
+  await setServiceMeta(name, meta);
+
+  ctx.status('追平容器 hosts（服务名解析）');
+  await applyServicesBlock(cfg);
+
+  ctx.status(`已接管进 compose 底账：${name}`);
+  return (await listServices(cfg)).items.find((x) => x.name === name) ?? viewFallback(name, meta, meta.ip || def.ip, true);
+}
+
 // 路由层已确保 name 在 label 过滤集里（requireService）。
 export async function deleteService(
   cfg: Config,
@@ -676,10 +830,12 @@ export async function deleteService(
   }
   let dataRemoved = false;
   if (opts.deleteData) {
-    // meta 里 volume 为 null 表示该服务没有数据卷（custom 可无卷）——不能兜底硬造卷名，
+    // 卷清单以底账为准（接管式服务可有多卷），meta.volume 兜底旧形态。meta 里
+    // volume 为 null 表示该服务没有数据卷（custom 可无卷）——不能兜底硬造卷名，
     // 否则对无卷服务删除会报 no such volume（实测踩到）。
-    const volume = m?.volume;
-    if (volume) {
+    const parsed = await readComposeService(name);
+    const volumes = parsed?.volumes.filter((v) => !v.startsWith('/')) ?? (m?.volume ? [m.volume] : []);
+    for (const volume of volumes) {
       await removeVolume(volume); // 卷被别的容器占用等失败原样抛，不假装成功
       dataRemoved = true;
     }
@@ -743,10 +899,12 @@ export interface AdoptableRow {
   status: string;
   networks: string;
   onServiceNetwork: boolean; // 已在服务网络（compose external 等手工挂过）——adopt 复用现 IP
+  compose: boolean; // compose 栈容器（带 project label）——只读收编，不做接管
   ip: string | null;
 }
 
 // 收编候选：宿主上非 mysandbox 管理的容器（无 label），排除已收编。
+// running 在前（收编的对象通常活着；Exited 试验残留靠「显示已停止」展开）。
 export async function listAdoptables(cfg: Config): Promise<AdoptableRow[]> {
   const adopted = new Set(adoptedServiceNames(await getAllServiceMeta()));
   const rows = await listExternalContainers();
@@ -763,15 +921,24 @@ export async function listAdoptables(cfg: Config): Promise<AdoptableRow[]> {
       status: row.Status,
       networks: row.Networks,
       onServiceNetwork: onNet.has(name),
+      compose: !!rowLabels(row)['com.docker.compose.project'],
       ip: onNet.get(name) ?? null,
     });
   }
-  items.sort((a, b) => a.name.localeCompare(b.name));
+  items.sort((a, b) => {
+    const ra = a.state === 'running' ? 0 : 1;
+    const rb = b.state === 'running' ? 0 : 1;
+    return ra !== rb ? ra - rb : a.name.localeCompare(b.name);
+  });
   return items;
 }
 
 // 收编动作。名字校验在路由层（ADOPT_NAME_RE）。
-export async function adoptService(cfg: Config, name: string): Promise<ServiceView> {
+// 两种形态：裸容器（无 compose label）+ takeover = **接管式收编**——inspect 复刻启动
+// 方式生成 compose 底账 → rm 裸容器 → compose up，文件进 compose 目录从此可查可改
+// （重建中断一次、可写层数据丢失的风险由前端确认）；compose 栈容器（带 compose
+// project label）只允许只读收编——底账在原编排方，复制过来就是双真相。
+export async function adoptService(cfg: Config, name: string, opts: { takeover?: boolean } = {}): Promise<ServiceView> {
   await ensureServiceNetwork(cfg);
   // 已受管（label 命中）不是收编对象；已收编的也不能重复收编（会覆盖用户改过的
   // displayName 等元数据）。与进行中任务撞名也要挡——任务预占的容器还没建出来，
@@ -781,12 +948,60 @@ export async function adoptService(cfg: Config, name: string): Promise<ServiceVi
   const managed = await listServiceContainers();
   if (managed.some((r) => rowName(r.Names) === name)) throw conflict(`"${name}" 已是受管服务`);
   if (!tryReserveJobName(name)) throw conflict(`同名任务「${name}」进行中`);
+  // 注意任务名预占的释放纪律：takeover 路径把释放交给 jobs.ts run() 的 finally（job
+  // 是异步的，这里 finally 释放会架空互斥）；只读路径是同步动作，路径尾部自己释放。
+  let releaseHere = true;
   try {
     const row = (await listExternalContainers()).find((r) => rowName(r.Names) === name);
     if (!row) throw notFound(`docker 容器 "${name}" 不存在（或已受管）`);
+    const composeProject = rowLabels(row)['com.docker.compose.project'];
+    if (opts.takeover && composeProject) {
+      throw conflict(`"${name}" 是 compose 栈容器（项目 ${composeProject}）——底账在原编排方，不做接管，请用只读收编`);
+    }
 
-    // 网络：已在服务网络 → 复用现 IP；否则从池里取空闲静态 IP 接入（--ip 进 IPAMConfig，
-    // 停机也在，与自建服务同一套占用记账）。
+    // —— 接管式：生成底账 → rm 裸容器 → compose up（后台 job，进度/取消走任务面）——
+    if (opts.takeover) {
+      const shape = await inspectContainerShape(name);
+      if (!shape) throw notFound(`docker 容器 "${name}" 不存在（或已受管）`);
+      const img = await inspectImageDefaults(shape.image);
+      // 服务网络 IP：已在网复用现 IP，否则分配（host 网络模式没有 IP 一说）
+      const net = await inspectNetwork(cfg.services.network);
+      let ip: string | null = net?.endpoints.find((e) => e.name === name)?.ip ?? null;
+      if (!ip && shape.networkMode !== 'host') {
+        ip = await allocateServiceIp(cfg);
+      }
+      const def = defFromShape(name, shape, img, cfg, ip);
+      if (!def.networkMode) {
+        await ensureServiceNetwork(cfg); // 分配过 IP 就必须保证网络在（inspect 与 up 之间可能被删）
+      }
+      // 释放纪律切换点：此后失败由 jobs.ts 的 finally 释放，路由侧不再插手
+      releaseHere = false;
+      const job = startServiceJob({ name, image: shape.image, ip: ip ?? '', kind: 'adopt' }, (ctx) =>
+        runServiceAdopt(cfg, name, def, ctx),
+      );
+      // jobId 一并回（前端任务横幅按 id 挂进度）；视图先行（容器在重建中，状态以轮询为准）
+      return {
+        name,
+        preset: 'adopted',
+        image: shape.image,
+        ip,
+        state: row.State,
+        status: row.Status,
+        running: row.State === 'running',
+        volume: null,
+        ports: [],
+        envKeys: [],
+        env: {},
+        connect: [],
+        adopted: false,
+        hasCompose: true,
+        description: '接管式收编（启动方式已复刻进 compose 底账）',
+        createdAt: new Date().toISOString(),
+        jobId: job.id,
+      } as ServiceView & { jobId: string };
+    }
+
+    // —— 只读收编：sidecar 登记 + 接入服务网络，本体不动 ——
     const net = await inspectNetwork(cfg.services.network);
     let ip = net?.endpoints.find((e) => e.name === name)?.ip ?? null;
     if (!ip) {
@@ -833,7 +1048,7 @@ export async function adoptService(cfg: Config, name: string): Promise<ServiceVi
       createdAt: meta.createdAt,
     };
   } finally {
-    releaseJobName(name);
+    if (releaseHere) releaseJobName(name);
   }
 }
 
@@ -866,11 +1081,14 @@ export async function unadoptService(cfg: Config, name: string): Promise<void> {
 // 变成不可逆的 meta 丢失（2026-09-10 myapikey 事故）。所以：任务占用期一律不删；其余
 // 情形单容器直查二次确认——在（ps 瞬时失败）照常放行，确认无才清，查询失败 409 拒判。
 async function requireService(name: string): Promise<void> {
+  // 目录注册表服务（agent 自放的 compose 文件）可能带 `_`（compose 惯例），放宽到收编名规格。
   const m = await getServiceMeta(name);
-  // 收编容器名允许 `_`（compose 惯例），仅以 adopted meta 为凭证放宽。
-  if (!NAME_RE.test(name) && !(m?.adopted && ADOPT_NAME_RE.test(name))) {
+  if (!NAME_RE.test(name) && !ADOPT_NAME_RE.test(name)) {
     throw badRequest('invalid service name');
   }
+  // 底账存在即服务（目录是注册表）：容器在不在由具体操作自己面对（compose down/up
+  // 对缺席容器天然幂等）。孤儿 meta 清理只对「无底账」的旧形态有意义。
+  if (await composeFileExists(name)) return;
   const rows = await listServiceContainers(m?.adopted ? [name] : []);
   if (!rows.some((r) => rowName(r.Names) === name)) {
     if (m && !hasJobName(name)) {
@@ -885,6 +1103,14 @@ async function requireService(name: string): Promise<void> {
     }
     throw notFound(`service "${name}" not found`);
   }
+}
+
+// 服务名 → 实际容器名：目录注册表服务 compose 项目名 ≠ container_name 时（agent 自放
+// 文件用 compose 默认命名 <project>-<service>-1），docker 直操作要对准容器真名。
+// 我们生成的文件 container_name 恒 = 服务名，此 helper 是零成本的直读。
+async function resolveContainerName(name: string): Promise<string> {
+  const parsed = await readComposeService(name);
+  return parsed?.containerName ?? name;
 }
 
 export function registerServices(app: FastifyInstance, cfg: Config): void {
@@ -919,13 +1145,15 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
   });
 
   app.post('/api/services/adopt', async (req) => {
-    const body = (req.body as { name?: unknown } | null) || {};
+    const body = (req.body as { name?: unknown; takeover?: unknown } | null) || {};
     const name = String(body.name ?? '').trim();
     if (!ADOPT_NAME_RE.test(name)) {
       throw badRequest('容器名须为 1–63 位小写字母/数字/连字符/下划线（含 . 或大写的外部容器暂不支持收编）');
     }
     if (!cfg.services.enabled) throw badRequest('services 层未启用（config services.enabled）');
-    return adoptService(cfg, name);
+    // takeover = 接管式收编：裸容器（无 compose label）复刻启动方式进底账并重建；
+    // compose 栈容器只能只读收编（服务内部按 label 挡，409 给人话）。
+    return adoptService(cfg, name, { takeover: body.takeover === true });
   });
 
   // 创建：快校验 + 预占通过即返回 jobId，写 compose 文件 + up 在后台 job 跑（jobs.ts）。
@@ -987,20 +1215,20 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
 
   app.post<{ Params: { name: string } }>('/api/services/:name/start', async (req) => {
     await requireService(req.params.name);
-    await startContainer(req.params.name);
+    await startContainer(await resolveContainerName(req.params.name));
     await applyServicesBlock(cfg);
     return { ok: true };
   });
 
   app.post<{ Params: { name: string } }>('/api/services/:name/stop', async (req) => {
     await requireService(req.params.name);
-    await stopContainer(req.params.name);
+    await stopContainer(await resolveContainerName(req.params.name));
     return { ok: true };
   });
 
   app.post<{ Params: { name: string } }>('/api/services/:name/restart', async (req) => {
     await requireService(req.params.name);
-    await restartContainer(req.params.name);
+    await restartContainer(await resolveContainerName(req.params.name));
     await applyServicesBlock(cfg);
     return { ok: true };
   });
@@ -1028,7 +1256,7 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     await requireService(req.params.name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const tail = Math.min(Math.max(Number(q.tail) || 200, 1), 2000);
-    return { logs: await containerLogs(req.params.name, tail) };
+    return { logs: await containerLogs(await resolveContainerName(req.params.name), tail) };
   });
 
   // —— 服务内监听端口（应用端口直达，对齐 /api/containers/:id/listen）——
@@ -1040,7 +1268,8 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
   app.get<{ Params: { name: string } }>('/api/services/:name/listen', async (req): Promise<{ ports: number[]; web: number[] }> => {
     const name = req.params.name;
     await requireService(name);
-    const pid = await containerPid(name);
+    const cname = await resolveContainerName(name);
+    const pid = await containerPid(cname);
     if (!pid) throw conflict('service not running');
     const texts = await Promise.allSettled([
       readFile(`/proc/${pid}/net/tcp`, 'utf8'),
@@ -1053,8 +1282,8 @@ export function registerServices(app: FastifyInstance, cfg: Config): void {
     // 收编容器的探测 IP 必须在 mysandbox-lan 上（可能与 compose 网并存，见 listServices）。
     const am = await getServiceMeta(name);
     const ip = am?.adopted
-      ? await containerNetIp(name, cfg.services.network)
-      : (await containerIpamIp(name)) ?? null;
+      ? await containerNetIp(cname, cfg.services.network)
+      : (await containerIpamIp(cname)) ?? null;
     if (!ip) return { ports, web: [] };
     const marks = await Promise.all(ports.map((p) => probeHtmlPort(ip, p)));
     const web = ports.filter((_, i) => marks[i]);
@@ -1137,7 +1366,12 @@ export function startServicesEventSync(cfg: Config): void {
           if (!ev.managed) {
             void getServiceMeta(ev.name)
               .then((m) => {
-                if (!m?.adopted) return;
+                if (!m?.adopted) {
+                  // 目录注册表服务（agent 自放 compose 文件）：容器无我们的 label，
+                  // 靠 compose project label 命中目录名判定——启停同样要追平 hosts。
+                  if (ev.composeProject) void isManagedComposeProject(ev.composeProject).then((hit) => hit && scheduleSweep(cfg));
+                  return;
+                }
                 scheduleSweep(cfg);
                 if (ev.action === 'start') void healAdopted(cfg, ev.name);
                 if (ev.action === 'destroy') scheduleAdoptedOrphanCheck(cfg, ev.name);

@@ -451,8 +451,9 @@ export interface ServiceView {
   createdAt?: string
   command?: string[]
   metaMissing?: boolean
-  adopted?: boolean // 收编的外部容器：无删除/改配置，只可取消收编
+  adopted?: boolean // 收编的外部容器：无删除/改配置，只可取消收编（接管式收编完成后转正，此标志清位）
   hasCompose?: boolean // compose 底账在（可改配置可应用）；managed 而无文件 = 旧版创建 → 迁移入口
+  container?: string // 实际容器名（目录注册表服务 compose 项目名 ≠ 容器名时不同）
 }
 
 export interface ServicesStatus {
@@ -551,17 +552,22 @@ export interface AdoptableContainerView {
   status: string
   networks: string
   onServiceNetwork: boolean // 已在服务网络（adopt 复用现 IP，不再 connect）
+  compose: boolean // compose 栈容器（有 project label）——只能只读收编，底账在原编排方
   ip: string | null
 }
 export const listAdoptables = () =>
   api('/api/services/adoptables') as Promise<{ items: AdoptableContainerView[]; enabled: boolean }>
-export const adoptService = (name: string) => postJson('/api/services/adopt', { name }) as Promise<ServiceView>
+// 只读收编：sidecar 登记 + 接入服务网络，本体不动（同步返回 ServiceView）。
+// takeover = 接管式收编（裸容器专用）：复刻启动方式进 compose 底账并重建容器
+// （可写层数据丢失，卷无损），走后台 job——响应附 jobId 供任务横幅挂进度。
+export const adoptService = (name: string, takeover = false) =>
+  postJson('/api/services/adopt', { name, takeover }) as Promise<ServiceView & { jobId?: string }>
 export const unadoptService = (name: string) => postJson(`/api/services/${name}/unadopt`)
 
 // —— 服务任务 ——
 export interface ServiceJobView {
   id: string
-  kind: 'create' | 'apply' | 'migrate'
+  kind: 'create' | 'apply' | 'migrate' | 'adopt'
   name: string
   image: string
   ip: string

@@ -11,7 +11,7 @@ import { migrateService } from './api'
 
 const lastStates = new Map<string, string>()
 
-const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', migrate: '迁移' }
+const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', migrate: '迁移', adopt: '收编接管' }
 
 // 喂入一次轮询快照，返回 running 数（轮询器据此自适应间隔/摘要条展示）。
 export function trackServiceJobs(jobs: ServiceJobView[]): number {
@@ -27,9 +27,12 @@ export function trackServiceJobs(jobs: ServiceJobView[]): number {
     }
     if (prev === 'running') {
       if (j.state === 'done') {
-        if (j.kind === 'create') {
-          toast.success(`应用容器 ${j.name} 就绪（${j.ip}）`, {
-            description: '容器内可直接按服务名连接（hosts 已注入）；配置底账在 ~/.config/mysandbox/compose/。',
+        if (j.kind === 'create' || j.kind === 'adopt') {
+          toast.success(`应用容器 ${j.name} ${j.kind === 'adopt' ? '接管完成' : '就绪'}（${j.ip}）`, {
+            description:
+              j.kind === 'adopt'
+                ? '启动方式已复刻进 compose 底账，可查看可修改（面板「配置」页）。'
+                : '容器内可直接按服务名连接（hosts 已注入）；配置底账在 ~/.config/mysandbox/compose/。',
           })
         } else {
           // statusText 携带收尾叙事：「配置已应用」「已迁移到 compose 底账」等

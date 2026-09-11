@@ -10,8 +10,6 @@ import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
 import { Toaster } from '@/components/ui/sonner'
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
-// 侧栏 ＋ 的独立创建对话框（不拉抽屉——创建入口就该只开表单）。
-const ServiceCreateDialog = defineAsyncComponent(() => import('@/components/ServiceCreateDialog.vue'))
 
 const token = ref<string | null>(getToken())
 const checking = ref(false)
@@ -26,7 +24,6 @@ const showServicesPanel = ref(false)
 // 服务卡片点击带服务名：抽屉打开即定位到该服务详情。
 const svcSelect = ref('')
 // 侧栏 ＋ 的独立创建对话框（只开表单，不拉抽屉；进度靠 toast + 侧栏摘要）。
-const showSvcCreate = ref(false)
 // 服务抽屉操作回传计数：抽屉里启停/删除/创建完成后 +1，ContainerList 据此即时刷侧栏。
 const svcVersion = ref(0)
 let baseTimer: ReturnType<typeof setInterval> | null = null
@@ -99,12 +96,8 @@ async function afterAuth() {
 const ready = computed(() => !!token.value)
 
 // —— 面板打开入口（全部来自侧栏，见 ContainerList）——
-// ＋：只开创建对话框，不拉抽屉；卡片/分区：开抽屉（卡片带服务名定位）。
-function openServices(create = false, select?: string) {
-  if (create) {
-    showSvcCreate.value = true
-    return
-  }
+// 卡片/分区：开抽屉（卡片带服务名定位）。服务不再有创建表单（compose 目录 + 收编）。
+function openServices(_create = false, select?: string) {
   svcSelect.value = select ?? ''
   showServicesPanel.value = true
 }
@@ -186,7 +179,6 @@ onUnmounted(() => {
         @close="closeServices"
         @changed="svcVersion++"
       />
-      <ServiceCreateDialog v-if="showSvcCreate" @created="showSvcCreate = false" @close="showSvcCreate = false" />
     </main>
     <!-- 全局通知（服务创建任务完成/失败等）。桌面右下角——终端主体在左上，避开视觉焦点；
          手机改顶部居中——右下角会压住终端底部输入区，且要避开软键盘与底部 home indicator。 -->
