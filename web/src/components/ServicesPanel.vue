@@ -48,8 +48,7 @@ import {
 // 全面相悖，反覆盖不如直接自绘；焦点陷阱/Esc/遮罩点击关等 a11y 行为由原语自带。
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogClose } from 'reka-ui'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
-import { LoaderCircle, Check, X, Ban, RefreshCw, Globe, ChevronRight, Import } from 'lucide-vue-next'
+import { LoaderCircle, Check, X, Ban, RefreshCw, Globe, ChevronRight } from 'lucide-vue-next'
 
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
@@ -63,8 +62,6 @@ const status = ref<ServicesStatus | null>(null)
 const busyName = ref('')
 const err = ref('')
 const copied = ref('')
-// 收编：抽屉头部入口（外部容器纳入管理，见 AdoptServiceDialog）。
-const showAdopt = ref(false)
 const pendingDelete = ref<{ name: string; deleteData: boolean } | null>(null)
 const pendingUnadopt = ref('')
 
@@ -343,13 +340,6 @@ async function confirmUnadopt() {
   await op(name, () => unadoptService(name))
 }
 
-// 收编完成后：定位到新收编的服务并让侧栏即时跟上。
-function onAdopted(name: string) {
-  selService.value = name
-  void refresh()
-  emit('changed')
-}
-
 // 打开服务端口：跟随控制台口径——IP/localhost 口径直连服务 IP，基域名口径经面板
 // Web 代理（见 lib/proxy.ts 与 server/proxy.ts）。
 function openServicePort(s: ServiceView, port: number) {
@@ -427,15 +417,14 @@ onUnmounted(() => {
       <DialogOverlay
         class="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
       />
-      <!-- 右侧滑入抽屉：单服务详情，宽度收窄到 md（信息分层后不需要 xl） -->
+      <!-- 右侧滑入抽屉：单服务详情（宽度 xl——配置编辑器/凭据/项目成员都吃宽度） -->
       <DialogContent
-        class="fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-full flex-col overflow-hidden border-l bg-background shadow-lg outline-none duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right sm:max-w-md"
+        class="fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-full flex-col overflow-hidden border-l bg-background shadow-lg outline-none duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right sm:max-w-xl"
       >
-        <!-- 头：标识 + 新建 + 关闭 -->
+        <!-- 头：标识 + 关闭（收编入口在侧栏分区头——抽屉是单服务详情，不放清单级动作） -->
         <div class="flex shrink-0 items-center gap-2.5 border-b px-4 py-3">
           <img src="/docker.svg" alt="" class="size-4 shrink-0" />
           <DialogTitle class="min-w-0 flex-1 text-sm leading-tight font-semibold">应用容器</DialogTitle>
-          <Button variant="ghost" size="icon-xs" title="收编外部容器" @click="showAdopt = true"><Import /></Button>
           <DialogClose as-child>
             <Button variant="ghost" size="icon-xs" title="关闭"><X /></Button>
           </DialogClose>
@@ -495,9 +484,8 @@ onUnmounted(() => {
             <p class="max-w-xs text-xs leading-relaxed text-muted-foreground/60">
               服务来自两处：往 <span class="font-mono">~/.config/mysandbox/compose/&lt;名&gt;/</span> 放一份
               compose.yaml 再 <span class="font-mono">docker compose up -d</span>（agent 干这事最顺手），
-              或收编宿主上现成的容器。
+              或经侧栏「应用容器」分区头的收编入口纳入现有容器。
             </p>
-            <Button size="sm" class="mt-2" @click="showAdopt = true">收编外部容器</Button>
           </div>
 
           <!-- 服务详情（分层） -->
@@ -841,8 +829,6 @@ onUnmounted(() => {
           @confirm="confirmUnadopt"
           @close="pendingUnadopt = ''"
         />
-
-        <AdoptServiceDialog v-if="showAdopt" @adopted="onAdopted" @close="showAdopt = false" />
       </DialogContent>
     </DialogPortal>
   </DialogRoot>

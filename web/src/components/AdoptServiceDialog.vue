@@ -6,7 +6,7 @@
 // 列表默认只显示 running（Exited 试验残留是收编 Inbox 的头号噪声），开关可展开。
 // 接管是重建性动作（可写层数据丢失、卷无损），确认框挑明；收编是同步动作不走 job。
 import { ref, computed, onMounted } from 'vue'
-import { RefreshCw, Import, Layers } from 'lucide-vue-next'
+import { RefreshCw, Import, Layers, Box } from 'lucide-vue-next'
 import { listAdoptables, adoptService, Unauthorized, type AdoptableContainerView, type AdoptableStackView } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -183,6 +183,7 @@ async function doTakeover(row: AdoptableContainerView) {
         >
           <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
+              <Box class="size-3.5 shrink-0 text-muted-foreground" />
               <span class="min-w-0 truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
               <span
                 class="shrink-0 text-[10px]"
