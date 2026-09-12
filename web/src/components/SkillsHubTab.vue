@@ -51,7 +51,6 @@ const hub = ref<SkillHubView | null>(null)
 const inv = ref<SkillInventoryView | null>(null)
 const invLoading = ref(false)
 const invErr = ref('')
-const invTotal = computed(() => inv.value?.locations.reduce((n, l) => n + l.skills.length, 0) ?? 0)
 const loading = ref(false)
 const err = ref('')
 
@@ -113,6 +112,29 @@ interface InvSpotRow {
   spot: string
   skills: SkillInventoryLocation['skills']
 }
+
+// 分发副本默认折叠：容器的 skills 目录大多是分发的结果，把结果当资产罗列只会
+// 刷屏（同一 skill 在 N 个容器重复）。默认只看「散装的」（未被任何规则管理的）
+// ——那才是待筛选的新资产；开关展开 = 运行时视角（确认某容器实际能用什么）。
+const showManaged = ref(localStorage.getItem('mysandbox:skills-show-managed') === '1')
+function toggleShowManaged(v: unknown) {
+  showManaged.value = !!v
+  localStorage.setItem('mysandbox:skills-show-managed', showManaged.value ? '1' : '0')
+}
+
+const invTotal = computed(() => inv.value?.locations.reduce((n, l) => n + l.skills.length, 0) ?? 0)
+const looseTotal = computed(
+  () => inv.value?.locations.reduce((n, l) => n + l.skills.filter((s) => !s.managed).length, 0) ?? 0,
+)
+
+// 默认只显示带散装 skill 的位置（全分发了的位置不占屏）；开关后显示全部。
+const invLocations = computed<SkillInventoryLocation[]>(() => {
+  const locs = inv.value?.locations ?? []
+  if (showManaged.value) return locs
+  return locs
+    .map((l) => ({ ...l, skills: l.skills.filter((s) => !s.managed) }))
+    .filter((l) => l.skills.length > 0)
+})
 
 function spotRows(loc: SkillInventoryLocation): InvSpotRow[] {
   const map = new Map<string, InvSpotRow>()
@@ -293,15 +315,22 @@ async function syncNow() {
       class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
     >{{ err }}</p>
 
-    <!-- 已安装（资产视图）：位置 × 落点，落点行可发起分发 -->
+    <!-- 已安装：默认只看散装（未分发）的技能；开关展开运行时全貌 -->
     <div class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <PackageSearch class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="text-xs font-semibold">已安装</span>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
-          {{ invTotal }} skill
+          {{ showManaged ? `${invTotal} skill` : `${looseTotal} 待筛选` }}
         </Badge>
         <div class="flex-1" />
+        <label
+          class="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-muted-foreground"
+          title="分发出的副本默认不展示（各容器大量重复）；勾选后按容器展示全部已安装（运行时视角）"
+        >
+          <Checkbox :model-value="showManaged" @update:model-value="toggleShowManaged" />
+          显示分发副本
+        </label>
         <Button
           variant="ghost"
           size="icon-xs"
@@ -315,7 +344,13 @@ async function syncNow() {
       </div>
       <p v-if="invErr" class="px-3 py-2 text-[11px] text-destructive">{{ invErr }}</p>
       <div
-        v-for="(loc, li) in inv?.locations ?? []"
+        v-if="!invLocations.length"
+        class="px-3 py-2.5 text-[11px] text-muted-foreground/70"
+      >
+        没有散装的 skill——扫到的都已进分发规则。要看各容器实际装了什么，勾「显示分发副本」。
+      </div>
+      <div
+        v-for="(loc, li) in invLocations"
         :key="loc.name"
         class="px-3 py-1.5"
         :class="li > 0 ? 'border-t' : ''"
