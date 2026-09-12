@@ -107,11 +107,27 @@ export interface SshTarget {
   createdAt?: string;
 }
 
+// 技能中心（server/skillSync.ts）：多源聚合的 skills 池 + 分发目标。源列表走这里
+// （UI 增删/启停/排序，与 sshTargets 同款理由——易变、UI 管理、不碰用户手改的
+// config.yaml）；config.skills.sync 是并存的静态精确映射规则，两者分工见 skillSync.ts。
+export interface SkillHubSource {
+  id: string; // 随机短 id（操作锚点；顺序 = 数组顺序 = 重名时的优先级）
+  from: string; // 源：'<容器名>:<容器内路径>' 或宿主路径（~/ 展开），解析规则同 config 规则
+  enabled: boolean;
+  createdAt?: string;
+}
+
+export interface SkillHubState {
+  to: string; // 容器内分发目标（相对 dev home；默认 ~/.claude/skills）
+  sources: SkillHubSource[];
+}
+
 interface StateShape {
   containers: Record<string, ContainerMeta>;
   services: Record<string, ServiceMeta>;
   sshTargets?: SshTarget[];
   aiGateway?: AiGatewayState;
+  skillsHub?: SkillHubState;
 }
 
 let cache: StateShape | null = null;
@@ -220,6 +236,19 @@ export async function getAiGateway(): Promise<AiGatewayState | undefined> {
 export async function setAiGateway(state: AiGatewayState): Promise<void> {
   const s = await load();
   s.aiGateway = state;
+  await persist(s);
+}
+
+// —— 技能中心（多源 skills 聚合池；server/skillSync.ts）——
+
+export async function getSkillHub(): Promise<SkillHubState> {
+  const s = await load();
+  return s.skillsHub ?? { to: '~/.claude/skills', sources: [] };
+}
+
+export async function setSkillHub(hub: SkillHubState): Promise<void> {
+  const s = await load();
+  s.skillsHub = hub;
   await persist(s);
 }
 

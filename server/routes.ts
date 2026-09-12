@@ -25,7 +25,17 @@ import { beginSse } from './sse.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
 import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
-import { syncSkillsAll } from './skillSync.js';
+import {
+  syncSkillsAll,
+  hubView,
+  addSkillHubSource,
+  updateSkillHubSource,
+  deleteSkillHubSource,
+  setSkillHubTo,
+  resolveSyncSource,
+} from './skillSync.js';
+import { getSkillHub } from './state.js';
+import { existsSync } from 'node:fs';
 import { getAiGateway, setAiGateway } from './state.js';
 import { getVersion } from './version.js';
 import { readHostHosts } from './hosts.js';
@@ -327,10 +337,74 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   // —— skills 同步（server/skillSync.ts）：手动触发一次镜像 + 分发（watch/启动 sweep 之外）——
   // 不收任何路径参数：规则只来自 config（skills.sync），API 无法被用来指路。
   app.post('/api/skills/sync', async () => {
-    if (!cfg.skills?.sync.length) {
-      throw new HttpError(400, 'config 里没有 skills.sync 规则（~/.config/mysandbox/config.yaml）', 'bad_request');
+    if (!cfg.skills?.sync.length && !(await getSkillHub()).sources.length) {
+      throw new HttpError(400, '没有任何 skills 源（面板「技能中心」或 config skills.sync）', 'bad_request');
     }
     return syncSkillsAll(cfg);
+  });
+
+  // —— 技能中心（hub）：多源聚合池的视图与源管理。源列表存 sidecar（state.skillsHub），
+  // config.skills.sync 是并存的静态规则（视图里只读展示）。表单校验在此处转 4xx，
+  // addSkillHubSource 的重复源转 409；视图是 readdir 级描述，不拷贝不分发。——
+  app.get('/api/skills/hub', async () => hubView(cfg));
+
+  app.post('/api/skills/hub/sources', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const from = String(body.from ?? '').trim();
+    if (!from) throw new HttpError(400, 'from 必填（<容器名>:<容器内路径> 或宿主路径）', 'bad_request');
+    try {
+      const src = resolveSyncSource(cfg, from);
+      if (!existsSync(src.hostPath)) {
+        throw new HttpError(400, `源不存在：${src.hostPath}`, 'bad_request');
+      }
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
+    }
+    try {
+      await addSkillHubSource(cfg, from);
+    } catch (e) {
+      throw new HttpError(409, e instanceof Error ? e.message : String(e), 'conflict');
+    }
+    return hubView(cfg);
+  });
+
+  app.patch('/api/skills/hub/sources/:id', async (req) => {
+    const id = (req.params as { id: string }).id;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: { enabled?: boolean; move?: number } = {};
+    if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
+    if (typeof body.move === 'number') patch.move = body.move;
+    if (!Object.keys(patch).length) throw new HttpError(400, 'enabled / move 至少给一个', 'bad_request');
+    try {
+      await updateSkillHubSource(cfg, id, patch);
+    } catch (e) {
+      throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
+    }
+    return hubView(cfg);
+  });
+
+  app.delete('/api/skills/hub/sources/:id', async (req) => {
+    const id = (req.params as { id: string }).id;
+    try {
+      await deleteSkillHubSource(cfg, id);
+    } catch (e) {
+      throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
+    }
+    return hubView(cfg);
+  });
+
+  app.patch('/api/skills/hub', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.to !== 'string' || !body.to.trim()) {
+      throw new HttpError(400, 'to 必填（容器内目标路径）', 'bad_request');
+    }
+    try {
+      await setSkillHubTo(body.to.trim());
+    } catch (e) {
+      throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
+    }
+    return hubView(cfg);
   });
 
   // —— AI 网关批量配置（myapikey 等兼容网关）——

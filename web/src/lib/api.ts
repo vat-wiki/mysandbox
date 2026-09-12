@@ -177,12 +177,55 @@ export interface SkillSyncRuleResult {
   error?: string
   containers: SkillSyncContainerResult[]
 }
+export interface SkillSyncHubResult {
+  ok: boolean
+  to: string
+  skills: { name: string }[]
+  containers: SkillSyncContainerResult[]
+  error?: string
+}
 export interface SkillSyncResult {
   ok: boolean
   rules: SkillSyncRuleResult[]
+  hub?: SkillSyncHubResult
   durationMs: number
 }
 export const syncSkills = () => postJson('/api/skills/sync', {}, 60_000) as Promise<SkillSyncResult>
+
+// —— 技能中心（多源 skills 聚合池；sidecar state.skillsHub；面板「AI 工具 → 技能中心」）——
+export interface SkillHubSourceView {
+  id: string
+  from: string
+  enabled: boolean
+  ok: boolean
+  skills: string[]
+  error?: string
+}
+export interface SkillHubSkillView {
+  name: string
+  sourceId: string
+  conflicts: string[] // 其他也提供同名 skill 的源 id（赢家 = sourceId，顺序在前者赢）
+}
+export interface SkillHubView {
+  ok: boolean
+  to: string
+  sources: SkillHubSourceView[]
+  skills: SkillHubSkillView[]
+  changed?: number
+  removed?: number
+  error?: string
+  // config.skills.sync 静态规则（UI 只读展示——改它去 config.yaml，需重启服务）
+  configRules: { from: string; to: string }[]
+}
+export const getSkillHub = () => api('/api/skills/hub') as Promise<SkillHubView>
+export const addSkillHubSource = (from: string) =>
+  postJson('/api/skills/hub/sources', { from }) as Promise<SkillHubView>
+export const updateSkillHubSource = (id: string, patch: { enabled?: boolean; move?: number }) =>
+  patchJson(`/api/skills/hub/sources/${id}`, patch) as Promise<SkillHubView>
+export const deleteSkillHubSource = (id: string) =>
+  api(`/api/skills/hub/sources/${id}`, { method: 'DELETE' }) as Promise<SkillHubView>
+export const setSkillHubTo = (to: string) =>
+  patchJson('/api/skills/hub', { to }) as Promise<SkillHubView>
 
 export const restartContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/restart`, { t })
 export const adoptContainer = (id: string, displayName?: string, source = 'external') =>

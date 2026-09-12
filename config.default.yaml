@@ -115,12 +115,17 @@ peer:
   port: 7331
 
 # Skills 同步（server/skillSync.ts）——把「源目录」（容器内项目的 skills 或宿主路径）
-# 镜像分发到全部受管容器的目标目录。宿主直读直写 rootfs（D1 uid 直通），容器不必在跑；
-# 权威副本在 ~/.local/share/mysandbox/skills/（源容器删了副本仍在）。
-# 自动触发：服务启动追平一次 + 源目录 fs.watch 实时分发（源在容器 rootfs 里照样是宿主
-# 文件，跑着的容器立即生效）+ 新建容器补发。手动：mysandbox skills sync / 面板侧栏
-# 「容器环境配置 → 同步 skills」。文件级比对、变才写；源里删掉的 skill 按清单从容器
-# 同步删除（容器里用户自装的其他 skills 不动）。
+# 分发到全部受管容器的目标目录。宿主直读直写 rootfs（D1 uid 直通），容器不必在跑。
+# 两条通路：
+#   技能中心（推荐）：多源聚合池，源在面板「AI 工具 → 技能中心」增删/启停/排序
+#     （存 sidecar state.json，重名按源顺序先到先得），统一分发到中心目标
+#     （默认 ~/.claude/skills）。
+#   静态规则（下面这个，精确映射场景用）：config 声明 from→to，改动需重启服务。
+#     ⚠️ 同一目标别同时用规则和中心——两边各自记账，会互相打架。
+# 自动触发：服务启动追平 + 源目录 fs.watch 实时分发（源在容器 rootfs 里照样是宿主
+# 文件，跑着的容器立即生效）+ 新建容器补发。手动：面板「立即同步」/ 侧栏 ⋯「同步
+# skills」/ mysandbox skills sync。文件级比对、变才写；源里删掉的 skill 按清单从
+# 容器同步删除（容器里用户自装的其他 skills 不动）。
 # skills:
 #   sync:
 #     - from: mytest:~/testlens/.claude/skills   # <容器名>:<容器内路径>（home=/home/dev）

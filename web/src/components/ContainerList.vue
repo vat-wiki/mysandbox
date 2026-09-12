@@ -77,9 +77,10 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, FolderSync, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, FolderSync, Bot, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
+import AiPanel from '@/components/AiPanel.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
@@ -657,6 +658,8 @@ const showCreate = ref(false)
 // 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
 // 侧栏不再有选择态。
 const showBatch = ref(false)
+// AI 工具面板（技能中心 + AI 网关）；侧栏自挂对话框，TermSessionsDialog 同模式。
+const showAi = ref(false)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
 const delTarget = ref<ContainerView | null>(null)
@@ -2485,9 +2488,12 @@ onUnmounted(() => {
               >
                 <ListChecks /> 批量配置
               </DropdownMenuItem>
+              <DropdownMenuItem title="技能中心 · AI 网关" @click="showAi = true">
+                <Bot /> AI 工具
+              </DropdownMenuItem>
               <DropdownMenuItem
                 :disabled="syncingSkills"
-                title="按 config skills.sync 把源目录的 skills 分发到全部容器"
+                title="手动触发一次 skills 同步（config 规则 + 技能中心；平时 watch 自动）"
                 @click="syncSkillsNow()"
               >
                 <FolderSync /> 同步 skills
@@ -2597,9 +2603,12 @@ onUnmounted(() => {
               >
                 <ListChecks /> 批量配置
               </DropdownMenuItem>
+              <DropdownMenuItem title="技能中心 · AI 网关" @click="showAi = true">
+                <Bot /> AI 工具
+              </DropdownMenuItem>
               <DropdownMenuItem
                 :disabled="syncingSkills"
-                title="按 config skills.sync 把源目录的 skills 分发到全部容器"
+                title="手动触发一次 skills 同步（config 规则 + 技能中心；平时 watch 自动）"
                 @click="syncSkillsNow()"
               >
                 <FolderSync /> 同步 skills
@@ -3648,6 +3657,17 @@ onUnmounted(() => {
     "
     @done="refresh()"
     @close="showBatch = false"
+    @unauthorized="emit('unauthorized')"
+  />
+
+  <!-- AI 工具面板：技能中心（skills 多源聚合分发）+ AI 网关（批量下发） -->
+  <AiPanel
+    v-if="showAi"
+    :containers="
+      selectableItems.map((c) => ({ id: c.id, label: c.displayName || c.name, ip: c.ip, state: c.state }))
+    "
+    @close="showAi = false"
+    @changed="refresh()"
     @unauthorized="emit('unauthorized')"
   />
 
