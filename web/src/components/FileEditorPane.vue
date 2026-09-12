@@ -2,6 +2,9 @@
 // 容器文件编辑面板（tab 化后的内联编辑器，FileEditorDialog 的接棒者）：
 // Monaco 大编辑空间 + 自动保存（停手 1.2s 落盘，Ctrl+S 立即冲一次）。
 // mtime 乐观锁冲突处理：409 后自动保存暂停，等用户重载/覆盖，绝不静默覆盖外部改动。
+// 外部修改同步：活动 tab 每 3s 对父目录做一次轻量 stat（列目录取本文件 mtime/size，
+// 无独立 stat 端点且三端通用）——干净缓冲静默原地重载（保滚动/光标），脏缓冲弹冲突条
+// 裁决；后台 tab 不轮询（exec 有成本），但激活瞬间立即查一次，切过去就是新的。
 // 二进制 / 超大文件只读提示。关闭走 tab 栏 X → requestClose()：先把防抖窗口内的改动
 // 冲一遍，失败/冲突留在原处裁决；新建文件不参与自动落盘（误触即建文件太激进），
 // 显式保存或关闭冲刷时才创建。
@@ -20,6 +23,7 @@ import { hydrateMermaid } from '@/lib/mermaid'
 import {
   readFile,
   writeFile,
+  listFiles,
   getGitDiff,
   downloadEntry,
   fetchFileBlob,
@@ -71,6 +75,7 @@ const mtime = ref<number | undefined>(undefined)
 const busy = ref(false)
 const err = ref('')
 const conflict = ref(false) // 409 后的冲突条（重载 / 覆盖）
+const conflictMsg = ref('文件在编辑期间被修改（mtime 不一致）')
 const confirmDiscard = ref(false) // 冲突未决时关闭的确认弹窗
 const isNew = ref(false) // 新建态：读取 404 进入，保存成功后退出
 
@@ -246,6 +251,7 @@ const diffNotice = computed(() => {
 async function load() {
   loading.value = true
   err.value = ''
+  pollBase = null // 失败路径不留旧基线（轮询守卫按 null 跳过）
   try {
     if (props.diff) {
       await loadDiff()
@@ -265,6 +271,7 @@ async function load() {
       clearPreview()
       previewUrl.value = URL.createObjectURL(blob)
       previewSize.value = blob.size
+      setPollBase(undefined, blob.size)
       return
     }
     const v = await readFile(props.containerId, props.path)
@@ -275,6 +282,9 @@ async function load() {
       content.value = v.content ?? ''
       savedContent.value = v.content ?? ''
       mtime.value = v.mtime
+      setPollBase(v.mtime, v.size) // size 用服务端 stat 值：内容解码剥 BOM 会让本地字节数对不上
+    } else {
+      pollBase = null // 二进制只读卡：无同步语义
     }
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -289,6 +299,7 @@ async function load() {
       content.value = ''
       savedContent.value = ''
       mtime.value = undefined
+      setPollBase(undefined, 0) // 轮询只盯「外部把文件建出来了」
     } else if (e instanceof ApiError && e.status === 413) {
       // 超大：保留元信息态展示只读提示
       meta.value = { path: props.path, name: name.value, size: 0, mtime: 0, binary: true }
@@ -407,6 +418,9 @@ async function save(overwrite = false) {
     )
     savedContent.value = content.value
     mtime.value = r.mtime ?? mtime.value
+    // 轮询基线跟上：size 本地算（写入即这串 utf8 字节，精确）；mtime 缺席（写后 stat
+    // 失败）记 null，轮询退化为只比 size，避免把自己的写入误判成外部改动
+    setPollBase(r.mtime, utf8.encode(savedContent.value).length)
     isNew.value = false // 保存成功即不再是新建态
     conflict.value = false
     emit('saved', props.path)
@@ -416,6 +430,7 @@ async function save(overwrite = false) {
       return
     }
     if (e instanceof ApiError && e.status === 409) {
+      conflictMsg.value = '文件在编辑期间被修改（mtime 不一致）'
       conflict.value = true // 自动保存到此暂停，等用户重载/覆盖后恢复
       if (autosaveTimer) {
         clearTimeout(autosaveTimer)
@@ -430,27 +445,152 @@ async function save(overwrite = false) {
 }
 
 // 冲突两路：重载（丢弃本地改动）/ 覆盖（不带 baseMtime 强写）。
+// 重载走 load() 全量重开：文件被删时落到「新建态」空编辑器（可 Ctrl+S 重建）、
+// 换成二进制/超大时落对应只读卡——比裸 readFile 多接住这些形态迁移。
 async function reload() {
   conflict.value = false
-  busy.value = true
-  try {
-    const v = await readFile(props.containerId, props.path)
-    if (v.binary) {
-      meta.value = v
-      return
-    }
-    content.value = v.content ?? ''
-    savedContent.value = v.content ?? ''
-    mtime.value = v.mtime
-  } catch (e) {
-    err.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    busy.value = false
-  }
+  const wasEditing = editing.value
+  const wasPreview = textPreview.value
+  await load()
+  if (isNew.value) return // 落新建态：编辑态由 load 定（true）
+  editing.value = wasEditing // 保留编辑会话，丢弃的只是未落盘改动
+  if ((isSvg.value || isMd.value) && wasPreview) textPreview.value = true
 }
 async function overwrite() {
   conflict.value = false
   await save(true)
+}
+
+// —— 外部修改同步（轮询）——
+// 服务端没有文件事件通道（exec 轮询是唯一手段，列目录即轻量 stat 且容器/宿主/服务三端
+// 同一端点形状）：活动 tab 每 3s 比对一次父目录里本文件的 mtime/size。基线 pollBase 在
+// load/save/外部重载时刷新——「我们自己落盘」与「外部改动」由此区分（写后 stat 偶发失败
+// 时 mtime 记 null，退化只比 size）。命中后的分流：干净缓冲静默原地重载（Monaco
+// saveViewState/restoreViewState 保滚动与光标）；脏缓冲复用 409 冲突条交用户裁决。
+// 只轮询活动 tab（后台 tab 激活瞬间立即查一次补上）；浏览器后台（document.hidden）暂停。
+const POLL_MS = 3000
+const utf8 = new TextEncoder()
+// size 用本地字节数兜底而非服务端值：写端点不回 size，而保存后的文件内容就是我们这串
+// utf8（字节数精确相等）。BOM 等只在 load 时由服务端 stat 值兜住（见 load 内注释）。
+let pollBase: { mtime: number | null; size: number } | null = null
+function setPollBase(mtime: number | null | undefined, size: number) {
+  pollBase = { mtime: typeof mtime === 'number' && mtime > 0 ? mtime : null, size }
+}
+let pollTimer: ReturnType<typeof setInterval> | null = null
+function startPoll() {
+  if (pollTimer) return
+  pollTimer = setInterval(() => {
+    if (!document.hidden) void checkExternal()
+  }, POLL_MS)
+}
+function stopPoll() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+function onVisChange() {
+  if (!document.hidden && props.active) void checkExternal()
+}
+watch(
+  () => props.active,
+  (v) => {
+    if (v) {
+      void checkExternal() // 切进来立即对一次：后台期间的外部改动不用等下一拍
+      startPoll()
+    } else stopPoll()
+  },
+  { immediate: true },
+)
+onMounted(() => document.addEventListener('visibilitychange', onVisChange))
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisChange)
+  stopPoll()
+})
+
+async function checkExternal() {
+  if (props.diff || loading.value || busy.value || conflict.value) return
+  const base = pollBase
+  if (!base) return // 二进制/413/加载失败：无同步语义
+  const dir = props.path.slice(0, props.path.lastIndexOf('/') + 1) || '/'
+  let view
+  try {
+    view = await listFiles(props.containerId, dir)
+  } catch {
+    return // 容器停了/瞬时失败：静默，下一拍再试
+  }
+  if (base !== pollBase) return // 轮询期间自己落盘过：基线已换，本轮作废（防自写误报）
+  const entry = view.entries.find((e) => e.name === name.value)
+  if (!entry || entry.type === 'dir') {
+    // 文件被删/被换成目录：交用户裁决（重载 → 新建态空编辑器；覆盖 → 原内容重建）。
+    // 预览形态没有冲突条可挂（条在文本分支里），置了也看不见还会卡死轮询——静默跳过。
+    if (!isNew.value && !previewKindV.value) {
+      conflictMsg.value = '文件已在外部被删除或替换'
+      conflict.value = true
+      if (autosaveTimer) {
+        clearTimeout(autosaveTimer)
+        autosaveTimer = null
+      }
+    }
+    return
+  }
+  if (isNew.value) {
+    if (!dirty.value) await load() // 外部把文件建出来了：干净空缓冲直接拾起
+    return
+  }
+  // mtime 半秒容差（GNU 浮点秒 / busybox 整秒、宿主 mtimeMs/1000 同单位但防格式漂移）；
+  // size 补刀整秒粒度下的同秒改写。symlink 条目是链接自身的 mtime/size——改目标探不到，
+  // 与读端点跟随目标打开的语义有缝，已知接受。
+  const mtimeChanged = base.mtime != null && Math.abs(entry.mtime - base.mtime) > 0.5
+  const sizeChanged = base.mtime == null || entry.size !== base.size
+  if (!mtimeChanged && !sizeChanged) return
+  if (dirty.value) {
+    conflictMsg.value = '文件已在外部被修改'
+    conflict.value = true
+    if (autosaveTimer) {
+      clearTimeout(autosaveTimer)
+      autosaveTimer = null
+    }
+    return
+  }
+  if (previewKindV.value) {
+    await load() // 二进制预览（图/视频/音频/PDF）：整流重取，objectURL 换新
+    return
+  }
+  try {
+    const v = await readFile(props.containerId, props.path)
+    if (v.binary) {
+      meta.value = v // 文件被换成非 UTF-8 内容：落只读卡
+      pollBase = null
+      return
+    }
+    if (dirty.value) {
+      // 取流期间用户开始键入：不静默顶掉，交冲突条裁决
+      conflictMsg.value = '文件已在外部被修改'
+      conflict.value = true
+      return
+    }
+    applyExternal(v.content ?? '', v.mtime, v.size)
+  } catch {
+    return // 瞬时失败静默：下一拍重试
+  }
+}
+
+// 外部内容原地换入：直接操作 Monaco model（wrapper 对 value prop 的 setValue 不保视图，
+// 这里 saveViewState/restoreViewState 保住滚动与光标）。setValue 触发的 update:value 会把
+// content 同步到位；Monaco 未挂载（md/svg 预览态）或值未变时走 content 直赋兜底。
+function applyExternal(text: string, mt: number, size: number) {
+  savedContent.value = text // 先落 savedContent：content 随后的更新不再被判脏、不触发自动保存
+  const ed = editorRef.value
+  const model = ed?.getModel()
+  if (ed && model && model.getValue() !== text) {
+    const viewState = ed.saveViewState()
+    model.setValue(text)
+    ed.restoreViewState(viewState)
+  }
+  content.value = text
+  mtime.value = mt
+  setPollBase(mt, size)
 }
 
 // 关闭流程（tab 栏 X → requestClose）：自动保存覆盖日常落盘——关闭时把防抖窗口内的
@@ -580,13 +720,13 @@ function fmtSize(n: number): string {
       </template>
       <template v-else>
         <div class="relative flex min-h-0 flex-1 flex-col">
-          <!-- 冲突条：文件在编辑期间被外部修改。挂在预览/编辑两种形态之外——自动保存
-               可能在预览态打出 409，收进编辑分支用户会看不见 -->
+          <!-- 冲突条：文件在编辑期间被外部修改（409 乐观锁命中或轮询探得）。挂在预览/编辑
+               两种形态之外——自动保存可能在预览态打出 409，收进编辑分支用户会看不见 -->
           <div
             v-if="conflict"
             class="flex flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-600 dark:text-amber-400"
           >
-            <span class="min-w-0 flex-1">文件在编辑期间被修改（mtime 不一致）</span>
+            <span class="min-w-0 flex-1">{{ conflictMsg }}</span>
             <Button variant="outline" size="xs" :disabled="busy" @click="reload">重载（丢弃本地）</Button>
             <Button size="xs" :disabled="busy" @click="overwrite">覆盖保存</Button>
           </div>
