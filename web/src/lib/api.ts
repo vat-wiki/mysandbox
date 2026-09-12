@@ -244,6 +244,28 @@ export const updateSkillHubTargetSource = (
 export const deleteSkillHubTargetSource = (targetId: string, sourceId: string) =>
   api(`/api/skills/hub/targets/${targetId}/sources/${sourceId}`, { method: 'DELETE' }) as Promise<SkillHubView>
 
+// —— skills 已安装清单（宿主 + 受管容器标准落点只读扫描；GET /api/skills/inventory）——
+export interface SkillInventoryEntry {
+  dir: string // 目录名（安装名）
+  name: string // SKILL.md frontmatter name（缺省 = 目录名）
+  description: string
+  spot: string // 所在落点（相对 home，如 .claude/skills）
+  managed: boolean // 被技能中心/静态规则分发管理（摘源/删目标会自动清理）
+}
+export interface SkillInventoryLocation {
+  name: string // 'host'（本机）或容器名
+  kind: 'host' | 'container'
+  home: string
+  ok: boolean
+  error?: string
+  skills: SkillInventoryEntry[]
+}
+export interface SkillInventoryView {
+  locations: SkillInventoryLocation[]
+  durationMs: number
+}
+export const getSkillInventory = () => api('/api/skills/inventory') as Promise<SkillInventoryView>
+
 export const restartContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/restart`, { t })
 export const adoptContainer = (id: string, displayName?: string, source = 'external') =>
   postJson(`/api/containers/${id}/adopt`, { displayName, source })

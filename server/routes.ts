@@ -35,6 +35,7 @@ import {
   updateSkillHubTargetSource,
   deleteSkillHubTargetSource,
   resolveSyncSource,
+  skillInventory,
 } from './skillSync.js';
 import { getSkillHub } from './state.js';
 import { existsSync } from 'node:fs';
@@ -434,6 +435,10 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     }
     return hubView(cfg);
   });
+
+  // —— skills 已安装清单：宿主 + 受管容器的标准落点只读扫描（落点常量在 skillSync.ts，
+  // 不收任何路径参数）。纯 readdir + SKILL.md 读，容器不必在跑。——
+  app.get('/api/skills/inventory', async () => skillInventory(cfg));
 
   // —— AI 网关批量配置（myapikey 等兼容网关）——
   // GET 回最近一次下发存档（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。

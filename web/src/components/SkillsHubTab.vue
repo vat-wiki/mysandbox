@@ -4,9 +4,10 @@
 // 同一 from 可挂到多个目标。目标内重名按源顺序先到先得；范围：全局目标铺全部
 // 容器，项目目标只同步到已有该项目的容器。全自动触发（watch + 启动追平 + 建容器/
 // 容器 start 补发），这里只是「看得见、管得了」。config.skills.sync 静态规则底部只读展示。
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import {
   getSkillHub,
+  getSkillInventory,
   addSkillHubTarget,
   updateSkillHubTarget,
   deleteSkillHubTarget,
@@ -18,13 +19,14 @@ import {
   type SkillHubView,
   type SkillHubTargetView,
   type SkillHubSourceView,
+  type SkillInventoryView,
 } from '@/lib/api'
 import { containerColor } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { RefreshCw, Trash2, ArrowUp, ArrowDown, FolderSync, Globe, Plus } from 'lucide-vue-next'
+import { RefreshCw, Trash2, ArrowUp, ArrowDown, FolderSync, Globe, Plus, PackageSearch } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { toast } from 'vue-sonner'
 
@@ -51,7 +53,32 @@ async function load() {
     loading.value = false
   }
 }
-onMounted(load)
+
+// —— 已安装清单（宿主 + 各容器的标准落点只读扫描）——
+const inv = ref<SkillInventoryView | null>(null)
+const invLoading = ref(false)
+const invErr = ref('')
+const invTotal = computed(() => inv.value?.locations.reduce((n, l) => n + l.skills.length, 0) ?? 0)
+
+async function loadInv() {
+  invLoading.value = true
+  invErr.value = ''
+  try {
+    inv.value = await getSkillInventory()
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('unauthorized')
+      return
+    }
+    invErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    invLoading.value = false
+  }
+}
+onMounted(() => {
+  void load()
+  void loadInv()
+})
 
 // 源的展示名（冲突归属/来源标注）：容器:路径 → 容器名段；宿主路径 → 末段目录。
 function sourceLabel(from: string): string {
@@ -167,7 +194,7 @@ async function syncNow() {
       const parts = [changed ? `更新 ${changed} 个文件` : '', removed ? `清理 ${removed} 个陈旧` : ''].filter(Boolean)
       toast(`skills 已同步${parts.length ? '：' + parts.join('，') : '：全部已是最新'}`)
     }
-    await load()
+    await Promise.all([load(), loadInv()])
   } catch (e) {
     fail(e)
   } finally {
@@ -332,6 +359,63 @@ async function syncNow() {
       <p class="mb-1 font-semibold">config.yaml 静态规则（{{ hub.configRules.length }} 条，独立于中心）</p>
       <p v-for="r in hub.configRules" :key="r.from + r.to" class="font-mono">{{ r.from }} → {{ r.to }}</p>
       <p class="mt-1">改它去 ~/.config/mysandbox/config.yaml（重启服务生效）；同目标别同时用规则和中心。</p>
+    </div>
+
+    <!-- 已安装清单：宿主 + 各容器标准落点实际有什么（只读扫描） -->
+    <div class="rounded-md border">
+      <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+        <PackageSearch class="size-3.5 shrink-0 text-muted-foreground" />
+        <span class="text-xs font-semibold">已安装（宿主 + 各容器）</span>
+        <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
+          {{ invTotal }} skill
+        </Badge>
+        <div class="flex-1" />
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="shrink-0 text-muted-foreground"
+          title="重新扫描"
+          :disabled="invLoading"
+          @click="loadInv"
+        >
+          <RefreshCw :class="invLoading ? 'animate-spin' : ''" />
+        </Button>
+      </div>
+      <p v-if="invErr" class="px-3 py-2 text-[11px] text-destructive">{{ invErr }}</p>
+      <div
+        v-for="(loc, li) in inv?.locations ?? []"
+        :key="loc.name"
+        class="px-3 py-1.5"
+        :class="li > 0 ? 'border-t' : ''"
+      >
+        <div class="flex items-center gap-2">
+          <span
+            class="h-2 w-2 shrink-0 rounded-full"
+            :style="{ backgroundColor: loc.kind === 'host' ? 'var(--color-primary)' : containerColor(loc.name) }"
+          />
+          <span class="text-xs font-medium">{{ loc.kind === 'host' ? '本机' : loc.name }}</span>
+          <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
+            {{ loc.skills.length }}
+          </Badge>
+        </div>
+        <div v-if="!loc.ok" class="pl-4 text-[11px] text-destructive">{{ loc.error }}</div>
+        <div v-else-if="!loc.skills.length" class="pl-4 text-[11px] text-muted-foreground/70">无 skill</div>
+        <div
+          v-for="s in loc.skills"
+          :key="s.spot + '/' + s.dir"
+          class="flex items-baseline gap-2 pl-4"
+        >
+          <span class="shrink-0 font-mono text-[11px]">{{ s.name }}</span>
+          <Badge
+            v-if="s.managed"
+            variant="outline"
+            class="shrink-0 border-transparent bg-primary/10 px-1 text-[10px] text-primary"
+            title="由技能中心目标或 config 静态规则分发管理——摘源/停用/删目标时会自动从这里清理"
+          >hub</Badge>
+          <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
+          <span class="shrink-0 font-mono text-[10px] text-muted-foreground/50" :title="s.spot">~/{{ s.spot }}</span>
+        </div>
+      </div>
     </div>
 
     <div class="flex justify-end">

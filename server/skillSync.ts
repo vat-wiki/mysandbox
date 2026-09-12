@@ -24,9 +24,10 @@
 // UI 增删时同步挂/摘）+ create() 建容器后补发 + 容器 start 事件补发（lifecycle.ts /
 // startSkillSyncEvents）。手动：mysandbox skills sync / POST /api/skills/sync / 面板
 // 「立即同步」。同步全程互斥（模块级 promise 链）。
-import { existsSync, watch as fsWatch, type FSWatcher } from 'node:fs';
+import { existsSync, watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { basename, join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Config } from './config.js';
 import { STATE_DIR, expandTilde } from './config.js';
@@ -781,4 +782,147 @@ export async function runSkillsCommand(cfg: Config): Promise<void> {
   }
   process.stdout.write(`>> skills 同步完成（${r.durationMs}ms）\n`);
   if (!r.ok) process.exit(1);
+}
+
+// —— 已安装清单（inventory）：宿主 + 受管容器的标准 skills 落点只读扫描 ——
+
+// 落点（相对 home）。加新工具支持 = 加一行；不存在/不可读的落点静默跳过。
+// 宿主与容器同一份清单（契约 home=/home/dev，宿主 $HOME 同形）。
+const INVENTORY_SPOTS = ['.claude/skills', '.agents/skills'];
+
+export interface SkillInventoryEntry {
+  dir: string; // 目录名（安装名）
+  name: string; // SKILL.md frontmatter name（缺省 = 目录名）
+  description: string; // frontmatter description（可空）
+  spot: string; // 所在落点（相对 home）
+  managed: boolean; // 被 hub 目标 / config 静态规则分发管理（manifest 命中——摘源/删目标会自动清理）
+}
+
+export interface SkillInventoryLocation {
+  name: string; // 'host'（本机）或容器名
+  kind: 'host' | 'container';
+  home: string;
+  ok: boolean;
+  error?: string;
+  skills: SkillInventoryEntry[];
+}
+
+export interface SkillInventoryView {
+  locations: SkillInventoryLocation[];
+  durationMs: number;
+}
+
+// frontmatter 单行值；块标量（> / |）取紧跟的缩进行首行。skills 的 frontmatter
+// 就两个字段有用（name/description），不值得为此引 YAML 解析器。
+function fmValue(fm: string, key: string): string {
+  const m = new RegExp(`^${key}:[ \\t]*(.*)$`, 'm').exec(fm);
+  if (!m) return '';
+  let v = m[1].trim();
+  if (/^[>|][+-]?\d*$/.test(v)) {
+    const rest = fm.slice((m.index ?? 0) + m[0].length);
+    v = rest.split('\n').find((l) => l.trim())?.trim() ?? '';
+  }
+  return v.replace(/^['"]|['"]$/g, '');
+}
+
+async function readSkillEntry(dir: string, spot: string, managedDirs: Set<string>): Promise<SkillInventoryEntry | null> {
+  let raw: string;
+  try {
+    raw = await readFile(join(dir, 'SKILL.md'), 'utf8');
+  } catch {
+    return null; // 无 SKILL.md 的顶层条目不是 skill
+  }
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)?.[1] ?? '';
+  const base = basename(dir);
+  return {
+    dir: base,
+    name: fmValue(fm, 'name') || base,
+    description: fmValue(fm, 'description'),
+    spot,
+    managed: managedDirs.has(base),
+  };
+}
+
+// manifest 全读（hub 目标 hub-*.json + 静态规则 <ruleId>.json）：to（相对 home）
+// → 该位置被分发管理的顶层条目集。只做展示对照，不影响任何分发语义。
+async function managedIndex(): Promise<Map<string, Set<string>>> {
+  const idx = new Map<string, Set<string>>();
+  let entries: string[] = [];
+  try {
+    entries = (await readdir(SKILLS_DIR)).filter((e) => e.endsWith('.json'));
+  } catch {
+    return idx; // 从未同步过 = 无 manifest
+  }
+  for (const e of entries) {
+    const manifest = await readManifest(e.slice(0, -'.json'.length));
+    if (!manifest) continue;
+    try {
+      const rel = containerRel(manifest.to);
+      const set = idx.get(rel) ?? new Set<string>();
+      for (const n of manifest.distributed) set.add(n);
+      idx.set(rel, set);
+    } catch {
+      /* to 形态不合法的旧清单，跳过 */
+    }
+  }
+  return idx;
+}
+
+async function scanInventoryLocation(
+  name: string,
+  kind: 'host' | 'container',
+  home: string,
+  managed: Map<string, Set<string>>,
+): Promise<SkillInventoryLocation> {
+  const loc: SkillInventoryLocation = { name, kind, home, ok: true, skills: [] };
+  try {
+    for (const spot of INVENTORY_SPOTS) {
+      let entries: Dirent[];
+      try {
+        entries = await readdir(join(home, spot), { withFileTypes: true });
+      } catch {
+        continue; // 落点不存在/不可读 = 该处无 skill
+      }
+      const dirs = managed.get(spot) ?? new Set<string>();
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        const ent = await readSkillEntry(join(home, spot, e.name), spot, dirs);
+        if (ent) loc.skills.push(ent);
+      }
+    }
+  } catch (err) {
+    loc.ok = false;
+    loc.error = err instanceof Error ? err.message : String(err);
+  }
+  return loc;
+}
+
+// 宿主 + 全部受管容器（home 可见口径同 distributeTargets）逐一扫描。纯 readdir +
+// SKILL.md 小文件读（D1 直读 rootfs，容器不必在跑），几十毫秒级，GET 即扫。
+export async function skillInventory(cfg: Config): Promise<SkillInventoryView> {
+  const started = Date.now();
+  const [managed, targets] = await Promise.all([managedIndex(), distributeTargets(cfg)]);
+  const locations = await Promise.all([
+    scanInventoryLocation('host', 'host', homedir(), managed),
+    ...targets.map((t) => scanInventoryLocation(t.name, 'container', t.home, managed)),
+  ]);
+  return { locations, durationMs: Date.now() - started };
+}
+
+// CLI：mysandbox skills ls
+export async function runSkillsListCommand(cfg: Config): Promise<void> {
+  const view = await skillInventory(cfg);
+  for (const loc of view.locations) {
+    const label = loc.kind === 'host' ? 'host（本机）' : loc.name;
+    if (!loc.ok) {
+      process.stdout.write(`>> ${label}：扫描失败 — ${loc.error}\n`);
+      continue;
+    }
+    process.stdout.write(`>> ${label}：${loc.skills.length} 个 skill\n`);
+    for (const s of loc.skills) {
+      const tags = [s.spot, s.managed ? 'hub' : ''].filter(Boolean).join(', ');
+      process.stdout.write(`>>   ${s.name}  [${tags}]${s.description ? `  ${s.description}` : ''}\n`);
+    }
+  }
+  process.stdout.write(`>> 扫描完成（${view.durationMs}ms）\n`);
 }

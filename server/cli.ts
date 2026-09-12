@@ -10,7 +10,7 @@ import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
-import { runSkillsCommand, startSkillSyncWatch, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
+import { runSkillsCommand, runSkillsListCommand, startSkillSyncWatch, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
@@ -99,6 +99,10 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
       While the server runs, source directories are watched and changes
       distribute automatically.
 
+  mysandbox skills ls
+      List installed skills on the host and every managed container
+      (standard locations like ~/.claude/skills; read-only scan).
+
   mysandbox status [--json]
       Scan and list every mysandbox-managed object on this host (containers,
       template, docker services/volumes, host-terminal sessions, transient
@@ -154,10 +158,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 一次性子命令：mysandbox skills sync（宿主侧文件镜像 + 分发，不启动 server、容器不必在跑）。
+  // 一次性子命令：mysandbox skills [sync|ls]（宿主侧文件操作，不启动 server、容器不必在跑）。
   if (process.argv[2] === 'skills') {
     const { config } = await loadConfig();
-    await runSkillsCommand(config);
+    if (process.argv[3] === 'ls') {
+      await runSkillsListCommand(config);
+    } else {
+      await runSkillsCommand(config);
+    }
     return;
   }
 
