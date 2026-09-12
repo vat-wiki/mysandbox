@@ -790,6 +790,29 @@ export async function runSkillsCommand(cfg: Config): Promise<void> {
 // 宿主与容器同一份清单（契约 home=/home/dev，宿主 $HOME 同形）。
 const INVENTORY_SPOTS = ['.claude/skills', '.agents/skills'];
 
+// 项目级落点动态发现：home 顶层非隐藏目录下的 .claude/skills（存在才列）。
+// 项目的 skills 也是「能用的 skills」（agent 在项目内加载），不扫就答不全；
+// 这也是 hub 挂源最常见的位置（mytest:~/proj/.claude/skills）。
+async function projectSpots(home: string): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(home, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith('.')) continue;
+    const spot = `${e.name}/.claude/skills`;
+    try {
+      if ((await stat(join(home, spot))).isDirectory()) out.push(spot);
+    } catch {
+      /* 无此落点 */
+    }
+  }
+  return out;
+}
+
 export interface SkillInventoryEntry {
   dir: string; // 目录名（安装名）
   name: string; // SKILL.md frontmatter name（缺省 = 目录名）
@@ -876,7 +899,8 @@ async function scanInventoryLocation(
 ): Promise<SkillInventoryLocation> {
   const loc: SkillInventoryLocation = { name, kind, home, ok: true, skills: [] };
   try {
-    for (const spot of INVENTORY_SPOTS) {
+    const spots = [...INVENTORY_SPOTS, ...(await projectSpots(home))];
+    for (const spot of spots) {
       let entries: Dirent[];
       try {
         entries = await readdir(join(home, spot), { withFileTypes: true });
