@@ -266,6 +266,28 @@ export interface SkillInventoryView {
 }
 export const getSkillInventory = () => api('/api/skills/inventory') as Promise<SkillInventoryView>
 
+// —— 技能库（registry）：用户策展的权威技能集；分发以库为源（from='registry'）——
+export interface SkillRegistryItem {
+  name: string
+  description: string
+  from: string // 导入来源（<容器>:<路径> / 宿主路径 / git URL#子路径）
+  importedAt: string
+  exists: boolean // false = 目录被外部删了（元数据残留）
+}
+export interface SkillGitCandidate {
+  path: string // repo 内子路径（'.' = repo 根即是技能）
+  name: string
+}
+export const getSkillRegistry = () => api('/api/skills/registry') as Promise<SkillRegistryItem[]>
+export const registryAddSkill = (from: string, force = false) =>
+  postJson('/api/skills/registry', { from, force }) as Promise<{ name: string; replaced: boolean }>
+export const registryRemoveSkill = (name: string) =>
+  api(`/api/skills/registry/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<SkillRegistryItem[]>
+export const registryProbeGit = (url: string) =>
+  postJson('/api/skills/registry/git', { url }, 120_000) as Promise<{ candidates: SkillGitCandidate[] }>
+export const registryImportGit = (url: string, path: string, force = false) =>
+  postJson('/api/skills/registry/git', { url, path, force }, 120_000) as Promise<{ name: string; replaced: boolean }>
+
 export const restartContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/restart`, { t })
 export const adoptContainer = (id: string, displayName?: string, source = 'external') =>
   postJson(`/api/containers/${id}/adopt`, { displayName, source })

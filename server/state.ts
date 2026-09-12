@@ -133,12 +133,21 @@ export interface SkillHubState {
   targets: SkillHubTarget[];
 }
 
+// 技能库（registry，server/skillSync.ts）：用户策展的权威技能集——放什么由用户定
+// （自产 + 外部导入），库内每技能一份独立副本（STATE_DIR/skills/registry/<名>/，
+// 与来源解耦），分发以库为源。这里只存成员元数据（来源/时间），技能本体在文件系统。
+export interface SkillRegistryMeta {
+  from: string; // 导入来源（原样记录：<容器>:<路径> / 宿主路径 / git URL#子路径）
+  importedAt: string;
+}
+
 interface StateShape {
   containers: Record<string, ContainerMeta>;
   services: Record<string, ServiceMeta>;
   sshTargets?: SshTarget[];
   aiGateway?: AiGatewayState;
   skillsHub?: SkillHubState;
+  skillsRegistry?: { skills: Record<string, SkillRegistryMeta> };
 }
 
 let cache: StateShape | null = null;
@@ -295,6 +304,20 @@ export async function getSkillHub(): Promise<SkillHubState> {
 export async function setSkillHub(hub: SkillHubState): Promise<void> {
   const s = await load();
   s.skillsHub = hub;
+  await persist(s);
+}
+
+// —— 技能库成员元数据（本体在 STATE_DIR/skills/registry/，元数据只记来源/时间）——
+
+export async function getSkillRegistry(): Promise<{ skills: Record<string, SkillRegistryMeta> }> {
+  const s = await load();
+  if (!s.skillsRegistry) s.skillsRegistry = { skills: {} };
+  return s.skillsRegistry;
+}
+
+export async function setSkillRegistry(reg: { skills: Record<string, SkillRegistryMeta> }): Promise<void> {
+  const s = await load();
+  s.skillsRegistry = reg;
   await persist(s);
 }
 

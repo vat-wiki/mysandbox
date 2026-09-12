@@ -27,12 +27,14 @@
 import { existsSync, watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Config } from './config.js';
 import { STATE_DIR, expandTilde } from './config.js';
 import { getEngine, subscribeEvents } from './engine/index.js';
-import { getAllMeta, getSkillHub, setSkillHub, type SkillHubTarget, type SkillHubTargetSource } from './state.js';
+import { getAllMeta, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, type SkillHubTarget, type SkillHubTargetSource, type SkillRegistryMeta } from './state.js';
 import { log } from './logger.js';
 
 const SKILLS_DIR = join(STATE_DIR, 'skills');
@@ -119,9 +121,11 @@ function containerRel(p: string): string {
   throw new Error(`容器内路径只认 ~/ 与 /home/dev 前缀（契约 home=/home/dev）："${p}"`);
 }
 
-// from → 宿主路径。'<容器名>:<路径>' 前缀匹配 LXC 名字符集即按容器解析
-// （容器名不会含 :，宿主路径必须 / 或 ~ 开头，两者天然无歧义）。
+// from → 宿主路径。'registry' = 技能库（用户策展的权威副本）；'<容器名>:<路径>'
+// 前缀匹配 LXC 名字符集即按容器解析（容器名不会含 :，宿主路径必须 / 或 ~ 开头，
+// 两者天然无歧义）。
 export function resolveSyncSource(cfg: Config, from: string): { hostPath: string; container?: string } {
+  if (from === REGISTRY_FROM) return { hostPath: REGISTRY_DIR };
   const idx = from.indexOf(':');
   if (idx > 0) {
     const name = from.slice(0, idx);
@@ -297,6 +301,7 @@ async function pruneStale(aliveRuleIds: Set<string>, aliveHubIds: Set<string>): 
   for (const e of entries) {
     const isFile = e.endsWith('.json');
     const id = isFile ? e.slice(0, -'.json'.length) : e;
+    if (id === 'registry') continue; // 技能库目录，不是规则副本——绝不清理
     if (id === 'hub') {
       await rm(join(SKILLS_DIR, e), { recursive: true, force: true }); // 旧版单中心遗留
       continue;
@@ -701,9 +706,11 @@ function unwatchSkillSource(key: string): void {
   watchers.delete(key);
 }
 
-// 服务启动：静态规则 + 中心各目标的源全部挂 watch。
+// 服务启动：静态规则 + 中心各目标的源 + 技能库全部挂 watch（registry 目录不存在
+// 时挂不上——首次入库时 registryAdd 会兜底补挂）。
 export function startSkillSyncWatch(cfg: Config): void {
   (cfg.skills?.sync ?? []).forEach((rule, i) => watchSkillSource(cfg, `cfg:${i}`, rule.from));
+  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
   void getSkillHub().then((hub) => {
     for (const t of hub.targets) {
       for (const s of t.sources) {
@@ -782,6 +789,166 @@ export async function runSkillsCommand(cfg: Config): Promise<void> {
   }
   process.stdout.write(`>> skills 同步完成（${r.durationMs}ms）\n`);
   if (!r.ok) process.exit(1);
+}
+
+// —— 技能库（registry）：入库 / 出库 / 列表 / git 导入 ——
+
+// 用户策展的权威技能集：库内每技能一份独立副本（与来源解耦），分发以库为源。
+export const REGISTRY_DIR = join(SKILLS_DIR, 'registry');
+// hub 分发源的特殊 from 值：指向技能库目录（resolveSyncSource 识别）。
+export const REGISTRY_FROM = 'registry';
+
+const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+const execFileP = promisify(execFile);
+
+async function readRegistryMeta(): Promise<Record<string, SkillRegistryMeta>> {
+  return (await getSkillRegistry()).skills;
+}
+
+// 入库：把一个技能目录（必须含 SKILL.md）拷进库，与来源解耦（源删了库还在）。
+// name = 目录末段；库内同名 = 覆盖（force=false 时拒绝，由调用方确认后重试）。
+export async function registryAdd(cfg: Config, from: string, force = false): Promise<{ name: string; replaced: boolean }> {
+  const { hostPath } = resolveSyncSource(cfg, from);
+  const st = await stat(hostPath).catch(() => null);
+  if (!st?.isDirectory()) throw new Error(`技能目录不存在：${hostPath}`);
+  if (!existsSync(join(hostPath, 'SKILL.md'))) throw new Error(`不是技能目录（缺 SKILL.md）：${hostPath}`);
+  const name = basename(hostPath.replace(/\/+$/, ''));
+  if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
+  await mkdir(REGISTRY_DIR, { recursive: true });
+  const dst = join(REGISTRY_DIR, name);
+  const replaced = existsSync(dst);
+  if (replaced && !force) throw new Error(`库中已有同名技能：${name}（覆盖请确认）`);
+  await syncTree(hostPath, dst);
+  const meta = await readRegistryMeta();
+  meta[name] = { from, importedAt: new Date().toISOString() };
+  await setSkillRegistry({ skills: meta });
+  // 库目录可能刚创建（首次入库）——watch 兜底挂上（幂等；watchSkillSource 对已挂 key 直接返回）。
+  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
+  log.info({ name, from }, 'skill added to registry');
+  return { name, replaced };
+}
+
+// 出库：删目录 + 删元数据。已在分发中的不受影响——下次同步按「源里已消失」从容器清理。
+export async function registryRemove(name: string): Promise<void> {
+  if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
+  await rm(join(REGISTRY_DIR, name), { recursive: true, force: true });
+  const meta = await readRegistryMeta();
+  delete meta[name];
+  await setSkillRegistry({ skills: meta });
+}
+
+export interface SkillRegistryItem {
+  name: string;
+  description: string;
+  from: string; // 导入来源（元数据；缺失 = 空串）
+  importedAt: string;
+  exists: boolean; // 目录还在（false = 元数据残留，展示为缺失）
+}
+
+// 库列表：readdir registry + 每技能读 SKILL.md frontmatter，合并 sidecar 元数据。
+export async function registryList(): Promise<SkillRegistryItem[]> {
+  const meta = await readRegistryMeta();
+  let names: string[] = [];
+  try {
+    names = (await readdir(REGISTRY_DIR, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    /* 库还没建 = 空 */
+  }
+  const out: SkillRegistryItem[] = [];
+  for (const name of names) {
+    let description = '';
+    try {
+      const raw = await readFile(join(REGISTRY_DIR, name, 'SKILL.md'), 'utf8');
+      description = fmValue(/^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)?.[1] ?? '', 'description');
+    } catch {
+      /* 无 SKILL.md：description 空 */
+    }
+    out.push({ name, description, from: meta[name]?.from ?? '', importedAt: meta[name]?.importedAt ?? '', exists: true });
+  }
+  // 元数据残留（目录被外部删了）：列出但 exists=false，用户可顺手清掉。
+  for (const name of Object.keys(meta)) {
+    if (!names.includes(name)) {
+      out.push({ name, description: '', from: meta[name].from, importedAt: meta[name].importedAt, exists: false });
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// —— git URL 导入（外部技能）：depth-1 clone 到临时目录，探测候选，按需入库 ——
+
+function gitTmpDir(url: string): string {
+  return join(tmpdir(), `mysandbox-skill-${createHash('sha1').update(url).digest('hex').slice(0, 12)}`);
+}
+
+// depth-1 clone（已存在则复用）。filter=blob:none 跳过非必要 blob——monorepo
+// （如 shadcn-vue）不带它 120s 都拉不完，带上后秒级。git 超时兜底 300s。
+async function ensureGitClone(url: string): Promise<string> {
+  if (!/^(https?:\/\/|git@|ssh:\/\/)/.test(url)) throw new Error(`git 地址不识别："${url}"`);
+  const dst = gitTmpDir(url);
+  if (existsSync(join(dst, '.git'))) return dst;
+  await mkdir(dirname(dst), { recursive: true });
+  await rm(dst, { recursive: true, force: true });
+  await execFileP('git', ['clone', '--depth', '1', '--filter=blob:none', url, dst], { timeout: 300_000 });
+  return dst;
+}
+
+export interface SkillGitCandidate {
+  path: string; // repo 内子路径（'.' = repo 根即是技能）
+  name: string; // 技能名（目录名）
+}
+
+// 探测 repo 里的技能候选：根 SKILL.md 优先；否则一层/两层深扫 SKILL.md
+// （skills-lock 约定 skills/<名>/ 与常见 <名>/SKILL.md 两种形状）。
+export async function registryProbeGit(url: string): Promise<SkillGitCandidate[]> {
+  const repo = await ensureGitClone(url);
+  const out: SkillGitCandidate[] = [];
+  if (existsSync(join(repo, 'SKILL.md'))) return [{ path: '.', name: basename(repo) }];
+  for (const depth of [['skills'], ['.']]) {
+    const base = join(repo, ...depth);
+    let entries: Dirent[] = [];
+    try {
+      entries = await readdir(base, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (existsSync(join(base, e.name, 'SKILL.md'))) {
+        const rel = depth[0] === '.' ? e.name : `${depth[0]}/${e.name}`;
+        out.push({ path: rel, name: e.name });
+      }
+    }
+    if (out.length) break; // skills/ 层命中就用它，不再扫根层
+  }
+  return out;
+}
+
+// 按探测结果导入：subPath = registryProbeGit 返回的 path（'.' = repo 根）。
+export async function registryImportGit(
+  cfg: Config,
+  url: string,
+  subPath: string,
+  force = false,
+): Promise<{ name: string; replaced: boolean }> {
+  const repo = await ensureGitClone(url);
+  const src = subPath === '.' ? repo : join(repo, subPath);
+  if (!existsSync(join(src, 'SKILL.md'))) throw new Error(`候选不存在或缺 SKILL.md：${url}#${subPath}`);
+  const st = await stat(src).catch(() => null);
+  if (!st?.isDirectory()) throw new Error(`技能目录不存在：${src}`);
+  const name = basename(src.replace(/\/+$/, ''));
+  if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
+  await mkdir(REGISTRY_DIR, { recursive: true });
+  const dst = join(REGISTRY_DIR, name);
+  const replaced = existsSync(dst);
+  if (replaced && !force) throw new Error(`库中已有同名技能：${name}（覆盖请确认）`);
+  await syncTree(src, dst);
+  const meta = await readRegistryMeta();
+  meta[name] = { from: `${url}#${subPath}`, importedAt: new Date().toISOString() };
+  await setSkillRegistry({ skills: meta });
+  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
+  log.info({ name, url, subPath }, 'skill imported to registry from git');
+  return { name, replaced };
 }
 
 // —— 已安装清单（inventory）：宿主 + 受管容器的标准 skills 落点只读扫描 ——

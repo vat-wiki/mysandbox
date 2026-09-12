@@ -36,6 +36,11 @@ import {
   deleteSkillHubTargetSource,
   resolveSyncSource,
   skillInventory,
+  registryList,
+  registryAdd,
+  registryRemove,
+  registryProbeGit,
+  registryImportGit,
 } from './skillSync.js';
 import { getSkillHub } from './state.js';
 import { existsSync } from 'node:fs';
@@ -439,6 +444,51 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   // —— skills 已安装清单：宿主 + 受管容器的标准落点只读扫描（落点常量在 skillSync.ts，
   // 不收任何路径参数）。纯 readdir + SKILL.md 读，容器不必在跑。——
   app.get('/api/skills/inventory', async () => skillInventory(cfg));
+
+  // —— 技能库（registry）：用户策展的权威技能集。入库的 from 形态由 resolveSyncSource
+  // 校验（容器:路径 / 宿主路径），git 导入走专门探测+导入两步。——
+  app.get('/api/skills/registry', async () => registryList());
+
+  app.post('/api/skills/registry', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const from = String(body.from ?? '').trim();
+    if (!from) throw new HttpError(400, 'from 必填（技能目录：<容器名>:<路径> 或宿主路径）', 'bad_request');
+    try {
+      return await registryAdd(cfg, from, body.force === true);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('不合法') || msg.includes('不存在') || msg.includes('缺 SKILL.md')) {
+        throw new HttpError(400, msg, 'bad_request');
+      }
+      if (msg.includes('已有同名')) throw new HttpError(409, msg, 'conflict');
+      throw new HttpError(400, msg, 'bad_request');
+    }
+  });
+
+  app.delete('/api/skills/registry/:name', async (req) => {
+    try {
+      await registryRemove((req.params as { name: string }).name);
+    } catch (e) {
+      throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
+    }
+    return registryList();
+  });
+
+  // git 导入：不带 path = 探测候选（不导入）；带 path = 导入该候选。
+  app.post('/api/skills/registry/git', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const url = String(body.url ?? '').trim();
+    if (!url) throw new HttpError(400, 'url 必填（git 仓库地址）', 'bad_request');
+    const path = typeof body.path === 'string' && body.path.trim() ? body.path.trim() : undefined;
+    try {
+      if (!path) return { candidates: await registryProbeGit(url) };
+      return await registryImportGit(cfg, url, path, body.force === true);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('已有同名')) throw new HttpError(409, msg, 'conflict');
+      throw new HttpError(400, msg, 'bad_request');
+    }
+  });
 
   // —— AI 网关批量配置（myapikey 等兼容网关）——
   // GET 回最近一次下发存档（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。

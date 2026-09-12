@@ -9,6 +9,11 @@ import { ref, onMounted, computed, nextTick } from 'vue'
 import {
   getSkillHub,
   getSkillInventory,
+  getSkillRegistry,
+  registryAddSkill,
+  registryRemoveSkill,
+  registryProbeGit,
+  registryImportGit,
   addSkillHubTarget,
   updateSkillHubTarget,
   deleteSkillHubTarget,
@@ -22,6 +27,8 @@ import {
   type SkillHubSourceView,
   type SkillInventoryView,
   type SkillInventoryLocation,
+  type SkillRegistryItem,
+  type SkillGitCandidate,
 } from '@/lib/api'
 import { containerColor } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -39,6 +46,7 @@ import {
   Plus,
   PackageSearch,
   CornerDownRight,
+  Library,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { toast } from 'vue-sonner'
@@ -88,7 +96,141 @@ async function loadInv() {
 onMounted(() => {
   void load()
   void loadInv()
+  void loadReg()
 })
+
+// —— 技能库（registry）：用户策展的权威技能集 ——
+
+const reg = ref<SkillRegistryItem[] | null>(null)
+const regErr = ref('')
+
+async function loadReg() {
+  regErr.value = ''
+  try {
+    reg.value = await getSkillRegistry()
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('unauthorized')
+      return
+    }
+    regErr.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// 导入表单（两种来源：目录 / git 仓库）
+const showImport = ref(false)
+const importMode = ref<'dir' | 'git'>('dir')
+const impDir = ref('')
+const impUrl = ref('')
+const impCandidates = ref<SkillGitCandidate[] | null>(null)
+const impPicked = ref('')
+const impBusy = ref(false)
+
+async function submitImportDir() {
+  const from = impDir.value.trim()
+  if (!from) return
+  impBusy.value = true
+  err.value = ''
+  try {
+    const r = await registryAddSkill(from)
+    toast(`${r.replaced ? '已覆盖入库' : '已入库'}：${r.name}`)
+    impDir.value = ''
+    await loadReg()
+  } catch (e) {
+    fail(e)
+  } finally {
+    impBusy.value = false
+  }
+}
+
+async function probeGit() {
+  const url = impUrl.value.trim()
+  if (!url) return
+  impBusy.value = true
+  err.value = ''
+  try {
+    const r = await registryProbeGit(url)
+    impCandidates.value = r.candidates
+    impPicked.value = r.candidates[0]?.path ?? ''
+    if (!r.candidates.length) toast('仓库里没探测到技能（找 SKILL.md）')
+  } catch (e) {
+    fail(e)
+  } finally {
+    impBusy.value = false
+  }
+}
+
+async function doImportGit() {
+  const url = impUrl.value.trim()
+  if (!url || !impPicked.value) return
+  impBusy.value = true
+  err.value = ''
+  try {
+    const r = await registryImportGit(url, impPicked.value)
+    toast(`${r.replaced ? '已覆盖入库' : '已入库'}：${r.name}`)
+    impUrl.value = ''
+    impCandidates.value = null
+    impPicked.value = ''
+    await loadReg()
+  } catch (e) {
+    fail(e)
+  } finally {
+    impBusy.value = false
+  }
+}
+
+// 入库（从已安装散装行）：from 精确到技能目录；同名 → 确认后覆盖。
+const regConfirm = ref<{ from: string; name: string } | null>(null)
+async function addToRegistry(loc: SkillInventoryLocation, dir: string, spot: string) {
+  const from = (loc.kind === 'host' ? '~' : `${loc.name}:~`) + `/${spot}/${dir}`
+  try {
+    await registryAddSkill(from)
+    toast(`已入库：${dir}`)
+    await loadReg()
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('unauthorized')
+      return
+    }
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('已有同名')) regConfirm.value = { from, name: dir }
+    else fail(e)
+  }
+}
+async function doConfirmRegistry() {
+  const c = regConfirm.value
+  if (!c) return
+  regConfirm.value = null
+  try {
+    await registryAddSkill(c.from, true)
+    toast(`已覆盖入库：${c.name}`)
+    await loadReg()
+  } catch (e) {
+    fail(e)
+  }
+}
+
+const delReg = ref<SkillRegistryItem | null>(null)
+async function doDeleteReg() {
+  const s = delReg.value
+  if (!s) return
+  delReg.value = null
+  err.value = ''
+  try {
+    reg.value = await registryRemoveSkill(s.name)
+    toast(`已出库：${s.name}（已在分发中的会在下次同步时从容器清理）`)
+  } catch (e) {
+    fail(e)
+  }
+}
+
+// 库整体分发：预填 from='registry' 的新建分发。
+function dispatchRegistry() {
+  if (!reg.value?.length) return
+  nf.value.from = 'registry'
+  showNew.value = true
+  void nextTick(() => newFormRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+}
 
 function fail(e: unknown) {
   if (e instanceof Unauthorized) {
@@ -98,8 +240,10 @@ function fail(e: unknown) {
   err.value = e instanceof Error ? e.message : String(e)
 }
 
-// 源的展示名（冲突归属/来源标注）：容器:路径 → 容器名段；宿主路径 → 末段目录。
+// 源的展示名（冲突归属/来源标注）：registry = 技能库；容器:路径 → 容器名段；
+// 宿主路径 → 末段目录。
 function sourceLabel(from: string): string {
+  if (from === 'registry') return '技能库'
   const idx = from.indexOf(':')
   if (idx > 0) return from.slice(0, idx)
   const parts = from.replace(/\/+$/, '').split('/')
@@ -155,9 +299,10 @@ const nf = ref({ from: '', to: '~/.claude/skills', all: true })
 const submitting = ref(false)
 const newFormRef = ref<HTMLElement | null>(null)
 
-// 从已安装扫描出候选（宿主 = ~/spot；容器 = <名>:~/spot）。
+// 从已安装扫描出候选（宿主 = ~/spot；容器 = <名>:~/spot），库是第一候选。
 const sourceOptions = computed(() => {
   const out: { value: string; label: string }[] = []
+  if (reg.value?.length) out.push({ value: 'registry', label: `技能库（${reg.value.length} 个技能）` })
   for (const loc of inv.value?.locations ?? []) {
     const spots = [...new Set(loc.skills.map((s) => s.spot))]
     for (const spot of spots) {
@@ -293,7 +438,7 @@ async function syncNow() {
       const parts = [changed ? `更新 ${changed} 个文件` : '', removed ? `清理 ${removed} 个陈旧` : ''].filter(Boolean)
       toast(`skills 已同步${parts.length ? '：' + parts.join('，') : '：全部已是最新'}`)
     }
-    await Promise.all([load(), loadInv()])
+    await Promise.all([load(), loadInv(), loadReg()])
   } catch (e) {
     fail(e)
   } finally {
@@ -305,9 +450,9 @@ async function syncNow() {
 <template>
   <div class="space-y-4">
     <p class="text-xs leading-relaxed text-muted-foreground">
-      <b class="font-medium">已安装</b>：本机与各容器实际装着的 skills（只读扫描）。
-      <b class="font-medium">分发规则</b>：把一个 skills 目录装进容器——源文件变化自动同步，
-      容器重启/新建自动补齐；同一去向可接多个来源（重名按顺序先到先得）。
+      <b class="font-medium">技能库</b>：你自己定的技能集（自产 + 外部导入），入库即与来源解耦。
+      <b class="font-medium">分发规则</b>：把一个 skills 目录（或整个库）装进容器——源变化自动同步，
+      容器重启/新建自动补齐。下面的<b class="font-medium">已安装</b>是发现视图：看到好的散装 skill 一键入库。
     </p>
 
     <p
@@ -393,8 +538,125 @@ async function syncNow() {
               title="已被某个分发规则管理——摘除来源/删除规则时会自动从这里清理"
             >已分发</Badge>
             <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
+            <Button
+              v-if="!s.managed"
+              variant="ghost"
+              size="icon-xs"
+              class="shrink-0 text-muted-foreground hover:text-foreground"
+              title="入库：拷一份进技能库（与来源解耦），之后从库分发"
+              @click="addToRegistry(loc, s.dir, row.spot)"
+            >
+              <Library class="size-3" />
+            </Button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- 技能库：用户策展的权威技能集（放什么用户定） -->
+    <div class="rounded-md border">
+      <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+        <Library class="size-3.5 shrink-0 text-muted-foreground" />
+        <span class="text-xs font-semibold">技能库</span>
+        <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
+          {{ reg?.filter((s) => s.exists).length ?? 0 }}
+        </Badge>
+        <div class="flex-1" />
+        <Button variant="ghost" size="xs" class="h-6 shrink-0 gap-1 px-1.5 text-[11px]" @click="showImport = !showImport">
+          <Plus class="size-3.5" /> 导入
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
+          :disabled="!reg?.some((s) => s.exists)"
+          title="把整个库作为一个来源挂到分发规则"
+          @click="dispatchRegistry"
+        >
+          <CornerDownRight class="size-3" /> 分发…
+        </Button>
+      </div>
+
+      <!-- 导入表单：目录 / git 仓库 -->
+      <div v-if="showImport" class="space-y-2 border-b bg-muted/20 px-3 py-2.5">
+        <div class="flex gap-1">
+          <button
+            type="button"
+            class="rounded border px-2 py-0.5 text-[11px] transition-colors"
+            :class="importMode === 'dir' ? 'border-primary/40 bg-primary/10 text-primary' : 'border-line text-muted-foreground hover:text-foreground'"
+            @click="importMode = 'dir'"
+          >从目录</button>
+          <button
+            type="button"
+            class="rounded border px-2 py-0.5 text-[11px] transition-colors"
+            :class="importMode === 'git' ? 'border-primary/40 bg-primary/10 text-primary' : 'border-line text-muted-foreground hover:text-foreground'"
+            @click="importMode = 'git'"
+          >从 git 仓库</button>
+        </div>
+        <template v-if="importMode === 'dir'">
+          <div class="flex gap-2">
+            <Input
+              v-model="impDir"
+              placeholder="技能目录（须含 SKILL.md）：mytest:~/proj/.claude/skills/xxx 或 ~/path/to/xxx"
+              class="h-8 flex-1 font-mono text-xs"
+              @keydown.enter="submitImportDir"
+            />
+            <Button size="sm" class="h-8 shrink-0" :disabled="impBusy || !impDir.trim()" @click="submitImportDir">入库</Button>
+          </div>
+        </template>
+        <template v-else>
+          <div class="flex gap-2">
+            <Input
+              v-model="impUrl"
+              placeholder="git 仓库地址：https://github.com/user/repo"
+              class="h-8 flex-1 font-mono text-xs"
+              @keydown.enter="probeGit"
+            />
+            <Button size="sm" class="h-8 shrink-0" :disabled="impBusy || !impUrl.trim()" @click="probeGit">
+              {{ impBusy ? '探测中…' : impCandidates ? '重扫' : '探测' }}
+            </Button>
+          </div>
+          <div v-if="impCandidates" class="space-y-1">
+            <p v-if="!impCandidates.length" class="text-[11px] text-muted-foreground/70">没探测到技能（找 SKILL.md）</p>
+            <label
+              v-for="c in impCandidates"
+              :key="c.path"
+              class="flex cursor-pointer items-center gap-2 text-[11px]"
+            >
+              <Checkbox :model-value="impPicked === c.path" @update:model-value="(v) => (impPicked = v ? c.path : '')" />
+              <span class="font-mono">{{ c.name }}</span>
+              <span class="text-muted-foreground">{{ c.path === '.' ? 'repo 根' : c.path }}</span>
+            </label>
+            <Button size="sm" class="h-7" :disabled="impBusy || !impPicked" @click="doImportGit">导入选中</Button>
+          </div>
+        </template>
+        <p class="text-[10px] leading-relaxed text-muted-foreground/70">
+          入库 = 拷一份进库（与来源解耦，源删了库还在）；库内同名会提示覆盖。
+        </p>
+      </div>
+
+      <div v-if="!reg?.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
+        库是空的——从目录或 git 仓库导入技能，或在下面已安装列表里把散装的 skill 一键入库。
+      </div>
+      <div
+        v-for="(s, si) in reg ?? []"
+        :key="s.name"
+        class="flex items-center gap-2 px-3 py-1.5"
+        :class="si > 0 ? 'border-t' : ''"
+      >
+        <span class="shrink-0 font-mono text-xs" :class="s.exists ? '' : 'text-muted-foreground/50 line-through'">{{ s.name }}</span>
+        <Badge v-if="!s.exists" variant="outline" class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive">缺失</Badge>
+        <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
+        <span class="hidden shrink-0 font-mono text-[10px] text-muted-foreground/50 md:block" :title="s.from">{{ s.from }}</span>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="shrink-0 text-muted-foreground hover:text-destructive"
+          title="出库（已在分发中的会在下次同步时从容器清理）"
+          @click="delReg = s"
+        >
+          <Trash2 />
+        </Button>
       </div>
     </div>
 
@@ -613,6 +875,24 @@ async function syncNow() {
       variant="destructive"
       @confirm="doDeleteSource"
       @close="delSource = null"
+    />
+    <ConfirmDialog
+      v-if="regConfirm"
+      title="覆盖入库"
+      :description="`技能库里已有「${regConfirm.name}」。用 ${regConfirm.from} 的内容覆盖它？`"
+      confirm-text="覆盖"
+      variant="destructive"
+      @confirm="doConfirmRegistry"
+      @close="regConfirm = null"
+    />
+    <ConfirmDialog
+      v-if="delReg"
+      title="出库"
+      :description="`把「${delReg.name}」移出技能库？已在分发中的它会在下次同步时从对应容器清理（库外的来源不受影响）。`"
+      confirm-text="出库"
+      variant="destructive"
+      @confirm="doDeleteReg"
+      @close="delReg = null"
     />
   </div>
 </template>
