@@ -10,7 +10,7 @@ import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
-import { runSkillsCommand, startSkillSyncWatch, syncSkillsAll } from './skillSync.js';
+import { runSkillsCommand, startSkillSyncWatch, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
@@ -218,10 +218,12 @@ async function main(): Promise<void> {
   const app = await buildServer(config);
   // 存量容器补种子容器内 mysandbox 命令（幂等；sidecar 已知且 dataRoot 可见的才写）。
   await sweepContainerCli(config);
-  // skills 同步：启动追平一次（镜像 + 分发，容器不必在跑），随后 watch 源目录实时分发。
-  // 只在配置了 skills.sync 时才有动作（见 server/skillSync.ts）。
+  // skills 同步：启动追平一次（镜像 + 分发，容器不必在跑），随后 watch 源目录实时
+  // 分发；容器 start 事件补发（项目目标「只同步到已有该项目的容器」的闭环——停机
+  // 期间克隆的项目，启动即补齐）。只在配置了 skills 源时才有动作（server/skillSync.ts）。
   void syncSkillsAll(config);
   startSkillSyncWatch(config);
+  startSkillSyncEvents(config);
   // 全局 hosts 启动补刷（幂等，hash 跳过；不阻塞 listen）+ events 自动重刷（容器重启追平）。
   void sweepHosts(config);
   startHostsEventSync(config);

@@ -177,11 +177,16 @@ export interface SkillSyncRuleResult {
   error?: string
   containers: SkillSyncContainerResult[]
 }
+export interface SkillSyncHubGroupResult {
+  to: string
+  ok: boolean
+  containers: SkillSyncContainerResult[]
+  error?: string
+}
 export interface SkillSyncHubResult {
   ok: boolean
   to: string
-  skills: { name: string }[]
-  containers: SkillSyncContainerResult[]
+  groups: SkillSyncHubGroupResult[]
   error?: string
 }
 export interface SkillSyncResult {
@@ -196,6 +201,7 @@ export const syncSkills = () => postJson('/api/skills/sync', {}, 60_000) as Prom
 export interface SkillHubSourceView {
   id: string
   from: string
+  to?: string // 缺省 = 全局目标；项目目标自动「只同步到已有该项目的容器」
   enabled: boolean
   ok: boolean
   skills: string[]
@@ -204,23 +210,28 @@ export interface SkillHubSourceView {
 export interface SkillHubSkillView {
   name: string
   sourceId: string
-  conflicts: string[] // 其他也提供同名 skill 的源 id（赢家 = sourceId，顺序在前者赢）
+  conflicts: string[] // 同组内其他也提供同名 skill 的源 id（赢家 = sourceId，顺序在前者赢）
+}
+// 一个目标组：同 to 的源聚合成组（组内重名按源顺序先到先得），独立分发。
+export interface SkillHubGroupView {
+  to: string
+  ok: boolean
+  skills: SkillHubSkillView[]
+  error?: string
 }
 export interface SkillHubView {
   ok: boolean
-  to: string
+  to: string // 全局目标（源未指定 to 时用它）
   sources: SkillHubSourceView[]
-  skills: SkillHubSkillView[]
-  changed?: number
-  removed?: number
+  groups: SkillHubGroupView[]
   error?: string
   // config.skills.sync 静态规则（UI 只读展示——改它去 config.yaml，需重启服务）
   configRules: { from: string; to: string }[]
 }
 export const getSkillHub = () => api('/api/skills/hub') as Promise<SkillHubView>
-export const addSkillHubSource = (from: string) =>
-  postJson('/api/skills/hub/sources', { from }) as Promise<SkillHubView>
-export const updateSkillHubSource = (id: string, patch: { enabled?: boolean; move?: number }) =>
+export const addSkillHubSource = (from: string, to?: string) =>
+  postJson('/api/skills/hub/sources', { from, to }) as Promise<SkillHubView>
+export const updateSkillHubSource = (id: string, patch: { enabled?: boolean; move?: number; to?: string | null }) =>
   patchJson(`/api/skills/hub/sources/${id}`, patch) as Promise<SkillHubView>
 export const deleteSkillHubSource = (id: string) =>
   api(`/api/skills/hub/sources/${id}`, { method: 'DELETE' }) as Promise<SkillHubView>

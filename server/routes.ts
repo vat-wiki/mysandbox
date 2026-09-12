@@ -352,6 +352,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const body = (req.body ?? {}) as Record<string, unknown>;
     const from = String(body.from ?? '').trim();
     if (!from) throw new HttpError(400, 'from 必填（<容器名>:<容器内路径> 或宿主路径）', 'bad_request');
+    // to 可选：缺省 = 全局目标；给了就是项目目标（范围自动收窄到已有该项目的容器）。
+    const to = typeof body.to === 'string' && body.to.trim() ? body.to.trim() : undefined;
     try {
       const src = resolveSyncSource(cfg, from);
       if (!existsSync(src.hostPath)) {
@@ -362,7 +364,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
     }
     try {
-      await addSkillHubSource(cfg, from);
+      await addSkillHubSource(cfg, from, to);
     } catch (e) {
       throw new HttpError(409, e instanceof Error ? e.message : String(e), 'conflict');
     }
@@ -372,10 +374,12 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   app.patch('/api/skills/hub/sources/:id', async (req) => {
     const id = (req.params as { id: string }).id;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const patch: { enabled?: boolean; move?: number } = {};
+    const patch: { enabled?: boolean; move?: number; to?: string | null } = {};
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
     if (typeof body.move === 'number') patch.move = body.move;
-    if (!Object.keys(patch).length) throw new HttpError(400, 'enabled / move 至少给一个', 'bad_request');
+    if (typeof body.to === 'string') patch.to = body.to.trim() || null; // 空串 = 回全局
+    else if (body.to === null) patch.to = null;
+    if (!Object.keys(patch).length) throw new HttpError(400, 'enabled / move / to 至少给一个', 'bad_request');
     try {
       await updateSkillHubSource(cfg, id, patch);
     } catch (e) {

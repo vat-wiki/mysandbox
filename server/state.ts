@@ -113,6 +113,7 @@ export interface SshTarget {
 export interface SkillHubSource {
   id: string; // 随机短 id（操作锚点；顺序 = 数组顺序 = 重名时的优先级）
   from: string; // 源：'<容器名>:<容器内路径>' 或宿主路径（~/ 展开），解析规则同 config 规则
+  to?: string; // 分发目标（容器内路径）；缺省 = hub.to 全局目标。项目目标自动「只同步到已有该项目的容器」
   enabled: boolean;
   createdAt?: string;
 }
