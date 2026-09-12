@@ -27,6 +27,7 @@ import {
   sshGroupId,
   sshTargetName,
   listSshTargets,
+  syncSkills,
   type SshTargetView,
   getServiceListenPorts,
   Unauthorized,
@@ -76,7 +77,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, FolderSync, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -1422,6 +1423,30 @@ function openSshTerm(t: SshTargetView) {
   createGroup(id, t.name, 'ssh')
 }
 
+// 手动触发 skills 同步（config.skills.sync → 全部受管容器；watch/启动追平之外的兜底）。
+// 汇总 toast：部分失败点名容器，全成报变更量（0 = 本来就最新）。
+const syncingSkills = ref(false)
+async function syncSkillsNow() {
+  if (syncingSkills.value) return
+  syncingSkills.value = true
+  try {
+    const r = await syncSkills()
+    const bad = r.rules.flatMap((x) => x.containers.filter((c) => !c.ok))
+    if (bad.length) {
+      toast.error(`skills 同步部分失败：${bad.map((f) => `${f.name} — ${f.error}`).join('；')}`)
+    } else {
+      const changed = r.rules.reduce((n, x) => n + x.containers.reduce((m, c) => m + c.changed, 0), 0)
+      const removed = r.rules.reduce((n, x) => n + x.containers.reduce((m, c) => m + c.removed, 0), 0)
+      const parts = [changed ? `更新 ${changed} 个文件` : '', removed ? `清理 ${removed} 个陈旧` : ''].filter(Boolean)
+      toast(`skills 已同步${parts.length ? '：' + parts.join('，') : '：全部已是最新'}`)
+    }
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    syncingSkills.value = false
+  }
+}
+
 // 点服务卡片：进服务终端（docker exec，与容器「点击即进」同一交互语义）。
 // 会话 = 宿主 tmux 上的 docker exec 窗口，跨 mysandbox 重启存活；想看详情走 ⋯ 详情。
 function openServiceTerm(s: ServiceView) {
@@ -2460,6 +2485,13 @@ onUnmounted(() => {
               >
                 <ListChecks /> 批量配置
               </DropdownMenuItem>
+              <DropdownMenuItem
+                :disabled="syncingSkills"
+                title="按 config skills.sync 把源目录的 skills 分发到全部容器"
+                @click="syncSkillsNow()"
+              >
+                <FolderSync /> 同步 skills
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <button
@@ -2564,6 +2596,13 @@ onUnmounted(() => {
                 @click="showBatch = true"
               >
                 <ListChecks /> 批量配置
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                :disabled="syncingSkills"
+                title="按 config skills.sync 把源目录的 skills 分发到全部容器"
+                @click="syncSkillsNow()"
+              >
+                <FolderSync /> 同步 skills
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

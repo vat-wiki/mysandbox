@@ -133,6 +133,25 @@ export const ConfigSchema = z.object({
       port: z.number().int().default(7331),
     })
     .default({ enabled: true, port: 7331 }),
+  // Skills 同步（server/skillSync.ts）：把「源目录」（容器内项目的 skills 或宿主路径）
+  // 镜像分发到全部受管容器的目标目录。宿主直读直写 rootfs（D1），容器不必在跑；触发：
+  // 服务启动 sweep + 源目录 fs.watch 实时分发 + create() 建容器补发 + 手动
+  // （mysandbox skills sync / POST /api/skills/sync）。权威副本在 STATE_DIR/skills/。
+  skills: z
+    .object({
+      sync: z
+        .array(
+          z.object({
+            // 源：'<容器名>:<容器内路径>'（home 契约 /home/dev，~/ 与绝对路径都认）
+            // 或宿主路径（~/ 展开）。容器名与路径以 : 分隔。
+            from: z.string(),
+            // 目标：容器内路径（相对 dev home，~/ 前缀可选，不能为空）。
+            to: z.string(),
+          }),
+        )
+        .default([]),
+    })
+    .default({ sync: [] }),
   token: z.string().optional(),
   // peer API 凭据（与主 token 分离：peer 端点只有 targets/exec，控制台全量 API 不在内）。
   // 首启随 token 一起生成；宿主自动种进每个受管容器的 ~/.config/mysandbox/peer.json。
@@ -231,6 +250,7 @@ export async function loadConfig(): Promise<LoadResult> {
       dockerApi: parsed.dockerApi,
       proxy: parsed.proxy,
       peer: parsed.peer,
+      skills: parsed.skills,
       token: parsed.token,
       peerToken: parsed.peerToken,
     });

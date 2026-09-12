@@ -20,6 +20,7 @@ import { readHostHosts } from './hosts.js';
 import { applyServicesBlock, overwriteHosts } from './hosts-sync.js';
 import { seedContainerCli } from './container-cli.js';
 import { peerSeedInfo } from './peer.js';
+import { syncContainerSkills } from './skillSync.js';
 import { log } from './logger.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
@@ -123,6 +124,9 @@ export async function createContainer(
   });
 
   log.info({ name, ip, engine: engine.name, network: cfg.network }, 'container created');
+  // skills 分发（config.skills.sync）：新容器补一发当前权威副本（宿主直写 rootfs，
+  // 容器在不在跑都行；尽力而为不阻塞返回）。
+  void syncContainerSkills(cfg, name);
   return { id, name, ip };
 }
 

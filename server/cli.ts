@@ -10,6 +10,7 @@ import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
+import { runSkillsCommand, startSkillSyncWatch, syncSkillsAll } from './skillSync.js';
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
@@ -92,6 +93,12 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
   mysandbox targets
       List peer exec targets (host, system containers, docker services).
 
+  mysandbox skills sync
+      Mirror config skills.sync sources and distribute skills to all managed
+      containers (host-side file copy; containers need not be running).
+      While the server runs, source directories are watched and changes
+      distribute automatically.
+
   mysandbox status [--json]
       Scan and list every mysandbox-managed object on this host (containers,
       template, docker services/volumes, host-terminal sessions, transient
@@ -144,6 +151,13 @@ async function main(): Promise<void> {
   if (process.argv[2] === 'open') {
     const { config } = await loadConfig();
     await runOpenCommand(process.argv.slice(3), config);
+    return;
+  }
+
+  // 一次性子命令：mysandbox skills sync（宿主侧文件镜像 + 分发，不启动 server、容器不必在跑）。
+  if (process.argv[2] === 'skills') {
+    const { config } = await loadConfig();
+    await runSkillsCommand(config);
     return;
   }
 
@@ -204,6 +218,10 @@ async function main(): Promise<void> {
   const app = await buildServer(config);
   // 存量容器补种子容器内 mysandbox 命令（幂等；sidecar 已知且 dataRoot 可见的才写）。
   await sweepContainerCli(config);
+  // skills 同步：启动追平一次（镜像 + 分发，容器不必在跑），随后 watch 源目录实时分发。
+  // 只在配置了 skills.sync 时才有动作（见 server/skillSync.ts）。
+  void syncSkillsAll(config);
+  startSkillSyncWatch(config);
   // 全局 hosts 启动补刷（幂等，hash 跳过；不阻塞 listen）+ events 自动重刷（容器重启追平）。
   void sweepHosts(config);
   startHostsEventSync(config);

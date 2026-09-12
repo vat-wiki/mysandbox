@@ -158,6 +158,32 @@ async function patchJson(path: string, body: unknown): Promise<any> {
 
 export const startContainer = (id: string) => postJson(`/api/containers/${id}/start`)
 export const stopContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/stop`, { t })
+
+// —— skills 同步（config.skills.sync → 全部受管容器；server/skillSync.ts）——
+export interface SkillSyncContainerResult {
+  name: string
+  ok: boolean
+  changed: number
+  removed: number
+  error?: string
+}
+export interface SkillSyncRuleResult {
+  from: string
+  to: string
+  source: string
+  ok: boolean
+  changed: number
+  removed: number
+  error?: string
+  containers: SkillSyncContainerResult[]
+}
+export interface SkillSyncResult {
+  ok: boolean
+  rules: SkillSyncRuleResult[]
+  durationMs: number
+}
+export const syncSkills = () => postJson('/api/skills/sync', {}, 60_000) as Promise<SkillSyncResult>
+
 export const restartContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/restart`, { t })
 export const adoptContainer = (id: string, displayName?: string, source = 'external') =>
   postJson(`/api/containers/${id}/adopt`, { displayName, source })

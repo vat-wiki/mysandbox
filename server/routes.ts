@@ -25,6 +25,7 @@ import { beginSse } from './sse.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
 import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
+import { syncSkillsAll } from './skillSync.js';
 import { getAiGateway, setAiGateway } from './state.js';
 import { getVersion } from './version.js';
 import { readHostHosts } from './hosts.js';
@@ -321,6 +322,15 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     if (!command) throw new HttpError(400, 'command required', 'bad_request');
     const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined;
     return batchExec(cfg, ids, { command, timeoutMs });
+  });
+
+  // —— skills 同步（server/skillSync.ts）：手动触发一次镜像 + 分发（watch/启动 sweep 之外）——
+  // 不收任何路径参数：规则只来自 config（skills.sync），API 无法被用来指路。
+  app.post('/api/skills/sync', async () => {
+    if (!cfg.skills?.sync.length) {
+      throw new HttpError(400, 'config 里没有 skills.sync 规则（~/.config/mysandbox/config.yaml）', 'bad_request');
+    }
+    return syncSkillsAll(cfg);
   });
 
   // —— AI 网关批量配置（myapikey 等兼容网关）——
