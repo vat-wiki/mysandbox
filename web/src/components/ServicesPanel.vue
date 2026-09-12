@@ -48,7 +48,7 @@ import {
 // 全面相悖，反覆盖不如直接自绘；焦点陷阱/Esc/遮罩点击关等 a11y 行为由原语自带。
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogClose } from 'reka-ui'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import { LoaderCircle, Check, X, Ban, RefreshCw, Globe, ChevronRight } from 'lucide-vue-next'
+import { LoaderCircle, Check, X, Ban, RefreshCw, Globe, ChevronRight, Maximize2, Minimize2 } from 'lucide-vue-next'
 
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
@@ -80,6 +80,7 @@ watch(selService, () => {
   openCfg.value = false
   openStack.value = false
   openLog.value = false
+  cfgZoom.value = false
   cfg.value = null
   cfgYaml.value = ''
   void refreshListen()
@@ -101,6 +102,9 @@ const cfgErr = ref('')
 const cfgLoading = ref(false)
 const applying = ref(false)
 const cfgDirty = computed(() => cfg.value != null && cfgYaml.value !== cfg.value.yaml)
+// 配置编辑器放大态：同一编辑器实例在「抽屉内嵌」与「全屏覆盖」两种形态间切换
+//（class 切换不重建，编辑内容/光标/撤销栈全保留；automaticLayout 负责重排）。
+const cfgZoom = ref(false)
 watch([selService, openCfg], ([name, open]) => {
   if (open && name) void loadCfg(name)
 })
@@ -748,8 +752,56 @@ onUnmounted(() => {
                   <span class="ml-1.5 text-muted-foreground/60">终端手改此文件 + docker compose up -d 等价</span>
                 </p>
                 <p v-if="cfgLoading" class="py-6 text-center text-xs text-muted-foreground">读取中…</p>
-                <CodeEditor v-else v-model="cfgYaml" language="yaml" class="h-72 rounded-md border" @save="applyCfg(false)" />
-                <div class="flex flex-wrap items-center gap-1.5">
+                <!-- 放大 = 外层容器从抽屉内嵌切到全屏覆盖（fixed）；同一编辑器实例不重建。 -->
+                <div
+                  v-else
+                  :class="
+                    cfgZoom
+                      ? 'fixed inset-3 z-[70] flex flex-col overflow-hidden rounded-lg border bg-zinc-900 shadow-2xl'
+                      : 'relative overflow-hidden rounded-md border'
+                  "
+                  @keydown.capture.esc.prevent="cfgZoom = false"
+                >
+                  <!-- 放大态工具条：路径/dirty 状态 + 应用动作原样可用 + 退出 -->
+                  <div v-if="cfgZoom" class="flex shrink-0 items-center gap-2 border-b px-2 py-1.5">
+                    <span class="truncate font-mono text-[11px] text-muted-foreground" :title="cfg.path">{{ cfg.path }}</span>
+                    <span v-if="cfgDirty" class="shrink-0 text-[11px] text-amber-600">未保存</span>
+                    <span v-else-if="cfg.drift" class="shrink-0 text-[11px] text-amber-600">待应用</span>
+                    <span class="min-w-0 flex-1" />
+                    <span class="shrink-0 text-[11px] text-muted-foreground/60">Esc 或</span>
+                    <Button variant="ghost" size="icon-xs" title="收起" @click="cfgZoom = false">
+                      <Minimize2 class="size-3.5" />
+                    </Button>
+                  </div>
+                  <CodeEditor
+                    v-model="cfgYaml"
+                    language="yaml"
+                    :class="cfgZoom ? 'min-h-0 flex-1' : 'h-96'"
+                    @save="applyCfg(false)"
+                  />
+                  <div v-if="cfgZoom" class="flex shrink-0 flex-wrap items-center gap-1.5 border-t px-2 py-1.5">
+                    <Button size="sm" :disabled="applying || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
+                      <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 应用
+                    </Button>
+                    <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying" @click="applyCfg(true)">
+                      <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 构建并应用
+                    </Button>
+                    <span v-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
+                    <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
+                  </div>
+                  <!-- 内嵌态：放大入口浮在编辑器右上角 -->
+                  <Button
+                    v-if="!cfgZoom"
+                    variant="ghost"
+                    size="icon-xs"
+                    class="absolute right-1.5 top-1.5 z-10 bg-zinc-900/80 text-muted-foreground hover:text-foreground"
+                    title="放大编辑"
+                    @click="cfgZoom = true"
+                  >
+                    <Maximize2 class="size-3.5" />
+                  </Button>
+                </div>
+                <div v-if="!cfgZoom" class="flex flex-wrap items-center gap-1.5">
                   <Button size="sm" :disabled="applying || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
                     <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 应用
                   </Button>

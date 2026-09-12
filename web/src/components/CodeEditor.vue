@@ -29,12 +29,17 @@ const emit = defineEmits<{
 }>()
 
 // 选项基线 + 消费方覆盖。无 minimap、等宽 12px、自动换行、禁用回环。
+// folding 恒显（Monaco 默认 hover 才出箭头，小屏上等于没有）；
+// automaticLayout 让容器尺寸变化（窗口/消费方形态切换）时自动重排。
 const editorOptions = computed(() => ({
   minimap: { enabled: false },
   fontSize: 12,
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
   lineNumbers: 'on',
   wordWrap: 'on',
+  folding: true,
+  showFoldingControls: 'always',
+  automaticLayout: true,
   scrollBeyondLastLine: false,
   renderLineHighlight: 'line',
   tabSize: 2,
