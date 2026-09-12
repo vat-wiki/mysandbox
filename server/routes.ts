@@ -28,10 +28,12 @@ import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from '
 import {
   syncSkillsAll,
   hubView,
-  addSkillHubSource,
-  updateSkillHubSource,
-  deleteSkillHubSource,
-  setSkillHubTo,
+  addSkillHubTarget,
+  updateSkillHubTarget,
+  deleteSkillHubTarget,
+  addSkillHubTargetSource,
+  updateSkillHubTargetSource,
+  deleteSkillHubTargetSource,
   resolveSyncSource,
 } from './skillSync.js';
 import { getSkillHub } from './state.js';
@@ -337,23 +339,60 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   // —— skills 同步（server/skillSync.ts）：手动触发一次镜像 + 分发（watch/启动 sweep 之外）——
   // 不收任何路径参数：规则只来自 config（skills.sync），API 无法被用来指路。
   app.post('/api/skills/sync', async () => {
-    if (!cfg.skills?.sync.length && !(await getSkillHub()).sources.length) {
+    if (!cfg.skills?.sync.length && !(await getSkillHub()).targets.some((t) => t.sources.length)) {
       throw new HttpError(400, '没有任何 skills 源（面板「技能中心」或 config skills.sync）', 'bad_request');
     }
     return syncSkillsAll(cfg);
   });
 
-  // —— 技能中心（hub）：多源聚合池的视图与源管理。源列表存 sidecar（state.skillsHub），
+  // —— 技能中心（hub）：以目标为中心的 CRUD。目标 = 分发位置（全局或某项目路径）
+  // + 挂在其下的多个源（同一 from 可挂多个目标）。源列表存 sidecar（state.skillsHub），
   // config.skills.sync 是并存的静态规则（视图里只读展示）。表单校验在此处转 4xx，
-  // addSkillHubSource 的重复源转 409；视图是 readdir 级描述，不拷贝不分发。——
+  // 重复目标/重复源转 409；视图是 readdir 级描述 + 聚合副本刷新，不分发之外的副作用。——
   app.get('/api/skills/hub', async () => hubView(cfg));
 
-  app.post('/api/skills/hub/sources', async (req) => {
+  app.post('/api/skills/hub/targets', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const to = String(body.to ?? '').trim();
+    if (!to) throw new HttpError(400, 'to 必填（容器内目标路径，如 ~/.claude/skills）', 'bad_request');
+    try {
+      await addSkillHubTarget(cfg, to, body.all === true);
+    } catch (e) {
+      throw new HttpError(409, e instanceof Error ? e.message : String(e), 'conflict');
+    }
+    return hubView(cfg);
+  });
+
+  app.patch('/api/skills/hub/targets/:id', async (req) => {
+    const id = (req.params as { id: string }).id;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: { to?: string; all?: boolean } = {};
+    if (typeof body.to === 'string' && body.to.trim()) patch.to = body.to.trim();
+    if (typeof body.all === 'boolean') patch.all = body.all;
+    if (!Object.keys(patch).length) throw new HttpError(400, 'to / all 至少给一个', 'bad_request');
+    try {
+      await updateSkillHubTarget(cfg, id, patch);
+    } catch (e) {
+      throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
+    }
+    return hubView(cfg);
+  });
+
+  app.delete('/api/skills/hub/targets/:id', async (req) => {
+    const id = (req.params as { id: string }).id;
+    try {
+      await deleteSkillHubTarget(cfg, id);
+    } catch (e) {
+      throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
+    }
+    return hubView(cfg);
+  });
+
+  app.post('/api/skills/hub/targets/:id/sources', async (req) => {
+    const id = (req.params as { id: string }).id;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const from = String(body.from ?? '').trim();
     if (!from) throw new HttpError(400, 'from 必填（<容器名>:<容器内路径> 或宿主路径）', 'bad_request');
-    // to 可选：缺省 = 全局目标；给了就是项目目标（范围自动收窄到已有该项目的容器）。
-    const to = typeof body.to === 'string' && body.to.trim() ? body.to.trim() : undefined;
     try {
       const src = resolveSyncSource(cfg, from);
       if (!existsSync(src.hostPath)) {
@@ -364,49 +403,34 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
     }
     try {
-      await addSkillHubSource(cfg, from, to);
+      await addSkillHubTargetSource(cfg, id, from);
     } catch (e) {
       throw new HttpError(409, e instanceof Error ? e.message : String(e), 'conflict');
     }
     return hubView(cfg);
   });
 
-  app.patch('/api/skills/hub/sources/:id', async (req) => {
-    const id = (req.params as { id: string }).id;
+  app.patch('/api/skills/hub/targets/:id/sources/:sid', async (req) => {
+    const { id, sid } = req.params as { id: string; sid: string };
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const patch: { enabled?: boolean; move?: number; to?: string | null } = {};
+    const patch: { enabled?: boolean; move?: number } = {};
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
     if (typeof body.move === 'number') patch.move = body.move;
-    if (typeof body.to === 'string') patch.to = body.to.trim() || null; // 空串 = 回全局
-    else if (body.to === null) patch.to = null;
-    if (!Object.keys(patch).length) throw new HttpError(400, 'enabled / move / to 至少给一个', 'bad_request');
+    if (!Object.keys(patch).length) throw new HttpError(400, 'enabled / move 至少给一个', 'bad_request');
     try {
-      await updateSkillHubSource(cfg, id, patch);
+      await updateSkillHubTargetSource(cfg, id, sid, patch);
     } catch (e) {
       throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
     }
     return hubView(cfg);
   });
 
-  app.delete('/api/skills/hub/sources/:id', async (req) => {
-    const id = (req.params as { id: string }).id;
+  app.delete('/api/skills/hub/targets/:id/sources/:sid', async (req) => {
+    const { id, sid } = req.params as { id: string; sid: string };
     try {
-      await deleteSkillHubSource(cfg, id);
+      await deleteSkillHubTargetSource(cfg, id, sid);
     } catch (e) {
       throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
-    }
-    return hubView(cfg);
-  });
-
-  app.patch('/api/skills/hub', async (req) => {
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof body.to !== 'string' || !body.to.trim()) {
-      throw new HttpError(400, 'to 必填（容器内目标路径）', 'bad_request');
-    }
-    try {
-      await setSkillHubTo(body.to.trim());
-    } catch (e) {
-      throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
     }
     return hubView(cfg);
   });

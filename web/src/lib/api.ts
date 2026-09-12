@@ -177,16 +177,16 @@ export interface SkillSyncRuleResult {
   error?: string
   containers: SkillSyncContainerResult[]
 }
-export interface SkillSyncHubGroupResult {
+export interface SkillSyncHubTargetResult {
   to: string
+  all: boolean
   ok: boolean
   containers: SkillSyncContainerResult[]
   error?: string
 }
 export interface SkillSyncHubResult {
   ok: boolean
-  to: string
-  groups: SkillSyncHubGroupResult[]
+  targets: SkillSyncHubTargetResult[]
   error?: string
 }
 export interface SkillSyncResult {
@@ -197,11 +197,11 @@ export interface SkillSyncResult {
 }
 export const syncSkills = () => postJson('/api/skills/sync', {}, 60_000) as Promise<SkillSyncResult>
 
-// —— 技能中心（多源 skills 聚合池；sidecar state.skillsHub；面板「AI 工具 → 技能中心」）——
+// —— 技能中心（以目标为中心的多源聚合；sidecar state.skillsHub；面板「AI 工具 → 技能中心」）——
+// 目标 = 分发位置（全局或某项目路径）+ 挂在其下的多个源；同一 from 可挂多个目标。
 export interface SkillHubSourceView {
   id: string
   from: string
-  to?: string // 缺省 = 全局目标；项目目标自动「只同步到已有该项目的容器」
   enabled: boolean
   ok: boolean
   skills: string[]
@@ -210,33 +210,39 @@ export interface SkillHubSourceView {
 export interface SkillHubSkillView {
   name: string
   sourceId: string
-  conflicts: string[] // 同组内其他也提供同名 skill 的源 id（赢家 = sourceId，顺序在前者赢）
+  conflicts: string[] // 目标内其他也提供同名 skill 的源 id（赢家 = sourceId，顺序在前者赢）
 }
-// 一个目标组：同 to 的源聚合成组（组内重名按源顺序先到先得），独立分发。
-export interface SkillHubGroupView {
+export interface SkillHubTargetView {
+  id: string
   to: string
+  all: boolean // true = 全部容器（全局语义）；false = 仅已有该项目的容器
   ok: boolean
+  sources: SkillHubSourceView[]
   skills: SkillHubSkillView[]
   error?: string
 }
 export interface SkillHubView {
   ok: boolean
-  to: string // 全局目标（源未指定 to 时用它）
-  sources: SkillHubSourceView[]
-  groups: SkillHubGroupView[]
-  error?: string
+  targets: SkillHubTargetView[]
   // config.skills.sync 静态规则（UI 只读展示——改它去 config.yaml，需重启服务）
   configRules: { from: string; to: string }[]
 }
 export const getSkillHub = () => api('/api/skills/hub') as Promise<SkillHubView>
-export const addSkillHubSource = (from: string, to?: string) =>
-  postJson('/api/skills/hub/sources', { from, to }) as Promise<SkillHubView>
-export const updateSkillHubSource = (id: string, patch: { enabled?: boolean; move?: number; to?: string | null }) =>
-  patchJson(`/api/skills/hub/sources/${id}`, patch) as Promise<SkillHubView>
-export const deleteSkillHubSource = (id: string) =>
-  api(`/api/skills/hub/sources/${id}`, { method: 'DELETE' }) as Promise<SkillHubView>
-export const setSkillHubTo = (to: string) =>
-  patchJson('/api/skills/hub', { to }) as Promise<SkillHubView>
+export const addSkillHubTarget = (to: string, all: boolean) =>
+  postJson('/api/skills/hub/targets', { to, all }) as Promise<SkillHubView>
+export const updateSkillHubTarget = (id: string, patch: { to?: string; all?: boolean }) =>
+  patchJson(`/api/skills/hub/targets/${id}`, patch) as Promise<SkillHubView>
+export const deleteSkillHubTarget = (id: string) =>
+  api(`/api/skills/hub/targets/${id}`, { method: 'DELETE' }) as Promise<SkillHubView>
+export const addSkillHubTargetSource = (targetId: string, from: string) =>
+  postJson(`/api/skills/hub/targets/${targetId}/sources`, { from }) as Promise<SkillHubView>
+export const updateSkillHubTargetSource = (
+  targetId: string,
+  sourceId: string,
+  patch: { enabled?: boolean; move?: number },
+) => patchJson(`/api/skills/hub/targets/${targetId}/sources/${sourceId}`, patch) as Promise<SkillHubView>
+export const deleteSkillHubTargetSource = (targetId: string, sourceId: string) =>
+  api(`/api/skills/hub/targets/${targetId}/sources/${sourceId}`, { method: 'DELETE' }) as Promise<SkillHubView>
 
 export const restartContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/restart`, { t })
 export const adoptContainer = (id: string, displayName?: string, source = 'external') =>

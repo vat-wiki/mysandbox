@@ -107,20 +107,30 @@ export interface SshTarget {
   createdAt?: string;
 }
 
-// 技能中心（server/skillSync.ts）：多源聚合的 skills 池 + 分发目标。源列表走这里
-// （UI 增删/启停/排序，与 sshTargets 同款理由——易变、UI 管理、不碰用户手改的
-// config.yaml）；config.skills.sync 是并存的静态精确映射规则，两者分工见 skillSync.ts。
-export interface SkillHubSource {
-  id: string; // 随机短 id（操作锚点；顺序 = 数组顺序 = 重名时的优先级）
+// 技能中心（server/skillSync.ts）：以「目标」为中心——一个目标位置（全局
+// ~/.claude/skills 或某项目的 .claude/skills）聚合多个源，统一分发到对应容器集合。
+// 源内嵌在目标下（同一 from 可挂到多个目标，各自启停/排序）；重名在目标内按源
+// 顺序先到先得。存这里而非 config.yaml：UI 可增删（config.yaml 是用户手改文件，
+// 程序回写会丢注释），与 sshTargets 同款理由。
+export interface SkillHubTargetSource {
+  id: string; // 随机短 id（操作锚点；目标内顺序 = 数组顺序 = 重名时的优先级）
   from: string; // 源：'<容器名>:<容器内路径>' 或宿主路径（~/ 展开），解析规则同 config 规则
-  to?: string; // 分发目标（容器内路径）；缺省 = hub.to 全局目标。项目目标自动「只同步到已有该项目的容器」
   enabled: boolean;
   createdAt?: string;
 }
 
+export interface SkillHubTarget {
+  id: string; // 随机短 id（操作锚点）
+  to: string; // 分发目标（容器内路径，相对 dev home）。唯一——同 to 不允许两个目标
+  // 范围：true = 全部受管容器（全局语义）；false = 仅已有该项目的容器（目标路径
+  // 逐级向上探测落点，项目克隆到哪 skill 跟到哪；容器 start 事件补发闭环）。
+  all: boolean;
+  sources: SkillHubTargetSource[];
+  createdAt?: string;
+}
+
 export interface SkillHubState {
-  to: string; // 容器内分发目标（相对 dev home；默认 ~/.claude/skills）
-  sources: SkillHubSource[];
+  targets: SkillHubTarget[];
 }
 
 interface StateShape {
@@ -240,17 +250,56 @@ export async function setAiGateway(state: AiGatewayState): Promise<void> {
   await persist(s);
 }
 
-// —— 技能中心（多源 skills 聚合池；server/skillSync.ts）——
+// —— 技能中心（目标为中心的多源聚合；server/skillSync.ts）——
+
+// 全局目标（铺全部容器）的缺省位置。
+export const SKILL_HUB_DEFAULT_TO = '~/.claude/skills';
 
 export async function getSkillHub(): Promise<SkillHubState> {
   const s = await load();
-  return s.skillsHub ?? { to: '~/.claude/skills', sources: [] };
+  const raw = s.skillsHub as unknown;
+  // 迁移：旧形状（扁平 sources[]，源带可选 to）→ 目标为中心。旧全局源归入全局
+  // 目标（all: true），显式 to 的源归入各自的项目目标（all: false）。
+  if (raw && typeof raw === 'object' && Array.isArray((raw as { sources?: unknown }).sources)) {
+    const old = raw as { to: string; sources: { id: string; from: string; to?: string; enabled: boolean; createdAt?: string }[] };
+    const targets = new Map<string, SkillHubTarget>();
+    for (const src of old.sources) {
+      const to = src.to || old.to || SKILL_HUB_DEFAULT_TO;
+      let t = targets.get(to);
+      if (!t) {
+        t = {
+          id: randomId(),
+          to,
+          all: to === (old.to || SKILL_HUB_DEFAULT_TO),
+          sources: [],
+        };
+        targets.set(to, t);
+      }
+      t.sources.push({ id: src.id, from: src.from, enabled: src.enabled, createdAt: src.createdAt });
+    }
+    s.skillsHub = { targets: [...targets.values()] };
+    void persist(s).catch(() => {});
+    return s.skillsHub;
+  }
+  if (raw && typeof raw === 'object' && Array.isArray((raw as { targets?: unknown }).targets)) {
+    return raw as SkillHubState;
+  }
+  // 首次：种一个全局目标（零源），面板即有「全局」落点可挂源。
+  s.skillsHub = {
+    targets: [{ id: randomId(), to: SKILL_HUB_DEFAULT_TO, all: true, sources: [] }],
+  };
+  await persist(s);
+  return s.skillsHub;
 }
 
 export async function setSkillHub(hub: SkillHubState): Promise<void> {
   const s = await load();
   s.skillsHub = hub;
   await persist(s);
+}
+
+function randomId(): string {
+  return Math.random().toString(16).slice(2, 10);
 }
 
 export function resetStateCache(): void {
