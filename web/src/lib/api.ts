@@ -346,6 +346,7 @@ export interface AiProjectRule {
   createdAt?: string
 }
 export interface AiView {
+  hostHome: string // 宿主 home（宿主 spot → 规则 ~/rel 归一化用）
   providers: AiProvider[]
   binding: AiBinding | null
   overrides: Record<string, AiBinding>

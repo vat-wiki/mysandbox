@@ -124,19 +124,20 @@ const installFilter = ref('')
 const installBusy = ref(false)
 const installErr = ref('')
 
-// 安装目标：当前目录下的 .claude/skills（已在其中则就地）。仅 dev home 内可装——
-// 安装 = 写容器 home + 建规则，home 外没有落点语义。
+// 安装目标：当前目录下的 .claude/skills（已在其中则就地）。容器走 home 契约前缀；
+// 宿主面板的 path 本身就是宿主路径（home 内与否由后端 hostHomeRel 校验）。
 const installTarget = computed<string | null>(() => {
   const p = path.value
   if (!p) return null
-  if (p !== '/home/dev' && !p.startsWith('/home/dev/')) return null
   if (/\/\.claude\/skills$/.test(p)) return p
+  if (!isHost.value && p !== '/home/dev' && !p.startsWith('/home/dev/')) return null
   return `${p}/.claude/skills`
 })
-// 容器面板 only（宿主 = 库本体就在这；服务组没有规则模型）。
-const canInstall = computed(() => !isHost.value && !targetId().startsWith('s:') && !!installTarget.value)
-// 全局落点（home 根下的 .claude/skills）= 铺全部容器；项目落点 = 跟项目走（后端定 all，这里只管展示）。
-const isGlobalSpot = computed(() => installTarget.value === '/home/dev/.claude/skills')
+// 服务组没有规则模型；容器与宿主（本机）都可作为分发目标。
+const canInstall = computed(() => !targetId().startsWith('s:') && !!installTarget.value)
+// 全局落点（home 根下的 .claude/skills）= 铺本机 + 全部容器；项目落点 = 跟项目走。
+// 宿主面板不知道宿主 home 路径，范围由后端按落点自动判定（home 直下 = 全局）。
+const isGlobalSpot = computed(() => !isHost.value && installTarget.value === '/home/dev/.claude/skills')
 
 const regFiltered = computed(() =>
   (regSkills.value ?? []).filter(
@@ -176,7 +177,7 @@ async function doInstall() {
   installErr.value = ''
   try {
     const r = await installSkills(targetId(), target, installPicked.value)
-    toast(`已安装 ${installPicked.value.length} 个技能 → ${r.to}${r.all ? '（全部容器）' : '（跟项目走）'}`)
+    toast(`已安装 ${installPicked.value.length} 个技能 → ${r.to}${r.all ? '（本机 + 全部容器）' : '（跟项目走）'}`)
     showInstall.value = false
     installPicked.value = []
     installFilter.value = ''
@@ -196,13 +197,15 @@ async function doInstall() {
 // 弹窗）。落点 = 当前目录（假定人在项目根）；home 根是 home 级语义，不可配。——
 const showAiCfg = ref(false)
 
-// 配置落点 = 当前目录。home 根不可配。
+// 配置落点 = 当前目录（假定人在项目根；进到哪配到哪）。容器 home 根不可配（home 级
+// 走智能体配置）；宿主面板的 path 本身就是宿主路径，home 内与否由后端校验。
 const aiSpot = computed<string | null>(() => {
   const p = path.value
-  if (!p || p === '/home/dev' || !p.startsWith('/home/dev/')) return null
+  if (!p) return null
+  if (!isHost.value && (p === '/home/dev' || !p.startsWith('/home/dev/'))) return null
   return p
 })
-const canAiCfg = computed(() => !isHost.value && !targetId().startsWith('s:') && !!aiSpot.value)
+const canAiCfg = computed(() => !targetId().startsWith('s:') && !!aiSpot.value)
 
 // —— 路径复制 ——
 // navigator.clipboard 不可用（http 局域网访问）时走 execCommand 兜底，必须同步在
@@ -1163,7 +1166,7 @@ function fmtSize(n: number): string {
         <FolderPlus class="size-3.5" />
       </Button>
       <!-- 安装技能（pull 入口）：库技能装进当前浏览位置下的 .claude/skills。
-           仅容器面板可用（宿主 = 库本体；服务组没有规则模型），home 外禁用。 -->
+           容器与宿主（本机）都可用（服务组没有规则模型），home 外禁用。 -->
       <Button
         v-if="canInstall || showInstall"
         variant="ghost"
@@ -1171,13 +1174,13 @@ function fmtSize(n: number): string {
         class="shrink-0"
         :class="showInstall ? 'bg-accent text-foreground' : ''"
         :disabled="!canInstall"
-        :title="canInstall ? `安装技能（库 → ${installTarget}）` : '仅在容器 home 内可安装技能'"
+        :title="canInstall ? `安装技能（库 → ${installTarget}）` : '进到 home 内可安装技能'"
         @click="toggleInstall"
       >
         <Library class="size-3.5" />
       </Button>
       <!-- AI 配置（pull 入口）：项目级配置写进当前目录 + 落规则（跟项目走）。
-           仅容器面板可用；home 根是 home 级语义，走「AI 工具 → 智能体配置」。 -->
+           容器与宿主都可用；home 根是 home 级语义，走「AI 工具 → 智能体配置」。 -->
       <Button
         v-if="canAiCfg || showAiCfg"
         variant="ghost"
@@ -1185,7 +1188,7 @@ function fmtSize(n: number): string {
         class="shrink-0"
         :class="showAiCfg ? 'bg-accent text-foreground' : ''"
         :disabled="!canAiCfg"
-        :title="canAiCfg ? `AI 配置（项目级 → ${aiSpot}）` : '进到项目目录再配置（home 根走智能体配置）'"
+        :title="canAiCfg ? `AI 配置（项目级 → ${aiSpot}）` : '进到项目目录再配置'"
         @click="showAiCfg = !showAiCfg"
       >
         <Sparkles class="size-3.5" />
@@ -1212,7 +1215,7 @@ function fmtSize(n: number): string {
         <span class="shrink-0 text-muted-foreground">装到</span>
         <span class="min-w-0 flex-1 truncate font-mono">{{ installTarget }}</span>
         <span class="shrink-0 text-[10px] text-muted-foreground/70">{{
-          isGlobalSpot ? '全局 · 全部容器' : '项目落点 · 跟项目走'
+          isGlobalSpot ? '全局 · 本机+全部容器' : isHost ? '范围随落点自动判定' : '项目落点 · 跟项目走'
         }}</span>
       </div>
       <div class="flex h-6 items-center gap-1.5">

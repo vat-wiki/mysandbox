@@ -76,6 +76,11 @@ export function stackMetaOfContainer(meta: Record<string, ServiceMeta>, containe
   return null;
 }
 
+// 本机（宿主）作为一等目标的哨兵 id：终端区 TermGroup.kind='host' 的 containerId、
+// AI 目标覆盖的 key、skills/AI 配置分发目标都用它。宿主 home 与容器契约 home 同形
+// （D1 uid 直通），所以 skills/ai 的「目标 = {name, home}」模型对宿主原样成立。
+export const HOST_TARGET = '__host__';
+
 // AI 网关（myapikey 等）的**声明式配置**（全局一份）。形状同 aiconfig.ts 的
 // AiGatewayInput（两路端点 + opencode/pi 的 wire 多选）+ updatedAt。语义是「期望
 // 状态」而非一次性动作：服务启动 sweep + 新建容器补发自动把它写到全部受管容器
@@ -122,8 +127,8 @@ export interface SshTarget {
 export interface SkillRule {
   id: string; // 随机短 id（操作锚点）
   to: string; // 分发目标（容器内路径，相对 dev home）。唯一——同 to 不允许两条规则
-  // 范围：true = 全部受管容器（全局语义）；false = 仅已有该项目的容器（目标路径
-  // 逐级向上探测落点，项目克隆到哪 skill 跟到哪；容器 start 事件补发闭环）。
+  // 范围：true = 本机 + 全部受管容器（全局语义）；false = 仅已有该项目的目标（目标
+  // 路径逐级向上探测落点，项目克隆到哪 skill 跟到哪；容器 start 事件补发闭环）。
   all: boolean;
   // 库内技能名集合（安装什么）。同步时取「库目录仍存在」的有效集，库里缺失的
   // 在面板标红（missing），不影响其他技能。

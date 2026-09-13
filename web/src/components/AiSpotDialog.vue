@@ -28,9 +28,9 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from 'vue-sonner'
 
 const props = defineProps<{
-  containerId: string
+  containerId: string // 容器名或 '__host__'（宿主面板）
   containerName: string
-  spot: string // 项目根（容器内绝对路径 /home/dev/…）
+  spot: string // 项目根（容器内 /home/dev/… 或宿主绝对路径）
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
@@ -39,6 +39,7 @@ const emit = defineEmits<{
 }>()
 
 const providers = ref<AiProvider[] | null>(null)
+const hostHome = ref('')
 const existingRule = ref<AiProjectRule | null>(null)
 const busy = ref(false)
 const err = ref('')
@@ -48,6 +49,17 @@ const claude = ref('')
 const ocOn = ref(false)
 const oc = ref<string[]>([])
 const ocWires = ref<GatewayWire[]>(['openai-chat'])
+
+// spot → 规则 to（~/rel）归一化：容器按 home 契约前缀，宿主按真实 home（view 回带）。
+const ruleKey = computed(() => {
+  if (props.containerId === '__host__') {
+    const home = hostHome.value.replace(/\/+$/, '')
+    if (!home || !props.spot.startsWith(home + '/')) return null
+    return `~/${props.spot.slice(home.length + 1)}`
+  }
+  if (!props.spot.startsWith('/home/dev/')) return null
+  return `~/${props.spot.slice('/home/dev/'.length)}`
+})
 
 const anthropicProviders = computed(() => (providers.value ?? []).filter((p) => p.endpoints.anthropic))
 const ruleSummary = computed(() => {
@@ -63,7 +75,8 @@ onMounted(async () => {
   try {
     const v = await getAiView()
     providers.value = v.providers
-    existingRule.value = v.projectRules.find((r) => r.to === `~/${props.spot.slice('/home/dev/'.length)}`) ?? null
+    hostHome.value = v.hostHome
+    existingRule.value = v.projectRules.find((r) => r.to === ruleKey.value) ?? null
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')

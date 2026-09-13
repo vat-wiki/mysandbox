@@ -1,4 +1,5 @@
 // REST 路由。/api/health 免鉴权；其余 /api/* + /ws/* 需 token（见 index.ts onRequest）。
+import { homedir } from 'node:os';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from './config.js';
 import { dockerStatus } from './docker.js';
@@ -480,6 +481,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   app.get('/api/ai/view', async () => {
     await ensureAiMigrated();
     return {
+      hostHome: homedir(), // 宿主 spot → 规则 to（~/rel）归一化用（面板端不知宿主 home）
       providers: Object.values(await getAiProviders()),
       binding: (await getAiBinding()) ?? null,
       overrides: await getAiTargetOverrides(),

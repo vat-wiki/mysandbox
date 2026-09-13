@@ -34,6 +34,7 @@ import pLimit from 'p-limit';
 import type { Config } from './config.js';
 import { execRun, getEngine, inspectContainer, listManaged, subscribeEvents } from './engine/index.js';
 import {
+  HOST_TARGET,
   getAiGateway,
   getAiGatewayOverrides,
   getAiProviders,
@@ -59,9 +60,8 @@ import type { BatchItemResult, BatchResult } from './batch.js';
 import { log } from './logger.js';
 
 export type { GatewayWire } from './state.js';
+export { HOST_TARGET } from './state.js';
 
-// 本机目标的哨兵 id（终端区 TermGroup.kind='host' 的 containerId 同款约定）。
-export const HOST_TARGET = '__host__';
 // 旧档迁移出的内置 provider id：与旧版写死的 provider 名一致，存量容器里的
 // myapikey-chat 变体、锚点块、MYAPIKEY_API_KEY 环境变量语义全部不变，零落盘迁移。
 const LEGACY_PROVIDER_ID = 'myapikey';
@@ -888,32 +888,34 @@ export async function applyAiAll(cfg: Config): Promise<void> {
     await ensureAiMigrated();
     const global = await getAiBinding();
     const overrides = await getAiTargetOverrides();
-    if (!global && !Object.keys(overrides).length) return;
-    const views = await listManaged(cfg);
-    if (!views.length) return;
-    const limit = pLimit(CONCURRENCY);
-    const items = await Promise.all(
-      views.map((v) =>
-        limit(async () => {
-          const binding = overrides[v.id] ?? global;
-          if (!binding) return null;
-          return applyOneTarget(cfg, v.id, binding);
-        }),
-      ),
-    );
-    const done = items.filter((i): i is BatchItemResult => i !== null);
-    log.info(
-      {
-        op: 'ai-config',
-        ok: done.filter((i) => i.ok).length,
-        failed: done.filter((i) => !i.ok).length,
-        overridden: done.filter((i) => overrides[i.id]).length,
-      },
-      'ai-config sweep done',
-    );
+    if (global || Object.keys(overrides).length) {
+      const views = await listManaged(cfg);
+      const limit = pLimit(CONCURRENCY);
+      const items = await Promise.all(
+        views.map((v) =>
+          limit(async () => {
+            const binding = overrides[v.id] ?? global;
+            if (!binding) return null;
+            return applyOneTarget(cfg, v.id, binding);
+          }),
+        ),
+      );
+      const done = items.filter((i): i is BatchItemResult => i !== null);
+      log.info(
+        {
+          op: 'ai-config',
+          ok: done.filter((i) => i.ok).length,
+          failed: done.filter((i) => !i.ok).length,
+          overridden: done.filter((i) => overrides[i.id]).length,
+        },
+        'ai-config sweep done',
+      );
+    }
   } catch (e) {
     log.warn({ err: String(e) }, 'ai-config startup sweep failed');
   }
+  // 项目规则：全目标（本机 + 容器）按落点追平——本机没有 start 事件，全量追平靠这里。
+  await applyAiProjectRulesAll(cfg);
 }
 
 // 保存目标覆盖（容器 or 本机）并立即应用到这台。
@@ -1036,13 +1038,34 @@ function containerRel(p: string): string {
   throw new Error(`容器内路径只认 ~/ 与 /home/dev 前缀（契约 home=/home/dev）："${p}"`);
 }
 
-// 项目落点探测：rel 的任一前缀（含 rel 本身）在容器 home 里已存在（同 skillSync）。
+// 项目落点探测：rel 的任一前缀（含 rel 本身）在 home 里已存在（同 skillSync）。
 function landingExists(home: string, rel: string): boolean {
   const parts = rel.split('/');
   for (let i = parts.length; i >= 1; i--) {
     if (existsSync(join(home, parts.slice(0, i).join('/')))) return true;
   }
   return false;
+}
+
+// 宿主路径 → home 内相对：'~/x' / '~' / 宿主绝对路径（相对 $HOME）。宿主 spot 走
+// 真实路径（文件面板宿主面板的 path 本身），与容器的契约前缀检查分形。
+function hostRel(p: string): string {
+  if (p === '~') return '';
+  if (p.startsWith('~/')) return p.slice(2);
+  const home = homedir().replace(/\/+$/, '');
+  if (p === home) return '';
+  if (p.startsWith(home + '/')) return p.slice(home.length + 1);
+  throw new Error(`宿主路径必须在 home 内（${home}）："${p}"`);
+}
+
+// 全部 AI 配置目标：本机 + 全部受管容器（本机排最前——展示/结果里它先出现）。
+async function allTargets(cfg: Config): Promise<string[]> {
+  try {
+    return [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
+  } catch (e) {
+    log.warn({ err: String(e) }, 'ai-config: list managed failed, host only');
+    return [HOST_TARGET];
+  }
 }
 
 // 项目规则校验：codex/pi 没有项目级配置形状（一期不支持，别硬凑），只收 claude/opencode。
@@ -1054,11 +1077,11 @@ export function validateProjectSelection(sel: unknown, lib: Record<string, AiPro
   return validateBinding(s, lib);
 }
 
-// 规则在单个容器上的项目级写入：只写「已有该项目」的容器（落点逐级向上探测），
-// 没项目的容器不制造目录。尽力而为不抛。
-async function applyProjectRuleToContainer(cfg: Config, rule: AiProjectRule, name: string): Promise<void> {
+// 规则在单个目标上的项目级写入：只写「已有该项目」的目标（落点逐级向上探测），
+// 没项目的不制造目录。本机与容器同构（homeOf 分流）。尽力而为不抛。
+async function applyProjectRuleToTarget(cfg: Config, rule: AiProjectRule, target: string): Promise<void> {
   try {
-    const home = getEngine(cfg).hostHomePath(cfg, name);
+    const home = homeOf(cfg, target);
     if (!home || !existsSync(home)) return;
     const rel = containerRel(rule.to);
     if (!landingExists(home, rel)) return;
@@ -1071,39 +1094,47 @@ async function applyProjectRuleToContainer(cfg: Config, rule: AiProjectRule, nam
     const root = join(home, rel);
     const notes: string[] = [];
     const failed = await applyPlanToHome(root, plan, Object.keys(lib), notes, 'project');
-    if (failed.length) log.warn({ container: name, to: rule.to, failed }, 'ai project rule apply failed');
-    else log.info({ container: name, to: rule.to }, 'ai project rule applied');
+    if (failed.length) log.warn({ target, to: rule.to, failed }, 'ai project rule apply failed');
+    else log.info({ target, to: rule.to }, 'ai project rule applied');
   } catch (e) {
-    log.warn({ container: name, to: rule.to, err: String(e) }, 'ai project rule apply error');
+    log.warn({ target, to: rule.to, err: String(e) }, 'ai project rule apply error');
   }
 }
 
-// 全部项目规则 → 全部可见 home（手动触发 / sweep 用）。
+// 全部项目规则 → 全部目标（本机 + 受管容器；sweep 与手动触发用——本机没有 start
+// 事件，项目规则的全量追平靠这里闭环）。
 export async function applyAiProjectRulesAll(cfg: Config): Promise<void> {
   const rules = await getAiProjectRules();
   if (!rules.length) return;
-  const engine = getEngine(cfg);
-  for (const rule of rules) {
-    for (const v of await listManaged(cfg)) {
-      await applyProjectRuleToContainer(cfg, rule, v.id);
+  try {
+    for (const rule of rules) {
+      for (const target of await allTargets(cfg)) {
+        await applyProjectRuleToTarget(cfg, rule, target);
+      }
     }
+  } catch (e) {
+    log.warn({ err: String(e) }, 'ai project rules sweep failed');
   }
 }
 
-// 就地安装（文件面板「AI 配置」入口——pull 语义：人到哪个项目就配到哪）：把选择
-// 落成/并入项目规则 + 立即为该容器写一次。to 唯一（同一落点两种写法归并同一条规则）。
-// 规则此后由同步系统接管（容器 start 补发、克隆到别的容器跟走）——安装只是规则系统的糖。
+// 就地安装（文件面板「AI 配置」入口——pull 语义：人到哪个项目就配到哪；本机同样
+// 可配，container 传 HOST_TARGET）：把选择落成/并入项目规则 + 立即为该目标写一次。
+// to 唯一（同一落点两种写法归并同一条规则）——宿主与容器的同一项目共享同一条规则，
+// 克隆到别的目标 start 时自动跟上。规则此后由同步系统接管——安装只是规则系统的糖。
 export async function installAiProjectRule(
   cfg: Config,
   container: string,
   spot: string,
   sel: { claude?: { provider: string }; opencode?: AiBinding['opencode'] },
 ): Promise<{ to: string; created: boolean; ruleId: string }> {
-  const rel = containerRel(spot);
+  const isHost = container === HOST_TARGET;
+  const home = isHost ? homedir() : getEngine(cfg).hostHomePath(cfg, container);
+  if (!home || !existsSync(home)) {
+    throw new Error(isHost ? '本机 home 不可见' : `容器 ${container} 的 home 不可见`);
+  }
+  const rel = isHost ? hostRel(spot) : containerRel(spot);
   if (!rel) throw new Error('配置位置不能是 home 根（home 级走全局绑定/目标覆盖）');
   const to = `~/${rel}`;
-  const home = getEngine(cfg).hostHomePath(cfg, container);
-  if (!home || !existsSync(home)) throw new Error(`容器 ${container} 的 home 不可见`);
   const lib = await getAiProviders();
   const invalid = validateProjectSelection(sel, lib);
   if (invalid) throw new Error(invalid);
@@ -1118,13 +1149,14 @@ export async function installAiProjectRule(
   if ('claude' in sel) rule.claude = sel.claude;
   if ('opencode' in sel) rule.opencode = sel.opencode;
   await setAiProjectRules(rules);
-  await applyProjectRuleToContainer(cfg, rule, container);
+  await applyProjectRuleToTarget(cfg, rule, container);
   log.info({ container, to, created }, 'ai project rule installed at spot');
   return { to, created, ruleId: rule.id };
 }
 
-// 删项目规则 + 孤儿回收：把该 to 在所有「已有该项目」容器里的受管条目清掉（prune-only
-// 对项目根；claude env 仅当 base URL 与规则绑定的 provider 端点一致才删——不猜用户的值）。
+// 删项目规则 + 孤儿回收：把该 to 在所有「已有该项目」目标（本机 + 容器）里的受管
+// 条目清掉（prune-only 对项目根；claude env 仅当 base URL 与规则绑定的 provider 端点
+// 一致才删——不猜用户的值）。
 export async function deleteAiProjectRuleById(cfg: Config, id: string): Promise<void> {
   const rules = await getAiProjectRules();
   const rule = rules.find((r) => r.id === id);
@@ -1132,11 +1164,10 @@ export async function deleteAiProjectRuleById(cfg: Config, id: string): Promise<
   await setAiProjectRules(rules.filter((r) => r.id !== id));
   const lib = await getAiProviders();
   const rel = containerRel(rule.to);
-  const engine = getEngine(cfg);
   const anthropicUrl = rule.claude ? lib[rule.claude.provider]?.endpoints.anthropic?.baseUrl : undefined;
   try {
-    for (const v of await listManaged(cfg)) {
-      const home = engine.hostHomePath(cfg, v.id);
+    for (const target of await allTargets(cfg)) {
+      const home = homeOf(cfg, target);
       if (!home || !existsSync(home)) continue;
       if (!landingExists(home, rel)) continue;
       const root = join(home, rel);
@@ -1158,7 +1189,7 @@ export async function deleteAiProjectRuleById(cfg: Config, id: string): Promise<
           /* 无文件/坏文件：跳过 */
         }
       }
-      if (notes.length) log.info({ container: v.id, to: rule.to, notes }, 'ai project rule orphan pruned');
+      if (notes.length) log.info({ target, to: rule.to, notes }, 'ai project rule orphan pruned');
     }
   } catch (e) {
     log.warn({ rule: id, err: String(e) }, 'ai project rule orphan cleanup failed');
@@ -1203,7 +1234,7 @@ export function startAiConfigEvents(cfg: Config): void {
 // 单容器的全部项目规则补发（事件路径；显式失败仅记日志）。
 async function applyProjectRulesAllToContainer(cfg: Config, name: string): Promise<void> {
   for (const rule of await getAiProjectRules()) {
-    await applyProjectRuleToContainer(cfg, rule, name);
+    await applyProjectRuleToTarget(cfg, rule, name);
   }
 }
 

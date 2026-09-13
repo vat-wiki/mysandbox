@@ -368,7 +368,7 @@ async function syncNow() {
     const containers = r.rules.flatMap((x) => x.containers)
     const bad = containers.filter((c) => !c.ok)
     if (bad.length) {
-      toast.error(`skills 同步部分失败：${bad.map((f) => `${f.name} — ${f.error}`).join('；')}`)
+      toast.error(`skills 同步部分失败：${bad.map((f) => `${f.name === '__host__' ? '本机' : f.name} — ${f.error}`).join('；')}`)
     } else {
       const changed = containers.reduce((n, c) => n + c.changed, 0)
       const removed = containers.reduce((n, c) => n + c.removed, 0)

@@ -7,10 +7,10 @@
 //    跟随（follow，每次同步先从来源刷新库内容——开发中的技能改了即生效，源删了
 //    副本冻结保留）；git 导入 = 快照（重导入即更新）。库内同名唯一 → 无冲突概念。
 // ② 安装规则（sidecar state.skillsHub.rules）：{库内技能集合, 去向, 范围}。去向
-//    唯一（同 to 不允许两条规则）；全局去向铺全部受管容器，项目去向只装已有该
-//    项目的容器（落点逐级向上探测，项目克隆到哪 skill 跟到哪），容器 start 事件
-//    补发闭环停机期间克隆的项目。规则删除/改去向 → 孤儿清理按清单把分发过的
-//    条目从容器收回。
+//    唯一（同 to 不允许两条规则）；全局去向铺本机 + 全部受管容器，项目去向只装已有
+//    该项目的目标（落点逐级向上探测，项目克隆到哪 skill 跟到哪；宿主与容器共享同一条
+//    项目规则），容器 start 事件补发闭环停机期间克隆的项目。规则删除/改去向 → 孤儿
+//    清理按清单把分发过的条目从目标收回。
 //
 // 同步两步（每条规则同构）：
 //   库 → 聚合副本（skills/hub-<hash(to)>/，规则技能集的有效子集；集合里已无的条目删）
@@ -36,7 +36,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Config } from './config.js';
 import { STATE_DIR, expandTilde } from './config.js';
 import { getEngine, subscribeEvents } from './engine/index.js';
-import { getAllMeta, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, type SkillHubState, type SkillRule, type SkillRegistryMeta } from './state.js';
+import { getAllMeta, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, HOST_TARGET, type SkillHubState, type SkillRule, type SkillRegistryMeta } from './state.js';
 import { log } from './logger.js';
 
 const SKILLS_DIR = join(STATE_DIR, 'skills');
@@ -88,6 +88,17 @@ function containerRel(p: string): string {
   if (p === '/home/dev') return '';
   if (p.startsWith('/home/dev/')) return p.slice('/home/dev/'.length);
   throw new Error(`容器内路径只认 ~/ 与 /home/dev 前缀（契约 home=/home/dev）："${p}"`);
+}
+
+// 宿主路径 → home 内相对：'~/x' / '~' / 宿主绝对路径（相对 $HOME）。文件面板宿主
+// 面板的 path 本身就是宿主路径，与容器的契约前缀分形（aiconfig.hostRel 同形）。
+function hostHomeRel(p: string): string {
+  if (p === '~') return '';
+  if (p.startsWith('~/')) return p.slice(2);
+  const home = homedir().replace(/\/+$/, '');
+  if (p === home) return '';
+  if (p.startsWith(home + '/')) return p.slice(home.length + 1);
+  throw new Error(`宿主路径必须在 home 内（${home}）："${p}"`);
 }
 
 // from → 宿主路径。'registry' = 技能库（用户策展的权威副本）；'<容器名>:<路径>'
@@ -230,16 +241,22 @@ async function distributeDir(
   return results;
 }
 
-// 分发目标：容器内绝对宿主路径（sidecar 已知、home 可见的容器 = 与 sweepContainerCli 同口径）。
+// 分发目标：本机（宿主 leon 的 home——与容器契约 home 同形，D1 直通）+ 容器内绝对
+// 宿主路径（sidecar 已知、home 可见的容器 = 与 sweepContainerCli 同口径）。宿主排最前。
 async function distributeTargets(cfg: Config): Promise<{ name: string; home: string }[]> {
   const engine = getEngine(cfg);
+  const out: { name: string; home: string }[] = [{ name: HOST_TARGET, home: homedir() }];
   const names = Object.keys(await getAllMeta());
-  const out: { name: string; home: string }[] = [];
   for (const name of names) {
     const home = engine.hostHomePath(cfg, name);
     if (home && existsSync(home)) out.push({ name, home });
   }
   return out;
+}
+
+// 分发结果里的人话目标名（CLI / 面板展示用）。
+export function targetDisplayName(name: string): string {
+  return name === HOST_TARGET ? 'host（本机）' : name;
 }
 
 // —— 清单（陈旧删除的记账） ——
@@ -525,14 +542,15 @@ export async function syncSkillsAll(cfg: Config): Promise<SkillSyncResult> {
   return exclusive(() => runSync(cfg));
 }
 
-// 单容器补发（create()/容器 start 事件后调用）：库刷新/聚合照跑（副本保鲜），只
-// 分发到这一个容器（项目目标按范围口径判这台要不要）。尽力而为不抛。
+// 单目标补发（create()/容器 start 事件/宿主就地安装后调用；本机传 HOST_TARGET）：
+// 库刷新/聚合照跑（副本保鲜），只分发到这一个目标（项目目标按范围口径判这台要不要）。
+// 尽力而为不抛。
 export async function syncContainerSkills(cfg: Config, name: string): Promise<void> {
   await exclusive(async () => {
     try {
       await ensureLegacyMigrated(cfg);
       await refreshLibrary(cfg);
-      const home = getEngine(cfg).hostHomePath(cfg, name);
+      const home = name === HOST_TARGET ? homedir() : getEngine(cfg).hostHomePath(cfg, name);
       if (!home || !existsSync(home)) return;
       const hub = await getSkillHub();
       if (!hub.rules.some((r) => r.skills.length) && !existsSync(SKILLS_DIR)) return;
@@ -550,10 +568,11 @@ export async function syncContainerSkills(cfg: Config, name: string): Promise<vo
   });
 }
 
-// 就地安装（文件面板「安装技能」的主入口——pull 语义：人到哪个项目就装到哪）：
-// 把库技能装进某容器当前浏览位置下的 .claude/skills。语义 = 确保 <spot> 的安装规则
-// 存在（home 根下的全局落点 all=true；项目落点 all=false，跟项目走）+ 勾上这些技能
-// + 立即为该容器分发一次。规则此后由同步系统接管（库更新跟走、出库自动清理）——
+// 就地安装（文件面板「安装技能」的主入口——pull 语义：人到哪个项目就装到哪；本机
+// 同样可装，container 传 HOST_TARGET）：把库技能装进某目标当前浏览位置下的
+// .claude/skills。语义 = 确保 <spot> 的安装规则存在（home 根下的全局落点 all=true；
+// 项目落点 all=false，跟项目走——宿主与容器的同一项目共享同一条规则）+ 勾上这些技能
+// + 立即为该目标分发一次。规则此后由同步系统接管（库更新跟走、出库自动清理）——
 // 安装按钮只是规则系统的糖，不产生第二套记账。to 按 ~/rel 规范化（hubDirId 锚在 to，
 // 同一落点两种写法必须是同一条规则）。
 export async function installSkillsToSpot(
@@ -562,11 +581,15 @@ export async function installSkillsToSpot(
   spot: string,
   skills: string[],
 ): Promise<{ to: string; all: boolean; created: boolean; ruleId: string }> {
-  const rel = containerRel(spot); // 形态校验（只认 ~/ 与 /home/dev 前缀）
+  const isHost = container === HOST_TARGET;
+  const home = isHost ? homedir() : getEngine(cfg).hostHomePath(cfg, container);
+  if (!home || !existsSync(home)) {
+    throw new Error(isHost ? '本机 home 不可见' : `容器 ${container} 的 home 不可见`);
+  }
+  // rel：宿主 spot 是真实宿主路径（相对 $HOME）；容器 spot 走契约前缀（/home/dev）。
+  const rel = isHost ? hostHomeRel(spot) : containerRel(spot);
   if (!rel) throw new Error('安装位置不能是 home 根');
   const to = `~/${rel}`;
-  const home = getEngine(cfg).hostHomePath(cfg, container);
-  if (!home || !existsSync(home)) throw new Error(`容器 ${container} 的 home 不可见`);
   const reg = await getSkillRegistry();
   const missing = skills.filter((n) => !reg.skills[n] || !existsSync(join(REGISTRY_DIR, n)));
   if (missing.length) throw new Error(`库中没有这些技能：${missing.join('、')}`);
@@ -769,7 +792,7 @@ export async function runSkillsCommand(cfg: Config): Promise<void> {
     for (const s of rule.missing) process.stdout.write(`>>   [缺失] ${s}\n`);
     for (const c of rule.containers) {
       process.stdout.write(
-        `>>   ${c.name}: ${c.ok ? `+${c.changed} 文件${c.removed ? ` -${c.removed} 陈旧` : ''}` : `失败 — ${c.error}`}\n`,
+        `>>   ${targetDisplayName(c.name)}: ${c.ok ? `+${c.changed} 文件${c.removed ? ` -${c.removed} 陈旧` : ''}` : `失败 — ${c.error}`}\n`,
       );
     }
   }
@@ -1096,15 +1119,14 @@ async function scanInventoryLocation(
   return loc;
 }
 
-// 宿主 + 全部受管容器（home 可见口径同 distributeTargets）逐一扫描。纯 readdir +
-// SKILL.md 小文件读（D1 直读 rootfs，容器不必在跑），几十毫秒级，GET 即扫。
+// 分发目标（distributeTargets：本机 + 受管容器，home 可见口径同 sweepContainerCli）
+// 逐一扫描。纯 readdir + SKILL.md 小文件读（D1 直读 rootfs，容器不必在跑），几十毫秒级，GET 即扫。
 export async function skillInventory(cfg: Config): Promise<SkillInventoryView> {
   const started = Date.now();
   const [managed, targets] = await Promise.all([managedIndex(), distributeTargets(cfg)]);
-  const locations = await Promise.all([
-    scanInventoryLocation('host', 'host', homedir(), managed),
-    ...targets.map((t) => scanInventoryLocation(t.name, 'container', t.home, managed)),
-  ]);
+  const locations = await Promise.all(
+    targets.map((t) => scanInventoryLocation(t.name, t.name === HOST_TARGET ? 'host' : 'container', t.home, managed)),
+  );
   return { locations, durationMs: Date.now() - started };
 }
 
