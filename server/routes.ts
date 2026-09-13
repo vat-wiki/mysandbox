@@ -13,7 +13,7 @@ import {
   execRun,
   getEngine,
 } from './engine/index.js';
-import { setMeta, getMeta, deleteMeta } from './state.js';
+import { setMeta, getMeta, deleteMeta, getSkillHub, getSkillRegistry, getAiGateway, setAiGateway } from './state.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
@@ -28,13 +28,9 @@ import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from '
 import {
   syncSkillsAll,
   hubView,
-  addSkillHubTarget,
-  updateSkillHubTarget,
-  deleteSkillHubTarget,
-  addSkillHubTargetSource,
-  updateSkillHubTargetSource,
-  deleteSkillHubTargetSource,
-  resolveSyncSource,
+  addSkillRule,
+  updateSkillRule,
+  deleteSkillRule,
   skillInventory,
   registryList,
   registryAdd,
@@ -42,9 +38,6 @@ import {
   registryProbeGit,
   registryImportGit,
 } from './skillSync.js';
-import { getSkillHub } from './state.js';
-import { existsSync } from 'node:fs';
-import { getAiGateway, setAiGateway } from './state.js';
 import { getVersion } from './version.js';
 import { readHostHosts } from './hosts.js';
 import { overwriteHosts, type ApplyHostsResult } from './hosts-sync.js';
@@ -342,99 +335,55 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return batchExec(cfg, ids, { command, timeoutMs });
   });
 
-  // —— skills 同步（server/skillSync.ts）：手动触发一次镜像 + 分发（watch/启动 sweep 之外）——
-  // 不收任何路径参数：规则只来自 config（skills.sync），API 无法被用来指路。
+  // —— skills 同步（server/skillSync.ts）：手动触发一次全量同步（watch/启动 sweep 之外）——
+  // 不收任何路径参数：规则只来自 sidecar（面板/API 管理），API 无法被用来指路。
   app.post('/api/skills/sync', async () => {
-    if (!cfg.skills?.sync.length && !(await getSkillHub()).targets.some((t) => t.sources.length)) {
-      throw new HttpError(400, '没有任何 skills 源（面板「技能中心」或 config skills.sync）', 'bad_request');
+    const hub = await getSkillHub();
+    const reg = await getSkillRegistry();
+    if (!hub.rules.some((r) => r.skills.length) && !Object.keys(reg.skills).length) {
+      throw new HttpError(400, '技能库是空的、也没有安装规则（面板「AI 工具 → 技能中心」配置）', 'bad_request');
     }
     return syncSkillsAll(cfg);
   });
 
-  // —— 技能中心（hub）：以目标为中心的 CRUD。目标 = 分发位置（全局或某项目路径）
-  // + 挂在其下的多个源（同一 from 可挂多个目标）。源列表存 sidecar（state.skillsHub），
-  // config.skills.sync 是并存的静态规则（视图里只读展示）。表单校验在此处转 4xx，
-  // 重复目标/重复源转 409；视图是 readdir 级描述 + 聚合副本刷新，不分发之外的副作用。——
+  // —— 技能分发规则 CRUD。规则 = {库内技能集合, 去向, 范围}，库（registry）是唯一
+  // 技能真相源。表单校验在此处转 4xx，重复去向转 409；视图（GET /hub）是一次全量
+  // 同步的返回（聚合副本刷新 + 分发结果）。——
   app.get('/api/skills/hub', async () => hubView(cfg));
 
-  app.post('/api/skills/hub/targets', async (req) => {
+  app.post('/api/skills/rules', async (req) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const to = String(body.to ?? '').trim();
     if (!to) throw new HttpError(400, 'to 必填（容器内目标路径，如 ~/.claude/skills）', 'bad_request');
+    const skills = Array.isArray(body.skills) ? body.skills.map(String) : [];
     try {
-      await addSkillHubTarget(cfg, to, body.all === true);
+      await addSkillRule(cfg, to, body.all === true, skills);
     } catch (e) {
       throw new HttpError(409, e instanceof Error ? e.message : String(e), 'conflict');
     }
     return hubView(cfg);
   });
 
-  app.patch('/api/skills/hub/targets/:id', async (req) => {
+  app.patch('/api/skills/rules/:id', async (req) => {
     const id = (req.params as { id: string }).id;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const patch: { to?: string; all?: boolean } = {};
+    const patch: { to?: string; all?: boolean; skills?: string[] } = {};
     if (typeof body.to === 'string' && body.to.trim()) patch.to = body.to.trim();
     if (typeof body.all === 'boolean') patch.all = body.all;
-    if (!Object.keys(patch).length) throw new HttpError(400, 'to / all 至少给一个', 'bad_request');
+    if (Array.isArray(body.skills)) patch.skills = body.skills.map(String);
+    if (!Object.keys(patch).length) throw new HttpError(400, 'to / all / skills 至少给一个', 'bad_request');
     try {
-      await updateSkillHubTarget(cfg, id, patch);
+      await updateSkillRule(cfg, id, patch);
     } catch (e) {
       throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
     }
     return hubView(cfg);
   });
 
-  app.delete('/api/skills/hub/targets/:id', async (req) => {
+  app.delete('/api/skills/rules/:id', async (req) => {
     const id = (req.params as { id: string }).id;
     try {
-      await deleteSkillHubTarget(cfg, id);
-    } catch (e) {
-      throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
-    }
-    return hubView(cfg);
-  });
-
-  app.post('/api/skills/hub/targets/:id/sources', async (req) => {
-    const id = (req.params as { id: string }).id;
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const from = String(body.from ?? '').trim();
-    if (!from) throw new HttpError(400, 'from 必填（<容器名>:<容器内路径> 或宿主路径）', 'bad_request');
-    try {
-      const src = resolveSyncSource(cfg, from);
-      if (!existsSync(src.hostPath)) {
-        throw new HttpError(400, `源不存在：${src.hostPath}`, 'bad_request');
-      }
-    } catch (e) {
-      if (e instanceof HttpError) throw e;
-      throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
-    }
-    try {
-      await addSkillHubTargetSource(cfg, id, from);
-    } catch (e) {
-      throw new HttpError(409, e instanceof Error ? e.message : String(e), 'conflict');
-    }
-    return hubView(cfg);
-  });
-
-  app.patch('/api/skills/hub/targets/:id/sources/:sid', async (req) => {
-    const { id, sid } = req.params as { id: string; sid: string };
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const patch: { enabled?: boolean; move?: number } = {};
-    if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
-    if (typeof body.move === 'number') patch.move = body.move;
-    if (!Object.keys(patch).length) throw new HttpError(400, 'enabled / move 至少给一个', 'bad_request');
-    try {
-      await updateSkillHubTargetSource(cfg, id, sid, patch);
-    } catch (e) {
-      throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
-    }
-    return hubView(cfg);
-  });
-
-  app.delete('/api/skills/hub/targets/:id/sources/:sid', async (req) => {
-    const { id, sid } = req.params as { id: string; sid: string };
-    try {
-      await deleteSkillHubTargetSource(cfg, id, sid);
+      await deleteSkillRule(cfg, id);
     } catch (e) {
       throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
     }
@@ -490,13 +439,17 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     }
   });
 
-  // —— AI 网关批量配置（myapikey 等兼容网关）——
-  // GET 回最近一次下发存档（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。
+  // —— AI 网关声明式配置（myapikey 等兼容网关）——
+  // GET 回当前生效配置（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。
   app.get('/api/batch/ai-config', async () => ({ config: await getAiGateway() ?? null }));
 
+  // POST = 保存配置 + 立即应用到容器。ids 缺省 = 全部受管容器（声明式语义：新容器
+  // 由启动 sweep / create 补发自动跟进）；显式给 ids = 只对这台重推（换 key 临时
+  // 场景，配置本身仍是全局一份）。校验通过先落 sidecar 再应用——配置是期望状态，
+  // 应用失败可由下次启动 sweep / 手动重推追平。
   app.post('/api/batch/ai-config', async (req): Promise<BatchResult> => {
     const body = (req.body as Record<string, unknown> | null) || {};
-    const ids = parseIds(body);
+    const ids = Array.isArray((body as { ids?: unknown }).ids) ? parseIds(body) : (await listManaged(cfg)).map((v) => v.id);
     const tools = (body.tools ?? {}) as Record<string, unknown>;
     const bool = (v: unknown) => v === true;
     // endpoints 两路协议分开收（openai / anthropic）；wire 是工具级协议多选
@@ -585,10 +538,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     if (modelsWho.length && (input.models ?? []).length === 0) {
       throw new HttpError(400, `${modelsWho.join('、')} 需要至少一个模型 ID（逗号分隔）`, 'bad_request');
     }
-    const result = await applyAiGateway(cfg, ids, input);
-    // 存档无条件记录最近一次意图（含部分失败），换 key 重推直接预填
     await setAiGateway({ ...input, updatedAt: new Date().toISOString() });
-    return result;
+    return applyAiGateway(cfg, ids, input);
   });
 
   // —— hosts 覆写（批量配置 tab） ——

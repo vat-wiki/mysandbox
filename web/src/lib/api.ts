@@ -159,7 +159,7 @@ async function patchJson(path: string, body: unknown): Promise<any> {
 export const startContainer = (id: string) => postJson(`/api/containers/${id}/start`)
 export const stopContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/stop`, { t })
 
-// —— skills 同步（config.skills.sync → 全部受管容器；server/skillSync.ts）——
+// —— skills 同步（技能库 → 安装规则 → 全部受管容器；server/skillSync.ts）——
 export interface SkillSyncContainerResult {
   name: string
   ok: boolean
@@ -167,82 +167,36 @@ export interface SkillSyncContainerResult {
   removed: number
   error?: string
 }
-export interface SkillSyncRuleResult {
-  from: string
+// 一条安装规则的同步结果。skills = 有效集（库里存在、实际分发的）；missing =
+// 规则勾了但库里没有（标红）。
+export interface SkillRuleResult {
+  id: string
   to: string
-  source: string
-  ok: boolean
+  all: boolean
+  skills: { name: string; ok: boolean; error?: string }[]
+  missing: string[]
   changed: number
   removed: number
   error?: string
   containers: SkillSyncContainerResult[]
 }
-export interface SkillSyncHubTargetResult {
-  to: string
-  all: boolean
-  ok: boolean
-  containers: SkillSyncContainerResult[]
-  error?: string
-}
-export interface SkillSyncHubResult {
-  ok: boolean
-  targets: SkillSyncHubTargetResult[]
-  error?: string
-}
 export interface SkillSyncResult {
   ok: boolean
-  rules: SkillSyncRuleResult[]
-  hub?: SkillSyncHubResult
+  rules: SkillRuleResult[]
   durationMs: number
 }
 export const syncSkills = () => postJson('/api/skills/sync', {}, 60_000) as Promise<SkillSyncResult>
 
-// —— 技能中心（以目标为中心的多源聚合；sidecar state.skillsHub；面板「AI 工具 → 技能中心」）——
-// 目标 = 分发位置（全局或某项目路径）+ 挂在其下的多个源；同一 from 可挂多个目标。
-export interface SkillHubSourceView {
-  id: string
-  from: string
-  enabled: boolean
-  ok: boolean
-  skills: string[]
-  error?: string
-}
-export interface SkillHubSkillView {
-  name: string
-  sourceId: string
-  conflicts: string[] // 目标内其他也提供同名 skill 的源 id（赢家 = sourceId，顺序在前者赢）
-}
-export interface SkillHubTargetView {
-  id: string
-  to: string
-  all: boolean // true = 全部容器（全局语义）；false = 仅已有该项目的容器
-  ok: boolean
-  sources: SkillHubSourceView[]
-  skills: SkillHubSkillView[]
-  error?: string
-}
-export interface SkillHubView {
-  ok: boolean
-  targets: SkillHubTargetView[]
-  // config.skills.sync 静态规则（UI 只读展示——改它去 config.yaml，需重启服务）
-  configRules: { from: string; to: string }[]
-}
+// —— 技能分发规则（库为唯一技能真相源；sidecar state.skillsHub；面板「AI 工具 → 技能中心」）——
+// 规则 = {库内技能集合, 去向, 范围}；去向唯一（同 to 不允许两条规则）。
+export type SkillHubView = SkillSyncResult
 export const getSkillHub = () => api('/api/skills/hub') as Promise<SkillHubView>
-export const addSkillHubTarget = (to: string, all: boolean) =>
-  postJson('/api/skills/hub/targets', { to, all }) as Promise<SkillHubView>
-export const updateSkillHubTarget = (id: string, patch: { to?: string; all?: boolean }) =>
-  patchJson(`/api/skills/hub/targets/${id}`, patch) as Promise<SkillHubView>
-export const deleteSkillHubTarget = (id: string) =>
-  api(`/api/skills/hub/targets/${id}`, { method: 'DELETE' }) as Promise<SkillHubView>
-export const addSkillHubTargetSource = (targetId: string, from: string) =>
-  postJson(`/api/skills/hub/targets/${targetId}/sources`, { from }) as Promise<SkillHubView>
-export const updateSkillHubTargetSource = (
-  targetId: string,
-  sourceId: string,
-  patch: { enabled?: boolean; move?: number },
-) => patchJson(`/api/skills/hub/targets/${targetId}/sources/${sourceId}`, patch) as Promise<SkillHubView>
-export const deleteSkillHubTargetSource = (targetId: string, sourceId: string) =>
-  api(`/api/skills/hub/targets/${targetId}/sources/${sourceId}`, { method: 'DELETE' }) as Promise<SkillHubView>
+export const addSkillRule = (to: string, all: boolean, skills: string[]) =>
+  postJson('/api/skills/rules', { to, all, skills }) as Promise<SkillHubView>
+export const updateSkillRule = (id: string, patch: { to?: string; all?: boolean; skills?: string[] }) =>
+  patchJson(`/api/skills/rules/${id}`, patch) as Promise<SkillHubView>
+export const deleteSkillRule = (id: string) =>
+  api(`/api/skills/rules/${id}`, { method: 'DELETE' }) as Promise<SkillHubView>
 
 // —— skills 已安装清单（宿主 + 受管容器标准落点只读扫描；GET /api/skills/inventory）——
 export interface SkillInventoryEntry {
@@ -250,7 +204,7 @@ export interface SkillInventoryEntry {
   name: string // SKILL.md frontmatter name（缺省 = 目录名）
   description: string
   spot: string // 所在落点（相对 home，如 .claude/skills）
-  managed: boolean // 被技能中心/静态规则分发管理（摘源/删目标会自动清理）
+  managed: boolean // 被某条安装规则分发管理（取消勾选/删规则会自动清理）
 }
 export interface SkillInventoryLocation {
   name: string // 'host'（本机）或容器名
@@ -266,12 +220,13 @@ export interface SkillInventoryView {
 }
 export const getSkillInventory = () => api('/api/skills/inventory') as Promise<SkillInventoryView>
 
-// —— 技能库（registry）：用户策展的权威技能集；分发以库为源（from='registry'）——
+// —— 技能库（registry）：唯一技能真相源，分发以库为源 ——
 export interface SkillRegistryItem {
   name: string
   description: string
   from: string // 导入来源（<容器>:<路径> / 宿主路径 / git URL#子路径）
   importedAt: string
+  follow: boolean // true = 跟随刷新（目录来源）；false = 快照（git 导入）
   exists: boolean // false = 目录被外部删了（元数据残留）
 }
 export interface SkillGitCandidate {
@@ -386,8 +341,10 @@ export interface AiGatewayState extends AiGatewayInput {
 }
 export const getAiGateway = () =>
   api('/api/batch/ai-config') as Promise<{ config: AiGatewayState | null }>
-export const batchAiConfig = (ids: string[], input: AiGatewayInput) =>
-  postJson('/api/batch/ai-config', { ids, ...input }) as Promise<BatchResult>
+// 保存网关配置并应用到容器。ids 缺省 = 全部受管容器（声明式语义，新容器自动跟进）；
+// 显式 ids = 只对这几台重推（换 key 等临时场景）。
+export const applyAiGateway = (input: AiGatewayInput, ids?: string[]) =>
+  postJson('/api/batch/ai-config', ids ? { ids, ...input } : input) as Promise<BatchResult>
 
 // —— 终端会话（跨窗口/浏览器找回 tmux 会话）——
 // 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）；

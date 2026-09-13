@@ -76,9 +76,11 @@ export function stackMetaOfContainer(meta: Record<string, ServiceMeta>, containe
   return null;
 }
 
-// AI 网关（myapikey 等）最近一次批量下发的配置存档。形状同 aiconfig.ts 的
-// AiGatewayInput（两路端点 + opencode/pi 的 wire 多选）+ updatedAt。含 apiKey——
-// state.json 本就 0600，与 services.env 同一泄露面；GET 回全量供前端预填改 key 重推。
+// AI 网关（myapikey 等）的**声明式配置**（全局一份）。形状同 aiconfig.ts 的
+// AiGatewayInput（两路端点 + opencode/pi 的 wire 多选）+ updatedAt。语义是「期望
+// 状态」而非一次性动作：服务启动 sweep + 新建容器补发自动把它写到全部受管容器
+// （aiconfig.ts 宿主直写 rootfs），改 key 重推 = 改这里 + 重推。含 apiKey——
+// state.json 本就 0600，与 services.env 同一泄露面；GET 回全量供前端预填。
 export interface AiGatewayState {
   endpoints: {
     openai?: { baseUrl: string };
@@ -107,38 +109,42 @@ export interface SshTarget {
   createdAt?: string;
 }
 
-// 技能中心（server/skillSync.ts）：以「目标」为中心——一个目标位置（全局
-// ~/.claude/skills 或某项目的 .claude/skills）聚合多个源，统一分发到对应容器集合。
-// 源内嵌在目标下（同一 from 可挂到多个目标，各自启停/排序）；重名在目标内按源
-// 顺序先到先得。存这里而非 config.yaml：UI 可增删（config.yaml 是用户手改文件，
-// 程序回写会丢注释），与 sshTargets 同款理由。
-export interface SkillHubTargetSource {
-  id: string; // 随机短 id（操作锚点；目标内顺序 = 数组顺序 = 重名时的优先级）
-  from: string; // 源：'<容器名>:<容器内路径>' 或宿主路径（~/ 展开），解析规则同 config 规则
-  enabled: boolean;
-  createdAt?: string;
-}
-
-export interface SkillHubTarget {
+// 技能分发规则（server/skillSync.ts）：以「库」为唯一技能真相源的安装规则——
+// 规则 = 库里勾选的一组技能 + 去向位置（全局 ~/.claude/skills 或某项目的
+// .claude/skills）+ 范围。技能级的勾选取代了旧版「目标聚合多源目录」的模型
+// （旧版重名靠目标内源顺序先到先得，库内同名天然唯一后冲突不存在）。存这里而非
+// config.yaml：UI 可增删（config.yaml 是用户手改文件，程序回写会丢注释），与
+// sshTargets 同款理由。
+export interface SkillRule {
   id: string; // 随机短 id（操作锚点）
-  to: string; // 分发目标（容器内路径，相对 dev home）。唯一——同 to 不允许两个目标
+  to: string; // 分发目标（容器内路径，相对 dev home）。唯一——同 to 不允许两条规则
   // 范围：true = 全部受管容器（全局语义）；false = 仅已有该项目的容器（目标路径
   // 逐级向上探测落点，项目克隆到哪 skill 跟到哪；容器 start 事件补发闭环）。
   all: boolean;
-  sources: SkillHubTargetSource[];
+  // 库内技能名集合（安装什么）。同步时取「库目录仍存在」的有效集，库里缺失的
+  // 在面板标红（missing），不影响其他技能。
+  skills: string[];
+  // 旧版迁移遗留：targets 模型下挂的目录源（{from, enabled}）。由 skillSync.ts 的
+  // ensureLegacyMigrated 一次性转换成库条目 + skills 名单后删掉本字段。新版不写。
+  legacy?: { from: string; enabled: boolean }[];
   createdAt?: string;
 }
 
 export interface SkillHubState {
-  targets: SkillHubTarget[];
+  rules: SkillRule[];
+  // 旧版 config.skills.sync 静态规则的一次性迁移时间戳（迁移后该 config 键被忽略）。
+  staticMigratedAt?: string;
 }
 
-// 技能库（registry，server/skillSync.ts）：用户策展的权威技能集——放什么由用户定
+// 技能库（registry，server/skillSync.ts）：唯一技能真相源——放什么由用户定
 // （自产 + 外部导入），库内每技能一份独立副本（STATE_DIR/skills/registry/<名>/，
-// 与来源解耦），分发以库为源。这里只存成员元数据（来源/时间），技能本体在文件系统。
+// 与来源解耦），分发以库为源。follow 条目每次同步先从 from 刷新库内容（本地目录
+// 来源 = 跟随开发中的技能；源删了副本冻结保留）。这里只存成员元数据，技能本体在文件系统。
 export interface SkillRegistryMeta {
   from: string; // 导入来源（原样记录：<容器>:<路径> / 宿主路径 / git URL#子路径）
   importedAt: string;
+  // true = 跟随刷新（目录来源，registryAdd 默认）；undefined = 快照（git 导入）。
+  follow?: boolean;
 }
 
 interface StateShape {
@@ -247,7 +253,7 @@ export async function deleteSshTarget(name: string): Promise<boolean> {
   return removed;
 }
 
-// —— AI 网关配置存档（全局一份，不按容器分）——
+// —— AI 网关声明式配置（全局一份，应用到全部受管容器）——
 
 export async function getAiGateway(): Promise<AiGatewayState | undefined> {
   return (await load()).aiGateway;
@@ -259,43 +265,59 @@ export async function setAiGateway(state: AiGatewayState): Promise<void> {
   await persist(s);
 }
 
-// —— 技能中心（目标为中心的多源聚合；server/skillSync.ts）——
+// —— 技能分发规则（库为真相源；server/skillSync.ts）——
 
-// 全局目标（铺全部容器）的缺省位置。
+// 全局规则（铺全部容器）的缺省去向。
 export const SKILL_HUB_DEFAULT_TO = '~/.claude/skills';
 
 export async function getSkillHub(): Promise<SkillHubState> {
   const s = await load();
   const raw = s.skillsHub as unknown;
-  // 迁移：旧形状（扁平 sources[]，源带可选 to）→ 目标为中心。旧全局源归入全局
-  // 目标（all: true），显式 to 的源归入各自的项目目标（all: false）。
+  // 迁移（三代形状逐级归一）：
+  // ① 最旧：扁平 sources[]（源带可选 to）→ targets 模型（旧全局源归全局目标，
+  //    显式 to 的源归各自项目目标）。
+  // ② 旧：targets 模型（目标聚合多源目录）→ rules 模型：源不再内嵌——enabled 的
+  //    目录源挪进 rule.legacy（由 skillSync.ts 的 ensureLegacyMigrated 转成库条目 +
+  //    skills 名单），from='registry' 的源展开为当时的库成员名单。
   if (raw && typeof raw === 'object' && Array.isArray((raw as { sources?: unknown }).sources)) {
     const old = raw as { to: string; sources: { id: string; from: string; to?: string; enabled: boolean; createdAt?: string }[] };
-    const targets = new Map<string, SkillHubTarget>();
+    const targets = new Map<string, { id: string; to: string; all: boolean; sources: { from: string; enabled: boolean; createdAt?: string }[] }>();
     for (const src of old.sources) {
       const to = src.to || old.to || SKILL_HUB_DEFAULT_TO;
       let t = targets.get(to);
       if (!t) {
-        t = {
-          id: randomId(),
-          to,
-          all: to === (old.to || SKILL_HUB_DEFAULT_TO),
-          sources: [],
-        };
+        t = { id: randomId(), to, all: to === (old.to || SKILL_HUB_DEFAULT_TO), sources: [] };
         targets.set(to, t);
       }
-      t.sources.push({ id: src.id, from: src.from, enabled: src.enabled, createdAt: src.createdAt });
+      t.sources.push({ from: src.from, enabled: src.enabled, createdAt: src.createdAt });
     }
-    s.skillsHub = { targets: [...targets.values()] };
+    s.skillsHub = {
+      rules: [...targets.values()].map((t) => ({ id: t.id, to: t.to, all: t.all, skills: [], legacy: t.sources })),
+    };
     void persist(s).catch(() => {});
     return s.skillsHub;
   }
   if (raw && typeof raw === 'object' && Array.isArray((raw as { targets?: unknown }).targets)) {
+    const old = raw as { targets: { id: string; to: string; all: boolean; sources: { from: string; enabled: boolean }[]; createdAt?: string }[] };
+    s.skillsHub = {
+      rules: old.targets.map((t) => ({
+        id: t.id,
+        to: t.to,
+        all: t.all,
+        skills: [],
+        legacy: t.sources.map((src) => ({ from: src.from, enabled: src.enabled })),
+        createdAt: t.createdAt,
+      })),
+    };
+    void persist(s).catch(() => {});
+    return s.skillsHub;
+  }
+  if (raw && typeof raw === 'object' && Array.isArray((raw as { rules?: unknown }).rules)) {
     return raw as SkillHubState;
   }
-  // 首次：种一个全局目标（零源），面板即有「全局」落点可挂源。
+  // 首次：种一条全局规则（零技能），面板即有「全局」去向可勾技能。
   s.skillsHub = {
-    targets: [{ id: randomId(), to: SKILL_HUB_DEFAULT_TO, all: true, sources: [] }],
+    rules: [{ id: randomId(), to: SKILL_HUB_DEFAULT_TO, all: true, skills: [] }],
   };
   await persist(s);
   return s.skillsHub;

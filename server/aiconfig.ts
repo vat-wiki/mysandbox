@@ -25,7 +25,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import pLimit from 'p-limit';
 import type { Config } from './config.js';
-import { execRun, getEngine, inspectContainer } from './engine/index.js';
+import { execRun, getEngine, inspectContainer, listManaged } from './engine/index.js';
+import { getAiGateway } from './state.js';
 import type { BatchItemResult, BatchResult } from './batch.js';
 import { log } from './logger.js';
 
@@ -467,4 +468,35 @@ export async function applyAiGateway(
   };
   log.info({ op: 'ai-config', ok: result.ok, failed: result.failed }, 'ai-config done');
   return result;
+}
+
+// —— 声明式追平（sidecar 的 AiGatewayState 是期望状态）——
+
+// 单容器补发（create() 建容器后调用）：有配置就照写一份，容器内凭据与新容器同步
+// 就位。无配置/容器不可见 = 无事发生。尽力而为不抛（失败靠下次 sweep/手动重推追平）。
+export async function applyGatewayToContainer(cfg: Config, name: string): Promise<void> {
+  try {
+    const input = await getAiGateway();
+    if (!input) return;
+    const home = getEngine(cfg).hostHomePath(cfg, name);
+    if (!home || !existsSync(home)) return;
+    await applyOne(cfg, name, input);
+    log.info({ container: name }, 'ai-config applied to container');
+  } catch (e) {
+    log.warn({ container: name, err: String(e) }, 'ai-config apply to container failed');
+  }
+}
+
+// 启动 sweep（cli.ts 装配）：把 sidecar 配置应用到全部受管容器（宿主直写 rootfs，
+// 容器不必在跑）。无配置 = 无事发生；尽力而为不抛。
+export async function applyGatewayAll(cfg: Config): Promise<void> {
+  try {
+    const input = await getAiGateway();
+    if (!input) return;
+    const views = await listManaged(cfg);
+    if (!views.length) return;
+    await applyAiGateway(cfg, views.map((v) => v.id), input);
+  } catch (e) {
+    log.warn({ err: String(e) }, 'ai-config startup sweep failed');
+  }
 }

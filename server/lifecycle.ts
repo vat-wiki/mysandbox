@@ -21,6 +21,7 @@ import { applyServicesBlock, overwriteHosts } from './hosts-sync.js';
 import { seedContainerCli } from './container-cli.js';
 import { peerSeedInfo } from './peer.js';
 import { syncContainerSkills } from './skillSync.js';
+import { applyGatewayToContainer } from './aiconfig.js';
 import { log } from './logger.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
@@ -124,9 +125,10 @@ export async function createContainer(
   });
 
   log.info({ name, ip, engine: engine.name, network: cfg.network }, 'container created');
-  // skills 分发（config.skills.sync）：新容器补一发当前权威副本（宿主直写 rootfs，
-  // 容器在不在跑都行；尽力而为不阻塞返回）。
+  // skills 分发 + AI 网关凭据：新容器补发当前期望状态（宿主直写 rootfs，容器在不在
+  // 跑都行；尽力而为不阻塞返回）。声明式配置从此对新容器自动就位。
   void syncContainerSkills(cfg, name);
+  void applyGatewayToContainer(cfg, name);
   return { id, name, ip };
 }
 

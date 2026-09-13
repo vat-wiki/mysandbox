@@ -1,11 +1,12 @@
 <script setup lang="ts">
-// AI 网关批量下发（自 AI 工具面板，原 BatchDialog ai tab 迁出）：对勾选容器把
-// OpenAI/Anthropic 兼容网关写进 claude/codex/opencode/pi 配置。后端 aiconfig.ts
-// 宿主直写 rootfs，容器不必在跑。表单与校验逻辑从 BatchDialog 原样迁出（场景驱动：
-// 网关类型单选决定端点框显隐 / Codex 可用性 / 协议多选显隐）。
+// AI 网关声明式配置（AI 工具面板页签）：把 OpenAI/Anthropic 兼容网关的接入配置
+// 应用到全部受管容器（claude/codex/opencode/pi）。配置存 sidecar（state.aiGateway，
+// 期望状态）——服务启动 sweep + 新建容器补发自动追平，这里只负责「改配置 + 立即
+// 应用」。后端 aiconfig.ts 宿主直写 rootfs，容器不必在跑。表单与校验逻辑自
+// BatchDialog 迁出（场景驱动：网关类型单选决定端点框显隐 / Codex 可用性 / 协议多选显隐）。
 import { ref, computed, watch, onMounted } from 'vue'
 import {
-  batchAiConfig,
+  applyAiGateway,
   getAiGateway,
   Unauthorized,
   type BatchResult,
@@ -13,7 +14,6 @@ import {
   type AiGatewayState,
   type AiGatewayInput,
 } from '@/lib/api'
-import { stateColor, stateLabel } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -30,33 +30,10 @@ import {
 } from '@/components/ui/table'
 import { ArrowLeft } from 'lucide-vue-next'
 
-const props = defineProps<{
-  containers: { id: string; label: string; ip?: string | null; state?: string | null }[]
-}>()
 const emit = defineEmits<{
   (e: 'done'): void
   (e: 'unauthorized'): void
 }>()
-
-// 容器勾选（紧凑 chip 形态）：默认全选，空选时执行按钮置灰。
-const checked = ref<Set<string>>(new Set(props.containers.map((c) => c.id)))
-const ids = computed(() => props.containers.filter((c) => checked.value.has(c.id)).map((c) => c.id))
-function toggleCheck(id: string) {
-  const s = new Set(checked.value)
-  if (s.has(id)) s.delete(id)
-  else s.add(id)
-  checked.value = s
-}
-const allChecked = computed(
-  () => props.containers.length > 0 && props.containers.every((c) => checked.value.has(c.id)),
-)
-// 停机提示（不阻断）：rootfs 直写停机容器也生效，只提一句免得意外。
-const stoppedSelected = computed(
-  () =>
-    ids.value.filter(
-      (id) => props.containers.find((c) => c.id === id)?.state && props.containers.find((c) => c.id === id)!.state !== 'running',
-    ).length,
-)
 
 const busy = ref(false)
 const err = ref('')
@@ -252,7 +229,8 @@ async function submit() {
   result.value = null
   err.value = ''
   try {
-    result.value = await batchAiConfig(ids.value, {
+    // 不带 ids = 应用到全部受管容器（后端缺省），新容器由启动 sweep / create 补发跟进。
+    result.value = await applyAiGateway({
       endpoints: {
         ...(aiGwKind.value !== 'anthropic' && openaiConsumers.value.length
           ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } }
@@ -282,37 +260,6 @@ async function submit() {
 
 <template>
   <div class="space-y-4">
-    <!-- 目标容器：紧凑 chip 勾选（rootfs 直写，停机容器同样生效，只提示不阻断） -->
-    <div class="rounded-md border p-3">
-      <div class="flex items-center justify-between">
-        <span class="text-xs font-medium text-muted-foreground">
-          目标容器 {{ ids.length }} / {{ props.containers.length }}
-          <span v-if="stoppedSelected" class="text-amber-600 dark:text-amber-400">（{{ stoppedSelected }} 个未在运行，同样可写）</span>
-        </span>
-        <button
-          type="button"
-          class="text-xs text-muted-foreground transition-colors hover:text-foreground"
-          @click="checked = allChecked ? new Set() : new Set(props.containers.map((c) => c.id))"
-        >
-          {{ allChecked ? '全不选' : '全选' }}
-        </button>
-      </div>
-      <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
-        <label
-          v-for="c in props.containers"
-          :key="c.id"
-          class="flex cursor-pointer select-none items-center gap-1.5 text-sm"
-        >
-          <Checkbox :model-value="checked.has(c.id)" @update:model-value="() => toggleCheck(c.id)" />
-          <span
-            :class="['h-2 w-2 shrink-0 rounded-full', stateColor(c.state ?? '')]"
-            :title="stateLabel(c.state ?? '')"
-          />
-          <span class="font-mono">{{ c.label }}</span>
-        </label>
-      </div>
-    </div>
-
     <!-- 结果态：表单区整体切走（返回编辑保留表单内容，换 key 重推是常态） -->
     <template v-if="result">
       <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1">
@@ -332,9 +279,7 @@ async function submit() {
           </TableHeader>
           <TableBody>
             <TableRow v-for="it in result.items" :key="it.id" class="align-top">
-              <TableCell class="font-mono text-xs">{{
-                props.containers.find((c) => c.id === it.id)?.label ?? it.name
-              }}</TableCell>
+              <TableCell class="font-mono text-xs">{{ it.name }}</TableCell>
               <TableCell class="text-xs">
                 <span v-if="it.ok" class="text-emerald-500">ok</span>
                 <span v-else class="text-destructive">fail ({{ it.exitCode }})</span>
@@ -365,15 +310,15 @@ async function submit() {
 
     <!-- 编辑态（自 BatchDialog 原样迁出）：场景驱动表单 -->
     <template v-else>
-      <!-- 上次下发：换 key 重推是最高频重复流，一键直达 -->
+      <!-- 当前生效配置：改 key 重推是最高频重复流，一键填入 -->
       <div
         v-if="lastPush"
         class="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2"
       >
         <span class="text-xs text-muted-foreground">
-          上次下发 {{ new Date(lastPush.updatedAt).toLocaleString() }}
+          当前配置（更新于 {{ new Date(lastPush.updatedAt).toLocaleString() }}）
         </span>
-        <Button variant="outline" size="xs" @click="repushLast">一键重推上次配置</Button>
+        <Button variant="outline" size="xs" @click="repushLast">填入当前配置</Button>
       </div>
 
       <div class="space-y-1.5">
@@ -546,20 +491,19 @@ async function submit() {
           </span>
         </summary>
         <p class="mt-2">
-          直接写入这 {{ ids.length }} 个容器的 home 配置文件——容器不必在运行，CLI
+          写入全部受管容器的 home 配置文件——容器不必在运行，CLI
           下次启动即生效：claude 走 settings.json env 注入；codex 加 provider（key 经
           ~/.zshrc 环境变量，固定走 responses）；opencode / pi 在配置里内联 key，按所选
           协议注册接入点。已有配置只合并本方案的键，不会整体覆盖；重复执行幂等。
+          配置保存后，新建容器会自动补发（启动追平）。
         </p>
-        <p class="mt-1 text-amber-500/90">API Key 会明文落盘在各容器内。</p>
+        <p class="mt-1 text-amber-500/90">API Key 会明文落盘在各容器内（sidecar 存档同面）。</p>
       </details>
 
       <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
 
       <div class="flex justify-end">
-        <Button :disabled="busy || !ids.length" @click="submit"
-          >{{ busy ? '下发中…' : `下发（对 ${ids.length} 个容器）` }}</Button
-        >
+        <Button :disabled="busy" @click="submit">{{ busy ? '应用中…' : '保存并应用到全部容器' }}</Button>
       </div>
     </template>
   </div>

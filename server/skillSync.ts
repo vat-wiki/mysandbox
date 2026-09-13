@@ -1,27 +1,29 @@
-// Skills 同步：两条通路把 skills 分发进全部受管容器（宿主直读直写 rootfs——D1 uid
-// 直通：容器内 dev(1000) = 宿主当前用户，写出的文件属主天然正确；容器不必在跑）。
+// Skills 分发：技能库（registry）为唯一技能真相源，安装规则把库技能装进受管容器
+// （宿主直读直写 rootfs——D1 uid 直通：容器内 dev(1000) = 宿主当前用户，写出的文件
+// 属主天然正确；容器不必在跑）。
 //
-// ① 静态规则（config.skills.sync = [{from,to}]）：精确映射，适合项目级/非标准目标。
-//    from：'<容器名>:<容器内路径>'（home 契约 /home/dev，~/ 与绝对路径都认）或宿主
-//    路径（~/ 展开）；to：容器内目标。走 UI 管不到的 config.yaml，改动需重启服务。
-// ② 技能中心（hub，sidecar state.json 的 skillsHub）：以「目标」为中心——一个目标
-//    位置（全局 ~/.claude/skills 或某项目的 .claude/skills）聚合多个源，源在 UI 里
-//    增删/启停/排序（目标内顺序 = 重名优先级，先到先得，冲突在面板可见）。同一源
-//    目录可挂到多个目标。聚合副本按目标分开（skills/hub-<hash(to)>/）独立分发。
-//    范围语义：全局目标 → 全部受管容器；项目目标 → **只同步到已有该项目的容器**
-//    （目标路径逐级向上探测落点，项目克隆到哪 skill 跟到哪），并配容器 start 事件
-//    补发（晚克隆的项目重启后自动补齐）。目标删除/改址 → 孤儿清理按清单把分发过
-//    的条目从容器收回。
+// 模型（两个一等概念）：
+// ① 技能库（STATE_DIR/skills/registry/<名>/）：放什么由用户定。目录来源入库 =
+//    跟随（follow，每次同步先从来源刷新库内容——开发中的技能改了即生效，源删了
+//    副本冻结保留）；git 导入 = 快照（重导入即更新）。库内同名唯一 → 无冲突概念。
+// ② 安装规则（sidecar state.skillsHub.rules）：{库内技能集合, 去向, 范围}。去向
+//    唯一（同 to 不允许两条规则）；全局去向铺全部受管容器，项目去向只装已有该
+//    项目的容器（落点逐级向上探测，项目克隆到哪 skill 跟到哪），容器 start 事件
+//    补发闭环停机期间克隆的项目。规则删除/改去向 → 孤儿清理按清单把分发过的
+//    条目从容器收回。
 //
-// 每条通路两步（同构）：
-//   源 → 宿主权威副本（规则 = skills/<ruleId>/，中心 = skills/hub-<hash>/；源删了副本仍在）
-//   权威副本 → 容器目标：顶层条目逐一克隆；「上次分发过而已消失」的顶层条目删除
-//   （按清单 <id>.json 记账，用户自装的其他 skills 不动）。
+// 同步两步（每条规则同构）：
+//   库 → 聚合副本（skills/hub-<hash(to)>/，规则技能集的有效子集；集合里已无的条目删）
+//   聚合副本 → 容器去向：顶层条目逐一克隆；「上次分发过而已消失」的删除（按清单
+//   <id>.json 记账，用户自装的其他 skills 不动）。
 // 文件级 size+内容比对、变才写（与 seedContainerCli 的自更新语义一致）。
 //
-// 触发点（全自动）：服务启动 sweep（cli.ts）+ 源目录 fs.watch（宿主 inotify——源在
-// 容器 rootfs 里照样是宿主文件，跑着的容器立即生效；watch 按源动态注册，中心源在
-// UI 增删时同步挂/摘）+ create() 建容器后补发 + 容器 start 事件补发（lifecycle.ts /
+// 旧版迁移（ensureLegacyMigrated，一次性）：config.skills.sync 静态规则与 targets
+// 模型下挂的目录源，逐技能入库（follow）后并进对应规则；'registry' 源展开为库成员
+// 名单。迁移后 config 键被忽略（state.staticMigratedAt 记账），双真相源不复存在。
+//
+// 触发点（全自动）：服务启动 sweep（cli.ts）+ fs.watch（库目录 + 各 follow 条目的
+// 来源目录）+ create() 建容器后补发 + 容器 start 事件补发（lifecycle.ts /
 // startSkillSyncEvents）。手动：mysandbox skills sync / POST /api/skills/sync / 面板
 // 「立即同步」。同步全程互斥（模块级 promise 链）。
 import { existsSync, watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs';
@@ -34,17 +36,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Config } from './config.js';
 import { STATE_DIR, expandTilde } from './config.js';
 import { getEngine, subscribeEvents } from './engine/index.js';
-import { getAllMeta, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, type SkillHubTarget, type SkillHubTargetSource, type SkillRegistryMeta } from './state.js';
+import { getAllMeta, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, type SkillHubState, type SkillRule, type SkillRegistryMeta } from './state.js';
 import { log } from './logger.js';
 
 const SKILLS_DIR = join(STATE_DIR, 'skills');
 // 源变化 → 实际同步的 debounce（编辑器保存往往连发多个事件）。
 const WATCH_DEBOUNCE_MS = 500;
-
-export interface SkillSyncRule {
-  from: string;
-  to: string;
-}
 
 export interface SkillSyncContainerResult {
   name: string;
@@ -54,51 +51,23 @@ export interface SkillSyncContainerResult {
   error?: string;
 }
 
-export interface SkillSyncRuleResult {
-  from: string;
-  to: string;
-  source: string; // 解析出的宿主路径（人话/排障用）
-  ok: boolean;
-  changed: number; // 权威副本这步的变更文件数
-  removed: number;
-  error?: string;
-  containers: SkillSyncContainerResult[];
-}
-
-// 目标内的源视图（取数情况）。
-export interface SkillHubSourceView {
-  id: string;
-  from: string;
-  enabled: boolean;
-  ok: boolean;
-  skills: string[]; // 该源当前顶层条目（disabled 的也列出，仅信息展示）
-  error?: string;
-}
-
-// 一个目标的聚合 + 分发结果（目标 = 分发位置 + 挂在其下的多个源）。
-export interface SkillHubTargetResult {
+// 一条安装规则的同步结果。skills = 有效集（库里存在、实际参与聚合的）；missing =
+// 规则勾了但库里没有（exists=false 元数据残留或目录被外部删）——展示层标红。
+export interface SkillRuleResult {
   id: string;
   to: string;
-  all: boolean; // 范围：全部容器 / 仅已有该项目的容器
-  ok: boolean;
-  sources: SkillHubSourceView[];
-  skills: { name: string; sourceId: string; conflicts: string[] }[];
+  all: boolean;
+  skills: { name: string; ok: boolean; error?: string }[];
+  missing: string[];
   changed: number;
   removed: number;
   containers: SkillSyncContainerResult[];
   error?: string;
 }
 
-export interface SkillHubResult {
-  ok: boolean;
-  targets: SkillHubTargetResult[];
-  error?: string;
-}
-
 export interface SkillSyncResult {
   ok: boolean;
-  rules: SkillSyncRuleResult[];
-  hub?: SkillHubResult;
+  rules: SkillRuleResult[];
   durationMs: number;
 }
 
@@ -288,10 +257,10 @@ async function readManifest(id: string): Promise<RuleManifest | null> {
   }
 }
 
-// 配置/分组里已消失的副本目录与清单清掉（幂等）。分类按文件名：
-// 'hub'/'hub.json' = 旧版单中心遗留（直接删）；'hub-*' = 目标组（存活集外删）；
-// 其余 = 静态规则副本（存活集外删）。
-async function pruneStale(aliveRuleIds: Set<string>, aliveHubIds: Set<string>): Promise<void> {
+// 旧命名空间副本清理（幂等）：hub 副本/清单（hub-*）与库（registry）之外的条目全是
+// 静态规则时代或更早的遗留（<ruleId>/、<ruleId>.json、旧版单中心 hub/hub.json）——
+// 静态规则通路已死，一律删。hub 孤儿（规则删除/改 to）在 syncRules 里连容器一起清。
+async function pruneStale(): Promise<void> {
   let entries: string[] = [];
   try {
     entries = await readdir(SKILLS_DIR);
@@ -299,56 +268,135 @@ async function pruneStale(aliveRuleIds: Set<string>, aliveHubIds: Set<string>): 
     return; // 目录还没有 = 无可清
   }
   for (const e of entries) {
-    const isFile = e.endsWith('.json');
-    const id = isFile ? e.slice(0, -'.json'.length) : e;
-    if (id === 'registry') continue; // 技能库目录，不是规则副本——绝不清理
-    if (id === 'hub') {
-      await rm(join(SKILLS_DIR, e), { recursive: true, force: true }); // 旧版单中心遗留
-      continue;
-    }
-    if (id.startsWith('hub-')) {
-      if (!aliveHubIds.has(id)) await rm(join(SKILLS_DIR, e), { recursive: true, force: true });
-      continue;
-    }
-    if (!aliveRuleIds.has(id)) await rm(join(SKILLS_DIR, e), { recursive: true, force: true });
+    const id = e.endsWith('.json') ? e.slice(0, -'.json'.length) : e;
+    if (id === 'registry' || id.startsWith('hub-')) continue;
+    await rm(join(SKILLS_DIR, e), { recursive: true, force: true });
   }
 }
 
-// —— 静态规则通路 ——
+// —— 库跟随刷新（follow 条目每次同步先从来源刷新库内容）——
 
-// 规则 id：from+to 的 sha1 前 12 位——配置里无关字段的改动不影响副本目录；
-// from/to 变了自然换新 id（旧副本由 pruneStale 清掉）。
-function ruleId(rule: SkillSyncRule): string {
-  return createHash('sha1').update(`${rule.from}=>${rule.to}`).digest('hex').slice(0, 12);
+// follow 条目：目录来源 = 每次同步从 from 镜像进库（开发中的技能改了即生效）；
+// 来源消失 = 冻结（库内容保留，meta.from 仍可看到出处）。git 快照条目不在此列。
+async function refreshLibrary(cfg: Config): Promise<void> {
+  const reg = await getSkillRegistry();
+  for (const [name, meta] of Object.entries(reg.skills)) {
+    if (!meta.follow) continue;
+    try {
+      const { hostPath } = resolveSyncSource(cfg, meta.from);
+      if (!existsSync(hostPath)) continue; // 来源没了：冻结保留
+      await syncTree(hostPath, join(REGISTRY_DIR, name));
+    } catch (e) {
+      log.warn({ skill: name, from: meta.from, err: String(e) }, 'skills library refresh failed');
+    }
+  }
 }
 
-// 单规则：镜像源 → 权威副本 → 逐容器分发。失败收敛进结果，不中断其他容器/规则。
-async function syncRule(cfg: Config, rule: SkillSyncRule): Promise<SkillSyncRuleResult> {
-  const id = ruleId(rule);
-  const base: SkillSyncRuleResult = { from: rule.from, to: rule.to, source: '', ok: false, changed: 0, removed: 0, containers: [] };
+// —— 旧版迁移（一次性）——
+
+// 旧目录源 → 库条目（follow）→ 并进 to 对应规则的技能名单。from 目录本身含
+// SKILL.md = 单技能；否则按 skills 目录处理（扫顶层含 SKILL.md 的子目录）。
+// 库内同名的条目不重导入（库内容是权威），但名字照样并进规则。
+async function legacySourceIntoLibrary(
+  cfg: Config,
+  from: string,
+  rule: SkillRule,
+): Promise<void> {
+  let hostPath = '';
   try {
-    const { hostPath } = resolveSyncSource(cfg, rule.from);
-    base.source = hostPath;
-    if (!existsSync(hostPath)) throw new Error(`源不存在：${hostPath}`);
-
-    const mirror = join(SKILLS_DIR, id);
-    const [changed, removed] = await syncTree(hostPath, mirror);
-    base.changed = changed;
-    base.removed = removed;
-    base.containers = await distributeDir(cfg, mirror, rule.to, id);
-    base.ok = true;
-    log.info(
-      { from: rule.from, to: rule.to, changed, removed, containers: base.containers.length },
-      'skills rule synced',
-    );
+    hostPath = resolveSyncSource(cfg, from).hostPath;
   } catch (e) {
-    base.error = e instanceof Error ? e.message : String(e);
-    log.warn({ from: rule.from, to: rule.to, err: base.error }, 'skills rule sync failed');
+    log.warn({ from, err: String(e) }, 'skills legacy migrate: source resolve failed');
+    return;
   }
-  return base;
+  if (!existsSync(hostPath)) {
+    log.warn({ from, hostPath }, 'skills legacy migrate: source missing');
+    return;
+  }
+  const add = async (dir: string): Promise<void> => {
+    const name = basename(dir.replace(/\/+$/, ''));
+    if (!existsSync(join(dir, 'SKILL.md'))) return;
+    try {
+      await registryAdd(cfg, fromForDir(from, dir), false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!msg.includes('已有同名')) {
+        log.warn({ skill: name, err: msg }, 'skills legacy migrate: import failed');
+        return;
+      }
+    }
+    if (!rule.skills.includes(name)) rule.skills.push(name);
+  };
+  if (existsSync(join(hostPath, 'SKILL.md'))) {
+    await add(hostPath);
+    return;
+  }
+  for (const e of await readdir(hostPath, { withFileTypes: true })) {
+    if (e.isDirectory()) await add(join(hostPath, e.name));
+  }
 }
 
-// —— 技能中心（hub）通路 ——
+// 旧源的 from 记账形态：源目录整体时 from 原样；顶层子技能时 <源>/<名>。
+// registryAdd 的 resolveSyncSource 认 <容器名>:<路径> 与宿主路径，直接拼即可。
+function fromForDir(from: string, dir: string): string {
+  return dir === from ? from : `${from.replace(/\/+$/, '')}/${basename(dir)}`;
+}
+
+// 一次性迁移：① 存量库条目回填 follow（目录来源 = 跟随；git 来源保持快照——旧
+// meta 没有这个标记，按来源形态推）；② config.skills.sync 静态规则（staticMigratedAt
+// 记账）；③ targets 模型 rule.legacy 遗留源（state.ts 形状迁移时挂上）。'registry'
+// 源展开为库成员名单；目录源逐技能入库。迁移后双真相源不复存在，config 键被忽略。
+function isGitFrom(from: string): boolean {
+  return /^(https?:\/\/|git@|ssh:\/\/)/.test(from);
+}
+
+async function ensureLegacyMigrated(cfg: Config): Promise<void> {
+  // ① 存量库条目 follow 回填（新代码写入的都带标记，只有旧 meta 需要推一次）。
+  const reg0 = await getSkillRegistry();
+  let regDirty = false;
+  for (const meta of Object.values(reg0.skills)) {
+    if (meta.follow === undefined && meta.from !== REGISTRY_FROM && !isGitFrom(meta.from)) {
+      meta.follow = true;
+      regDirty = true;
+    }
+  }
+  if (regDirty) await setSkillRegistry({ skills: reg0.skills });
+
+  const hub = await getSkillHub();
+  let dirty = regDirty;
+  if (!hub.staticMigratedAt && (cfg.skills?.sync ?? []).length) {
+    for (const r of cfg.skills?.sync ?? []) {
+      let target = hub.rules.find((x) => x.to === r.to);
+      if (!target) {
+        target = { id: randomBytes(4).toString('hex'), to: r.to, all: true, skills: [] };
+        hub.rules.push(target);
+      }
+      await legacySourceIntoLibrary(cfg, r.from, target);
+    }
+    hub.staticMigratedAt = new Date().toISOString();
+    log.info({ rules: (cfg.skills?.sync ?? []).length }, 'skills: legacy config rules migrated');
+    dirty = true;
+  }
+  for (const rule of hub.rules) {
+    if (!rule.legacy?.length) continue;
+    for (const l of rule.legacy) {
+      if (!l.enabled) continue; // 旧「停用」语义：跳过即弃（迁移不复活）
+      if (l.from === REGISTRY_FROM) {
+        const reg = await getSkillRegistry();
+        for (const name of Object.keys(reg.skills)) {
+          if (!rule.skills.includes(name)) rule.skills.push(name);
+        }
+      } else {
+        await legacySourceIntoLibrary(cfg, l.from, rule);
+      }
+    }
+    delete rule.legacy;
+    dirty = true;
+  }
+  if (dirty) await setSkillHub(hub);
+}
+
+// —— 安装规则通路 ——
 
 // 目标的聚合副本目录/清单锚点：sha1(to) 前 8 位。锚在 to 而非 target id——目标删
 // 除/改 to 时旧目录自然变孤儿，由孤儿清理按清单把分发过的条目从容器收回来。
@@ -357,105 +405,81 @@ function hubDirId(to: string): string {
   return `hub-${createHash('sha1').update(to).digest('hex').slice(0, 8)}`;
 }
 
-// 目标聚合：按源顺序把各源顶层条目镜像进目标副本目录（重名先到先得），目标里已
-// 无提供者的条目从副本删除。返回该目标的聚合视图（不分发）。
-async function aggregateTarget(cfg: Config, t: SkillHubTarget): Promise<SkillHubTargetResult> {
-  const out: SkillHubTargetResult = {
-    id: t.id, to: t.to, all: t.all, ok: false, sources: [], skills: [], changed: 0, removed: 0, containers: [],
+// 规则聚合：把规则技能集的有效子集（库目录仍存在的）从库镜像进聚合副本，副本里
+// 已不在集合的条目删除。返回聚合视图（不分发）——syncRule/syncContainerSkills 共用。
+async function aggregateRule(rule: SkillRule): Promise<{ dir: string; effective: string[]; changed: number; removed: number }> {
+  const dir = join(SKILLS_DIR, hubDirId(rule.to));
+  await mkdir(dir, { recursive: true });
+  const effective = rule.skills.filter((n) => existsSync(join(REGISTRY_DIR, n)));
+  let changed = 0;
+  let removed = 0;
+  for (const n of effective) {
+    const [w] = await syncTree(join(REGISTRY_DIR, n), join(dir, n));
+    changed += w;
+  }
+  // 集合里已无的条目 → 删（取消勾选/出库后自动退出聚合副本，进而从容器收回）。
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    if (!effective.includes(e.name)) {
+      await rm(join(dir, e.name), { recursive: true, force: true });
+      removed++;
+    }
+  }
+  return { dir, effective, changed, removed };
+}
+
+// 单规则：库 → 聚合副本 → 逐容器分发。失败收敛进结果，不中断其他规则/容器。
+async function syncRule(cfg: Config, rule: SkillRule): Promise<SkillRuleResult> {
+  const out: SkillRuleResult = {
+    id: rule.id, to: rule.to, all: rule.all, skills: [], missing: [], changed: 0, removed: 0, containers: [],
   };
   try {
-    const dir = join(SKILLS_DIR, hubDirId(t.to));
-    await mkdir(dir, { recursive: true });
-
-    const enabledNames = new Map<string, string[]>(); // sourceId → 条目名
-    const resolved = new Map<string, string>(); // sourceId → 宿主源路径
-    for (const src of t.sources) {
-      const v: SkillHubSourceView = { id: src.id, from: src.from, enabled: src.enabled, ok: true, skills: [] };
-      out.sources.push(v);
-      if (!src.enabled) continue;
-      try {
-        const { hostPath } = resolveSyncSource(cfg, src.from);
-        if (!existsSync(hostPath)) throw new Error(`源不存在：${hostPath}`);
-        resolved.set(src.id, hostPath);
-        enabledNames.set(src.id, await topLevelNames(hostPath));
-      } catch (e) {
-        v.ok = false;
-        v.error = e instanceof Error ? e.message : String(e);
-        log.warn({ source: src.from, err: v.error }, 'skills hub source failed');
-      }
-    }
-
-    // 赢家（目标内先到先得）与冲突表 → 逐条目镜像进副本。
-    const winners = new Map<string, string>();
-    const conflicts = new Map<string, string[]>();
-    for (const [id, names] of enabledNames) {
-      for (const n of names) {
-        const w = winners.get(n);
-        if (w === undefined) winners.set(n, id);
-        else conflicts.set(n, [...(conflicts.get(n) ?? []), id]);
-      }
-    }
-    for (const [id, names] of enabledNames) {
-      const srcDir = resolved.get(id);
-      if (!srcDir) continue;
-      for (const n of names) {
-        if (winners.get(n) !== id) continue;
-        const [w] = await syncTree(join(srcDir, n), join(dir, n));
-        out.changed += w;
-      }
-    }
-    // 目标里已无提供者的条目 → 删（源移除/禁用后自动退出）。
-    for (const e of await readdir(dir, { withFileTypes: true })) {
-      if (!winners.has(e.name)) {
-        await rm(join(dir, e.name), { recursive: true, force: true });
-        out.removed++;
-      }
-    }
-    out.skills = [...winners.entries()].map(([name, sourceId]) => ({ name, sourceId, conflicts: conflicts.get(name) ?? [] }));
-    out.ok = true;
+    const agg = await aggregateRule(rule);
+    // skills = 全量声明集（含库里缺失的，ok=false）——面板勾选面板/编辑需要完整名单。
+    out.skills = rule.skills.map((name) => ({ name, ok: agg.effective.includes(name) }));
+    out.missing = out.skills.filter((s) => !s.ok).map((s) => s.name);
+    out.changed = agg.changed;
+    out.removed = agg.removed;
+    out.containers = await distributeDir(cfg, agg.dir, rule.to, hubDirId(rule.to), {
+      onlyIfParentExists: !rule.all,
+    });
+    log.info(
+      { to: rule.to, all: rule.all, skills: agg.effective.length, containers: out.containers.length },
+      'skills rule synced',
+    );
   } catch (e) {
     out.error = e instanceof Error ? e.message : String(e);
-    log.warn({ to: t.to, err: out.error }, 'skills hub aggregate failed');
+    log.warn({ to: rule.to, err: out.error }, 'skills rule sync failed');
   }
   return out;
 }
 
-// 中心同步：逐目标聚合 → 分发（all = 全部容器；否则按落点探测收窄）；孤儿副本
-// （目标已删/改 to）按清单把分发过的条目从容器里清掉再删副本——「目标管理」语义
-// 闭环。从未配置过（全部目标零源且无任何副本）则整体跳过，不碰任何目标目录。
-async function syncHub(cfg: Config): Promise<SkillHubResult | undefined> {
+// 规则同步：逐规则聚合 → 分发（all = 全部容器；否则按落点探测收窄）；孤儿副本
+// （规则已删/改 to）按清单把分发过的条目从容器里清掉再删副本。从未配置过（全部
+// 规则零技能且无任何副本）则整体跳过，不碰任何目录。
+async function syncRules(cfg: Config): Promise<{ ok: boolean; rules: SkillRuleResult[] }> {
   const hub = await getSkillHub();
-  const used = hub.targets.some((t) => t.sources.length > 0) || existsSync(SKILLS_DIR);
-  if (!used) return undefined;
-  const out: SkillHubResult = { ok: true, targets: [] };
+  const used = hub.rules.some((r) => r.skills.length > 0) || existsSync(SKILLS_DIR);
+  if (!used) return { ok: true, rules: [] };
+  const out: SkillRuleResult[] = [];
+  let ok = true;
 
-  for (const t of hub.targets) {
-    const res = await aggregateTarget(cfg, t);
-    if (res.ok) {
-      try {
-        res.containers = await distributeDir(cfg, join(SKILLS_DIR, hubDirId(t.to)), t.to, hubDirId(t.to), {
-          onlyIfParentExists: !t.all,
-        });
-      } catch (e) {
-        res.error = e instanceof Error ? e.message : String(e);
-        log.warn({ to: t.to, err: res.error }, 'skills hub distribute failed');
-      }
-    }
-    if (!res.ok) out.ok = false;
-    out.targets.push(res);
+  for (const rule of hub.rules) {
+    const res = await syncRule(cfg, rule);
+    if (res.error) ok = false;
+    out.push(res);
   }
 
-  // 孤儿副本清理：目标已删/改 to 的副本 → 按清单把分发过的条目从容器收回来，再删
-  // 副本与清单。范围口径重算：清单 to 还在某个存活目标里 = 沿用其口径；不在 = 曾是
-  // 项目目标（收窄——孤儿多半是目标删除/改 to，原容器集合里落点判据依然成立）。
+  // 孤儿副本清理：规则已删/改 to 的副本 → 按清单把分发过的条目从容器收回来，再删
+  // 副本与清单。范围口径重算：清单 to 还在存活规则里 = 沿用其口径；不在 = 曾是
+  // 项目目标（收窄——孤儿多半是规则删除/改 to，原容器集合里落点判据依然成立）。
   let entries: string[] = [];
   try {
     entries = await readdir(SKILLS_DIR);
   } catch {
     /* 无目录 = 无孤儿 */
   }
-  const aliveIds = new Set(hub.targets.map((t) => hubDirId(t.to)));
-  const aliveAll = new Set(hub.targets.filter((t) => t.all).map((t) => t.to));
+  const aliveIds = new Set(hub.rules.map((r) => hubDirId(r.to)));
+  const aliveAll = new Set(hub.rules.filter((r) => r.all).map((r) => r.to));
   for (const e of entries) {
     if (!e.startsWith('hub-') || !e.endsWith('.json')) continue;
     const id = e.slice(0, -'.json'.length);
@@ -467,204 +491,135 @@ async function syncHub(cfg: Config): Promise<SkillHubResult | undefined> {
           onlyIfParentExists: !aliveAll.has(manifest.to),
         });
       } catch (err) {
-        log.warn({ id, err: String(err) }, 'skills hub orphan cleanup failed');
+        log.warn({ id, err: String(err) }, 'skills orphan cleanup failed');
       }
     }
     await rm(join(SKILLS_DIR, id), { recursive: true, force: true });
   }
 
-  if (out.targets.length) {
+  if (out.length) {
     log.info(
-      { targets: out.targets.map((t) => ({ to: t.to, all: t.all, sources: t.sources.length, skills: t.skills.length })) },
-      'skills hub synced',
+      { rules: out.map((r) => ({ to: r.to, all: r.all, skills: r.skills.length, missing: r.missing.length })) },
+      'skills rules synced',
     );
   }
-  return out;
+  return { ok, rules: out };
 }
 
 // —— 总入口 ——
 
-// 全量同步：全部静态规则 + 中心。手动/API/启动 sweep/watch 共用。
-export async function syncSkillsAll(cfg: Config): Promise<SkillSyncResult> {
+// 内部全量同步（不加锁；syncSkillsAll/hubView 各自 exclusive 包一层——嵌套 exclusive
+// 会死锁，runSync 绝不自己加锁）：迁移 → 库跟随刷新 → 规则同步（含孤儿清理）→ 旧
+// 命名空间副本清理。
+async function runSync(cfg: Config): Promise<SkillSyncResult> {
   const started = Date.now();
-  const { rules, hub } = await exclusive(async () => {
-    const rules = cfg.skills?.sync ?? [];
-    const out: SkillSyncRuleResult[] = [];
-    for (const rule of rules) out.push(await syncRule(cfg, rule));
-    const hub = await syncHub(cfg);
-    // 清失效副本：规则副本按 config 存活集；目标副本已在 syncHub 里连容器一起清过。
-    await pruneStale(
-      new Set(rules.map(ruleId)),
-      new Set((await getSkillHub()).targets.map((t) => hubDirId(t.to))),
-    );
-    return { rules: out, hub };
-  });
-  return {
-    ok: rules.every((r) => r.ok) && (hub?.ok ?? true),
-    rules,
-    hub,
-    durationMs: Date.now() - started,
-  };
+  await ensureLegacyMigrated(cfg);
+  await refreshLibrary(cfg);
+  const { rules, ok } = await syncRules(cfg);
+  await pruneStale();
+  return { ok, rules, durationMs: Date.now() - started };
 }
 
-// 单容器补发（create()/容器 start 事件后调用）：镜像/聚合照跑（副本保鲜），只分发
-// 到这一个容器（项目目标按范围口径判这台要不要）。尽力而为不抛。
+// 全量同步。手动/API/启动 sweep/watch 共用。
+export async function syncSkillsAll(cfg: Config): Promise<SkillSyncResult> {
+  return exclusive(() => runSync(cfg));
+}
+
+// 单容器补发（create()/容器 start 事件后调用）：库刷新/聚合照跑（副本保鲜），只
+// 分发到这一个容器（项目目标按范围口径判这台要不要）。尽力而为不抛。
 export async function syncContainerSkills(cfg: Config, name: string): Promise<void> {
   await exclusive(async () => {
     try {
+      await ensureLegacyMigrated(cfg);
+      await refreshLibrary(cfg);
       const home = getEngine(cfg).hostHomePath(cfg, name);
       if (!home || !existsSync(home)) return;
-      for (const rule of cfg.skills?.sync ?? []) {
-        try {
-          const { hostPath } = resolveSyncSource(cfg, rule.from);
-          if (!existsSync(hostPath)) continue;
-          const mirror = join(SKILLS_DIR, ruleId(rule));
-          await syncTree(hostPath, mirror);
-          await distributeDir(cfg, mirror, rule.to, ruleId(rule), { only: [{ name, home }] });
-          log.info({ container: name, from: rule.from }, 'skills distributed to container');
-        } catch (e) {
-          log.warn({ container: name, from: rule.from, err: String(e) }, 'skills distribute to container failed');
-        }
-      }
-      // 中心：逐目标聚合 + 单容器分发（全部目标零源且从未用过则跳过，同 syncHub）。
       const hub = await getSkillHub();
-      if (!hub.targets.some((t) => t.sources.length) && !existsSync(SKILLS_DIR)) return;
-      for (const t of hub.targets) {
-        const agg = await aggregateTarget(cfg, t);
-        if (!agg.ok) continue;
-        await distributeDir(cfg, join(SKILLS_DIR, hubDirId(t.to)), t.to, hubDirId(t.to), {
+      if (!hub.rules.some((r) => r.skills.length) && !existsSync(SKILLS_DIR)) return;
+      for (const rule of hub.rules) {
+        const agg = await aggregateRule(rule);
+        await distributeDir(cfg, agg.dir, rule.to, hubDirId(rule.to), {
           only: [{ name, home }],
-          onlyIfParentExists: !t.all,
+          onlyIfParentExists: !rule.all,
         });
       }
-      log.info({ container: name }, 'skills distributed to container (hub)');
+      log.info({ container: name }, 'skills distributed to container');
     } catch (e) {
       log.warn({ container: name, err: String(e) }, 'skills distribute to container failed');
     }
   });
 }
 
-// —— 面板视图与目标/源管理（routes 调用）——
+// —— 面板视图与规则管理（routes 调用）——
 
-// 中心面板视图：目标列表（各带自己的源与聚合归属/冲突）+ config 静态规则展示。
-// 聚合顺带把副本刷新鲜并分发（readdir/小拷贝级，开销可忽略；面板即真相）。
-export async function hubView(cfg: Config): Promise<SkillHubResult & { configRules: SkillSyncRule[] }> {
-  const view = await exclusive(() => syncHub(cfg));
-  return {
-    ok: view?.ok ?? true,
-    targets: view?.targets ?? [],
-    configRules: cfg.skills?.sync ?? [],
-  };
+// 面板视图：跑一次全量同步再返回规则列表（聚合顺带把副本刷新鲜并分发——readdir/
+// 小拷贝级开销可忽略；面板即真相）。
+export async function hubView(cfg: Config): Promise<SkillSyncResult> {
+  return exclusive(() => runSync(cfg));
 }
 
-function findTarget(hub: { targets: SkillHubTarget[] }, id: string): SkillHubTarget {
-  const t = hub.targets.find((x) => x.id === id);
-  if (!t) throw new Error(`目标不存在：${id}`);
-  return t;
+function findRule(hub: SkillHubState, id: string): SkillRule {
+  const r = hub.rules.find((x) => x.id === id);
+  if (!r) throw new Error(`规则不存在：${id}`);
+  return r;
 }
 
-// 添加目标。to 全局唯一（副本目录/清单按 to 锚定，撞了会互踩）。
-export async function addSkillHubTarget(cfg: Config, to: string, all: boolean): Promise<void> {
+// 添加规则。to 全局唯一（聚合副本/清单按 to 锚定，撞了会互踩）。skills 允许空
+// （先建去向再勾技能）；名字合法性不做库存在性校验——库里缺失在视图 missing 里可见。
+export async function addSkillRule(_cfg: Config, to: string, all: boolean, skills: string[]): Promise<void> {
   containerRel(to);
   const hub = await getSkillHub();
-  if (hub.targets.some((t) => t.to === to)) throw new Error(`目标已存在：${to}`);
-  hub.targets.push({
+  if (hub.rules.some((r) => r.to === to)) throw new Error(`去向已存在：${to}`);
+  hub.rules.push({
     id: randomBytes(4).toString('hex'),
     to,
     all,
-    sources: [],
+    skills: [...new Set(skills)],
     createdAt: new Date().toISOString(),
   });
   await setSkillHub(hub);
 }
 
-// 目标 patch：to 改址（旧位置由孤儿清理收回）/ all 切范围。改 to 时目标内源不动。
-export async function updateSkillHubTarget(
+// 规则 patch：to 改址（旧位置由孤儿清理收回）/ all 切范围 / skills 全量替换
+// （取消勾选的技能下次同步按清单从容器收回）。
+export async function updateSkillRule(
   _cfg: Config,
   id: string,
-  patch: { to?: string; all?: boolean },
+  patch: { to?: string; all?: boolean; skills?: string[] },
 ): Promise<void> {
   const hub = await getSkillHub();
-  const t = findTarget(hub, id);
+  const r = findRule(hub, id);
   if (patch.to !== undefined) {
     containerRel(patch.to);
-    if (hub.targets.some((x) => x.id !== id && x.to === patch.to)) {
-      throw new Error(`目标已存在：${patch.to}`);
+    if (hub.rules.some((x) => x.id !== id && x.to === patch.to)) {
+      throw new Error(`去向已存在：${patch.to}`);
     }
-    t.to = patch.to;
+    r.to = patch.to;
   }
-  if (patch.all !== undefined) t.all = patch.all;
+  if (patch.all !== undefined) r.all = patch.all;
+  if (patch.skills !== undefined) r.skills = [...new Set(patch.skills)];
   await setSkillHub(hub);
 }
 
-// 删目标：副本变孤儿，下一次 syncHub 的孤儿清理按清单把分发过的条目从容器收回。
-export async function deleteSkillHubTarget(_cfg: Config, id: string): Promise<void> {
+// 删规则：副本变孤儿，下一次同步的孤儿清理按清单把分发过的条目从容器收回。
+export async function deleteSkillRule(_cfg: Config, id: string): Promise<void> {
   const hub = await getSkillHub();
-  const t = findTarget(hub, id);
-  hub.targets = hub.targets.filter((x) => x.id !== id);
+  findRule(hub, id);
+  hub.rules = hub.rules.filter((x) => x.id !== id);
   await setSkillHub(hub);
-  // 目标下源的全部 watcher 摘除。
-  for (const s of t.sources) unwatchSkillSource(`hub:${s.id}`);
-}
-
-// 挂源到目标。from 在同一目标内查重；同一 from 可挂到多个目标（各自启停/排序）。
-export async function addSkillHubTargetSource(cfg: Config, targetId: string, from: string): Promise<void> {
-  resolveSyncSource(cfg, from); // 形态不识别直接抛（routes 转 400）
-  const hub = await getSkillHub();
-  const t = findTarget(hub, targetId);
-  if (t.sources.some((s) => s.from === from)) throw new Error(`源已存在：${from}`);
-  const src: SkillHubTargetSource = {
-    id: randomBytes(4).toString('hex'),
-    from,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-  };
-  t.sources.push(src);
-  await setSkillHub(hub);
-  watchSkillSource(cfg, `hub:${src.id}`, src.from);
-}
-
-// 源 patch：enabled 开关 / move 排序（-1 上移 +1 下移，越界即贴边，目标内优先级）。
-// from 不支持改——改源 = 删了重加（id/顺序语义才稳定）。
-export async function updateSkillHubTargetSource(
-  cfg: Config,
-  targetId: string,
-  sourceId: string,
-  patch: { enabled?: boolean; move?: number },
-): Promise<void> {
-  const hub = await getSkillHub();
-  const t = findTarget(hub, targetId);
-  const i = t.sources.findIndex((s) => s.id === sourceId);
-  if (i < 0) throw new Error(`源不存在：${sourceId}`);
-  if (patch.enabled !== undefined) t.sources[i].enabled = patch.enabled;
-  if (patch.move) {
-    const j = Math.max(0, Math.min(t.sources.length - 1, i + patch.move));
-    if (j !== i) {
-      const [s] = t.sources.splice(i, 1);
-      t.sources.splice(j, 0, s);
-    }
-  }
-  await setSkillHub(hub);
-}
-
-export async function deleteSkillHubTargetSource(
-  cfg: Config,
-  targetId: string,
-  sourceId: string,
-): Promise<void> {
-  const hub = await getSkillHub();
-  const t = findTarget(hub, targetId);
-  if (!t.sources.some((s) => s.id === sourceId)) throw new Error(`源不存在：${sourceId}`);
-  t.sources = t.sources.filter((s) => s.id !== sourceId);
-  await setSkillHub(hub);
-  unwatchSkillSource(`hub:${sourceId}`);
 }
 
 // —— watch（实时分发的自动触发器，按源动态注册）——
 
-// watchers 注册表：key = 'cfg:<规则序号>'（config 静态规则，重启才变）/ 'hub:<源id>'
-// （中心源，UI 增删时同步挂/摘）。值 = watcher + debounce timer。
+// watchers 注册表：key = 'registry'（库目录，外部手改也能分发出去）/ 'reg:<名>'
+// （follow 条目的来源目录，入库/出库时同步挂/摘）。值 = watcher + debounce timer。
 const watchers = new Map<string, { w: FSWatcher; timer?: ReturnType<typeof setTimeout> }>();
+// CLI 一次性命令（mysandbox skills sync 迁移入库会走 registryAdd）不挂 watch——
+// Node v24 的 recursive fs.watch 连 unref 都释放不了事件循环，挂了进程就退不出去。
+let watchAllowed = true;
+export function disableSkillWatch(): void {
+  watchAllowed = false;
+}
 
 function scheduleSync(cfg: Config, key: string): void {
   const e = watchers.get(key);
@@ -674,10 +629,11 @@ function scheduleSync(cfg: Config, key: string): void {
     if (e) e.timer = undefined;
     void syncSkillsAll(cfg).catch((err) => log.warn({ err: String(err) }, 'skills watch sync failed'));
   }, WATCH_DEBOUNCE_MS);
+  e.timer.unref?.(); // 不占事件循环——CLI 一次性命令（skills sync 迁移入库）能正常退出
 }
 
 function watchSkillSource(cfg: Config, key: string, from: string): void {
-  if (watchers.has(key)) return;
+  if (!watchAllowed || watchers.has(key)) return;
   let source: string;
   try {
     source = resolveSyncSource(cfg, from).hostPath;
@@ -692,6 +648,7 @@ function watchSkillSource(cfg: Config, key: string, from: string): void {
   try {
     const w = fsWatch(source, { recursive: true }, () => scheduleSync(cfg, key));
     w.on('error', (e) => log.warn({ from, err: String(e) }, 'skills watch error'));
+    w.unref?.(); // 同上：常驻服务里无感，一次性 CLI 里不该被 watcher 拖住
     watchers.set(key, { w });
   } catch (e) {
     log.warn({ from, err: String(e) }, 'skills watch setup failed');
@@ -706,20 +663,20 @@ function unwatchSkillSource(key: string): void {
   watchers.delete(key);
 }
 
-// 服务启动：静态规则 + 中心各目标的源 + 技能库全部挂 watch（registry 目录不存在
-// 时挂不上——首次入库时 registryAdd 会兜底补挂）。
-export function startSkillSyncWatch(cfg: Config): void {
-  (cfg.skills?.sync ?? []).forEach((rule, i) => watchSkillSource(cfg, `cfg:${i}`, rule.from));
-  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
-  void getSkillHub().then((hub) => {
-    for (const t of hub.targets) {
-      for (const s of t.sources) {
-        if (s.enabled) watchSkillSource(cfg, `hub:${s.id}`, s.from);
-      }
+// 全部 follow 条目的来源目录挂 watch（启动 sweep + 入库后共用；已挂的 key 幂等跳过）。
+function watchFollowSources(cfg: Config): void {
+  void getSkillRegistry().then((reg) => {
+    for (const [name, meta] of Object.entries(reg.skills)) {
+      if (meta.follow) watchSkillSource(cfg, `reg:${name}`, meta.from);
     }
-    const n = hub.targets.reduce((m, t) => m + t.sources.length, 0);
-    if (n) log.info({ sources: n }, 'skills hub watch active');
   });
+}
+
+// 服务启动：技能库目录 + 各 follow 条目的来源目录挂 watch（库目录不存在时挂不上
+// ——首次入库时 registryAdd 会兜底补挂）。
+export function startSkillSyncWatch(cfg: Config): void {
+  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
+  watchFollowSources(cfg);
 }
 
 // 容器 start/restart 事件补发（startSkillSyncEvents，cli.ts 装配）：项目目标的
@@ -759,43 +716,35 @@ export function startSkillSyncEvents(cfg: Config): void {
 // —— CLI：mysandbox skills sync ——
 
 export async function runSkillsCommand(cfg: Config): Promise<void> {
-  const rules = cfg.skills?.sync ?? [];
-  const hub = await getSkillHub();
-  if (!rules.length && !hub.targets.some((t) => t.sources.length)) {
-    process.stdout.write('>> 没有配置任何 skills 源（面板「AI 工具 → 技能中心」或 config skills.sync）\n');
-    process.stdout.write('>> config 示例:\n>>   skills:\n>>     sync:\n>>       - from: mytest:~/testlens/.claude/skills\n>>         to: ~/.claude/skills\n');
+  disableSkillWatch(); // 一次性命令：迁移入库不挂 watcher（见 disableSkillWatch 注释）
+  const r = await syncSkillsAll(cfg);
+  const reg = await getSkillRegistry();
+  if (!r.rules.length && !Object.keys(reg.skills).length) {
+    process.stdout.write('>> 库是空的、也没有安装规则——面板「AI 工具 → 技能中心」入库技能并建规则\n');
     return;
   }
-  const r = await syncSkillsAll(cfg);
   for (const rule of r.rules) {
-    process.stdout.write(`>> ${rule.from} → ${rule.to}  ${rule.ok ? '' : `失败 — ${rule.error}`}\n`);
+    process.stdout.write(
+      `>> ${rule.to}${rule.all ? '' : '（仅已有该项目的容器）'}（${rule.skills.length} 个技能${
+        rule.missing.length ? `，${rule.missing.length} 个库中缺失` : ''
+      }）  ${rule.error ? `失败 — ${rule.error}` : ''}\n`,
+    );
+    for (const s of rule.missing) process.stdout.write(`>>   [缺失] ${s}\n`);
     for (const c of rule.containers) {
       process.stdout.write(
         `>>   ${c.name}: ${c.ok ? `+${c.changed} 文件${c.removed ? ` -${c.removed} 陈旧` : ''}` : `失败 — ${c.error}`}\n`,
       );
     }
   }
-  if (r.hub) {
-    for (const t of r.hub.targets) {
-      process.stdout.write(
-        `>> 中心（${t.skills.length} 个技能）→ ${t.to}${t.all ? '' : '（仅已有该项目的容器）'}  ${t.ok ? '' : `失败 — ${t.error}`}\n`,
-      );
-      for (const c of t.containers) {
-        process.stdout.write(
-          `>>   ${c.name}: ${c.ok ? `+${c.changed} 文件${c.removed ? ` -${c.removed} 陈旧` : ''}` : `失败 — ${c.error}`}\n`,
-        );
-      }
-    }
-  }
   process.stdout.write(`>> skills 同步完成（${r.durationMs}ms）\n`);
   if (!r.ok) process.exit(1);
 }
 
-// —— 技能库（registry）：入库 / 出库 / 列表 / git 导入 ——
+// —— 技能库（registry）：唯一技能真相源。入库 / 出库 / 列表 / git 导入 ——
 
-// 用户策展的权威技能集：库内每技能一份独立副本（与来源解耦），分发以库为源。
+// 库目录：库内每技能一份独立副本，分发以库为源。
 export const REGISTRY_DIR = join(SKILLS_DIR, 'registry');
-// hub 分发源的特殊 from 值：指向技能库目录（resolveSyncSource 识别）。
+// 分发 from 的特殊值：指向技能库目录（resolveSyncSource 识别）——legacy 迁移判定用。
 export const REGISTRY_FROM = 'registry';
 
 const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -806,9 +755,11 @@ async function readRegistryMeta(): Promise<Record<string, SkillRegistryMeta>> {
   return (await getSkillRegistry()).skills;
 }
 
-// 入库：把一个技能目录（必须含 SKILL.md）拷进库，与来源解耦（源删了库还在）。
+// 入库：把一个技能目录（必须含 SKILL.md）拷进库。目录来源 = 跟随（follow，每次
+// 同步先从来源刷新库内容；源删了副本冻结保留）；git 来源走 registryImportGit（快照）。
 // name = 目录末段；库内同名 = 覆盖（force=false 时拒绝，由调用方确认后重试）。
 export async function registryAdd(cfg: Config, from: string, force = false): Promise<{ name: string; replaced: boolean }> {
+  if (from === REGISTRY_FROM) throw new Error('库不能以自己为来源入库');
   const { hostPath } = resolveSyncSource(cfg, from);
   const st = await stat(hostPath).catch(() => null);
   if (!st?.isDirectory()) throw new Error(`技能目录不存在：${hostPath}`);
@@ -821,21 +772,24 @@ export async function registryAdd(cfg: Config, from: string, force = false): Pro
   if (replaced && !force) throw new Error(`库中已有同名技能：${name}（覆盖请确认）`);
   await syncTree(hostPath, dst);
   const meta = await readRegistryMeta();
-  meta[name] = { from, importedAt: new Date().toISOString() };
+  meta[name] = { from, importedAt: new Date().toISOString(), follow: true };
   await setSkillRegistry({ skills: meta });
-  // 库目录可能刚创建（首次入库）——watch 兜底挂上（幂等；watchSkillSource 对已挂 key 直接返回）。
+  // watch 兜底挂上（库目录可能刚创建；follow 来源跟随刷新——幂等，已挂 key 直接返回）。
   watchSkillSource(cfg, 'registry', REGISTRY_FROM);
+  watchSkillSource(cfg, `reg:${name}`, from);
   log.info({ name, from }, 'skill added to registry');
   return { name, replaced };
 }
 
-// 出库：删目录 + 删元数据。已在分发中的不受影响——下次同步按「源里已消失」从容器清理。
+// 出库：删目录 + 删元数据 + 摘来源 watch。已在分发中的不受影响——下次同步按
+// 「聚合副本里已消失」从容器清理。
 export async function registryRemove(name: string): Promise<void> {
   if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
   await rm(join(REGISTRY_DIR, name), { recursive: true, force: true });
   const meta = await readRegistryMeta();
   delete meta[name];
   await setSkillRegistry({ skills: meta });
+  unwatchSkillSource(`reg:${name}`);
 }
 
 export interface SkillRegistryItem {
@@ -843,6 +797,7 @@ export interface SkillRegistryItem {
   description: string;
   from: string; // 导入来源（元数据；缺失 = 空串）
   importedAt: string;
+  follow: boolean; // 跟随刷新（目录来源）；false = 快照（git 导入）
   exists: boolean; // 目录还在（false = 元数据残留，展示为缺失）
 }
 
@@ -864,12 +819,26 @@ export async function registryList(): Promise<SkillRegistryItem[]> {
     } catch {
       /* 无 SKILL.md：description 空 */
     }
-    out.push({ name, description, from: meta[name]?.from ?? '', importedAt: meta[name]?.importedAt ?? '', exists: true });
+    out.push({
+      name,
+      description,
+      from: meta[name]?.from ?? '',
+      importedAt: meta[name]?.importedAt ?? '',
+      follow: meta[name]?.follow ?? false,
+      exists: true,
+    });
   }
   // 元数据残留（目录被外部删了）：列出但 exists=false，用户可顺手清掉。
   for (const name of Object.keys(meta)) {
     if (!names.includes(name)) {
-      out.push({ name, description: '', from: meta[name].from, importedAt: meta[name].importedAt, exists: false });
+      out.push({
+        name,
+        description: '',
+        from: meta[name].from,
+        importedAt: meta[name].importedAt,
+        follow: meta[name].follow ?? false,
+        exists: false,
+      });
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -925,6 +894,7 @@ export async function registryProbeGit(url: string): Promise<SkillGitCandidate[]
 }
 
 // 按探测结果导入：subPath = registryProbeGit 返回的 path（'.' = repo 根）。
+// git 来源 = 快照（follow 不设）——版本化在仓库侧，更新 = 重新导入。
 export async function registryImportGit(
   cfg: Config,
   url: string,
@@ -1033,7 +1003,8 @@ async function readSkillEntry(dir: string, spot: string, managedDirs: Set<string
   };
 }
 
-// manifest 全读（hub 目标 hub-*.json + 静态规则 <ruleId>.json）：to（相对 home）
+// manifest 全读（安装规则的 hub-*.json 清单；旧静态规则清单已被 pruneStale 清掉，
+// 读不到自然跳过）：to（相对 home）
 // → 该位置被分发管理的顶层条目集。只做展示对照，不影响任何分发语义。
 async function managedIndex(): Promise<Map<string, Set<string>>> {
   const idx = new Map<string, Set<string>>();

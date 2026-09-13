@@ -114,27 +114,23 @@ peer:
   enabled: true
   port: 7331
 
-# Skills 同步（server/skillSync.ts）——把「源目录」（容器内项目的 skills 或宿主路径）
-# 分发到全部受管容器的目标目录。宿主直读直写 rootfs（D1 uid 直通），容器不必在跑。
-# 两条通路：
-#   技能中心（推荐）：多源聚合池，源在面板「AI 工具 → 技能中心」增删/启停/排序/改
-#     目标（存 sidecar state.json；重名按同目标内源顺序先到先得）。每源自带可选目标：
-#     缺省 = 全局 ~/.claude/skills（铺全部容器）；项目目标（如 ~/proj/.claude/skills）
-#     只同步到已有该项目的容器（项目克隆到哪 skill 跟到哪，容器 start 自动补齐）。
-#   静态规则（下面这个，精确映射场景用）：config 声明 from→to，改动需重启服务。
-#     ⚠️ 同一目标别同时用规则和中心——两边各自记账，会互相打架。
-# 自动触发：服务启动追平 + 源目录 fs.watch 实时分发（源在容器 rootfs 里照样是宿主
-# 文件，跑着的容器立即生效）+ 新建容器补发。手动：面板「立即同步」/ 侧栏 ⋯「同步
-# skills」/ mysandbox skills sync。文件级比对、变才写；源里删掉的 skill 按清单从
-# 容器同步删除（容器里用户自装的其他 skills 不动）。
-# skills:
-#   sync:
-#     - from: mytest:~/testlens/.claude/skills   # <容器名>:<容器内路径>（home=/home/dev）
-#       to: ~/.claude/skills                      # 容器内目标（相对 dev home）
-#     - from: ~/projects/mysandbox/.claude/skills # 宿主路径也行（~/ 展开）
-#       to: ~/.claude/skills
-skills:
-  sync: []
+# Skills 分发（server/skillSync.ts）——技能库（面板「AI 工具 → 技能中心」）是唯一
+# 技能真相源，安装规则把库技能装进全部受管容器。宿主直读直写 rootfs（D1 uid 直通），
+# 容器不必在跑。模型两条：
+#   技能库：目录来源入库 = 跟随刷新（源改动自动刷新库并分发；源删了冻结保留）；
+#     git 导入 = 快照（更新 = 重新导入）。库内同名唯一，无冲突概念。
+#   安装规则：{库内技能集合, 去向, 范围}。全局去向（~/.claude/skills）铺全部受管
+#     容器；项目去向（如 ~/proj/.claude/skills）只装已有该项目的容器（项目克隆到哪
+#     skill 跟到哪，容器 start 自动补齐）。
+# 全自动触发：服务启动追平 + watch（库目录与跟随来源）+ 新建容器补发 + 容器 start
+# 补发。手动：面板「立即同步」/ 侧栏 ⋯「同步 skills」/ mysandbox skills sync。文件级
+# 比对、变才写；规则里摘掉的 skill 按清单从容器同步删除（用户自装的其他 skills 不动）。
+# ⚠️ 旧版 config.skills.sync 静态规则已废弃：首次同步自动迁移成安装规则，之后忽略。
+skills: {}
+
+# AI 网关声明式配置（server/aiconfig.ts，面板「AI 工具 → AI 网关」）不在本文件——
+# 存 sidecar state.json（期望状态），服务启动 sweep + 新建容器补发自动应用到全部
+# 受管容器；面板改配置即重推。
 
 # Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
 # 端口点击跟随控制台访问口径：IP:端口 打开控制台 → 直连容器/服务 IP:端口；经基域名

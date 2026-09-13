@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // AI 工具面板：AI 相关「就位配置」的唯一入口。两个页签分工——
-//   技能中心 = skills 多源聚合分发（server/skillSync.ts，持续同步 + watch）
-//   AI 网关  = 网关/凭据批量下发（server/aiconfig.ts，一次性批量写 + 探测）
-// 纯 UI 组合层：两个后端机制生命周期不同，刻意不合并（后端各管各的）。
+//   技能中心 = skills 分发（server/skillSync.ts，库为真相源 + 安装规则，持续同步 + watch）
+//   AI 网关  = 网关/凭据声明式配置（server/aiconfig.ts，sidecar 期望状态 + 启动/建容器追平）
+// 两者同为「配置声明、自动追平」语义；纯 UI 组合层，后端各管各的。
 import { ref } from 'vue'
 import { Bot } from 'lucide-vue-next'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -10,15 +10,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import SkillsHubTab from './SkillsHubTab.vue'
 import AiGatewayForm from './AiGatewayForm.vue'
 
-const props = defineProps<{
-  // 可选容器全集（受管理/已纳入的），网关页签的勾选池（技能中心不分发到指定容器，
-  // 它恒向全部受管容器分发）。
-  containers: { id: string; label: string; ip?: string | null; state?: string | null }[]
-}>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'unauthorized'): void
-  (e: 'changed'): void // 网关下发完成（父级可刷新）
+  (e: 'changed'): void // 网关配置保存（父级可刷新）
 }>()
 
 const tab = ref<'hub' | 'gw'>('hub')
@@ -48,7 +43,6 @@ const tab = ref<'hub' | 'gw'>('hub')
           </TabsContent>
           <TabsContent value="gw" class="mt-0">
             <AiGatewayForm
-              :containers="props.containers"
               @unauthorized="emit('unauthorized')"
               @done="emit('changed')"
             />

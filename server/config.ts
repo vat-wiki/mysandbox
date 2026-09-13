@@ -133,19 +133,15 @@ export const ConfigSchema = z.object({
       port: z.number().int().default(7331),
     })
     .default({ enabled: true, port: 7331 }),
-  // Skills 同步（server/skillSync.ts）：把「源目录」（容器内项目的 skills 或宿主路径）
-  // 镜像分发到全部受管容器的目标目录。宿主直读直写 rootfs（D1），容器不必在跑；触发：
-  // 服务启动 sweep + 源目录 fs.watch 实时分发 + create() 建容器补发 + 手动
-  // （mysandbox skills sync / POST /api/skills/sync）。权威副本在 STATE_DIR/skills/。
+  // ⚠️ 已废弃（server/skillSync.ts）：旧版静态 from→to 规则，首次同步时自动迁移成
+  // 技能库安装规则（state.staticMigratedAt 记账），之后此键被忽略。schema 仅为读取
+  // 旧 config 做迁移而保留；新配置走面板「AI 工具 → 技能中心」（sidecar state.json）。
   skills: z
     .object({
       sync: z
         .array(
           z.object({
-            // 源：'<容器名>:<容器内路径>'（home 契约 /home/dev，~/ 与绝对路径都认）
-            // 或宿主路径（~/ 展开）。容器名与路径以 : 分隔。
             from: z.string(),
-            // 目标：容器内路径（相对 dev home，~/ 前缀可选，不能为空）。
             to: z.string(),
           }),
         )

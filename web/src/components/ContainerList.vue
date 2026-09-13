@@ -1426,7 +1426,7 @@ function openSshTerm(t: SshTargetView) {
   createGroup(id, t.name, 'ssh')
 }
 
-// 手动触发 skills 同步（config.skills.sync → 全部受管容器；watch/启动追平之外的兜底）。
+// 手动触发 skills 同步（安装规则 + 技能库 → 全部受管容器；watch/启动追平之外的兜底）。
 // 汇总 toast：部分失败点名容器，全成报变更量（0 = 本来就最新）。
 const syncingSkills = ref(false)
 async function syncSkillsNow() {
@@ -2493,7 +2493,7 @@ onUnmounted(() => {
               </DropdownMenuItem>
               <DropdownMenuItem
                 :disabled="syncingSkills"
-                title="手动触发一次 skills 同步（config 规则 + 技能中心；平时 watch 自动）"
+                title="手动触发一次 skills 同步（安装规则 + 技能库；平时 watch 自动）"
                 @click="syncSkillsNow()"
               >
                 <FolderSync /> 同步 skills
@@ -2608,7 +2608,7 @@ onUnmounted(() => {
               </DropdownMenuItem>
               <DropdownMenuItem
                 :disabled="syncingSkills"
-                title="手动触发一次 skills 同步（config 规则 + 技能中心；平时 watch 自动）"
+                title="手动触发一次 skills 同步（安装规则 + 技能库；平时 watch 自动）"
                 @click="syncSkillsNow()"
               >
                 <FolderSync /> 同步 skills
@@ -3660,12 +3660,9 @@ onUnmounted(() => {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- AI 工具面板：技能中心（skills 多源聚合分发）+ AI 网关（批量下发） -->
+  <!-- AI 工具面板：技能中心（库 + 安装规则）+ AI 网关（声明式配置，自动追平） -->
   <AiPanel
     v-if="showAi"
-    :containers="
-      selectableItems.map((c) => ({ id: c.id, label: c.displayName || c.name, ip: c.ip, state: c.state }))
-    "
     @close="showAi = false"
     @changed="refresh()"
     @unauthorized="emit('unauthorized')"
