@@ -550,6 +550,43 @@ export async function syncContainerSkills(cfg: Config, name: string): Promise<vo
   });
 }
 
+// 就地安装（文件面板「安装技能」的主入口——pull 语义：人到哪个项目就装到哪）：
+// 把库技能装进某容器当前浏览位置下的 .claude/skills。语义 = 确保 <spot> 的安装规则
+// 存在（home 根下的全局落点 all=true；项目落点 all=false，跟项目走）+ 勾上这些技能
+// + 立即为该容器分发一次。规则此后由同步系统接管（库更新跟走、出库自动清理）——
+// 安装按钮只是规则系统的糖，不产生第二套记账。to 按 ~/rel 规范化（hubDirId 锚在 to，
+// 同一落点两种写法必须是同一条规则）。
+export async function installSkillsToSpot(
+  cfg: Config,
+  container: string,
+  spot: string,
+  skills: string[],
+): Promise<{ to: string; all: boolean; created: boolean; ruleId: string }> {
+  const rel = containerRel(spot); // 形态校验（只认 ~/ 与 /home/dev 前缀）
+  if (!rel) throw new Error('安装位置不能是 home 根');
+  const to = `~/${rel}`;
+  const home = getEngine(cfg).hostHomePath(cfg, container);
+  if (!home || !existsSync(home)) throw new Error(`容器 ${container} 的 home 不可见`);
+  const reg = await getSkillRegistry();
+  const missing = skills.filter((n) => !reg.skills[n] || !existsSync(join(REGISTRY_DIR, n)));
+  if (missing.length) throw new Error(`库中没有这些技能：${missing.join('、')}`);
+  // 范围：仅规范的 ~/.claude/skills 是全局（铺全部容器）；其余落点一律项目范围。
+  const all = rel === '.claude/skills';
+  const hub = await getSkillHub();
+  let rule = hub.rules.find((r) => r.to === to);
+  let created = false;
+  if (!rule) {
+    rule = { id: randomBytes(4).toString('hex'), to, all, skills: [], createdAt: new Date().toISOString() };
+    hub.rules.push(rule);
+    created = true;
+  }
+  for (const n of skills) if (!rule.skills.includes(n)) rule.skills.push(n);
+  await setSkillHub(hub);
+  await syncContainerSkills(cfg, container);
+  log.info({ container, to, skills, created }, 'skills installed at spot');
+  return { to, all, created, ruleId: rule.id };
+}
+
 // —— 面板视图与规则管理（routes 调用）——
 
 // 面板视图：跑一次全量同步再返回规则列表（聚合顺带把副本刷新鲜并分发——readdir/

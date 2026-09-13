@@ -13,7 +13,7 @@ import {
   execRun,
   getEngine,
 } from './engine/index.js';
-import { setMeta, getMeta, deleteMeta, getSkillHub, getSkillRegistry, getAiGateway, setAiGateway, getAiGatewayOverrides } from './state.js';
+import { setMeta, getMeta, deleteMeta, getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiProjectRules, setAiProvider, setAiBinding, type AiProvider, type AiBinding } from './state.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
@@ -24,7 +24,21 @@ import type { CreateSource, BaseProgress } from './engine/index.js';
 import { beginSse } from './sse.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
-import { applyAiGateway, setGatewayOverride, clearGatewayOverride, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
+import {
+  applyAiBindingToTargets,
+  setTargetOverride,
+  clearTargetOverride,
+  ensureAiMigrated,
+  removeAiProviderEverywhere,
+  probeProvider,
+  fetchProviderModels,
+  installAiProjectRule,
+  deleteAiProjectRuleById,
+  validateBinding,
+  validateProjectSelection,
+  PROVIDER_ID_RE,
+  HOST_TARGET,
+} from './aiconfig.js';
 import {
   syncSkillsAll,
   hubView,
@@ -459,120 +473,184 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     }
   });
 
-  // —— AI 网关声明式配置（myapikey 等兼容网关）——
-  // GET 回全局配置 + 各容器覆盖（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。
-  app.get('/api/batch/ai-config', async () => ({
-    config: await getAiGateway() ?? null,
-    overrides: await getAiGatewayOverrides(),
-  }));
+  // —— AI 配置：provider 库 × 智能体绑定 × 项目级规则（server/aiconfig.ts）——
+  // 三层模型：provider 库存凭据与端点（N 个）；绑定只引用 provider id（全局一份 +
+  // 目标覆盖，key = 容器名或 __host__）；落盘由绑定+库解析后执行（宿主直写，容器不必
+  // 在跑）。GET 回全量（含 key——sidecar 0600 同 services.env 泄露面，token 边界收住）。
+  app.get('/api/ai/view', async () => {
+    await ensureAiMigrated();
+    return {
+      providers: Object.values(await getAiProviders()),
+      binding: (await getAiBinding()) ?? null,
+      overrides: await getAiTargetOverrides(),
+      projectRules: await getAiProjectRules(),
+    };
+  });
 
-  // POST = 保存配置 + 立即应用。两种模式：
-  //   缺省   = 全局声明（应用到全部未覆盖容器；新容器由启动 sweep / create 补发跟进）。
-  //   container = 存成该容器的覆盖配置并只应用到这台（卡片菜单「AI 网关…」的 pull
-  //   入口；覆盖存在即生效，全局不再应用到这台）。
-  // 校验通过先落 sidecar 再应用——配置是期望状态，应用失败可由下次 sweep / 手动重推追平。
-  app.post('/api/batch/ai-config', async (req): Promise<BatchResult> => {
-    const body = (req.body as Record<string, unknown> | null) || {};
-    const overrideFor = typeof body.container === 'string' ? body.container.trim() : '';
-    const ids = Array.isArray((body as { ids?: unknown }).ids) ? parseIds(body) : (await listManaged(cfg)).map((v) => v.id);
-    const tools = (body.tools ?? {}) as Record<string, unknown>;
-    const bool = (v: unknown) => v === true;
-    // endpoints 两路协议分开收（openai / anthropic）；wire 是工具级协议多选
-    // （数组，opencode/pi 专用；claude 固定 anthropic、codex 固定 responses 不进表）
+  // provider 库 CRUD：body 带 id = 更新（改名走 id 不变），不带 = 新建（id 查重）。
+  app.post('/api/ai/providers', async (req) => {
+    await ensureAiMigrated();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const id = typeof body.id === 'string' ? body.id.trim() : '';
+    const name = String(body.name ?? '').trim();
+    if (!name) throw badRequest('name 必填');
+    if (!id && !PROVIDER_ID_RE.test(String(body.wantId ?? '').trim())) {
+      throw badRequest('id 必填（小写字母开头，小写字母/数字/短横线，≤32 位）——它会被用作各工具配置里的 provider 名');
+    }
+    const pid = id || String(body.wantId).trim();
+    const lib = await getAiProviders();
+    if (!id && lib[pid]) throw conflict(`provider id 已存在：${pid}`);
+    if (id && !lib[pid]) throw new HttpError(404, `provider 不存在：${pid}`, 'not_found');
+    // 端点两路分开收；填了但不像 URL → 400 点名，不静默当没填。
     const epIn = (body.endpoints ?? {}) as Record<string, unknown>;
-    const wireIn = (body.wire ?? {}) as Record<string, unknown>;
-    const WIRE_VALUES: GatewayWire[] = ['openai-chat', 'openai-responses', 'anthropic-messages'];
-    // URL 收参：收 string 或 {baseUrl} 两种形状（前端按 AiGatewayInput 发对象）。
-    // 填了但不像 URL → 400 点名（而不是静默当没填，让用户以为配上了）；
-    // 没填返回 undefined，由下方按工具需求校验。注意旧版这里只吃 string，导致
-    // 前端发来的 {baseUrl} 被静默丢成 undefined——端点提取从未生效过。
     const pickUrl = (v: unknown, side: 'openai' | 'anthropic'): string | undefined => {
       const raw = typeof v === 'string' ? v : (v as { baseUrl?: unknown })?.baseUrl;
       if (raw == null || String(raw).trim() === '') return undefined;
       const s = String(raw).trim();
-      if (!/^https?:\/\//.test(s))
-        throw new HttpError(400, `endpoints.${side}.baseUrl 必须以 http:// 或 https:// 开头（收到 ${JSON.stringify(s)}）`, 'bad_request');
+      if (!/^https?:\/\//.test(s)) {
+        throw badRequest(`endpoints.${side}.baseUrl 必须以 http:// 或 https:// 开头（收到 ${JSON.stringify(s)}）`);
+      }
       return s.replace(/\/+$/, '');
     };
-    // 单工具的 wire 数组收参：合法值校验 + 去重保序。未传（undefined）与空数组分明——
-    // 前者走后端缺省 ['openai-chat']，后者是显式「清空所有变体」。
-    const pickWires = (tool: string): GatewayWire[] | undefined => {
-      const rawList = wireIn[tool];
-      if (!Array.isArray(rawList)) return undefined;
-      const seen: GatewayWire[] = [];
-      for (const v of rawList) {
-        if (typeof v !== 'string' || !(WIRE_VALUES as string[]).includes(v)) {
-          throw new HttpError(400, `wire.${tool} 非法：${String(v)}（合法值 ${WIRE_VALUES.join('/')}）`, 'bad_request');
-        }
-        if (!seen.includes(v as GatewayWire)) seen.push(v as GatewayWire);
-      }
-      return seen;
+    const endpoints = {
+      ...(pickUrl(epIn.openai, 'openai') ? { openai: { baseUrl: pickUrl(epIn.openai, 'openai')! } } : {}),
+      ...(pickUrl(epIn.anthropic, 'anthropic') ? { anthropic: { baseUrl: pickUrl(epIn.anthropic, 'anthropic')! } } : {}),
     };
-    const input: AiGatewayInput = {
-      endpoints: {
-        ...(pickUrl(epIn.openai, 'openai') ? { openai: { baseUrl: pickUrl(epIn.openai, 'openai')! } } : {}),
-        ...(pickUrl(epIn.anthropic, 'anthropic') ? { anthropic: { baseUrl: pickUrl(epIn.anthropic, 'anthropic')! } } : {}),
-      },
-      apiKey: String(body.apiKey ?? '').trim(),
-      tools: {
-        claude: bool(tools.claude),
-        codex: bool(tools.codex),
-        opencode: bool(tools.opencode),
-        pi: bool(tools.pi),
-      },
-      wire: {
-        opencode: pickWires('opencode'),
-        pi: pickWires('pi'),
-      },
-      models: Array.isArray(body.models)
-        ? body.models.map(String).map((s) => s.trim()).filter(Boolean)
-        : typeof body.models === 'string'
-          ? body.models.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
-          : [],
-      setDefault: bool(body.setDefault),
+    if (!endpoints.openai && !endpoints.anthropic) throw badRequest('至少填一个端点（OpenAI 兼容 / Anthropic 兼容）');
+    const apiKey = String(body.apiKey ?? '').trim();
+    if (!apiKey) throw badRequest('apiKey 必填');
+    const models = Array.isArray(body.models)
+      ? body.models.map(String).map((s) => s.trim()).filter(Boolean)
+      : typeof body.models === 'string'
+        ? body.models.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+        : undefined;
+    const prev = lib[pid];
+    const p: AiProvider = {
+      id: pid,
+      name,
+      endpoints,
+      apiKey,
+      ...(models && models.length ? { models } : prev?.models?.length ? { models: prev.models } : {}),
+      createdAt: prev?.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
-    // 校验按所勾工具动态收紧：某工具要哪条端点由它自己的 wire 集合决定。
-    // claude/codex 是固定消费者（anthropic / openai），不依赖 wire 表。
-    const t = input.tools;
-    if (!t.claude && !t.codex && !t.opencode && !t.pi) {
-      throw new HttpError(400, '至少勾选一个工具', 'bad_request');
-    }
-    if (!input.apiKey) throw new HttpError(400, 'apiKey required', 'bad_request');
-    // 需求方点名（错误信息直接说谁要这条 URL，不让人猜）
-    const needOpenaiWho: string[] = [];
-    const needAnthropicWho: string[] = [];
-    if (t.codex) needOpenaiWho.push('codex');
-    if (t.claude) needAnthropicWho.push('claude');
-    for (const tool of ['opencode', 'pi'] as const) {
-      if (!t[tool]) continue;
-      const wires = wiresOf(input, tool);
-      const openaiWires = wires.filter((w) => w !== 'anthropic-messages');
-      if (openaiWires.length)
-        needOpenaiWho.push(`${tool}（${openaiWires.map((w) => (w === 'openai-responses' ? 'responses' : 'chat')).join('、')}）`);
-      if (wires.includes('anthropic-messages')) needAnthropicWho.push(`${tool}（anthropic）`);
-    }
-    if (needOpenaiWho.length && !input.endpoints.openai) {
-      throw new HttpError(400, `需要 OpenAI 兼容 Base URL：${needOpenaiWho.join('、')} 要走这条端点（或取消勾选/清空对应协议）`, 'bad_request');
-    }
-    if (needAnthropicWho.length && !input.endpoints.anthropic) {
-      throw new HttpError(400, `需要 Anthropic 兼容 Base URL：${needAnthropicWho.join('、')} 要走这条端点（或取消勾选/清空对应协议）`, 'bad_request');
-    }
-    const modelsWho = (['opencode', 'pi'] as const).filter(
-      (tool) => t[tool] && wiresOf(input, tool).length > 0,
-    );
-    if (modelsWho.length && (input.models ?? []).length === 0) {
-      throw new HttpError(400, `${modelsWho.join('、')} 需要至少一个模型 ID（逗号分隔）`, 'bad_request');
-    }
-    if (overrideFor) return setGatewayOverride(cfg, overrideFor, input);
-    await setAiGateway({ ...input, updatedAt: new Date().toISOString() });
-    return applyAiGateway(cfg, ids, input);
+    await setAiProvider(p);
+    return { provider: p };
   });
 
-  // 清除容器覆盖（恢复跟随全局）：删覆盖 + 立即把全局配置应用到这台（下次 sweep 兜底）。
-  app.delete('/api/batch/ai-config/overrides/:container', async (req) => {
-    const container = (req.params as { container: string }).container;
-    await clearGatewayOverride(cfg, container);
-    return { overrides: await getAiGatewayOverrides() };
+  // 删 provider：库删除 + 本机与全部可见容器 home 的落盘条目回收（aiconfig.removeAiProviderEverywhere）。
+  app.delete('/api/ai/providers/:id', async (req) => {
+    const id = (req.params as { id: string }).id;
+    const lib = await getAiProviders();
+    if (!lib[id]) throw new HttpError(404, `provider 不存在：${id}`, 'not_found');
+    await removeAiProviderEverywhere(cfg, id);
+    return { ok: true };
+  });
+
+  // 探测（编辑中的端点即可探，不必先入库）：进程内 fetch，逐侧回人话结果。
+  app.post('/api/ai/providers/probe', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const epIn = (body.endpoints ?? {}) as Record<string, unknown>;
+    const pick = (v: unknown): string | undefined => {
+      const raw = typeof v === 'string' ? v : (v as { baseUrl?: unknown })?.baseUrl;
+      const s = raw == null ? '' : String(raw).trim();
+      return s || undefined;
+    };
+    return probeProvider({
+      ...(pick(epIn.openai) ? { openai: { baseUrl: pick(epIn.openai)! } } : {}),
+      ...(pick(epIn.anthropic) ? { anthropic: { baseUrl: pick(epIn.anthropic)! } } : {}),
+    });
+  });
+
+  // 拉模型清单（两路独立，一路失败不影响另一路；错误在 errors 里点侧）。
+  app.post('/api/ai/providers/models', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const epIn = (body.endpoints ?? {}) as Record<string, unknown>;
+    const pick = (v: unknown): string | undefined => {
+      const raw = typeof v === 'string' ? v : (v as { baseUrl?: unknown })?.baseUrl;
+      const s = raw == null ? '' : String(raw).trim();
+      return s || undefined;
+    };
+    const endpoints = {
+      ...(pick(epIn.openai) ? { openai: { baseUrl: pick(epIn.openai)! } } : {}),
+      ...(pick(epIn.anthropic) ? { anthropic: { baseUrl: pick(epIn.anthropic)! } } : {}),
+    };
+    const apiKey = String(body.apiKey ?? '').trim();
+    if (!apiKey) throw badRequest('apiKey 必填');
+    if (!endpoints.openai && !endpoints.anthropic) throw badRequest('至少填一个端点');
+    return fetchProviderModels(endpoints, apiKey);
+  });
+
+  // 保存全局绑定 + 立即应用。ids 缺省 = 全部受管容器（本机不进缺省——宿主是真实
+  // 环境，只有显式覆盖才写）；ids 显式给 = 只应用这些（仍保存为全局绑定）。
+  app.post('/api/ai/binding', async (req): Promise<BatchResult> => {
+    await ensureAiMigrated();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const lib = await getAiProviders();
+    const invalid = validateBinding(body.binding, lib);
+    if (invalid) throw badRequest(invalid);
+    const binding = body.binding as AiBinding;
+    await setAiBinding(binding);
+    const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : (await listManaged(cfg)).map((v) => v.id);
+    if (ids.includes(HOST_TARGET)) {
+      throw badRequest(`本机不进全局应用的缺省/批量目标——为本机配置走 /api/ai/targets/${HOST_TARGET}`);
+    }
+    return applyAiBindingToTargets(cfg, ids, binding);
+  });
+
+  // 目标覆盖（key = 容器名或 __host__）：保存 + 立即应用到这台。存在即生效
+  // （sweep / 建容器补发用它替代全局绑定）。
+  app.post('/api/ai/targets/:target', async (req): Promise<BatchResult> => {
+    await ensureAiMigrated();
+    const target = (req.params as { target: string }).target;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const lib = await getAiProviders();
+    const invalid = validateBinding(body.binding, lib);
+    if (invalid) throw badRequest(invalid);
+    return setTargetOverride(cfg, target, body.binding as AiBinding);
+  });
+
+  // 清除目标覆盖：容器 = 恢复跟随全局（立即应用全局绑定）；本机 = 回收本机受管条目。
+  app.delete('/api/ai/targets/:target', async (req) => {
+    const target = (req.params as { target: string }).target;
+    const overrides = await getAiTargetOverrides();
+    if (!overrides[target]) {
+      throw new HttpError(404, target === HOST_TARGET ? '本机没有配置覆盖' : '该目标没有覆盖配置', 'not_found');
+    }
+    await clearTargetOverride(cfg, target);
+    return { overrides: await getAiTargetOverrides() };
+  });
+
+  // 项目级规则 CRUD（文件面板「AI 配置」是就地安装入口；这里看账 + 删）。
+  app.delete('/api/ai/projects/:id', async (req) => {
+    try {
+      await deleteAiProjectRuleById(cfg, (req.params as { id: string }).id);
+    } catch (e) {
+      throw new HttpError(404, e instanceof Error ? e.message : String(e), 'not_found');
+    }
+    return { projectRules: await getAiProjectRules() };
+  });
+
+  // 项目级规则就地安装（pull 语义）：容器当前浏览位置落成/并入规则并立即写一次。
+  app.post('/api/ai/projects/install', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const container = String(body.container ?? '').trim();
+    const spot = String(body.spot ?? '').trim();
+    if (!container || !spot) throw badRequest('container / spot 必填');
+    const lib = await getAiProviders();
+    const sel = (body.selection ?? {}) as Record<string, unknown>;
+    const invalid = validateProjectSelection(sel, lib);
+    if (invalid) throw badRequest(invalid);
+    try {
+      return await installAiProjectRule(
+        cfg,
+        container,
+        spot,
+        sel as { claude?: AiBinding['claude']; opencode?: AiBinding['opencode'] },
+      );
+    } catch (e) {
+      throw badRequest(e instanceof Error ? e.message : String(e));
+    }
   });
 
   // —— hosts 覆写（批量配置 tab） ——

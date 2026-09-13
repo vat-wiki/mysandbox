@@ -658,9 +658,9 @@ const showCreate = ref(false)
 // 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
 // 侧栏不再有选择态。
 const showBatch = ref(false)
-// AI 工具面板（技能中心 + AI 网关）；侧栏自挂对话框，TermSessionsDialog 同模式。
+// AI 工具面板（技能中心 + 模型服务 + 智能体配置）；侧栏自挂对话框，TermSessionsDialog 同模式。
 const showAi = ref(false)
-// 容器卡片菜单「AI 网关…」：覆盖模式打开（面板只显网关页签，编辑该容器的覆盖配置）。
+// 容器卡片菜单「AI 配置…」：覆盖模式打开（面板只显智能体配置页签，编辑该容器的覆盖绑定）。
 const aiOverrideFor = ref<string | null>(null)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
@@ -2422,7 +2422,7 @@ onUnmounted(() => {
                   title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
                   @click="aiOverrideFor = c.name"
                 >
-                  <Bot /> AI 网关…
+                  <Bot /> AI 配置…
                 </ContextMenuItem>
                 <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
                 <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
@@ -2496,7 +2496,7 @@ onUnmounted(() => {
               >
                 <ListChecks /> 批量配置
               </DropdownMenuItem>
-              <DropdownMenuItem title="技能中心 · AI 网关" @click="showAi = true">
+              <DropdownMenuItem title="技能中心 · 模型服务 · 智能体配置" @click="showAi = true">
                 <Bot /> AI 工具
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -2611,7 +2611,7 @@ onUnmounted(() => {
               >
                 <ListChecks /> 批量配置
               </DropdownMenuItem>
-              <DropdownMenuItem title="技能中心 · AI 网关" @click="showAi = true">
+              <DropdownMenuItem title="技能中心 · 模型服务 · 智能体配置" @click="showAi = true">
                 <Bot /> AI 工具
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -2747,7 +2747,7 @@ onUnmounted(() => {
                 title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
                 @click="aiOverrideFor = c.name"
               >
-                <Bot /> AI 网关…
+                <Bot /> AI 配置…
               </ContextMenuItem>
               <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
               <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
@@ -3674,7 +3674,7 @@ onUnmounted(() => {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- AI 工具面板：全局 = 技能中心 + AI 网关；overrideFor = 容器覆盖模式（仅网关页签） -->
+  <!-- AI 工具面板：全局 = 技能中心 + 模型服务 + 智能体配置；overrideFor = 容器覆盖模式（仅智能体配置页签） -->
   <AiPanel
     v-if="showAi || aiOverrideFor"
     :override-for="aiOverrideFor"

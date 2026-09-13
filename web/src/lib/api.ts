@@ -317,40 +317,76 @@ export const batchClaude = (ids: string[], prompt: string, timeoutMs?: number) =
 export const batchExec = (ids: string[], command: string, timeoutMs?: number) =>
   postJson('/api/batch/exec', { ids, command, timeoutMs }) as Promise<BatchResult>
 
-// —— AI 网关批量配置（rootfs 直写，容器无需在跑）——
-// claude 固定 Anthropic；codex 固定 OpenAI Responses（官方已停 chat completions）；
-// opencode/pi 的 wire 是多选数组——每个选中的协议注册一个独立 provider 变体
-// （myapikey-chat / -responses / -anthropic），工具内按 <变体>/<模型> 切换。
+// —— AI 配置（provider 库 × 智能体绑定 × 项目级规则；rootfs 直写，容器无需在跑）——
+// provider 库存凭据与端点（N 个）；绑定只引用 provider id：全局一份 + 目标覆盖
+// （key = 容器名或 '__host__'，本机只有显式覆盖才写）。claude/codex 单槽绑一个；
+// opencode/pi 多 provider 变体并存（<pid>-chat/-responses/-anthropic），工具内 /models 切。
 export type GatewayWire = 'openai-chat' | 'openai-responses' | 'anthropic-messages'
-export interface AiGatewayInput {
-  endpoints: {
-    openai?: { baseUrl: string }
-    anthropic?: { baseUrl: string }
-  }
+export const HOST_TARGET = '__host__'
+export interface AiProvider {
+  id: string
+  name: string
+  endpoints: { openai?: { baseUrl: string }; anthropic?: { baseUrl: string } }
   apiKey: string
-  tools: { claude: boolean; codex: boolean; opencode: boolean; pi: boolean }
-  wire?: {
-    opencode?: GatewayWire[]
-    pi?: GatewayWire[]
-  }
   models?: string[]
-  setDefault?: boolean
+  createdAt?: string
+  updatedAt?: string
 }
-export interface AiGatewayState extends AiGatewayInput {
-  updatedAt: string
+export interface AiBinding {
+  claude?: { provider: string }
+  codex?: { provider: string; setDefault?: boolean }
+  opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
+  pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
 }
-export const getAiGateway = () =>
-  api('/api/batch/ai-config') as Promise<{ config: AiGatewayState | null; overrides: Record<string, AiGatewayState> }>
-// 保存全局网关配置并应用到全部未覆盖容器（声明式语义，新容器自动跟进）。
-export const applyAiGateway = (input: AiGatewayInput, ids?: string[]) =>
-  postJson('/api/batch/ai-config', ids ? { ids, ...input } : input) as Promise<BatchResult>
-// 容器覆盖（卡片菜单「AI 网关…」的 pull 入口）：存成本容器专属配置并只应用到这台。
-export const applyGatewayOverride = (container: string, input: AiGatewayInput) =>
-  postJson('/api/batch/ai-config', { container, ...input }) as Promise<BatchResult>
-// 清除覆盖（恢复跟随全局）并立即把全局配置应用到这台。
-export const clearGatewayOverride = (container: string) =>
-  api(`/api/batch/ai-config/overrides/${encodeURIComponent(container)}`, { method: 'DELETE' }) as Promise<{
-    overrides: Record<string, AiGatewayState>
+export interface AiProjectRule {
+  id: string
+  to: string
+  claude?: { provider: string }
+  opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
+  createdAt?: string
+}
+export interface AiView {
+  providers: AiProvider[]
+  binding: AiBinding | null
+  overrides: Record<string, AiBinding>
+  projectRules: AiProjectRule[]
+}
+export const getAiView = () => api('/api/ai/view') as Promise<AiView>
+// provider 库 CRUD（wantId = 新建时的 id；带 id = 更新）。探测/拉模型直接吃端点形状，
+// 编辑中未入库也能用。
+export const upsertAiProvider = (p: { id?: string; wantId?: string; name: string; endpoints: AiProvider['endpoints']; apiKey: string; models?: string[] }) =>
+  postJson('/api/ai/providers', p, 60_000) as Promise<{ provider: AiProvider }>
+export const deleteAiProvider = (id: string) =>
+  api(`/api/ai/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<{ ok: boolean }>
+export const probeAiProvider = (endpoints: AiProvider['endpoints']) =>
+  postJson('/api/ai/providers/probe', { endpoints }, 30_000) as Promise<{ openai?: string; anthropic?: string }>
+export const fetchAiModels = (endpoints: AiProvider['endpoints'], apiKey: string) =>
+  postJson('/api/ai/providers/models', { endpoints, apiKey }, 60_000) as Promise<{ models: string[]; errors: string[] }>
+// 保存全局绑定并应用（ids 缺省 = 全部受管容器；本机走 targets 专属覆盖）。
+export const saveAiBinding = (binding: AiBinding, ids?: string[]) =>
+  postJson('/api/ai/binding', ids ? { binding, ids } : { binding }, 120_000) as Promise<BatchResult>
+// 目标覆盖（容器 or 本机）：保存 + 立即应用到这台 / 清除（容器恢复跟随全局；本机回收条目）。
+export const saveAiTargetOverride = (target: string, binding: AiBinding) =>
+  postJson(`/api/ai/targets/${encodeURIComponent(target)}`, { binding }, 120_000) as Promise<BatchResult>
+export const clearAiTargetOverride = (target: string) =>
+  api(`/api/ai/targets/${encodeURIComponent(target)}`, { method: 'DELETE' }) as Promise<{
+    overrides: Record<string, AiBinding>
+  }>
+// 项目级规则：就地安装（文件面板「AI 配置」，写 <项目>/.claude/settings.json 与
+// <项目>/opencode.json 并落规则）/ 删除（孤儿条目自动回收）。
+export const installAiProject = (
+  container: string,
+  spot: string,
+  selection: { claude?: { provider: string }; opencode?: AiBinding['opencode'] },
+) =>
+  postJson('/api/ai/projects/install', { container, spot, selection }, 60_000) as Promise<{
+    to: string
+    created: boolean
+    ruleId: string
+  }>
+export const deleteAiProjectRule = (id: string) =>
+  api(`/api/ai/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<{
+    projectRules: AiProjectRule[]
   }>
 // skills 就地安装（文件面板「安装技能」）：库技能装进某容器 spot 目录，自动落规则。
 export const installSkills = (container: string, spot: string, skills: string[]) =>

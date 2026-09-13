@@ -12,7 +12,7 @@ import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
 import { runSkillsCommand, runSkillsListCommand, startSkillSyncWatch, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
-import { applyGatewayAll } from './aiconfig.js';
+import { applyAiAll, startAiConfigEvents } from './aiconfig.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
 import { sweepContainerCli } from './container-cli.js';
@@ -234,8 +234,10 @@ async function main(): Promise<void> {
   void syncSkillsAll(config);
   startSkillSyncWatch(config);
   startSkillSyncEvents(config);
-  // AI 网关声明式配置：启动追平一次（sidecar 配置 → 全部受管容器，rootfs 直写）。
-  void applyGatewayAll(config);
+  // AI 配置声明式追平：启动 sweep 一次（绑定（覆盖 ?? 全局）→ 全部受管容器，rootfs
+  // 直写；本机不进 sweep），容器 start 事件补发闭环停机期间的变化（绑定 + 项目规则）。
+  void applyAiAll(config);
+  startAiConfigEvents(config);
   // 全局 hosts 启动补刷（幂等，hash 跳过；不阻塞 listen）+ events 自动重刷（容器重启追平）。
   void sweepHosts(config);
   startHostsEventSync(config);

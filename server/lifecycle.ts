@@ -13,7 +13,7 @@ import {
   type CreateSource,
   type BaseProgress,
 } from './engine/index.js';
-import { setMeta, deleteMeta, deleteAiGatewayOverride } from './state.js';
+import { setMeta, deleteMeta, deleteAiTargetOverride } from './state.js';
 import { allocate, isFree } from './network.js';
 import { conflict, notFound } from './errors.js';
 import { readHostHosts } from './hosts.js';
@@ -21,7 +21,7 @@ import { applyServicesBlock, overwriteHosts } from './hosts-sync.js';
 import { seedContainerCli } from './container-cli.js';
 import { peerSeedInfo } from './peer.js';
 import { syncContainerSkills } from './skillSync.js';
-import { applyGatewayToContainer } from './aiconfig.js';
+import { applyAiToContainer } from './aiconfig.js';
 import { log } from './logger.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
@@ -125,10 +125,10 @@ export async function createContainer(
   });
 
   log.info({ name, ip, engine: engine.name, network: cfg.network }, 'container created');
-  // skills 分发 + AI 网关凭据：新容器补发当前期望状态（宿主直写 rootfs，容器在不在
+  // skills 分发 + AI 配置凭据：新容器补发当前期望状态（宿主直写 rootfs，容器在不在
   // 跑都行；尽力而为不阻塞返回）。声明式配置从此对新容器自动就位。
   void syncContainerSkills(cfg, name);
-  void applyGatewayToContainer(cfg, name);
+  void applyAiToContainer(cfg, name);
   return { id, name, ip };
 }
 
@@ -163,7 +163,7 @@ export async function deleteManaged(
   }
   await removeContainer(cfg, id, { force: true });
   await deleteMeta(name);
-  await deleteAiGatewayOverride(name); // 网关覆盖随容器走（残留会对不上任何容器）
+  await deleteAiTargetOverride(name); // AI 目标覆盖随容器走（残留会对不上任何容器）
 
   log.warn({ name, dataRemoved: true }, 'container deleted');
   return { ok: true, dataRemoved: true, name };

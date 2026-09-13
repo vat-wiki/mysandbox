@@ -81,6 +81,10 @@ export function stackMetaOfContainer(meta: Record<string, ServiceMeta>, containe
 // 状态」而非一次性动作：服务启动 sweep + 新建容器补发自动把它写到全部受管容器
 // （aiconfig.ts 宿主直写 rootfs），改 key 重推 = 改这里 + 重推。含 apiKey——
 // state.json 本就 0600，与 services.env 同一泄露面；GET 回全量供前端预填。
+//
+// ⚠️ 已被 provider 库 + 绑定模型取代（ensureAiMigrated 一次性迁移后删除本键）：
+// 旧单网关形状表达不了「多个模型服务提供商共存、按目标/项目选择」。迁移只读此形
+// 状，新代码一律走 AiProvider/AiBinding。
 export interface AiGatewayState {
   endpoints: {
     openai?: { baseUrl: string };
@@ -153,6 +157,11 @@ interface StateShape {
   sshTargets?: SshTarget[];
   aiGateway?: AiGatewayState;
   aiGatewayOverrides?: Record<string, AiGatewayState>;
+  aiProviders?: Record<string, AiProvider>;
+  aiBinding?: AiBinding;
+  aiTargetOverrides?: Record<string, AiBinding>;
+  aiProjectRules?: AiProjectRule[];
+  aiMigratedAt?: string; // 旧 aiGateway 单网关档 → provider 库 + 绑定 的一次性迁移时间戳
   skillsHub?: SkillHubState;
   skillsRegistry?: { skills: Record<string, SkillRegistryMeta> };
 }
@@ -288,6 +297,129 @@ export async function getAiGateway(): Promise<AiGatewayState | undefined> {
 export async function setAiGateway(state: AiGatewayState): Promise<void> {
   const s = await load();
   s.aiGateway = state;
+  await persist(s);
+}
+
+// —— AI 模型服务提供商库（provider）——
+// N 个 OpenAI/Anthropic 兼容网关的凭据与端点。绑定（AiBinding）只引用 id 不内联
+// 端点——provider 改 key 重推即全局生效；删 provider 由 aiconfig 全量回收其落盘
+// 条目。id 落进各工具配置当 provider 名（锚点块/variant key 前缀），限安全字符集。
+// 含 apiKey——state.json 本就 0600，与 aiGateway 旧档同一泄露面。
+export type GatewayWire = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+
+export interface AiProvider {
+  id: string; // /^[a-z][a-z0-9-]{0,31}$/；工具配置里的 provider key 前缀（禁 _ 防与 - 转换后撞名）
+  name: string; // 显示名
+  endpoints: {
+    openai?: { baseUrl: string }; // OpenAI 兼容端点（…/openai/v1）
+    anthropic?: { baseUrl: string }; // Anthropic 兼容端点（…/anthropic，不含 /v1）
+  };
+  apiKey: string;
+  models?: string[]; // opencode/pi 变体下挂的模型清单（手填或从网关 /models 拉取）
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 绑定（智能体配置的声明层）：工具 → 用哪些 provider。单槽工具（claude 的 env
+// 只有一份、codex 的 model_provider 指一个）绑一个；多槽工具（opencode/pi 的
+// provider 表）绑 N 个共存，setDefault 取 providers[0]。providers 空数组 = 显式
+// 清空该工具的全部受管条目（回收锚点块/变体）。缺某工具键 = 不碰该工具的落盘配置。
+export interface AiBinding {
+  claude?: { provider: string };
+  codex?: { provider: string; setDefault?: boolean };
+  opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
+  pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
+}
+
+// 项目级 AI 配置规则（像技能规则）：去向 = 项目目录（容器内 ~/rel，唯一），写入
+// 项目级配置文件（claude: <dir>/.claude/settings.json；opencode: <dir>/opencode.json）。
+// 范围语义同技能的项目规则：只写「已有该项目」的容器（落点逐级向上探测），容器
+// start 事件补发。codex/pi 无项目级配置形状，不进表。
+export interface AiProjectRule {
+  id: string;
+  to: string;
+  claude?: { provider: string };
+  opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
+  createdAt?: string;
+}
+
+export async function getAiProviders(): Promise<Record<string, AiProvider>> {
+  return (await load()).aiProviders ?? {};
+}
+
+export async function setAiProvider(p: AiProvider): Promise<void> {
+  const s = await load();
+  if (!s.aiProviders) s.aiProviders = {};
+  s.aiProviders[p.id] = p;
+  await persist(s);
+}
+
+export async function deleteAiProvider(id: string): Promise<boolean> {
+  const s = await load();
+  if (!s.aiProviders?.[id]) return false;
+  delete s.aiProviders[id];
+  await persist(s);
+  return true;
+}
+
+export async function getAiBinding(): Promise<AiBinding | undefined> {
+  return (await load()).aiBinding;
+}
+
+export async function setAiBinding(b: AiBinding): Promise<void> {
+  const s = await load();
+  s.aiBinding = b;
+  await persist(s);
+}
+
+// 目标级覆盖（绑定层的 pull 语义）：key = 容器名或 '__host__'（本机）。存在即生效
+// （sweep / 建容器补发用它替代全局绑定，全局不再应用到这台）。本机不在 sweep 范围，
+// 只有显式覆盖才写——宿主 leon 的真实环境不被全局改 key 连带刷掉。
+export async function getAiTargetOverrides(): Promise<Record<string, AiBinding>> {
+  return (await load()).aiTargetOverrides ?? {};
+}
+
+export async function setAiTargetOverride(target: string, b: AiBinding): Promise<void> {
+  const s = await load();
+  if (!s.aiTargetOverrides) s.aiTargetOverrides = {};
+  s.aiTargetOverrides[target] = b;
+  await persist(s);
+}
+
+export async function deleteAiTargetOverride(target: string): Promise<boolean> {
+  const s = await load();
+  if (!s.aiTargetOverrides?.[target]) return false;
+  delete s.aiTargetOverrides[target];
+  await persist(s);
+  return true;
+}
+
+export async function getAiProjectRules(): Promise<AiProjectRule[]> {
+  return (await load()).aiProjectRules ?? [];
+}
+
+export async function setAiProjectRules(rules: AiProjectRule[]): Promise<void> {
+  const s = await load();
+  s.aiProjectRules = rules;
+  await persist(s);
+}
+
+// 旧档迁移旗标 + 旧键清理（aiconfig.ensureAiMigrated 一次性用）。
+export async function getAiMigratedAt(): Promise<string | undefined> {
+  return (await load()).aiMigratedAt;
+}
+
+export async function setAiMigratedAt(ts: string): Promise<void> {
+  const s = await load();
+  s.aiMigratedAt = ts;
+  await persist(s);
+}
+
+export async function clearLegacyAiGateway(): Promise<void> {
+  const s = await load();
+  if (s.aiGateway === undefined && !s.aiGatewayOverrides) return;
+  delete s.aiGateway;
+  delete s.aiGatewayOverrides;
   await persist(s);
 }
 
