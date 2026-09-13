@@ -16,6 +16,7 @@ import {
   getFileClipboard,
   getSkillRegistry,
   installSkills,
+  registryAddSkill,
   Unauthorized,
   HOST_ID,
   type FileEntry,
@@ -63,6 +64,7 @@ import {
   ClipboardPaste,
   Copy,
   Library,
+  BookPlus,
   Sparkles,
   MoreHorizontal,
   Pencil,
@@ -190,6 +192,46 @@ async function doInstall() {
     installErr.value = e instanceof Error ? e.message : String(e)
   } finally {
     installBusy.value = false
+  }
+}
+
+// —— 注册为技能（pull 反向：就地入库）——把一个含 SKILL.md 的目录直接注册进技能库
+// （目录来源 = 跟随：源改了库里跟走；此后任何目标都能「安装技能」拉它）。服务组没有
+// 可解析的来源形态，不出现入口。
+const regBusy = ref(false)
+const canRegistry = computed(() => !targetId().startsWith('s:'))
+// 当前目录本身是技能（含 SKILL.md）→ 工具栏露出「就地入库」快捷钮。
+const hasSkillMd = computed(() => entries.value.some((e) => e.name === 'SKILL.md' && e.type === 'file'))
+
+async function registerSkillFrom(fromPath: string) {
+  // from 形态：宿主 = 绝对路径；容器 = <名>:/home/dev/…（resolveSyncSource 两种都吃）。
+  const from = isHost.value ? fromPath : `${targetId()}:${fromPath}`
+  regBusy.value = true
+  try {
+    const r = await registryAddSkill(from)
+    toast(`已入库：${r.name}（目录来源，跟随源更新）`)
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('已有同名') && confirm(`${msg}——覆盖库里的同名技能？`)) {
+      try {
+        const r = await registryAddSkill(from, true)
+        toast(`已覆盖入库：${r.name}`)
+      } catch (e2) {
+        if (e2 instanceof Unauthorized) {
+          emit('close')
+          return
+        }
+        toast.error(e2 instanceof Error ? e2.message : String(e2))
+      }
+    } else {
+      toast.error(msg)
+    }
+  } finally {
+    regBusy.value = false
   }
 }
 
@@ -1165,6 +1207,19 @@ function fmtSize(n: number): string {
       >
         <FolderPlus class="size-3.5" />
       </Button>
+      <!-- 注册为技能（就地入库）：当前目录含 SKILL.md = 本身就是技能，一键进库
+           （目录来源跟随）。与「安装技能」方向相反：库 ← 目录。 -->
+      <Button
+        v-if="canRegistry && hasSkillMd"
+        variant="ghost"
+        size="icon-xs"
+        class="shrink-0"
+        :disabled="regBusy || !path"
+        :title="regBusy ? '入库中…' : `注册为技能（${path.split('/').filter(Boolean).pop() ?? path}）`"
+        @click="registerSkillFrom(path)"
+      >
+        <BookPlus class="size-3.5" />
+      </Button>
       <!-- 安装技能（pull 入口）：库技能装进当前浏览位置下的 .claude/skills。
            容器与宿主（本机）都可用（服务组没有规则模型），home 外禁用。 -->
       <Button
@@ -1491,6 +1546,13 @@ function fmtSize(n: number): string {
                     <DropdownMenuItem v-if="row.entry.type === 'file'" :disabled="isMultiHit(row)" @click="emit('open-file', row.path, { editing: true })">
                       <Pencil /> 编辑
                     </DropdownMenuItem>
+                    <DropdownMenuItem
+                      v-if="row.entry.type === 'dir' && canRegistry"
+                      :disabled="regBusy || isMultiHit(row)"
+                      @click="registerSkillFrom(row.path)"
+                    >
+                      <BookPlus /> 注册为技能
+                    </DropdownMenuItem>
                     <DropdownMenuItem :disabled="isMultiHit(row)" @click="download(row)">
                       <Download /> 下载
                     </DropdownMenuItem>
@@ -1523,6 +1585,13 @@ function fmtSize(n: number): string {
         <template v-if="ctxTarget">
           <ContextMenuItem v-if="ctxTarget.entry.type === 'file'" :disabled="ctxMulti" @click="emit('open-file', ctxTarget.path, { editing: true })">
             编辑
+          </ContextMenuItem>
+          <ContextMenuItem
+            v-if="ctxTarget.entry.type === 'dir' && canRegistry"
+            :disabled="regBusy || ctxMulti"
+            @click="registerSkillFrom(ctxTarget.path)"
+          >
+            注册为技能
           </ContextMenuItem>
           <ContextMenuItem @click="copyToClipboard(ctxTarget)">
             {{ copyLabel(ctxTarget) }}
