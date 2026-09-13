@@ -14,20 +14,15 @@ import {
   copyEntry,
   setFileClipboard,
   getFileClipboard,
-  getSkillRegistry,
-  installSkills,
   registryAddSkill,
   Unauthorized,
   HOST_ID,
   type FileEntry,
   type FilesView,
   type FileClipboard,
-  type SkillRegistryItem,
 } from '@/lib/api'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,6 +36,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import SkillsInstallDialog from '@/components/SkillsInstallDialog.vue'
 import NameDialog from '@/components/NameDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import AiSpotDialog from '@/components/AiSpotDialog.vue'
@@ -117,14 +113,9 @@ function targetId(): string {
 const isHost = computed(() => targetId() === HOST_ID)
 
 // —— 安装技能（pull 入口）：库技能装进当前浏览位置下的 .claude/skills，自动落规则
-// （库更新跟走 / 出库自动清）；规则系统接管后续，这里不产生第二套记账。——
+// （库更新跟走 / 出库自动清）；规则系统接管后续，这里不产生第二套记账。表单走
+// SkillsInstallDialog（与 AI 配置同款居中弹窗，窄条展不开）。——
 const showInstall = ref(false)
-const regSkills = ref<SkillRegistryItem[] | null>(null)
-const regLoading = ref(false)
-const installPicked = ref<string[]>([])
-const installFilter = ref('')
-const installBusy = ref(false)
-const installErr = ref('')
 
 // 安装目标：当前目录下的 .claude/skills（已在其中则就地）。容器走 home 契约前缀；
 // 宿主面板的 path 本身就是宿主路径（home 内与否由后端 hostHomeRel 校验）。
@@ -137,63 +128,6 @@ const installTarget = computed<string | null>(() => {
 })
 // 服务组没有规则模型；容器与宿主（本机）都可作为分发目标。
 const canInstall = computed(() => !targetId().startsWith('s:') && !!installTarget.value)
-// 全局落点（home 根下的 .claude/skills）= 铺本机 + 全部容器；项目落点 = 跟项目走。
-// 宿主面板不知道宿主 home 路径，范围由后端按落点自动判定（home 直下 = 全局）。
-const isGlobalSpot = computed(() => !isHost.value && installTarget.value === '/home/dev/.claude/skills')
-
-const regFiltered = computed(() =>
-  (regSkills.value ?? []).filter(
-    (s) => s.exists && (!installFilter.value.trim() || s.name.includes(installFilter.value.trim())),
-  ),
-)
-
-async function loadRegSkills() {
-  regLoading.value = true
-  installErr.value = ''
-  try {
-    regSkills.value = await getSkillRegistry()
-  } catch (e) {
-    if (e instanceof Unauthorized) {
-      emit('close')
-      return
-    }
-    installErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    regLoading.value = false
-  }
-}
-
-function toggleInstall() {
-  showInstall.value = !showInstall.value
-  if (showInstall.value && !regSkills.value) void loadRegSkills()
-}
-
-function togglePick(name: string, on: boolean) {
-  installPicked.value = on ? [...installPicked.value, name] : installPicked.value.filter((n) => n !== name)
-}
-
-async function doInstall() {
-  const target = installTarget.value
-  if (!target || !installPicked.value.length) return
-  installBusy.value = true
-  installErr.value = ''
-  try {
-    const r = await installSkills(targetId(), target, installPicked.value)
-    toast(`已安装 ${installPicked.value.length} 个技能 → ${r.to}${r.all ? '（本机 + 全部容器）' : '（跟项目走）'}`)
-    showInstall.value = false
-    installPicked.value = []
-    installFilter.value = ''
-    void refresh()
-  } catch (e) {
-    if (e instanceof Unauthorized) {
-      emit('close')
-      return
-    }
-    installErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    installBusy.value = false
-  }
-}
 
 // —— 注册为技能（pull 反向：就地入库）——把一个含 SKILL.md 的目录直接注册进技能库
 // （目录来源 = 跟随：源改了库里跟走；此后任何目标都能「安装技能」拉它）。服务组没有
@@ -1230,7 +1164,7 @@ function fmtSize(n: number): string {
         :class="showInstall ? 'bg-accent text-foreground' : ''"
         :disabled="!canInstall"
         :title="canInstall ? `安装技能（库 → ${installTarget}）` : '进到 home 内可安装技能'"
-        @click="toggleInstall"
+        @click="showInstall = !showInstall"
       >
         <Library class="size-3.5" />
       </Button>
@@ -1262,59 +1196,6 @@ function fmtSize(n: number): string {
       <Button variant="ghost" size="icon-xs" class="shrink-0" title="关闭文件面板" @click="emit('close')">
         <X class="size-3.5" />
       </Button>
-    </div>
-
-    <!-- 安装技能面板：目标落点 + 库清单勾选（就地 pull，装完自动建规则并分发） -->
-    <div v-if="showInstall" class="shrink-0 space-y-2 border-b border-border bg-muted/20 px-2.5 py-2">
-      <div class="flex items-center gap-2 text-[11px]">
-        <span class="shrink-0 text-muted-foreground">装到</span>
-        <span class="min-w-0 flex-1 truncate font-mono">{{ installTarget }}</span>
-        <span class="shrink-0 text-[10px] text-muted-foreground/70">{{
-          isGlobalSpot ? '全局 · 本机+全部容器' : isHost ? '范围随落点自动判定' : '项目落点 · 跟项目走'
-        }}</span>
-      </div>
-      <div class="flex h-6 items-center gap-1.5">
-        <Search class="size-3 shrink-0 text-muted-foreground" />
-        <input
-          v-model="installFilter"
-          class="min-w-0 flex-1 bg-transparent text-[11px] outline-none placeholder:text-muted-foreground/60"
-          placeholder="过滤技能名…"
-          @keydown.esc="installFilter = ''"
-        />
-      </div>
-      <p v-if="installErr" class="text-[11px] text-destructive">{{ installErr }}</p>
-      <p v-if="regLoading" class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <Loader2 class="size-3 animate-spin" /> 读取技能库…
-      </p>
-      <div v-else-if="!regFiltered.length" class="text-[11px] text-muted-foreground/70">
-        技能库是空的——去「AI 工具 → 技能中心」入库，或在别处的文件面板把散装 skill 一键入库。
-      </div>
-      <div v-else class="scroll-thin max-h-44 space-y-0.5 overflow-y-auto">
-        <label v-for="s in regFiltered" :key="s.name" class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[11px] hover:bg-accent/50">
-          <Checkbox
-            :model-value="installPicked.includes(s.name)"
-            @update:model-value="(v) => togglePick(s.name, !!v)"
-          />
-          <span class="shrink-0 font-mono">{{ s.name }}</span>
-          <Badge
-            variant="outline"
-            class="shrink-0 border-transparent px-1 text-[9px]"
-            :class="s.follow ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'"
-          >{{ s.follow ? '跟随' : '快照' }}</Badge>
-          <span class="min-w-0 flex-1 truncate text-muted-foreground" :title="s.description">{{ s.description }}</span>
-        </label>
-      </div>
-      <div class="flex items-center justify-between">
-        <span class="text-[10px] leading-snug text-muted-foreground/70">
-          安装 = 拷进该目录并自动登记为分发规则；此后库更新自动跟走，出库自动清理。
-        </span>
-        <div class="flex shrink-0 gap-1.5">
-          <Button variant="outline" size="xs" @click="showInstall = false">取消</Button>
-          <Button size="xs" :disabled="installBusy || !installPicked.length" @click="doInstall">
-            {{ installBusy ? '安装中…' : `安装（${installPicked.length}）` }}
-          </Button>
-        </div>
-      </div>
     </div>
 
 
@@ -1683,6 +1564,16 @@ function fmtSize(n: number): string {
       :spot="aiSpot"
       @done="refresh()"
       @close="showAiCfg = false"
+      @unauthorized="emit('close')"
+    />
+    <!-- 安装技能（📚 按钮）：居中弹窗，库清单勾选（与 AI 配置同款交互） -->
+    <SkillsInstallDialog
+      v-if="showInstall && installTarget"
+      :container-id="targetId()"
+      :container-name="containerName"
+      :spot="installTarget"
+      @done="refresh()"
+      @close="showInstall = false"
       @unauthorized="emit('close')"
     />
   </div>
