@@ -1,12 +1,18 @@
 <script setup lang="ts">
 // AI 网关声明式配置（AI 工具面板页签）：把 OpenAI/Anthropic 兼容网关的接入配置
-// 应用到全部受管容器（claude/codex/opencode/pi）。配置存 sidecar（state.aiGateway，
-// 期望状态）——服务启动 sweep + 新建容器补发自动追平，这里只负责「改配置 + 立即
-// 应用」。后端 aiconfig.ts 宿主直写 rootfs，容器不必在跑。表单与校验逻辑自
-// BatchDialog 迁出（场景驱动：网关类型单选决定端点框显隐 / Codex 可用性 / 协议多选显隐）。
+// 应用到容器。两种模式：
+//   全局（缺省）    配置存 sidecar（期望状态）——启动 sweep + 新建容器补发自动追平，
+//                   应用到全部未覆盖容器。表单即配置，「保存并应用到全部容器」。
+//   容器覆盖        props.container 传入时 = 本容器专属配置（卡片菜单「AI 网关…」的
+//                   pull 入口）：覆盖存在即生效（全局不再应用到这台，手改的专属 key
+//                   因此是合法状态而不是被 sweep 冲掉的暂态），可一键清除恢复跟随全局。
+// 后端 aiconfig.ts 宿主直写 rootfs，容器不必在跑。表单与校验逻辑自 BatchDialog 迁出
+// （场景驱动：网关类型单选决定端点框显隐 / Codex 可用性 / 协议多选显隐）。
 import { ref, computed, watch, onMounted } from 'vue'
 import {
   applyAiGateway,
+  applyGatewayOverride,
+  clearGatewayOverride,
   getAiGateway,
   Unauthorized,
   type BatchResult,
@@ -29,11 +35,20 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { ArrowLeft } from 'lucide-vue-next'
+import { toast } from 'vue-sonner'
 
+const props = defineProps<{
+  // 传入 = 本容器的覆盖配置模式（编辑/保存对象是该容器的 override，不是全局）。
+  container?: string
+}>()
 const emit = defineEmits<{
   (e: 'done'): void
   (e: 'unauthorized'): void
 }>()
+
+const isOverride = computed(() => !!props.container)
+// 覆盖存在 = 该容器已脱离全局（sweep 不再碰它）。
+const overrideExists = ref(false)
 
 const busy = ref(false)
 const err = ref('')
@@ -158,27 +173,55 @@ function repushLast() {
   err.value = ''
 }
 
-// 打开即预填最近一次下发存档：场景从存档端点形状推导，URL/key/wire/模型只补空字段；
+// 清除覆盖（恢复跟随全局）：后端删 override 并立即把全局配置应用到这台；表单重填全局。
+async function clearOverride() {
+  if (!props.container) return
+  busy.value = true
+  err.value = ''
+  try {
+    await clearGatewayOverride(props.container)
+    overrideExists.value = false
+    result.value = null
+    toast('已清除覆盖，恢复跟随全局')
+    const { config } = await getAiGateway()
+    lastPush.value = config ?? null
+    if (config) repushLast()
+    emit('done')
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('unauthorized')
+      return
+    }
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+// 打开即预填：覆盖模式优先该容器的 override（无则全局作编辑底稿）；全局模式读全局。
+// 场景从存档端点形状推导，URL/key/wire/模型只补空字段；
 // 工具勾选在用户没动过时恢复（动过则跳过——否则「用户先勾后填」时迟到的响应会把
 // 勾选打回去，实测踩过）。
 onMounted(() => {
   getAiGateway()
-    .then(({ config }) => {
-      if (!config) return
-      lastPush.value = config
-      if (!aiGwKind.value) aiGwKind.value = kindFromConfig(config)
-      if (!aiAnthropicUrl.value.trim() && config.endpoints.anthropic)
-        aiAnthropicUrl.value = config.endpoints.anthropic.baseUrl
-      if (!aiOpenaiUrl.value.trim() && config.endpoints.openai)
-        aiOpenaiUrl.value = config.endpoints.openai.baseUrl
-      if (config.wire)
+    .then(({ config, overrides }) => {
+      const base = props.container ? (overrides[props.container] ?? config) : config
+      overrideExists.value = !!(props.container && overrides[props.container])
+      if (!base) return
+      lastPush.value = base
+      if (!aiGwKind.value) aiGwKind.value = kindFromConfig(base)
+      if (!aiAnthropicUrl.value.trim() && base.endpoints.anthropic)
+        aiAnthropicUrl.value = base.endpoints.anthropic.baseUrl
+      if (!aiOpenaiUrl.value.trim() && base.endpoints.openai)
+        aiOpenaiUrl.value = base.endpoints.openai.baseUrl
+      if (base.wire)
         aiWire.value = {
-          opencode: config.wire.opencode ? [...config.wire.opencode] : undefined,
-          pi: config.wire.pi ? [...config.wire.pi] : undefined,
+          opencode: base.wire.opencode ? [...base.wire.opencode] : undefined,
+          pi: base.wire.pi ? [...base.wire.pi] : undefined,
         }
-      if (!aiKey.value.trim()) aiKey.value = config.apiKey
-      if (!aiModels.value.trim()) aiModels.value = (config.models ?? []).join(', ')
-      if (!aiToolsTouched.value && config.tools) aiTools.value = { ...config.tools }
+      if (!aiKey.value.trim()) aiKey.value = base.apiKey
+      if (!aiModels.value.trim()) aiModels.value = (base.models ?? []).join(', ')
+      if (!aiToolsTouched.value && base.tools) aiTools.value = { ...base.tools }
     })
     .catch(() => {
       /* 无存档/读取失败不阻塞，表单留空手填 */
@@ -229,8 +272,7 @@ async function submit() {
   result.value = null
   err.value = ''
   try {
-    // 不带 ids = 应用到全部受管容器（后端缺省），新容器由启动 sweep / create 补发跟进。
-    result.value = await applyAiGateway({
+    const input: AiGatewayInput = {
       endpoints: {
         ...(aiGwKind.value !== 'anthropic' && openaiConsumers.value.length
           ? { openai: { baseUrl: aiOpenaiUrl.value.trim() } }
@@ -244,7 +286,13 @@ async function submit() {
       wire: wireOut,
       models: aiModels.value.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean),
       setDefault: aiSetDefault.value,
-    })
+    }
+    // 覆盖模式 = 存该容器的 override 并只应用到这台；全局模式 = 应用到全部未覆盖容器
+    // （新容器由启动 sweep / create 补发跟进）。
+    result.value = props.container
+      ? await applyGatewayOverride(props.container, input)
+      : await applyAiGateway(input)
+    overrideExists.value = isOverride.value
     emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -310,13 +358,26 @@ async function submit() {
 
     <!-- 编辑态（自 BatchDialog 原样迁出）：场景驱动表单 -->
     <template v-else>
+      <!-- 覆盖模式横幅：状态一目了然（跟随全局 / 已脱离） -->
+      <div
+        v-if="isOverride"
+        class="rounded-md border px-3 py-2 text-[11px] leading-relaxed"
+        :class="overrideExists
+          ? 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+          : 'border-border bg-muted/30 text-muted-foreground'"
+      >
+        <b class="font-medium">{{ props.container }}</b> ·
+        <template v-if="overrideExists">本容器使用专属覆盖配置，全局配置不再应用到这台（启动追平也跳过）。</template>
+        <template v-else>当前跟随全局配置——保存后成为本容器的专属覆盖。</template>
+      </div>
+
       <!-- 当前生效配置：改 key 重推是最高频重复流，一键填入 -->
       <div
         v-if="lastPush"
         class="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2"
       >
         <span class="text-xs text-muted-foreground">
-          当前配置（更新于 {{ new Date(lastPush.updatedAt).toLocaleString() }}）
+          {{ isOverride ? '本容器当前配置' : '当前配置' }}（更新于 {{ new Date(lastPush.updatedAt).toLocaleString() }}）
         </span>
         <Button variant="outline" size="xs" @click="repushLast">填入当前配置</Button>
       </div>
@@ -491,19 +552,28 @@ async function submit() {
           </span>
         </summary>
         <p class="mt-2">
-          写入全部受管容器的 home 配置文件——容器不必在运行，CLI
+          写入{{ isOverride ? '本容器' : '全部受管容器' }}的 home 配置文件——容器不必在运行，CLI
           下次启动即生效：claude 走 settings.json env 注入；codex 加 provider（key 经
           ~/.zshrc 环境变量，固定走 responses）；opencode / pi 在配置里内联 key，按所选
           协议注册接入点。已有配置只合并本方案的键，不会整体覆盖；重复执行幂等。
-          配置保存后，新建容器会自动补发（启动追平）。
+          <template v-if="!isOverride">配置保存后，新建容器会自动补发（启动追平）。</template>
         </p>
         <p class="mt-1 text-amber-500/90">API Key 会明文落盘在各容器内（sidecar 存档同面）。</p>
       </details>
 
       <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
 
-      <div class="flex justify-end">
-        <Button :disabled="busy" @click="submit">{{ busy ? '应用中…' : '保存并应用到全部容器' }}</Button>
+      <div class="flex items-center justify-end gap-2">
+        <Button
+          v-if="isOverride && overrideExists"
+          variant="outline"
+          :disabled="busy"
+          title="删除本容器的覆盖配置，恢复跟随全局（立即把全局配置应用到这台）"
+          @click="clearOverride"
+        >清除覆盖（跟随全局）</Button>
+        <Button :disabled="busy" @click="submit">{{
+          busy ? '应用中…' : isOverride ? '保存并应用到本容器' : '保存并应用到全部容器'
+        }}</Button>
       </div>
     </template>
   </div>

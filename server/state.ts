@@ -152,6 +152,7 @@ interface StateShape {
   services: Record<string, ServiceMeta>;
   sshTargets?: SshTarget[];
   aiGateway?: AiGatewayState;
+  aiGatewayOverrides?: Record<string, AiGatewayState>;
   skillsHub?: SkillHubState;
   skillsRegistry?: { skills: Record<string, SkillRegistryMeta> };
 }
@@ -253,7 +254,32 @@ export async function deleteSshTarget(name: string): Promise<boolean> {
   return removed;
 }
 
-// —— AI 网关声明式配置（全局一份，应用到全部受管容器）——
+// —— AI 网关声明式配置（全局一份 + 容器覆盖；应用到全部受管容器）——
+
+// 容器覆盖（pull 语义的落点）：某台容器在卡片菜单「AI 网关…」里保存的专属配置——
+// 存在即生效（启动 sweep / 建容器补发用它替代全局），全局配置不再应用到这台。让
+// 「手改某台容器的 key」成为合法状态而不是被 sweep 冲掉的暂态。容器名作 key；
+// 删容器时随手清（lifecycle.deleteManaged）。
+export type AiGatewayOverride = AiGatewayState;
+
+export async function getAiGatewayOverrides(): Promise<Record<string, AiGatewayOverride>> {
+  return (await load()).aiGatewayOverrides ?? {};
+}
+
+export async function setAiGatewayOverride(name: string, state: AiGatewayOverride): Promise<void> {
+  const s = await load();
+  if (!s.aiGatewayOverrides) s.aiGatewayOverrides = {};
+  s.aiGatewayOverrides[name] = state;
+  await persist(s);
+}
+
+export async function deleteAiGatewayOverride(name: string): Promise<boolean> {
+  const s = await load();
+  if (!s.aiGatewayOverrides?.[name]) return false;
+  delete s.aiGatewayOverrides[name];
+  await persist(s);
+  return true;
+}
 
 export async function getAiGateway(): Promise<AiGatewayState | undefined> {
   return (await load()).aiGateway;

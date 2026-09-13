@@ -13,7 +13,7 @@ import {
   type CreateSource,
   type BaseProgress,
 } from './engine/index.js';
-import { setMeta, deleteMeta } from './state.js';
+import { setMeta, deleteMeta, deleteAiGatewayOverride } from './state.js';
 import { allocate, isFree } from './network.js';
 import { conflict, notFound } from './errors.js';
 import { readHostHosts } from './hosts.js';
@@ -163,6 +163,7 @@ export async function deleteManaged(
   }
   await removeContainer(cfg, id, { force: true });
   await deleteMeta(name);
+  await deleteAiGatewayOverride(name); // 网关覆盖随容器走（残留会对不上任何容器）
 
   log.warn({ name, dataRemoved: true }, 'container deleted');
   return { ok: true, dataRemoved: true, name };

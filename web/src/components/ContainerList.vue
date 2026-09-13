@@ -660,6 +660,8 @@ const showCreate = ref(false)
 const showBatch = ref(false)
 // AI 工具面板（技能中心 + AI 网关）；侧栏自挂对话框，TermSessionsDialog 同模式。
 const showAi = ref(false)
+// 容器卡片菜单「AI 网关…」：覆盖模式打开（面板只显网关页签，编辑该容器的覆盖配置）。
+const aiOverrideFor = ref<string | null>(null)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
 const delTarget = ref<ContainerView | null>(null)
@@ -2416,6 +2418,12 @@ onUnmounted(() => {
                 >
                 <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
                 <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
+                <ContextMenuItem
+                  title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
+                  @click="aiOverrideFor = c.name"
+                >
+                  <Bot /> AI 网关…
+                </ContextMenuItem>
                 <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
                 <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
               </template>
@@ -2735,6 +2743,12 @@ onUnmounted(() => {
               >
               <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
               <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
+              <ContextMenuItem
+                title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
+                @click="aiOverrideFor = c.name"
+              >
+                <Bot /> AI 网关…
+              </ContextMenuItem>
               <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
               <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
             </template>
@@ -3660,10 +3674,11 @@ onUnmounted(() => {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- AI 工具面板：技能中心（库 + 安装规则）+ AI 网关（声明式配置，自动追平） -->
+  <!-- AI 工具面板：全局 = 技能中心 + AI 网关；overrideFor = 容器覆盖模式（仅网关页签） -->
   <AiPanel
-    v-if="showAi"
-    @close="showAi = false"
+    v-if="showAi || aiOverrideFor"
+    :override-for="aiOverrideFor"
+    @close="showAi = false; aiOverrideFor = null"
     @changed="refresh()"
     @unauthorized="emit('unauthorized')"
   />

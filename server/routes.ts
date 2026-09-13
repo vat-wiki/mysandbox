@@ -13,7 +13,7 @@ import {
   execRun,
   getEngine,
 } from './engine/index.js';
-import { setMeta, getMeta, deleteMeta, getSkillHub, getSkillRegistry, getAiGateway, setAiGateway } from './state.js';
+import { setMeta, getMeta, deleteMeta, getSkillHub, getSkillRegistry, getAiGateway, setAiGateway, getAiGatewayOverrides } from './state.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
@@ -24,13 +24,14 @@ import type { CreateSource, BaseProgress } from './engine/index.js';
 import { beginSse } from './sse.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
-import { applyAiGateway, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
+import { applyAiGateway, setGatewayOverride, clearGatewayOverride, wiresOf, type AiGatewayInput, type GatewayWire } from './aiconfig.js';
 import {
   syncSkillsAll,
   hubView,
   addSkillRule,
   updateSkillRule,
   deleteSkillRule,
+  installSkillsToSpot,
   skillInventory,
   registryList,
   registryAdd,
@@ -439,16 +440,40 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     }
   });
 
-  // —— AI 网关声明式配置（myapikey 等兼容网关）——
-  // GET 回当前生效配置（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。
-  app.get('/api/batch/ai-config', async () => ({ config: await getAiGateway() ?? null }));
+  // —— skills 就地安装（文件面板「安装技能」的主入口）：pull 语义——人在哪个项目
+  // 就装到哪。确保 <spot> 的安装规则存在（全局落点铺全部容器 / 项目落点跟项目走）
+  // + 勾上这些技能 + 立即为该容器分发一次；规则此后由同步系统接管。不收任意写路径：
+  // spot 限于 dev home 内（containerRel 校验），技能必须已在库里。——
+  app.post('/api/skills/install', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const container = String(body.container ?? '').trim();
+    const spot = String(body.spot ?? '').trim();
+    const skills = Array.isArray(body.skills) ? [...new Set(body.skills.map(String))] : [];
+    if (!container || !spot || !skills.length) {
+      throw new HttpError(400, 'container / spot / skills 必填', 'bad_request');
+    }
+    try {
+      return await installSkillsToSpot(cfg, container, spot, skills);
+    } catch (e) {
+      throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
+    }
+  });
 
-  // POST = 保存配置 + 立即应用到容器。ids 缺省 = 全部受管容器（声明式语义：新容器
-  // 由启动 sweep / create 补发自动跟进）；显式给 ids = 只对这台重推（换 key 临时
-  // 场景，配置本身仍是全局一份）。校验通过先落 sidecar 再应用——配置是期望状态，
-  // 应用失败可由下次启动 sweep / 手动重推追平。
+  // —— AI 网关声明式配置（myapikey 等兼容网关）——
+  // GET 回全局配置 + 各容器覆盖（含 key；sidecar 0600 同 services.env 泄露面）供前端预填。
+  app.get('/api/batch/ai-config', async () => ({
+    config: await getAiGateway() ?? null,
+    overrides: await getAiGatewayOverrides(),
+  }));
+
+  // POST = 保存配置 + 立即应用。两种模式：
+  //   缺省   = 全局声明（应用到全部未覆盖容器；新容器由启动 sweep / create 补发跟进）。
+  //   container = 存成该容器的覆盖配置并只应用到这台（卡片菜单「AI 网关…」的 pull
+  //   入口；覆盖存在即生效，全局不再应用到这台）。
+  // 校验通过先落 sidecar 再应用——配置是期望状态，应用失败可由下次 sweep / 手动重推追平。
   app.post('/api/batch/ai-config', async (req): Promise<BatchResult> => {
     const body = (req.body as Record<string, unknown> | null) || {};
+    const overrideFor = typeof body.container === 'string' ? body.container.trim() : '';
     const ids = Array.isArray((body as { ids?: unknown }).ids) ? parseIds(body) : (await listManaged(cfg)).map((v) => v.id);
     const tools = (body.tools ?? {}) as Record<string, unknown>;
     const bool = (v: unknown) => v === true;
@@ -538,8 +563,16 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     if (modelsWho.length && (input.models ?? []).length === 0) {
       throw new HttpError(400, `${modelsWho.join('、')} 需要至少一个模型 ID（逗号分隔）`, 'bad_request');
     }
+    if (overrideFor) return setGatewayOverride(cfg, overrideFor, input);
     await setAiGateway({ ...input, updatedAt: new Date().toISOString() });
     return applyAiGateway(cfg, ids, input);
+  });
+
+  // 清除容器覆盖（恢复跟随全局）：删覆盖 + 立即把全局配置应用到这台（下次 sweep 兜底）。
+  app.delete('/api/batch/ai-config/overrides/:container', async (req) => {
+    const container = (req.params as { container: string }).container;
+    await clearGatewayOverride(cfg, container);
+    return { overrides: await getAiGatewayOverrides() };
   });
 
   // —— hosts 覆写（批量配置 tab） ——

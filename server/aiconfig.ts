@@ -26,7 +26,7 @@ import { dirname, join } from 'node:path';
 import pLimit from 'p-limit';
 import type { Config } from './config.js';
 import { execRun, getEngine, inspectContainer, listManaged } from './engine/index.js';
-import { getAiGateway } from './state.js';
+import { getAiGateway, getAiGatewayOverrides, setAiGatewayOverride, deleteAiGatewayOverride } from './state.js';
 import type { BatchItemResult, BatchResult } from './batch.js';
 import { log } from './logger.js';
 
@@ -472,11 +472,20 @@ export async function applyAiGateway(
 
 // —— 声明式追平（sidecar 的 AiGatewayState 是期望状态）——
 
-// 单容器补发（create() 建容器后调用）：有配置就照写一份，容器内凭据与新容器同步
-// 就位。无配置/容器不可见 = 无事发生。尽力而为不抛（失败靠下次 sweep/手动重推追平）。
+// 容器的有效网关配置：覆盖 ?? 全局（覆盖即生效——全局不再应用到这台，手改的
+// 专属配置因此是合法状态而非被 sweep 冲掉的暂态）。都没有 = 无事发生。
+async function gatewayFor(name: string): Promise<AiGatewayInput | undefined> {
+  const overrides = await getAiGatewayOverrides();
+  if (overrides[name]) return overrides[name];
+  return getAiGateway();
+}
+
+// 单容器补发（create() 建容器后调用）：有配置（覆盖优先）就照写一份，容器内凭据
+// 与新容器同步就位。无配置/容器不可见 = 无事发生。尽力而为不抛（失败靠下次
+// sweep/手动重推追平）。
 export async function applyGatewayToContainer(cfg: Config, name: string): Promise<void> {
   try {
-    const input = await getAiGateway();
+    const input = await gatewayFor(name);
     if (!input) return;
     const home = getEngine(cfg).hostHomePath(cfg, name);
     if (!home || !existsSync(home)) return;
@@ -487,16 +496,45 @@ export async function applyGatewayToContainer(cfg: Config, name: string): Promis
   }
 }
 
-// 启动 sweep（cli.ts 装配）：把 sidecar 配置应用到全部受管容器（宿主直写 rootfs，
-// 容器不必在跑）。无配置 = 无事发生；尽力而为不抛。
+// 启动 sweep（cli.ts 装配）：逐容器按「覆盖 ?? 全局」应用（宿主直写 rootfs，容器
+// 不必在跑）。都没有 = 无事发生；尽力而为不抛。
 export async function applyGatewayAll(cfg: Config): Promise<void> {
   try {
-    const input = await getAiGateway();
-    if (!input) return;
+    const global = await getAiGateway();
+    const overrides = await getAiGatewayOverrides();
+    if (!global && !Object.keys(overrides).length) return;
     const views = await listManaged(cfg);
     if (!views.length) return;
-    await applyAiGateway(cfg, views.map((v) => v.id), input);
+    const limit = pLimit(CONCURRENCY);
+    const items = await Promise.all(
+      views.map((v) =>
+        limit(async () => {
+          const input = overrides[v.id] ?? global;
+          if (!input) return null;
+          return applyOne(cfg, v.id, input);
+        }),
+      ),
+    );
+    const done = items.filter((i): i is BatchItemResult => i !== null);
+    log.info(
+      { op: 'ai-config', ok: done.filter((i) => i.ok).length, failed: done.filter((i) => !i.ok).length, overridden: done.filter((i) => overrides[i.id]).length },
+      'ai-config sweep done',
+    );
   } catch (e) {
     log.warn({ err: String(e) }, 'ai-config startup sweep failed');
   }
+}
+
+// 保存容器覆盖（routes：卡片菜单「AI 网关…」保存）并立即应用到这台。
+export async function setGatewayOverride(cfg: Config, name: string, input: AiGatewayInput): Promise<BatchResult> {
+  await setAiGatewayOverride(name, { ...input, updatedAt: new Date().toISOString() });
+  return applyAiGateway(cfg, [name], input);
+}
+
+// 清除覆盖（恢复跟随全局）并立即把全局配置应用到这台（有全局才应用；下次 sweep 兜底）。
+export async function clearGatewayOverride(cfg: Config, name: string): Promise<void> {
+  await deleteAiGatewayOverride(name);
+  const global = await getAiGateway();
+  if (global) await applyAiGateway(cfg, [name], global);
+  log.info({ container: name }, 'ai-config override cleared');
 }

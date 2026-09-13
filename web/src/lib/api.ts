@@ -340,11 +340,26 @@ export interface AiGatewayState extends AiGatewayInput {
   updatedAt: string
 }
 export const getAiGateway = () =>
-  api('/api/batch/ai-config') as Promise<{ config: AiGatewayState | null }>
-// 保存网关配置并应用到容器。ids 缺省 = 全部受管容器（声明式语义，新容器自动跟进）；
-// 显式 ids = 只对这几台重推（换 key 等临时场景）。
+  api('/api/batch/ai-config') as Promise<{ config: AiGatewayState | null; overrides: Record<string, AiGatewayState> }>
+// 保存全局网关配置并应用到全部未覆盖容器（声明式语义，新容器自动跟进）。
 export const applyAiGateway = (input: AiGatewayInput, ids?: string[]) =>
   postJson('/api/batch/ai-config', ids ? { ids, ...input } : input) as Promise<BatchResult>
+// 容器覆盖（卡片菜单「AI 网关…」的 pull 入口）：存成本容器专属配置并只应用到这台。
+export const applyGatewayOverride = (container: string, input: AiGatewayInput) =>
+  postJson('/api/batch/ai-config', { container, ...input }) as Promise<BatchResult>
+// 清除覆盖（恢复跟随全局）并立即把全局配置应用到这台。
+export const clearGatewayOverride = (container: string) =>
+  api(`/api/batch/ai-config/overrides/${encodeURIComponent(container)}`, { method: 'DELETE' }) as Promise<{
+    overrides: Record<string, AiGatewayState>
+  }>
+// skills 就地安装（文件面板「安装技能」）：库技能装进某容器 spot 目录，自动落规则。
+export const installSkills = (container: string, spot: string, skills: string[]) =>
+  postJson('/api/skills/install', { container, spot, skills }, 60_000) as Promise<{
+    to: string
+    all: boolean
+    created: boolean
+    ruleId: string
+  }>
 
 // —— 终端会话（跨窗口/浏览器找回 tmux 会话）——
 // 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）；
