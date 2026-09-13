@@ -16,17 +16,12 @@ import {
   getFileClipboard,
   getSkillRegistry,
   installSkills,
-  getAiView,
-  installAiProject,
   Unauthorized,
   HOST_ID,
   type FileEntry,
   type FilesView,
   type FileClipboard,
   type SkillRegistryItem,
-  type AiProvider,
-  type AiProjectRule,
-  type GatewayWire,
 } from '@/lib/api'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -45,16 +40,9 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import NameDialog from '@/components/NameDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import AiSpotDialog from '@/components/AiSpotDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
 import {
   Folder,
@@ -204,94 +192,17 @@ async function doInstall() {
   }
 }
 
-// —— AI 配置（pull 入口）：项目级配置写进当前目录（claude 的 .claude/settings.json +
-// opencode 的 opencode.json）并落项目规则（克隆到别的容器跟走）。仅容器面板、home 内
-// 非根可用（home 根 = home 级语义，走「AI 工具 → 智能体配置」）。——
+// —— AI 配置（pull 入口）：✨ 按钮开 AiSpotDialog（表单在窄面板条里展不开，走居中
+// 弹窗）。落点 = 当前目录（假定人在项目根）；home 根是 home 级语义，不可配。——
 const showAiCfg = ref(false)
-const aiProviders = ref<AiProvider[] | null>(null)
-const aiRules = ref<AiProjectRule[]>([])
-const aiBusy = ref(false)
-const aiErr = ref('')
-// 每工具一个启用开关（默认关——只送勾选的工具，未启用的不动既有规则）。
-const aiClaudeOn = ref(false)
-const aiClaude = ref('')
-const aiOcOn = ref(false)
-const aiOc = ref<string[]>([])
-const aiOcWires = ref<GatewayWire[]>(['openai-chat'])
 
-// 配置落点 = 当前目录（假定人在项目根；进到哪配到哪）。home 根不可配。
+// 配置落点 = 当前目录。home 根不可配。
 const aiSpot = computed<string | null>(() => {
   const p = path.value
   if (!p || p === '/home/dev' || !p.startsWith('/home/dev/')) return null
   return p
 })
 const canAiCfg = computed(() => !isHost.value && !targetId().startsWith('s:') && !!aiSpot.value)
-const aiAnthropicProviders = computed(() => (aiProviders.value ?? []).filter((x) => x.endpoints.anthropic))
-const aiRule = computed<AiProjectRule | null>(() => {
-  const spot = aiSpot.value
-  if (!spot) return null
-  return aiRules.value.find((r) => r.to === `~/${spot.slice('/home/dev/'.length)}`) ?? null
-})
-
-async function loadAiData() {
-  aiErr.value = ''
-  try {
-    const v = await getAiView()
-    aiProviders.value = v.providers
-    aiRules.value = v.projectRules
-  } catch (e) {
-    if (e instanceof Unauthorized) {
-      emit('close')
-      return
-    }
-    aiErr.value = e instanceof Error ? e.message : String(e)
-  }
-}
-
-function toggleAiCfg() {
-  showAiCfg.value = !showAiCfg.value
-  if (showAiCfg.value && !aiProviders.value) void loadAiData()
-}
-
-async function doAiInstall() {
-  const spot = aiSpot.value
-  if (!spot) return
-  const selection: { claude?: { provider: string }; opencode?: { providers: string[]; wires: GatewayWire[] } } = {}
-  if (aiClaudeOn.value) {
-    if (!aiClaude.value) {
-      aiErr.value = 'Claude Code 已启用：选一个模型服务'
-      return
-    }
-    selection.claude = { provider: aiClaude.value }
-  }
-  if (aiOcOn.value) {
-    if (!aiOc.value.length || !aiOcWires.value.length) {
-      aiErr.value = 'OpenCode 已启用：选模型服务与协议'
-      return
-    }
-    selection.opencode = { providers: [...aiOc.value], wires: [...aiOcWires.value] }
-  }
-  if (!selection.claude && !selection.opencode) {
-    aiErr.value = '至少启用并配置一个工具'
-    return
-  }
-  aiBusy.value = true
-  aiErr.value = ''
-  try {
-    const r = await installAiProject(targetId(), spot, selection)
-    toast(`项目级 AI 配置 → ${r.to}${r.created ? '（新规则）' : '（并入已有规则）'}`)
-    showAiCfg.value = false
-    void refresh()
-  } catch (e) {
-    if (e instanceof Unauthorized) {
-      emit('close')
-      return
-    }
-    aiErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    aiBusy.value = false
-  }
-}
 
 // —— 路径复制 ——
 // navigator.clipboard 不可用（http 局域网访问）时走 execCommand 兜底，必须同步在
@@ -1275,7 +1186,7 @@ function fmtSize(n: number): string {
         :class="showAiCfg ? 'bg-accent text-foreground' : ''"
         :disabled="!canAiCfg"
         :title="canAiCfg ? `AI 配置（项目级 → ${aiSpot}）` : '进到项目目录再配置（home 根走智能体配置）'"
-        @click="toggleAiCfg"
+        @click="showAiCfg = !showAiCfg"
       >
         <Sparkles class="size-3.5" />
       </Button>
@@ -1348,78 +1259,6 @@ function fmtSize(n: number): string {
       </div>
     </div>
 
-    <!-- AI 配置面板：当前目录落项目级配置 + 并入规则（就地 pull；未启用的工具不动既有规则） -->
-    <div v-if="showAiCfg" class="shrink-0 space-y-2 border-b border-border bg-muted/20 px-2.5 py-2">
-      <div class="flex items-center gap-2 text-[11px]">
-        <span class="shrink-0 text-muted-foreground">配到</span>
-        <span class="min-w-0 flex-1 truncate font-mono">{{ aiSpot }}</span>
-        <span v-if="aiRule" class="shrink-0 text-[10px] text-amber-500/90">已有规则（保存即并入）</span>
-      </div>
-      <div v-if="!aiProviders" class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <Loader2 class="size-3 animate-spin" /> 读取模型服务…
-      </div>
-      <template v-else>
-        <div class="flex items-center gap-2 text-[11px]">
-          <Checkbox
-            id="ai-cfg-claude"
-            :model-value="aiClaudeOn"
-            @update:model-value="(v) => (aiClaudeOn = !!v)"
-          />
-          <label for="ai-cfg-claude" class="w-20 shrink-0 cursor-pointer">Claude Code</label>
-          <Select v-if="aiClaudeOn" :model-value="aiClaude" @update:model-value="(v) => (aiClaude = v as string)">
-            <SelectTrigger size="sm" class="h-6 min-w-0 flex-1 text-[11px]">
-              <SelectValue placeholder="选模型服务（anthropic 端点）" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem v-for="p in aiAnthropicProviders" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</SelectItem>
-            </SelectContent>
-          </Select>
-          <span v-else class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">.claude/settings.json env 注入</span>
-        </div>
-        <div class="flex items-start gap-2 text-[11px]">
-          <Checkbox id="ai-cfg-oc" class="mt-0.5" :model-value="aiOcOn" @update:model-value="(v) => (aiOcOn = !!v)" />
-          <label for="ai-cfg-oc" class="w-20 shrink-0 cursor-pointer">OpenCode</label>
-          <div v-if="aiOcOn" class="min-w-0 flex-1 space-y-1">
-            <ToggleGroup
-              type="multiple"
-              size="sm"
-              variant="outline"
-              class="flex-wrap text-[11px]"
-              :model-value="aiOc"
-              @update:model-value="(v) => (aiOc = v as string[])"
-            >
-              <ToggleGroupItem v-for="p in aiProviders" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</ToggleGroupItem>
-            </ToggleGroup>
-            <ToggleGroup
-              type="multiple"
-              size="sm"
-              variant="outline"
-              class="text-[11px]"
-              :model-value="aiOcWires"
-              @update:model-value="(v) => (aiOcWires = v as GatewayWire[])"
-            >
-              <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
-              <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
-              <ToggleGroupItem value="anthropic-messages">anthropic</ToggleGroupItem>
-            </ToggleGroup>
-          </div>
-          <span v-else class="min-w-0 flex-1 truncate pt-1 text-[10px] text-muted-foreground/70">opencode.json provider 变体</span>
-        </div>
-        <p v-if="!aiProviders.length" class="text-[11px] text-amber-500/90">
-          模型服务库是空的——先在「AI 工具 → 模型服务」添加提供商。
-        </p>
-        <p v-if="aiErr" class="text-[11px] text-destructive">{{ aiErr }}</p>
-        <div class="flex items-center justify-between">
-          <span class="text-[10px] leading-snug text-muted-foreground/70">
-            项目级配置优先于 home 级绑定（工具自己的合并语义）；克隆到别的容器，start 时自动跟上。
-          </span>
-          <div class="flex shrink-0 gap-1.5">
-            <Button variant="outline" size="xs" @click="showAiCfg = false">取消</Button>
-            <Button size="xs" :disabled="aiBusy" @click="doAiInstall">{{ aiBusy ? '配置中…' : '保存配置' }}</Button>
-          </div>
-        </div>
-      </template>
-    </div>
 
     <!-- 已暂停跟随提示条 -->
     <button
@@ -1763,6 +1602,16 @@ function fmtSize(n: number): string {
       :busy="opBusy"
       @confirm="confirmDelete"
       @close="delTarget = null"
+    />
+    <!-- 项目级 AI 配置（✨ 按钮）：居中弹窗，表单不塞面板窄条 -->
+    <AiSpotDialog
+      v-if="showAiCfg && aiSpot"
+      :container-id="targetId()"
+      :container-name="containerName"
+      :spot="aiSpot"
+      @done="refresh()"
+      @close="showAiCfg = false"
+      @unauthorized="emit('close')"
     />
   </div>
 </template>
