@@ -17,7 +17,8 @@ import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { listServiceContainers } from './docker.js';
-import { getServiceMeta } from './state.js';
+import { getServiceMeta, getSshTargets, type SshTarget } from './state.js';
+import { sshExec, sshSpawn, sshSpawnIn, sshTest } from './sshChannel.js';
 import { TERMID_RE, sessionName } from './terminal.js';
 import {
   parsePorcelainZ,
@@ -460,14 +461,16 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     return { ok: true };
   });
 
-  // —— 跨面板复制粘贴（容器↔宿主↔容器↔服务，文件/目录通用）——
-  // 双侧统一解析成 Side 再组 tar 管道：宿主/容器（'__host__' 与 LXC 容器）宿主实址直拼、
+  // —— 跨面板复制粘贴（容器↔宿主↔容器↔服务↔SSH 主机，文件/目录通用）——
+  // 多侧统一解析成 Side 再组 tar 管道：宿主/容器（'__host__' 与 LXC 容器）宿主实址直拼、
   // tar 在宿主跑；服务（'s:' 前缀，web 侧 api.ts filesBase 约定）容器内路径，tar 经
-  // docker exec 流式进出。为什么用 tar 而不是 fs.cp：tar 打包不跟随符号链接，链接字符串
-  // 原样进包、解到目的端后语义正确；包内 uid 由解包侧 --no-same-owner 落为执行用户。
-  // 宿主侧解包到兄弟临时目录、成功后 rename 落位（失败清理不留半拷，落位瞬时）；服务侧
-  // 同构：容器内 /tmp 临时目录 + 容器内 mv（mkdir -p 兜 /tmp 必在）。服务侧必须运行中
-  // （docker exec 前提）；容器侧不要求运行中（rootfs 直操作）但必须受控。无进度上报
+  // docker exec 流式进出；SSH 主机（'ssh:' 前缀）远端路径，tar 经 ssh 流式进出
+  //（sshChannel.ts，argv 通道层包裹）。为什么用 tar 而不是 fs.cp：tar 打包不跟随符号链接，
+  // 链接字符串原样进包、解到目的端后语义正确；包内 uid 由解包侧 --no-same-owner 落为
+  // 执行用户。宿主侧解包到兄弟临时目录、成功后 rename 落位（失败清理不留半拷，落位瞬时）；
+  // 服务侧同构：容器内 /tmp 临时目录 + 容器内 mv（mkdir -p 兜 /tmp 必在）；ssh 侧同服务侧
+  //（远端 /tmp + 远端 mv）。服务侧必须运行中（docker exec 前提）；容器侧不要求运行中
+  //（rootfs 直操作）但必须受控；ssh 侧无运行态概念，预检即连通性探测。无进度上报
   // （本地管道秒级，大目录由前端 toast.promise 兜住观感），10min watchdog 硬顶防悬挂。
   app.post('/api/files/copy', async (req): Promise<{ ok: true }> => {
     const body = (req.body as Record<string, unknown>) || {};
@@ -494,13 +497,25 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
       return rows.some((r) => r.Names.split(',')[0].replace(/^\//, '') === sname);
     }
 
-    type Side = { kind: 'host'; path: string } | { kind: 'docker'; name: string; path: string };
+    type Side =
+      | { kind: 'host'; path: string }
+      | { kind: 'docker'; name: string; path: string }
+      | { kind: 'ssh'; t: SshTarget; path: string };
     async function locate(id: string, p: string): Promise<Side> {
       if (id === HOST_ID) return { kind: 'host', path: p };
       if (id.startsWith('s:')) {
         const sname = id.slice(2);
         if (!(await svcRow(sname))) throw notFound(`service "${sname}" not found`);
         return { kind: 'docker', name: sname, path: p };
+      }
+      if (id.startsWith('ssh:')) {
+        // ssh: 前缀（api.ts filesBase 同约定）：目标必须在 state.json（sshTerminal.ts 的
+        // targets）。存在性预检经通道层 sshTest（BatchMode；密码目标快败成 false → 404，
+        // 真实连接错误由 pack 阶段的 stderr 给人话）。
+        const tname = id.slice(4);
+        const t = (await getSshTargets()).find((x) => x.name === tname);
+        if (!t) throw notFound(`ssh target "${tname}" not found`);
+        return { kind: 'ssh', t, path: p };
       }
       const r = await resolve(cfg, id); // 存在性校验：容器名来自列表，仍防直调 API 的注入名
       requireControlled(r);
@@ -523,7 +538,9 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
             () => true,
             () => false,
           )
-        : await svcTest(src.name, '[ -e "$1" ] || [ -L "$1" ]', src.path);
+        : src.kind === 'ssh'
+          ? await sshTest(src.t, '[ -e "$1" ] || [ -L "$1" ]', src.path)
+          : await svcTest(src.name, '[ -e "$1" ] || [ -L "$1" ]', src.path);
     if (!srcExists) throw notFound(`source not found: ${srcPath}`);
     const dstFree =
       dst.kind === 'host'
@@ -534,12 +551,16 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
               return true;
             },
           )
-        : !(await svcTest(dst.name, '[ -e "$1" ] || [ -L "$1" ]', dst.path));
+        : !(dst.kind === 'ssh'
+            ? await sshTest(dst.t, '[ -e "$1" ] || [ -L "$1" ]', dst.path)
+            : await svcTest(dst.name, '[ -e "$1" ] || [ -L "$1" ]', dst.path));
     if (!dstFree) throw conflict('同名文件或目录已存在');
     // 自噬检查只在同一 fs 内有意义（跨 fs 永不成立）
     if (
       (src.kind === 'host' && dst.kind === 'host' && (dst.path === src.path || dst.path.startsWith(`${src.path}/`))) ||
       (src.kind === 'docker' && dst.kind === 'docker' && src.name === dst.name &&
+        (dst.path === src.path || dst.path.startsWith(`${src.path}/`))) ||
+      (src.kind === 'ssh' && dst.kind === 'ssh' && src.t.name === dst.t.name &&
         (dst.path === src.path || dst.path.startsWith(`${src.path}/`)))
     ) {
       throw badRequest('cannot copy into itself');
@@ -551,10 +572,12 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
             (s) => s.isDirectory(),
             () => false,
           )
-        : await svcTest(dst.name, '[ -d "$1" ]', dstParent);
+        : dst.kind === 'ssh'
+          ? await sshTest(dst.t, '[ -d "$1" ]', dstParent)
+          : await svcTest(dst.name, '[ -d "$1" ]', dstParent);
     if (!dstParentOk) throw notFound(`destination directory not found: ${dstPath}`);
 
-    // 临时目录 + pack/unpack 进程：宿主侧落 dst 兄弟目录；服务侧落容器内 /tmp。
+    // 临时目录 + pack/unpack 进程：宿主侧落 dst 兄弟目录；服务/ssh 侧落各自 /tmp。
     const tmpHost = join(dstParent, `.mysandbox-copy-${randomUUID().slice(0, 8)}`);
     const tmp = dst.kind === 'host' ? tmpHost : '/tmp/.mysandbox-copy-' + randomUUID().slice(0, 8);
     if (dst.kind === 'host') await mkdir(tmp);
@@ -562,19 +585,29 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const packArgv =
       src.kind === 'host'
         ? ['tar', '-C', srcParent, '-cf', '-', '--', srcName]
-        : ['docker', 'exec', src.name, 'tar', '-C', srcParent, '-cf', '-', '--', srcName];
+        : src.kind === 'docker'
+          ? ['docker', 'exec', src.name, 'tar', '-C', srcParent, '-cf', '-', '--', srcName]
+          : null; // ssh 侧走 sshSpawn（argv 由通道层包裹），见下
     const unpackArgv =
       dst.kind === 'host'
         ? ['tar', '-x', '-C', tmp, '--no-same-owner']
-        : [
-            'docker', 'exec', '-i', dst.name, 'sh', '-c',
-            'mkdir -p "$1" && tar -x -C "$1" --no-same-owner', 'sh', tmp,
-          ];
+        : dst.kind === 'docker'
+          ? [
+              'docker', 'exec', '-i', dst.name, 'sh', '-c',
+              'mkdir -p "$1" && tar -x -C "$1" --no-same-owner', 'sh', tmp,
+            ]
+          : null;
     const kids: ChildProcess[] = [];
     const errs: string[] = [];
     try {
-      const pack = spawn(packArgv[0], packArgv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-      const unpack = spawn(unpackArgv[0], unpackArgv.slice(1), { stdio: ['pipe', 'ignore', 'pipe'] });
+      const pack =
+        src.kind === 'ssh'
+          ? sshSpawn(src.t, ['tar', '-C', srcParent, '-cf', '-', '--', srcName])
+          : spawn(packArgv![0], packArgv!.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const unpack =
+        dst.kind === 'ssh'
+          ? sshSpawnIn(dst.t, ['sh', '-c', 'mkdir -p "$1" && tar -x -C "$1" --no-same-owner', 'sh', tmp])
+          : spawn(unpackArgv![0], unpackArgv!.slice(1), { stdio: ['pipe', 'ignore', 'pipe'] });
       for (const [c, tag] of [
         [pack, 'pack'],
         [unpack, 'unpack'],
@@ -606,12 +639,27 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
               () => false,
               () => true,
             )
-          : !(await svcTest(dst.name, '[ -e "$1" ] || [ -L "$1" ]', dst.path));
+          : !(dst.kind === 'ssh'
+              ? await sshTest(dst.t, '[ -e "$1" ] || [ -L "$1" ]', dst.path)
+              : await svcTest(dst.name, '[ -e "$1" ] || [ -L "$1" ]', dst.path));
       if (!dstStillFree) throw conflict('同名文件或目录已存在');
       if (dst.kind === 'host') {
         await rename(join(tmp, srcName), dst.path);
         // 落位后临时目录只剩空壳（包内唯一顶层条目已移走），一并清掉——失败路径在 catch 里清。
         await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      } else if (dst.kind === 'ssh') {
+        await sshExec(
+          dst.t,
+          ['sh', '-c', 'mv -- "$1" "$2" && rm -rf -- "$3"', 'sh', join(tmp, srcName), dst.path, tmp],
+          30_000,
+        ).catch((e) => {
+          if (e instanceof HttpError) throw e;
+          throw new HttpError(
+            400,
+            String((e as { stderr?: string }).stderr ?? e).trim().slice(0, 500) || 'copy finalize failed',
+            'copy_failed',
+          );
+        });
       } else {
         const fin = await execFileAsync(
           'docker',
@@ -629,7 +677,10 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
       return { ok: true };
     } catch (e) {
       if (dst.kind === 'host') await rm(tmp, { recursive: true, force: true }).catch(() => {});
-      else await execFileAsync('docker', ['exec', dst.name, 'rm', '-rf', '--', tmp], { timeout: 8_000 }).catch(() => {});
+      else if (dst.kind === 'ssh')
+        await sshExec(dst.t, ['rm', '-rf', '--', tmp], 8_000).catch(() => {});
+      else
+        await execFileAsync('docker', ['exec', dst.name, 'rm', '-rf', '--', tmp], { timeout: 8_000 }).catch(() => {});
       throw e;
     }
   });

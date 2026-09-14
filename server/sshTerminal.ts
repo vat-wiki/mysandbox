@@ -1,9 +1,10 @@
 // SSH 终端：WS /ws/ssh-terminal?target=&termId=&cols=&rows=&from=（远程主机）。
 //
-// 定位刻意收窄（与产品概念的分界）：远程主机只是「终端的延伸」，不是被管理对象——
-// 无文件面板、无 OSC 深链、无活动扫描（无输出提醒）、不进批量操作/hosts/mysandbox
-// status。除本机外，终端区的其他主机条目来自这里的 targets CRUD（存 sidecar
-// state.json，UI 可增删，不动用户手改的 config.yaml）。
+// 定位刻意收窄（与产品概念的分界）：远程主机不是被管理对象——无 OSC 深链、无活动扫描
+// （无输出提醒）、不进批量操作/hosts/mysandbox status。文件面板是刻意保留的例外（四足
+// 鼎立的第四足）：/api/ssh/:name/*（sshFiles.ts，通道经 sshChannel.ts 的宿主 ssh），
+// 终端本体之外只补文件浏览/编辑这一件事。除本机外，终端区的其他主机条目来自这里的
+// targets CRUD（存 sidecar state.json，UI 可增删，不动用户手改的 config.yaml）。
 //
 // 会话语义与宿主终端（hostTerminal.ts）同构，差别只在会话本体搬到了**远端**：
 //   - 远端 tmux 用专用 socket `-L mysandbox-ssh`（不碰远端用户自己的 tmux server），
@@ -38,8 +39,9 @@ const execFileAsync = promisify(execFile);
 export const SSH_SOCKET = 'mysandbox-ssh';
 const SSH_SESSION_PREFIX = 'mysandbox-ssh-';
 
-// 目标名校验（标识 + 显示名；进 WS query 与 state key）。
-const SSH_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/;
+// 目标名校验（标识 + 显示名；进 WS query 与 state key）。导出：sshFiles.ts 的
+// requireTarget 同一防线（文件端点的 :name 同源校验）。
+export const SSH_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/;
 // 目的地字符集白名单：无空白与 shell 元字符（host 串会进 script -c 命令串，这是
 // 注入面的总闸）。覆盖 host / user@host / IPv6 [::1] 形态；ssh config 的别名同理。
 const SSH_HOST_RE = /^[A-Za-z0-9._@%+\-[\]:]{1,255}$/;
@@ -48,12 +50,13 @@ const SSH_USER_RE = /^[A-Za-z0-9._-]{1,64}$/;
 // resize 尾沿防抖（同 hostTerminal）。
 const RESIZE_DEBOUNCE_MS = 120;
 
-// 后台命令（建会话/扫描/kill）：BatchMode 快败（密码认证的目标不吊死到超时）。
+// 后台命令（建会话/扫描/kill + 文件层 sshChannel）：BatchMode 快败（密码认证的目标
+// 不吊死到超时）。导出：sshChannel.ts（文件层通道）同用。
 // 交互 attach 不带 BatchMode——密码/口令/首次 host key 确认都要能在终端里应答。
 // ⚠️ attach 必须显式 -t：ssh 带远端命令时**不会**因本机 stdin 是 tty 就自动申请
 // 远端 pty（实测：script 给了本机 pty，远端 tmux client 仍报 "open terminal failed:
 // not a terminal"）——-t 强制远端 pty 分配，本机侧的 pty 由 script 提供。
-const SSH_BG_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8'];
+export const SSH_BG_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8'];
 const SSH_TTY_OPTS = ['-t', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3'];
 
 // 目的地串：user 优先拼 user@host；host 本身含 @（用户直接写了 user@host）则原样。
@@ -71,7 +74,8 @@ function shq(target: string): string {
 
 // ssh 命令参数（不含程序名本身——execFile('ssh', argv) 另给；之前重复带了导致远端
 // 主机名变成字面量 "ssh" 被 DNS 解析到 fake-ip，实测踩坑）。port 有值才传 -p。
-function sshArgv(t: SshTarget, opts: string[], cmd: string[]): string[] {
+// 导出：sshFiles.ts / sshChannel.ts（文件层通道）同用。
+export function sshArgv(t: SshTarget, opts: string[], cmd: string[]): string[] {
   return [...opts, ...(t.port ? ['-p', String(t.port)] : []), sshDest(t), ...cmd];
 }
 

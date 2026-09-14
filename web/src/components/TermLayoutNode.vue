@@ -79,10 +79,10 @@ function onDividerStart(idx: number, parentSize: number) {
 }
 
 // —— pane 自己的 cwd（头部标题旁展示）——
-// 每叶子一份轮询：容器侧 tmux list-panes、宿主侧同款端点（HOST_ID 哨兵分流）。
+// 每叶子一份轮询：容器侧 tmux list-panes、宿主侧同款端点（HOST_ID 哨兵分流）、SSH 组走
+// /api/ssh/<name>/cwd（远端 tmux 的 pane_current_path 就是远端真实路径）。
 // 5s 节奏与旧整行信息条一致；会话未建/已收（404）显示占位而非报错。组切走
 // （active=false）继续轮——切回来立即是新鲜值，代价是后台组也每 5s 一个轻请求。
-// SSH 组没有 cwd 端点（远端路径不走本机 API），不轮询，头部显示动态标题或占位。
 const cwd = ref('')
 // pane 动态标题（OSC 链路，ContainerList 内存态）：跑命令/CC·opencode 任务时替代
 // cwd 显示位（每 pane 各自可见，分屏时逐 pane 有标题；tab 标签恒为容器名做身份定位）。
@@ -96,8 +96,8 @@ async function pollCwd() {
   if (!l) return
   try {
     // 服务组走 's:' 前缀切 /api/services/<name>/cwd（docker exec 进容器查会话 shell 的
-    // cwd，标记注入与扫描见 server/serviceFiles.ts / hostTerminal.ts）。SSH 组无端点，
-    // 挂载前已排除，不会走到这里。
+    // cwd，标记注入与扫描见 server/serviceFiles.ts / hostTerminal.ts）。SSH 组
+    // containerId 本体即 'ssh:'+名，getTermCwd 自动落到 /api/ssh/<name>/cwd。
     const id =
       props.group.kind === 'service' ? serviceFileId(props.group.containerId) : props.group.containerId
     // host 组 containerId 即 HOST_ID 哨兵，getTermCwd 自动落到 /api/host-terminal/cwd
@@ -109,7 +109,7 @@ async function pollCwd() {
     cwd.value = '' // 会话还没建好/已收：占位，下轮自愈
   }
 }
-if (leaf.value && props.group.kind !== 'ssh') {
+if (leaf.value) {
   onMounted(() => {
     pollCwd()
     cwdTimer = setInterval(() => void pollCwd(), 5000)

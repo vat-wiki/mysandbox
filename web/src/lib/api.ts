@@ -8,8 +8,8 @@ const TOKEN_KEY = 'mysandbox.token'
 export const HOST_ID = '__host__'
 // SSH 终端组的 containerId 前缀（同 HOST_ID 哨兵思路）：组 containerId = 'ssh:'+目标名。
 // 前缀隔离与容器名的撞名面（目标名可自由起，容器名来自 docker/LXC）；WS/会话 key 在
-// 边界处剥前缀用真名。与 SVC_FILE_PREFIX 的差异：SSH 组**没有**文件端点，前缀全程
-// 身份用，不进 filesBase。
+// 边界处剥前缀用真名。与 SVC_FILE_PREFIX 的差异：SSH 组的 containerId 本体就是文件目标
+//（filesBase 切 /api/ssh/<name>/*，server/sshFiles.ts），前缀全程一份身份不剥不加。
 export const SSH_ID_PREFIX = 'ssh:'
 export const sshGroupId = (name: string): string => SSH_ID_PREFIX + name
 export const sshTargetName = (id: string): string => id.slice(SSH_ID_PREFIX.length)
@@ -21,13 +21,15 @@ export const sshTargetName = (id: string): string => id.slice(SSH_ID_PREFIX.leng
 export const SVC_FILE_PREFIX = 's:'
 export const serviceFileId = (id: string): string => SVC_FILE_PREFIX + id
 export const isServiceFileId = (id: string): boolean => id.startsWith(SVC_FILE_PREFIX)
-// 容器 / 宿主 / 服务文件端点前缀。
+// 容器 / 宿主 / 服务 / SSH 主机文件端点前缀。
 const filesBase = (id: string) =>
   id === HOST_ID
     ? '/api/host-terminal'
     : id.startsWith(SVC_FILE_PREFIX)
       ? `/api/services/${id.slice(SVC_FILE_PREFIX.length)}`
-      : `/api/containers/${id}`
+      : id.startsWith(SSH_ID_PREFIX)
+        ? `/api/ssh/${sshTargetName(id)}`
+        : `/api/containers/${id}`
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)

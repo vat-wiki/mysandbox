@@ -13,6 +13,7 @@ import { registerTerminal } from './terminal.js';
 import { registerDesktop } from './desktop.js';
 import { registerHostTerminal } from './hostTerminal.js';
 import { registerSshTerminal } from './sshTerminal.js';
+import { registerSshFileRoutes } from './sshFiles.js';
 import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
 import { registerServices } from './services.js';
@@ -99,6 +100,9 @@ export async function buildServer(cfg: Config) {
   // 服务文件端点（server/serviceFiles.ts）：docker 服务容器的文件面板/编辑器/git 套件，
   // 前端 's:' 前缀 id（api.ts filesBase）切到这里。
   await registerServiceFileRoutes(app);
+  // SSH 文件端点（server/sshFiles.ts）：远程主机（sshTerminal.ts 的 targets）的文件面板，
+  // 四足鼎立的第四足；前端 'ssh:' 前缀 id（api.ts filesBase）切到这里。
+  await registerSshFileRoutes(app);
   // Web 代理（server/proxy.ts）：cookie 会话 + /api/proxy/config + /proxy 转发核心。
   await registerProxy(app, cfg);
   // 终端输出活动扫描（server/activity.ts）：进程内周期轮询，供 /api/terminal-activity。

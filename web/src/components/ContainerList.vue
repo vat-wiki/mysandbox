@@ -762,7 +762,8 @@ function onFilesDrag(dx: number) {
 const filePaneIdx = ref(0)
 const activeGroup = computed(() => groups.value[activeIdx.value])
 // 文件面板/编辑器/复制粘贴的目标 id：服务组加 's:' 前缀（api.ts filesBase 切
-// /api/services/<name>/*），容器/宿主组原样（宿主即 HOST_ID 哨兵）。
+// /api/services/<name>/*），SSH 组 containerId 本体即 'ssh:'+名（切 /api/ssh/<name>/*），
+// 容器/宿主组原样（宿主即 HOST_ID 哨兵）。
 function fileTargetId(g: TermGroup): string {
   return g.kind === 'service' ? serviceFileId(g.containerId) : g.containerId
 }
@@ -776,9 +777,6 @@ watch(
   () => activeGroup.value?.id,
   () => {
     filePaneIdx.value = 0
-    // SSH 组没有文件端点（远端 fs 不经本机 API）：切到该组时收起文件面板，
-    // 面板按钮同步禁用（模板）。切回其他组不自动重开——保持用户上次显式选择。
-    if (activeGroup.value?.kind === 'ssh' && showFiles.value) showFiles.value = false
   },
 )
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
@@ -1326,13 +1324,12 @@ async function onOscOpen(group: TermGroup, termId: string, path: string) {
 // 终端 Ctrl+点击路径链接：后端权威解析（tmux pane cwd + ~ 展开 + readlink 归一 + 类型
 // 探测，一次往返），宿主组与容器组同路径。missing 按 file（编辑器侧 404 → 新建态）。
 async function onLinkOpen(group: TermGroup, termId: string, raw: string, line?: number, col?: number) {
-  // SSH 组没有路径解析端点（远端 fs 不经本机 API），Ctrl+点击不联动文件面板。
-  if (group.kind === 'ssh') return
   const gi = groups.value.findIndex((g) => g.id === group.id)
   if (gi >= 0) activeIdx.value = gi
   filePaneIdx.value = Math.min(ordinalOf(group.root, termId), Math.max(leafCount(group.root) - 1, 0))
-  // 路径解析：服务组走 /api/services/<name>/resolve（id 加 's:' 前缀）；host 组
-  // containerId 即 HOST_ID 哨兵自动分流；容器组走 /api/containers/<id>/resolve。
+  // 路径解析：服务组走 /api/services/<name>/resolve（id 加 's:' 前缀）；SSH 组走
+  // /api/ssh/<name>/resolve（containerId 本体即 'ssh:'+名）；host 组 containerId 即
+  // HOST_ID 哨兵自动分流；容器组走 /api/containers/<id>/resolve。
   let r: ResolveView
   try {
     r = await resolveTermPath(
@@ -3361,16 +3358,8 @@ onUnmounted(() => {
         </button>
         <button
           class="flex items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
-          :class="[
-            activeGroup?.kind === 'ssh'
-              ? 'pointer-events-none opacity-30'
-              : showFiles
-                ? 'bg-accent text-foreground'
-                : 'text-muted-foreground hover:bg-accent/50',
-          ]"
-          :title="activeGroup?.kind === 'ssh'
-            ? 'SSH 主机暂无文件面板'
-            : showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
+          :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
+          :title="showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
           @click="showFiles = !showFiles"
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
