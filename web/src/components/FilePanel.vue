@@ -130,8 +130,8 @@ const installTarget = computed<string | null>(() => {
 const canInstall = computed(() => !targetId().startsWith('s:') && !!installTarget.value)
 
 // —— 添加为技能（pull 反向：就地收进库）——把一个含 SKILL.md 的目录直接收进技能库
-// （目录来源 = 自动更新：源改了库里跟走；此后任何目标都能「安装技能」拉它）。服务组没有
-// 可解析的来源形态，不出现入口。
+// （拷一份静态快照，与来源解耦；此后任何目标都能「安装技能」拉它，更新在技能中心）。
+// 服务组没有可解析的来源形态，不出现入口。
 const regBusy = ref(false)
 const canRegistry = computed(() => !targetId().startsWith('s:'))
 // 当前目录本身是技能（含 SKILL.md）→ 工具栏露出「就地添加」快捷钮。
@@ -143,7 +143,7 @@ async function registerSkillFrom(fromPath: string) {
   regBusy.value = true
   try {
     const r = await registryAddSkill(from)
-    toast(`已添加：${r.name}（目录来源，自动更新）`)
+    toast(`已添加：${r.name}（快照——更新在技能中心）`)
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('close')

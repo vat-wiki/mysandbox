@@ -147,13 +147,11 @@ export interface SkillHubState {
 
 // 技能库（registry，server/skillSync.ts）：唯一技能真相源——放什么由用户定
 // （自产 + 外部导入），库内每技能一份独立副本（STATE_DIR/skills/registry/<名>/，
-// 与来源解耦），分发以库为源。follow 条目每次同步先从 from 刷新库内容（本地目录
-// 来源 = 跟随开发中的技能；源删了副本冻结保留）。这里只存成员元数据，技能本体在文件系统。
+// 与来源解耦），分发以库为源。库是静态快照：入库一律拷贝，来源改动不自动进库，
+// 更新走显式动作（registryUpdate，从 from 重拉）。这里只存成员元数据，技能本体在文件系统。
 export interface SkillRegistryMeta {
   from: string; // 导入来源（原样记录：<容器>:<路径> / 宿主路径 / git URL#子路径）
   importedAt: string;
-  // true = 跟随刷新（目录来源，registryAdd 默认）；undefined = 快照（git 导入）。
-  follow?: boolean;
 }
 
 interface StateShape {

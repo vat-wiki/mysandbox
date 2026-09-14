@@ -220,13 +220,13 @@ export interface SkillInventoryView {
 }
 export const getSkillInventory = () => api('/api/skills/inventory') as Promise<SkillInventoryView>
 
-// —— 技能库（registry）：唯一技能真相源，分发以库为源 ——
+// —— 技能库（registry）：唯一技能真相源，分发以库为源。库是静态快照（来源改动
+// 不自动进库），显式更新走 registryUpdateSkill（重拉来源 + 全量分发）。——
 export interface SkillRegistryItem {
   name: string
   description: string
   from: string // 导入来源（<容器>:<路径> / 宿主路径 / git URL#子路径）
   importedAt: string
-  follow: boolean // true = 跟随刷新（目录来源）；false = 快照（git 导入）
   exists: boolean // false = 目录被外部删了（元数据残留）
 }
 export interface SkillGitCandidate {
@@ -238,6 +238,8 @@ export const registryAddSkill = (from: string, force = false) =>
   postJson('/api/skills/registry', { from, force }) as Promise<{ name: string; replaced: boolean }>
 export const registryRemoveSkill = (name: string) =>
   api(`/api/skills/registry/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<SkillRegistryItem[]>
+export const registryUpdateSkill = (name: string) =>
+  postJson(`/api/skills/registry/${encodeURIComponent(name)}/update`, {}, 120_000) as Promise<{ name: string; sync: SkillSyncResult }>
 export const registryProbeGit = (url: string) =>
   postJson('/api/skills/registry/git', { url }, 120_000) as Promise<{ candidates: SkillGitCandidate[] }>
 export const registryImportGit = (url: string, path: string, force = false) =>

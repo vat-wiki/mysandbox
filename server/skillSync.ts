@@ -3,14 +3,17 @@
 // 属主天然正确；容器不必在跑）。
 //
 // 模型（两个一等概念）：
-// ① 技能库（STATE_DIR/skills/registry/<名>/）：放什么由用户定。目录来源入库 =
-//    跟随（follow，每次同步先从来源刷新库内容——开发中的技能改了即生效，源删了
-//    副本冻结保留）；git 导入 = 快照（重导入即更新）。库内同名唯一 → 无冲突概念。
+// ① 技能库（STATE_DIR/skills/registry/<名>/）：**静态快照中心**——入库（目录/git）
+//    一律拷贝快照，与来源解耦；来源的改动**不**订阅、不自动进库，更新走显式动作
+//    （registryUpdate：面板行「更新」/ mysandbox skills update / POST .../update）
+//    ——从 meta.from 重拉一份替换库内容，更新即全量分发。源没了更新报错，库副本
+//    冻结保留。库内同名唯一 → 无冲突概念。
 // ② 安装规则（sidecar state.skillsHub.rules）：{库内技能集合, 去向, 范围}。去向
 //    唯一（同 to 不允许两条规则）；全局去向铺本机 + 全部受管容器，项目去向只装已有
 //    该项目的目标（落点逐级向上探测，项目克隆到哪 skill 跟到哪；宿主与容器共享同一条
 //    项目规则），容器 start 事件补发闭环停机期间克隆的项目。规则删除/改去向 → 孤儿
-//    清理按清单把分发过的条目从目标收回。
+//    清理按清单把分发过的条目从目标收回。**订阅单向：只订阅库，不订阅来源**——库
+//    内容一变（显式更新/手改库目录），安装位置自动跟走。
 //
 // 同步两步（每条规则同构）：
 //   库 → 聚合副本（skills/hub-<hash(to)>/，规则技能集的有效子集；集合里已无的条目删）
@@ -19,13 +22,13 @@
 // 文件级 size+内容比对、变才写（与 seedContainerCli 的自更新语义一致）。
 //
 // 旧版迁移（ensureLegacyMigrated，一次性）：config.skills.sync 静态规则与 targets
-// 模型下挂的目录源，逐技能入库（follow）后并进对应规则；'registry' 源展开为库成员
+// 模型下挂的目录源，逐技能入库（快照）后并进对应规则；'registry' 源展开为库成员
 // 名单。迁移后 config 键被忽略（state.staticMigratedAt 记账），双真相源不复存在。
 //
-// 触发点（全自动）：服务启动 sweep（cli.ts）+ fs.watch（库目录 + 各 follow 条目的
-// 来源目录）+ create() 建容器后补发 + 容器 start 事件补发（lifecycle.ts /
-// startSkillSyncEvents）。手动：mysandbox skills sync / POST /api/skills/sync / 面板
-// 「立即同步」。同步全程互斥（模块级 promise 链）。
+// 触发点（全自动）：服务启动 sweep（cli.ts）+ fs.watch（库目录——手改库也分发出去）
+// + create() 建容器后补发 + 容器 start 事件补发（lifecycle.ts / startSkillSyncEvents）。
+// 手动：mysandbox skills sync / POST /api/skills/sync / 面板「立即同步」。同步全程
+// 互斥（模块级 promise 链）。
 import { existsSync, watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join, dirname } from 'node:path';
@@ -291,27 +294,9 @@ async function pruneStale(): Promise<void> {
   }
 }
 
-// —— 库跟随刷新（follow 条目每次同步先从来源刷新库内容）——
-
-// follow 条目：目录来源 = 每次同步从 from 镜像进库（开发中的技能改了即生效）；
-// 来源消失 = 冻结（库内容保留，meta.from 仍可看到出处）。git 快照条目不在此列。
-async function refreshLibrary(cfg: Config): Promise<void> {
-  const reg = await getSkillRegistry();
-  for (const [name, meta] of Object.entries(reg.skills)) {
-    if (!meta.follow) continue;
-    try {
-      const { hostPath } = resolveSyncSource(cfg, meta.from);
-      if (!existsSync(hostPath)) continue; // 来源没了：冻结保留
-      await syncTree(hostPath, join(REGISTRY_DIR, name));
-    } catch (e) {
-      log.warn({ skill: name, from: meta.from, err: String(e) }, 'skills library refresh failed');
-    }
-  }
-}
-
 // —— 旧版迁移（一次性）——
 
-// 旧目录源 → 库条目（follow）→ 并进 to 对应规则的技能名单。from 目录本身含
+// 旧目录源 → 库条目（快照）→ 并进 to 对应规则的技能名单。from 目录本身含
 // SKILL.md = 单技能；否则按 skills 目录处理（扫顶层含 SKILL.md 的子目录）。
 // 库内同名的条目不重导入（库内容是权威），但名字照样并进规则。
 async function legacySourceIntoLibrary(
@@ -359,28 +344,16 @@ function fromForDir(from: string, dir: string): string {
   return dir === from ? from : `${from.replace(/\/+$/, '')}/${basename(dir)}`;
 }
 
-// 一次性迁移：① 存量库条目回填 follow（目录来源 = 跟随；git 来源保持快照——旧
-// meta 没有这个标记，按来源形态推）；② config.skills.sync 静态规则（staticMigratedAt
-// 记账）；③ targets 模型 rule.legacy 遗留源（state.ts 形状迁移时挂上）。'registry'
+// 一次性迁移：① config.skills.sync 静态规则（staticMigratedAt 记账）；② targets
+// 模型 rule.legacy 遗留源（state.ts 形状迁移时挂上）。'registry'
 // 源展开为库成员名单；目录源逐技能入库。迁移后双真相源不复存在，config 键被忽略。
 function isGitFrom(from: string): boolean {
   return /^(https?:\/\/|git@|ssh:\/\/)/.test(from);
 }
 
 async function ensureLegacyMigrated(cfg: Config): Promise<void> {
-  // ① 存量库条目 follow 回填（新代码写入的都带标记，只有旧 meta 需要推一次）。
-  const reg0 = await getSkillRegistry();
-  let regDirty = false;
-  for (const meta of Object.values(reg0.skills)) {
-    if (meta.follow === undefined && meta.from !== REGISTRY_FROM && !isGitFrom(meta.from)) {
-      meta.follow = true;
-      regDirty = true;
-    }
-  }
-  if (regDirty) await setSkillRegistry({ skills: reg0.skills });
-
   const hub = await getSkillHub();
-  let dirty = regDirty;
+  let dirty = false;
   if (!hub.staticMigratedAt && (cfg.skills?.sync ?? []).length) {
     for (const r of cfg.skills?.sync ?? []) {
       let target = hub.rules.find((x) => x.to === r.to);
@@ -531,7 +504,6 @@ async function syncRules(cfg: Config): Promise<{ ok: boolean; rules: SkillRuleRe
 async function runSync(cfg: Config): Promise<SkillSyncResult> {
   const started = Date.now();
   await ensureLegacyMigrated(cfg);
-  await refreshLibrary(cfg);
   const { rules, ok } = await syncRules(cfg);
   await pruneStale();
   return { ok, rules, durationMs: Date.now() - started };
@@ -543,13 +515,12 @@ export async function syncSkillsAll(cfg: Config): Promise<SkillSyncResult> {
 }
 
 // 单目标补发（create()/容器 start 事件/宿主就地安装后调用；本机传 HOST_TARGET）：
-// 库刷新/聚合照跑（副本保鲜），只分发到这一个目标（项目目标按范围口径判这台要不要）。
+// 聚合照跑（副本保鲜），只分发到这一个目标（项目目标按范围口径判这台要不要）。
 // 尽力而为不抛。
 export async function syncContainerSkills(cfg: Config, name: string): Promise<void> {
   await exclusive(async () => {
     try {
       await ensureLegacyMigrated(cfg);
-      await refreshLibrary(cfg);
       const home = name === HOST_TARGET ? homedir() : getEngine(cfg).hostHomePath(cfg, name);
       if (!home || !existsSync(home)) return;
       const hub = await getSkillHub();
@@ -669,10 +640,10 @@ export async function deleteSkillRule(_cfg: Config, id: string): Promise<void> {
   await setSkillHub(hub);
 }
 
-// —— watch（实时分发的自动触发器，按源动态注册）——
+// —— watch（实时分发的自动触发器）——
 
-// watchers 注册表：key = 'registry'（库目录，外部手改也能分发出去）/ 'reg:<名>'
-// （follow 条目的来源目录，入库/出库时同步挂/摘）。值 = watcher + debounce timer。
+// watcher 注册表：key = 'registry'（库目录——库是分发源头，显式更新写进来的与
+// 用户手改的都从这里触发再分发）。值 = watcher + debounce timer。
 const watchers = new Map<string, { w: FSWatcher; timer?: ReturnType<typeof setTimeout> }>();
 // CLI 一次性命令（mysandbox skills sync 迁移入库会走 registryAdd）不挂 watch——
 // Node v24 的 recursive fs.watch 连 unref 都释放不了事件循环，挂了进程就退不出去。
@@ -715,28 +686,10 @@ function watchSkillSource(cfg: Config, key: string, from: string): void {
   }
 }
 
-function unwatchSkillSource(key: string): void {
-  const e = watchers.get(key);
-  if (!e) return;
-  if (e.timer) clearTimeout(e.timer);
-  e.w.close();
-  watchers.delete(key);
-}
-
-// 全部 follow 条目的来源目录挂 watch（启动 sweep + 入库后共用；已挂的 key 幂等跳过）。
-function watchFollowSources(cfg: Config): void {
-  void getSkillRegistry().then((reg) => {
-    for (const [name, meta] of Object.entries(reg.skills)) {
-      if (meta.follow) watchSkillSource(cfg, `reg:${name}`, meta.from);
-    }
-  });
-}
-
-// 服务启动：技能库目录 + 各 follow 条目的来源目录挂 watch（库目录不存在时挂不上
-// ——首次入库时 registryAdd 会兜底补挂）。
+// 服务启动：技能库目录挂 watch（库目录不存在时挂不上——首次入库时 registryAdd
+// 会兜底补挂）。
 export function startSkillSyncWatch(cfg: Config): void {
   watchSkillSource(cfg, 'registry', REGISTRY_FROM);
-  watchFollowSources(cfg);
 }
 
 // 容器 start/restart 事件补发（startSkillSyncEvents，cli.ts 装配）：项目目标的
@@ -800,6 +753,30 @@ export async function runSkillsCommand(cfg: Config): Promise<void> {
   if (!r.ok) process.exit(1);
 }
 
+// CLI：mysandbox skills update [名…]——显式更新库条目（快照语义下库不会自己变；
+// 不带名字 = 全部）。更新完统一同步分发一次。
+export async function runSkillsUpdateCommand(cfg: Config, args: string[]): Promise<void> {
+  disableSkillWatch();
+  const reg = await getSkillRegistry();
+  const names = args.length ? args : Object.keys(reg.skills);
+  if (!names.length) {
+    process.stdout.write('>> 库是空的——面板「AI 工具 → 技能中心」入库技能后才能更新\n');
+    return;
+  }
+  let failed = false;
+  for (const name of names) {
+    try {
+      await registryUpdate(cfg, name, { sync: false });
+      process.stdout.write(`>> 已更新：${name}（来源 ${reg.skills[name]?.from ?? '?'})\n`);
+    } catch (e) {
+      failed = true;
+      process.stdout.write(`>> 更新失败：${name} — ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+  }
+  await runSkillsCommand(cfg);
+  if (failed) process.exit(1);
+}
+
 // —— 技能库（registry）：唯一技能真相源。入库 / 出库 / 列表 / git 导入 ——
 
 // 库目录：库内每技能一份独立副本，分发以库为源。
@@ -815,41 +792,79 @@ async function readRegistryMeta(): Promise<Record<string, SkillRegistryMeta>> {
   return (await getSkillRegistry()).skills;
 }
 
-// 入库：把一个技能目录（必须含 SKILL.md）拷进库。目录来源 = 跟随（follow，每次
-// 同步先从来源刷新库内容；源删了副本冻结保留）；git 来源走 registryImportGit（快照）。
+// 把 srcDir 快照进库（校验 SKILL.md）。name 显式传入——更新路径保持条目名稳定，
+// 不随来源目录改名漂移。
+async function snapshotIntoLibrary(name: string, srcDir: string): Promise<void> {
+  const st = await stat(srcDir).catch(() => null);
+  if (!st?.isDirectory()) throw new Error(`技能目录不存在：${srcDir}`);
+  if (!existsSync(join(srcDir, 'SKILL.md'))) throw new Error(`不是技能目录（缺 SKILL.md）：${srcDir}`);
+  await mkdir(REGISTRY_DIR, { recursive: true });
+  await syncTree(srcDir, join(REGISTRY_DIR, name));
+}
+
+// 入库：把一个技能目录（必须含 SKILL.md）拷进库。**一律快照**——来源改动不自动
+// 进库（不订阅来源），更新走 registryUpdate。git 来源走 registryImportGit。
 // name = 目录末段；库内同名 = 覆盖（force=false 时拒绝，由调用方确认后重试）。
 export async function registryAdd(cfg: Config, from: string, force = false): Promise<{ name: string; replaced: boolean }> {
   if (from === REGISTRY_FROM) throw new Error('库不能以自己为来源入库');
   const { hostPath } = resolveSyncSource(cfg, from);
-  const st = await stat(hostPath).catch(() => null);
-  if (!st?.isDirectory()) throw new Error(`技能目录不存在：${hostPath}`);
-  if (!existsSync(join(hostPath, 'SKILL.md'))) throw new Error(`不是技能目录（缺 SKILL.md）：${hostPath}`);
   const name = basename(hostPath.replace(/\/+$/, ''));
   if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
-  await mkdir(REGISTRY_DIR, { recursive: true });
   const dst = join(REGISTRY_DIR, name);
   const replaced = existsSync(dst);
   if (replaced && !force) throw new Error(`库中已有同名技能：${name}（覆盖请确认）`);
-  await syncTree(hostPath, dst);
+  await snapshotIntoLibrary(name, hostPath);
   const meta = await readRegistryMeta();
-  meta[name] = { from, importedAt: new Date().toISOString(), follow: true };
+  meta[name] = { from, importedAt: new Date().toISOString() };
   await setSkillRegistry({ skills: meta });
-  // watch 兜底挂上（库目录可能刚创建；follow 来源跟随刷新——幂等，已挂 key 直接返回）。
+  // watch 兜底挂上（库目录可能刚创建；幂等，已挂 key 直接返回）。
   watchSkillSource(cfg, 'registry', REGISTRY_FROM);
-  watchSkillSource(cfg, `reg:${name}`, from);
   log.info({ name, from }, 'skill added to registry');
   return { name, replaced };
 }
 
-// 出库：删目录 + 删元数据 + 摘来源 watch。已在分发中的不受影响——下次同步按
-// 「聚合副本里已消失」从容器清理。
+// 出库：删目录 + 删元数据。已在分发中的不受影响——下次同步按「聚合副本里已消失」
+// 从容器清理。
 export async function registryRemove(name: string): Promise<void> {
   if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
   await rm(join(REGISTRY_DIR, name), { recursive: true, force: true });
   const meta = await readRegistryMeta();
   delete meta[name];
   await setSkillRegistry({ skills: meta });
-  unwatchSkillSource(`reg:${name}`);
+}
+
+// 显式更新库条目（快照语义下库不会自己变——这是来源 →库的唯一更新通道）：从
+// meta.from 重拉一份替换库内容。git 源（url#subPath）弃 /tmp 缓存 clone 重拉最新；
+// 目录源重新镜像。源没了 → 报错（库副本冻结保留）。opts.sync = 更新后全量分发
+// （订阅侧语义：库变 → 安装位置跟走）；CLI 批量更新传 false，最后统一同步一次。
+export async function registryUpdate(
+  cfg: Config,
+  name: string,
+  opts: { sync?: boolean } = {},
+): Promise<{ name: string; sync: SkillSyncResult | null }> {
+  if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
+  const meta = await readRegistryMeta();
+  const m = meta[name];
+  if (!m) throw new Error(`库中没有这个技能：${name}`);
+  let srcDir: string;
+  if (isGitFrom(m.from)) {
+    const hash = m.from.indexOf('#');
+    const url = hash > 0 ? m.from.slice(0, hash) : m.from;
+    const subPath = hash > 0 ? m.from.slice(hash + 1) : '.';
+    await rm(gitTmpDir(url), { recursive: true, force: true }); // 缓存 clone 弃掉——更新要最新
+    const repo = await ensureGitClone(url);
+    srcDir = subPath === '.' ? repo : join(repo, subPath);
+  } else {
+    srcDir = resolveSyncSource(cfg, m.from).hostPath;
+  }
+  await snapshotIntoLibrary(name, srcDir);
+  // 显式重建字段（不 spread）——旧 meta 里可能残留已废弃的 follow 键，顺手洗掉。
+  meta[name] = { from: m.from, importedAt: new Date().toISOString() };
+  await setSkillRegistry({ skills: meta });
+  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
+  log.info({ name, from: m.from }, 'skill updated in registry');
+  const sync = opts.sync === false ? null : await syncSkillsAll(cfg);
+  return { name, sync };
 }
 
 export interface SkillRegistryItem {
@@ -857,7 +872,6 @@ export interface SkillRegistryItem {
   description: string;
   from: string; // 导入来源（元数据；缺失 = 空串）
   importedAt: string;
-  follow: boolean; // 跟随刷新（目录来源）；false = 快照（git 导入）
   exists: boolean; // 目录还在（false = 元数据残留，展示为缺失）
 }
 
@@ -884,7 +898,6 @@ export async function registryList(): Promise<SkillRegistryItem[]> {
       description,
       from: meta[name]?.from ?? '',
       importedAt: meta[name]?.importedAt ?? '',
-      follow: meta[name]?.follow ?? false,
       exists: true,
     });
   }
@@ -896,7 +909,6 @@ export async function registryList(): Promise<SkillRegistryItem[]> {
         description: '',
         from: meta[name].from,
         importedAt: meta[name].importedAt,
-        follow: meta[name].follow ?? false,
         exists: false,
       });
     }
@@ -954,7 +966,7 @@ export async function registryProbeGit(url: string): Promise<SkillGitCandidate[]
 }
 
 // 按探测结果导入：subPath = registryProbeGit 返回的 path（'.' = repo 根）。
-// git 来源 = 快照（follow 不设）——版本化在仓库侧，更新 = 重新导入。
+// git来源 = 快照——版本化在仓库侧，更新走 registryUpdate（弃缓存 clone 重拉）。
 export async function registryImportGit(
   cfg: Config,
   url: string,
@@ -963,16 +975,12 @@ export async function registryImportGit(
 ): Promise<{ name: string; replaced: boolean }> {
   const repo = await ensureGitClone(url);
   const src = subPath === '.' ? repo : join(repo, subPath);
-  if (!existsSync(join(src, 'SKILL.md'))) throw new Error(`候选不存在或缺 SKILL.md：${url}#${subPath}`);
-  const st = await stat(src).catch(() => null);
-  if (!st?.isDirectory()) throw new Error(`技能目录不存在：${src}`);
   const name = basename(src.replace(/\/+$/, ''));
   if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
-  await mkdir(REGISTRY_DIR, { recursive: true });
   const dst = join(REGISTRY_DIR, name);
   const replaced = existsSync(dst);
   if (replaced && !force) throw new Error(`库中已有同名技能：${name}（覆盖请确认）`);
-  await syncTree(src, dst);
+  await snapshotIntoLibrary(name, src);
   const meta = await readRegistryMeta();
   meta[name] = { from: `${url}#${subPath}`, importedAt: new Date().toISOString() };
   await setSkillRegistry({ skills: meta });

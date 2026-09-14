@@ -7,8 +7,9 @@
 // 添加面板三来源：扫描（本机/容器里已装、未纳管的技能，有货时打开默认落此页）
 // / 目录 / git——「扫描」只是添加的发现型入口，与手填路径走同一 API。
 // 顶部不再铺概念说明——收在头部 ？tooltip（空态引导见空库文案）。
-// 库语义：目录来源 = 自动更新（源改库跟，源删冻结）；git 导入 = 快照。库内同名
-// 唯一，无冲突概念。全自动触发（watch + 启动追平 + 建容器/容器 start 补发）。
+// 库语义：**静态快照中心**——入库（目录/git）一律拷贝，来源改动不自动进库（不订阅
+// 来源）；更新 = 显式动作（行展开「更新」，重拉来源 + 全量分发）。安装位置订阅库：
+// 库一变自动跟走。全自动触发（watch 库目录 + 启动追平 + 建容器/容器 start 补发）。
 import { ref, computed, onMounted } from 'vue'
 import {
   getSkillHub,
@@ -16,6 +17,7 @@ import {
   getSkillRegistry,
   registryAddSkill,
   registryRemoveSkill,
+  registryUpdateSkill,
   registryProbeGit,
   registryImportGit,
   addSkillRule,
@@ -163,7 +165,7 @@ async function submitImportDir() {
   err.value = ''
   try {
     const r = await registryAddSkill(from)
-    toast(`${r.replaced ? '已覆盖添加' : '已添加'}：${r.name}（目录来源，自动更新）`)
+    toast(`${r.replaced ? '已覆盖添加' : '已添加'}：${r.name}（快照——更新点行内「更新」）`)
     impDir.value = ''
     await loadReg()
   } catch (e) {
@@ -197,7 +199,7 @@ async function doImportGit() {
   err.value = ''
   try {
     const r = await registryImportGit(url, impPicked.value)
-    toast(`${r.replaced ? '已覆盖添加' : '已添加'}：${r.name}（git 快照，更新请重新导入）`)
+    toast(`${r.replaced ? '已覆盖添加' : '已添加'}：${r.name}（快照——更新点行内「更新」）`)
     impUrl.value = ''
     impCandidates.value = null
     impPicked.value = ''
@@ -271,6 +273,31 @@ async function doDeleteReg() {
     await load()
   } catch (e) {
     fail(e)
+  }
+}
+
+// —— 显式更新（库是静态快照：来源改动不自动进库，这是来源 → 库的唯一更新通道）。
+// 更新即全量分发——订阅侧只认库，装出去的自动跟走。 ——
+
+const updatingSkill = ref('')
+async function updateSkill(s: SkillRegistryItem) {
+  if (updatingSkill.value) return
+  updatingSkill.value = s.name
+  err.value = ''
+  try {
+    const r = await registryUpdateSkill(s.name)
+    const containers = r.sync.rules.flatMap((x) => x.containers)
+    const bad = containers.filter((c) => !c.ok)
+    if (bad.length) {
+      toast.error(`库已更新，分发部分失败：${bad.map((f) => `${f.name === '__host__' ? '本机' : f.name} — ${f.error}`).join('；')}`)
+    } else {
+      toast(`已更新：${s.name}（已按安装位置分发）`)
+    }
+    await Promise.all([load(), loadReg(), loadInv()])
+  } catch (e) {
+    fail(e)
+  } finally {
+    updatingSkill.value = ''
   }
 }
 
@@ -380,7 +407,7 @@ function spotRows(loc: SkillInventoryLocation): InvSpotRow[] {
   return [...map.values()]
 }
 
-// —— 立即同步（watch/启动追平之外的手动兜底；顺带刷新 follow 条目）——
+// —— 立即同步（watch/启动追平之外的手动兜底）——
 const syncing = ref(false)
 async function syncNow() {
   if (syncing.value) return
@@ -425,7 +452,7 @@ async function syncNow() {
         <div class="flex-1" />
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="技能库是中心——库里的每个技能看它装到了哪。目录来源自动更新（源改动库跟着刷新再安装），git 导入是快照；安装、容器新建/重启全自动追平。最顺手的添加入口在文件面板：进到项目目录点「安装技能」就地添加。"
+          title="技能库是中心——库里的每个技能看它装到了哪。库是静态快照：来源改动不自动进库，更新走行内「更新」（重拉来源并分发）；安装位置订阅库，库一变自动跟走；容器新建/重启全自动追平。最顺手的添加入口在文件面板：进到项目目录点「安装技能」就地添加。"
         ><Info class="size-3.5" /></span>
         <Button
           variant="ghost"
@@ -441,7 +468,7 @@ async function syncNow() {
           variant="ghost"
           size="icon-xs"
           class="shrink-0 text-muted-foreground hover:text-foreground"
-          title="立即同步（平时全自动——watch/启动追平/建容器补发；这里是手动兜底，顺带刷新自动更新条目）"
+          title="立即同步（平时全自动——watch/启动追平/建容器补发；这里是手动兜底）"
           :disabled="syncing"
           @click="syncNow"
         >
@@ -519,7 +546,7 @@ async function syncNow() {
                   variant="ghost"
                   size="icon-xs"
                   class="shrink-0 text-muted-foreground hover:text-foreground"
-                  title="添加：拷一份进技能库（目录来源，自动更新）"
+                  title="添加：拷一份快照进技能库（来源改动不自动进库，更新走行内「更新」）"
                   @click="addToRegistry(loc, s.dir, row.spot)"
                 >
                   <Library class="size-3" />
@@ -548,7 +575,7 @@ async function syncNow() {
             <Button size="sm" class="h-8 shrink-0" :disabled="impBusy || !impDir.trim()" @click="submitImportDir">添加</Button>
           </div>
           <p class="text-[10px] leading-relaxed text-muted-foreground/70">
-            目录来源 = 自动更新：源目录改动自动刷新库再安装；源删了库内容冻结保留。
+            目录来源也是快照：拷进库即与来源解耦，源改动不自动进库；要更新在技能行展开里点「更新」。
           </p>
         </template>
         <template v-if="importMode === 'git'">
@@ -577,7 +604,7 @@ async function syncNow() {
             <Button size="sm" class="h-7" :disabled="impBusy || !impPicked" @click="doImportGit">导入选中</Button>
           </div>
           <p class="text-[10px] leading-relaxed text-muted-foreground/70">
-            git 导入 = 快照（版本在仓库侧）；要更新重新导入即可。库内同名会提示覆盖。
+            git 导入 = 快照（版本在仓库侧）；要更新在技能行展开里点「更新」（重拉最新）。库内同名会提示覆盖。
           </p>
         </template>
       </div>
@@ -606,13 +633,7 @@ async function syncNow() {
             :title="`来源：${s.from}`"
           />
           <span class="shrink-0 font-mono text-xs" :class="s.exists ? 'font-medium' : 'text-muted-foreground/50 line-through'">{{ s.name }}</span>
-          <Badge
-            v-if="s.exists"
-            variant="outline"
-            class="shrink-0 border-transparent px-1 text-[10px]"
-            :class="s.follow ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'"
-            :title="s.follow ? '自动更新：源目录改动，库跟着刷新再安装' : '快照：git 导入的副本，更新请重新导入'"
-          >{{ s.follow ? '自动更新' : '快照' }}</Badge>
+          <Badge v-if="s.exists" variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground" title="静态快照——与来源解耦，更新走行内「更新」">快照</Badge>
           <Badge v-else variant="outline" class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive">缺失</Badge>
           <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
           <!-- 安装位置概要：核心语义是「看它装到了哪」，收起态也要能瞥见；多则截断，行展开看全 -->
@@ -686,15 +707,16 @@ async function syncNow() {
 
             <div class="flex items-center gap-1">
               <Button
-                v-if="s.follow"
+                v-if="s.from"
                 variant="ghost"
                 size="xs"
                 class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-                title="立即从来源刷新这个技能（全量同步）"
-                :disabled="syncing"
-                @click="syncNow"
+                :title="`从来源重拉快照并分发（${s.from}）`"
+                :disabled="!!updatingSkill"
+                @click="updateSkill(s)"
               >
-                <RefreshCw class="size-3" :class="syncing ? 'animate-spin' : ''" /> 刷新
+                <RefreshCw class="size-3" :class="updatingSkill === s.name ? 'animate-spin' : ''" />
+                {{ updatingSkill === s.name ? '更新中…' : '更新' }}
               </Button>
               <div class="flex-1" />
               <Button
@@ -709,8 +731,21 @@ async function syncNow() {
             </div>
           </template>
           <template v-else>
-            <p class="text-[10px] leading-relaxed text-muted-foreground/70">内容缺失（来源不在了）——移除后可重新添加。</p>
-            <div class="flex justify-end">
+            <p class="text-[10px] leading-relaxed text-muted-foreground/70">内容缺失——来源还在的话点「更新」重拉一份，否则移除后重新添加。</p>
+            <div class="flex items-center gap-1">
+              <Button
+                v-if="s.from"
+                variant="ghost"
+                size="xs"
+                class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                :title="`从来源重拉快照并分发（${s.from}）`"
+                :disabled="!!updatingSkill"
+                @click="updateSkill(s)"
+              >
+                <RefreshCw class="size-3" :class="updatingSkill === s.name ? 'animate-spin' : ''" />
+                {{ updatingSkill === s.name ? '更新中…' : '更新' }}
+              </Button>
+              <div class="flex-1" />
               <Button
                 variant="ghost"
                 size="xs"

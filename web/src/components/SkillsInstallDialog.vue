@@ -135,9 +135,9 @@ async function install() {
             <span class="shrink-0 pt-0.5 font-mono">{{ s.name }}</span>
             <Badge
               variant="outline"
-              class="mt-0.5 shrink-0 border-transparent px-1 text-[9px]"
-              :class="s.follow ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'"
-            >{{ s.follow ? '自动更新' : '快照' }}</Badge>
+              class="mt-0.5 shrink-0 border-transparent bg-muted px-1 text-[9px] text-muted-foreground"
+              title="静态快照——来源改动不自动进库，更新在技能中心"
+            >快照</Badge>
             <span class="min-w-0 flex-1 pt-0.5 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</span>
           </label>
         </div>

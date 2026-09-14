@@ -10,7 +10,7 @@ import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
-import { runSkillsCommand, runSkillsListCommand, startSkillSyncWatch, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
+import { runSkillsCommand, runSkillsListCommand, runSkillsUpdateCommand, startSkillSyncWatch, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { applyAiAll, startAiConfigEvents } from './aiconfig.js';
 import { proxyBases } from './proxy.js';
@@ -95,11 +95,16 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
       List peer exec targets (host, system containers, docker services).
 
   mysandbox skills sync
-      Refresh the skill library (follow-mode entries) and distribute skills to
-      all managed containers per the install rules (host-side file copy;
-      containers need not be running). While the server runs, the library and
-      follow-mode source directories are watched and changes distribute
+      Distribute the skill library to all managed containers per the install
+      rules (host-side file copy; containers need not be running). While the
+      server runs, the library directory is watched and changes distribute
       automatically.
+
+  mysandbox skills update [name...]
+      Re-pull snapshots for library skills from their import sources (all
+      skills, or just the named ones) and distribute them. The library is a
+      static snapshot store — source changes never auto-propagate; this is
+      the explicit update path.
 
   mysandbox skills ls
       List installed skills on the host and every managed container
@@ -160,11 +165,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 一次性子命令：mysandbox skills [sync|ls]（宿主侧文件操作，不启动 server、容器不必在跑）。
+  // 一次性子命令：mysandbox skills [sync|update|ls]（宿主侧文件操作，不启动 server、容器不必在跑）。
   if (process.argv[2] === 'skills') {
     const { config } = await loadConfig();
     if (process.argv[3] === 'ls') {
       await runSkillsListCommand(config);
+    } else if (process.argv[3] === 'update') {
+      await runSkillsUpdateCommand(config, process.argv.slice(4));
     } else {
       await runSkillsCommand(config);
     }
@@ -228,9 +235,10 @@ async function main(): Promise<void> {
   const app = await buildServer(config);
   // 存量容器补种子容器内 mysandbox 命令（幂等；sidecar 已知且 dataRoot 可见的才写）。
   await sweepContainerCli(config);
-  // skills 同步：启动追平一次（旧版迁移 + 库刷新 + 规则分发，容器不必在跑），随后
-  // watch（库目录 + follow 来源）实时分发；容器 start 事件补发（项目目标「只同步到
-  // 已有该项目的容器」的闭环——停机期间克隆的项目，启动即补齐）。
+  // skills 同步：启动追平一次（旧版迁移 + 规则分发，容器不必在跑），随后 watch
+  // （库目录）实时分发；容器 start 事件补发（项目目标「只同步到已有该项目的容器」
+  // 的闭环——停机期间克隆的项目，启动即补齐）。库是静态快照：来源不 watch，更新
+  // 走显式动作（mysandbox skills update / 面板「更新」）。
   void syncSkillsAll(config);
   startSkillSyncWatch(config);
   startSkillSyncEvents(config);
