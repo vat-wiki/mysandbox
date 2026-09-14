@@ -290,5 +290,5 @@ cat >&2 <<EOF
 
 模板 $NAME 就绪。接着做两件事：
   1) lxc-stop -n $NAME          # lxc-copy 对运行中的源静默失败，必须先停
-  2) 在 ~/.config/mysandbox/config.yaml 里设 engine: lxc 与 lxc.template: $NAME
+  2) 在 ~/.mysandbox/config.yaml 里设 engine: lxc 与 lxc.template: $NAME
 EOF

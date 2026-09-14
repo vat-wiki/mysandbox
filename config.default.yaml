@@ -1,5 +1,5 @@
 # mysandbox 默认配置（随包发布）。
-# 用户覆盖：~/.config/mysandbox/config.yaml（首启自动生成，含随机 token，权限 0600）。
+# 用户覆盖：~/.mysandbox/config.yaml（首启自动生成，含随机 token，权限 0600）。
 # 这里留空的字段（sshSource）首启按宿主用户自动填充。
 #
 # ⚠️ 安全：mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），拿不到
@@ -11,7 +11,7 @@
 # Web 监听。host 可设 auto（= 默认路由接口的 IPv4，绑本机网卡 IP）。
 # host 为任何非 127.0.0.1 值都会触发启动警告（见 CLI 输出）。
 # tls: 自签名 HTTPS（本地 CA + *.基域名/IP 泛叶子证书，首次启用自动生成到
-# ~/.local/share/mysandbox/tls/）。开启后浏览器需把 ca.crt 导入信任库一次
+# ~/.mysandbox/tls/）。开启后浏览器需把 ca.crt 导入信任库一次
 # （也可在 https://<域名>:<port>/tls-ca.crt 下载）；CLI/脚本用 --cacert 或 -k。
 listen:
   host: 127.0.0.1
@@ -109,7 +109,7 @@ dockerApi:
 # 监听绑网关 IP（<ipPool 前缀>.1，LAN 无路由可达），ufw 只放 LXC 网段（firewall.ts
 # 推导；改过端口记 sudo systemctl restart mysandbox-firewall）。凭据是独立
 # peerToken（首启随 config 生成、0600，不是控制台主 token），宿主自动种进每个
-# 受管容器的 ~/.config/mysandbox/peer.json（启动扫描/建容器时刷新）。
+# 受管容器的 ~/.config/mysandbox/peer.json（容器内路径，启动扫描/建容器时刷新）。
 peer:
   enabled: true
   port: 7331

@@ -91,7 +91,7 @@ if [ "$UNINSTALL" = 1 ]; then
   rm -f "$TARGET_HOME/.config/systemd/user/mysandbox.service"
   systemctl daemon-reload
   as_user systemctl --user daemon-reload 2>/dev/null || true
-  log "已卸载。保留：容器（~/.local/share/lxc）、config（~/.config/mysandbox）、state（~/.local/share/mysandbox）。"
+  log "已卸载。保留：容器（~/.local/share/lxc）、mysandbox 数据（~/.mysandbox）。"
   log "彻底清除请手工删上述目录 + /etc/subuid /etc/subgid 里的 ${TARGET_USER}:100000 行。"
   exit 0
 fi
@@ -157,10 +157,10 @@ fi
 # 装出来的环境若不覆盖，首启生成的池就在错误网段上（建容器分到不可达 IP）。
 # 只在 config **尚不存在**时写（已有 config 尊重不动，末尾探活后有不一致提醒）；
 # 故意只写 ipPool 一项——缺的 token/peerToken 由首启补生成并全量写回（config.ts）。
-CFG_SEED="$TARGET_HOME/.config/mysandbox/config.yaml"
+CFG_SEED="$TARGET_HOME/.mysandbox/config.yaml"
 if [ "$SUBNET_PREFIX" != "10.88.10" ] && [ ! -f "$CFG_SEED" ]; then
   log "3.5/8 config 预置（ipPool 对齐自定义网段 $SUBNET）"
-  mkdir -p "$TARGET_HOME/.config/mysandbox"
+  mkdir -p "$TARGET_HOME/.mysandbox"
   cat > "$CFG_SEED" <<EOF
 # scripts/install.sh --subnet $SUBNET 生成：仅覆盖 ipPool，其余字段首启按 default 生成。
 ipPool:
@@ -170,7 +170,7 @@ ipPool:
     - ${SUBNET_PREFIX}.1
     - ${SUBNET_PREFIX}.2
 EOF
-  chown -R "$TARGET_USER:" "$TARGET_HOME/.config/mysandbox"
+  chown -R "$TARGET_USER:" "$TARGET_HOME/.mysandbox"
   chmod 600 "$CFG_SEED"
 fi
 
@@ -256,7 +256,7 @@ loginctl enable-linger "$TARGET_USER" 2>/dev/null || true
 
 log "8/8 user service（mysandbox 本体）"
 # mkdir -p 会把缺失的父目录建成 root 属主（.config 原本不存在时）——devtest 的服务
-# 首启要往 ~/.config/mysandbox 写 config，属主残留 root 就是 EACCES crash 循环。
+# 首启要往 ~/.mysandbox 写 config，属主残留 root 就是 EACCES crash 循环。
 # 三个层级全部 chown（已属目标用户时幂等无害）。
 mkdir -p "$TARGET_HOME/.config/systemd/user"
 chown "$TARGET_USER:" "$TARGET_HOME/.config" "$TARGET_HOME/.config/systemd" "$TARGET_HOME/.config/systemd/user"
@@ -305,7 +305,7 @@ _auto_host() {
   [ -n "$ip" ] || ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{ split($4, a, "/"); print a[1]; exit }')"
   printf '%s' "${ip:-127.0.0.1}"
 }
-CFG="$TARGET_HOME/.config/mysandbox/config.yaml"
+CFG="$TARGET_HOME/.mysandbox/config.yaml"
 LISTEN_PORT=7321; LISTEN_HOST=127.0.0.1; LISTEN_TLS=0
 if [ -f "$CFG" ]; then
   LISTEN_PORT="$(grep -E '^[[:space:]]*port:' "$CFG" | head -n1 | awk '{print $2}' | grep -oE '[0-9]+' || echo 7321)"

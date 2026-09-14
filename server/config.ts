@@ -1,6 +1,6 @@
-// 配置加载：随包 default.yaml ← XDG 用户 config.yaml（首启生成 + 注入随机 token）← 环境变量。
+// 配置加载：随包 default.yaml ← ~/.mysandbox/config.yaml（首启生成 + 注入随机 token）← 环境变量。
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,9 +17,51 @@ export function xdgDataHome(): string {
   return process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
 }
 
-export const CONFIG_DIR = join(xdgConfigHome(), 'mysandbox');
+// 产品单一根目录（~/.mysandbox）：config.yaml、compose 底账、sidecar state.json、
+// AI 板块、日志、TLS 全在这——备份/搬机/清场一条命令（~/.docker/~/.ssh 同款哲学）。
+// ⚠️ 唯一例外：LXC 容器本体在 $HOME/.local/share/lxc——liblxc 硬编码该路径、不认
+// 任何配置（engine/lxc.ts 文件头），搬不动也不该搬。
+export const MYSANDBOX_DIR = join(homedir(), '.mysandbox');
+// 旧根（XDG 双目录）——只供一次性迁移读取。
+const LEGACY_CONFIG_DIR = join(xdgConfigHome(), 'mysandbox');
+const LEGACY_STATE_DIR = join(xdgDataHome(), 'mysandbox');
+
+// 一次性迁移（模块加载即做，先于 logger 开日志文件/任何读写）：把 XDG 时代的
+// config/（config.yaml、compose/）与 data/（state.json、ai/、logs/、tls/…）整并进
+// ~/.mysandbox。条目级 rename（同名撞车保新留旧——理论上不存在，防御性的话留给
+// 人工），搬完旧目录空了就 rmdir。非本机用户数据（liblxc 容器）不在迁移范围。
+function migrateToMysandboxDir(): void {
+  const legacyDirs = [LEGACY_STATE_DIR, LEGACY_CONFIG_DIR];
+  if (!legacyDirs.some((d) => existsSync(d))) return;
+  mkdirSync(MYSANDBOX_DIR, { recursive: true, mode: 0o700 });
+  for (const legacy of legacyDirs) {
+    if (!existsSync(legacy)) continue;
+    for (const e of readdirSync(legacy)) {
+      const dst = join(MYSANDBOX_DIR, e);
+      if (existsSync(dst)) {
+        process.stderr.write(`>> mysandbox 迁移：${e} 在新根已存在，保留新位置（旧条目留在 ${legacy}）\n`);
+        continue;
+      }
+      try {
+        renameSync(join(legacy, e), dst);
+      } catch (err) {
+        process.stderr.write(`>> mysandbox 迁移失败：${e} — ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
+    try {
+      rmdirSync(legacy); // 只在空时生效——有撞名残留就留给人工
+    } catch {
+      /* 非空：正常 */
+    }
+  }
+}
+migrateToMysandboxDir();
+
+// 历史别名：曾经 config 在 XDG config、状态在 XDG data，合并后同指 MYSANDBOX_DIR。
+// 两个名字保留——消费方语义不变（CONFIG_DIR = 配置根、STATE_DIR = 状态根）。
+export const CONFIG_DIR = MYSANDBOX_DIR;
 export const CONFIG_FILE = join(CONFIG_DIR, 'config.yaml');
-export const STATE_DIR = join(xdgDataHome(), 'mysandbox');
+export const STATE_DIR = MYSANDBOX_DIR;
 export const STATE_FILE = join(STATE_DIR, 'state.json');
 
 export const ConfigSchema = z.object({
