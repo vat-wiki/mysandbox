@@ -160,14 +160,6 @@ const missingTotal = computed(
   () => (hub.value?.rules ?? []).reduce((n, r) => n + ruleMissing(r), 0),
 )
 
-// 来源形态 → 身份色（与容器身份色同机制）：容器来源用容器色，宿主/git 用主色。
-function sourceHost(s: SkillRegistryItem): string {
-  if (s.from === 'registry') return 'host'
-  const idx = s.from.indexOf(':')
-  if (idx > 0 && /^[a-z0-9]/.test(s.from.slice(0, idx))) return s.from.slice(0, idx)
-  return 'host'
-}
-
 // —— 卡面状态 ——
 
 // 装到几处（= 含它的规则数）。
@@ -662,16 +654,9 @@ async function doDeleteRule() {
         <div
           v-for="s in reg"
           :key="s.name"
-          class="relative flex flex-col gap-2.5 overflow-hidden rounded-xl border p-4 pl-5.5 transition-colors"
+          class="relative flex flex-col gap-2.5 overflow-hidden rounded-xl border p-4 transition-colors"
           :class="!s.exists ? 'border-destructive/30 bg-destructive/5' : 'hover:border-line hover:bg-accent/20'"
         >
-          <!-- 身份色条：来源身份色（与侧栏容器卡同语言） -->
-          <span
-            class="absolute inset-y-3 left-0 w-1 rounded-r-full"
-            :style="{ backgroundColor: containerColor(sourceHost(s)) }"
-            :title="`来源：${s.from}`"
-          />
-
           <!-- 卡头：名称 + 状态 -->
           <div class="flex min-w-0 items-center gap-2">
             <span class="min-w-0 truncate font-mono text-sm font-medium" :class="!s.exists ? 'text-destructive/80 line-through' : ''">{{ s.name }}</span>
