@@ -2,11 +2,11 @@
 // 技能中心（AI 工具面板页签）。**技能库是个人技能池**——就几个、都是自己挑的，
 // 用大卡片铺开：名称/描述在卡面，操作收敛两级——
 // ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 红调缺失）+ 描述，零杂音；
-// ② 安装是显式动作：卡脚右下「安装」实色主按钮（这张卡的主要动作）开安装弹框——
-//    本机 + 运行中容器混成一棵目录树（各端 home 起步，展开懒加载；停着的容器列不了
-//    目录故不出现），整行点击 = 选落点、可多选（选中高亮 + ✓，不满屏勾选框）：
-//    命中既有位置并进该规则（沿用其范围），没命中的新建规则（范围由弹框底部
-//    「新位置范围」chip 统一管）。
+// ② 安装是显式动作：卡脚「全局安装」实色主钮一键铺本机+全部容器（~/.claude/skills，
+//    两态开关——已全局再点即取消）；「选择位置…」开安装弹框——本机 + 运行中容器混成
+//    一棵目录树（各端 home 起步，展开懒加载；停着的容器列不了目录故不出现），整行
+//    点击 = 选落点、可多选（选中高亮 + ✓，不满屏勾选框）：命中既有位置并进该规则
+//    （沿用其范围），没命中的新建规则（范围由弹框底部「新位置范围」chip 统一管）。
 // ③ 卡头右上 ⋯ 菜单收低频动作：安装位置（就地展开该技能的位置视图——范围切换/
 //    卸载）、更新（显式重拉快照并分发）、移除（confirm）。
 // ④ 添加面板（扫描/目录/git）是头部「+ 添加」Popover；位置级删除（整条规则）在底部
@@ -252,15 +252,27 @@ async function doInstall(name: string) {
 const spotsOpenFor = ref<string | null>(null)
 
 // 卡上「全局安装」：一键装到 ~/.claude/skills（本机 + 全部受管容器）——技能全局
-// 安装的独立快捷形式，点完即走不开弹框。ensureGlobalHas 找既有全局规则并进、
-// 没有就建（all=true）。
+// 安装的独立快捷形式，点完即走不开弹框。两态开关：已全局再点一下 = 取消（从全局
+// 规则摘掉该技能，规则/位置保留，下次同步从各处清理）。装的时候顺手把范围拉回
+// all=true（规则可能被范围切换动过）。
 const globalInstalling = ref('')
 async function installGlobal(s: SkillRegistryItem) {
-  if (globalInstalling.value || installedAt(s.name, GLOBAL_TO)) return
+  if (globalInstalling.value) return
+  const has = installedAt(s.name, GLOBAL_TO)
   globalInstalling.value = s.name
   err.value = ''
   try {
-    await ensureGlobalHas(s.name)
+    const rule = (hub.value?.rules ?? []).find((r) => r.to === GLOBAL_TO)
+    if (rule) {
+      const declared = declaredOf(rule)
+      hub.value = await updateSkillRule(rule.id, {
+        ...(has ? {} : { all: true }),
+        skills: has ? declared.filter((n) => n !== s.name) : [...declared, s.name],
+      })
+    } else {
+      hub.value = await addSkillRule(GLOBAL_TO, true, [s.name])
+    }
+    toast(has ? `已取消全局：${s.name}（下次同步从各处清理）` : `已全局安装：${s.name} → ${GLOBAL_TO}`)
   } catch (e) {
     fail(e)
   } finally {
@@ -946,17 +958,21 @@ async function doDeleteRule() {
             <Button
               v-if="s.exists"
               size="xs"
+              :variant="installedAt(s.name, GLOBAL_TO) ? 'outline' : 'default'"
               class="h-6 shrink-0 gap-1 px-2.5 text-[11px]"
-              :disabled="installedAt(s.name, GLOBAL_TO) || globalInstalling === s.name"
+              :disabled="globalInstalling === s.name"
               :title="installedAt(s.name, GLOBAL_TO)
-                ? '已全局安装（~/.claude/skills · 本机+全部容器）'
+                ? '已全局安装——点击取消（从本机+全部容器移除，下次同步清理）'
                 : '一键装到 ~/.claude/skills——本机 + 全部受管容器（技能全局安装）'"
               @click="installGlobal(s)"
             >
               <Loader2 v-if="globalInstalling === s.name" class="animate-spin" />
-              <Check v-else-if="installedAt(s.name, GLOBAL_TO)" />
-              <Globe v-else />
-              全局安装
+              <template v-else-if="installedAt(s.name, GLOBAL_TO)">
+                <Check /> 取消全局
+              </template>
+              <template v-else>
+                <Globe /> 全局安装
+              </template>
             </Button>
             <Button
               v-if="s.exists"
