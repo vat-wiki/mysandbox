@@ -658,14 +658,13 @@ const showCreate = ref(false)
 // 侧栏不再有选择态。
 const showBatch = ref(false)
 // AI 工具工作区（技能 / 模型接入）：主区级页面——文件 tab 栏的单例 tab（VSCode
-// 设置页模式），与文件编辑器/终端同区切换。aiOpen = tab 存在（会话级，不持久化——
-// 「有事才出现」），aiActive = 主区当前给它。Bot 钮与容器卡片「AI 配置…」都是开它。
+// 设置页模式）。aiOpen = tab 存在（会话级，不持久化——「有事才出现」）；激活与否
+// 由主区归属 mainView 表达（'ai'），与终端/文件天然互斥。Bot 钮与容器卡片
+// 「AI 配置…」都是开它。
 const aiOpen = ref(false)
-const aiActive = ref(false)
 function openAi() {
   aiOpen.value = true
-  aiActive.value = true
-  areaMode.value = 'editor'
+  mainView.value = 'ai'
 }
 function openAiOverride(name: string) {
   aiOverrideFor.value = name
@@ -673,8 +672,8 @@ function openAiOverride(name: string) {
 }
 function closeAi() {
   aiOpen.value = false
-  aiActive.value = false
   aiOverrideFor.value = null
+  if (mainView.value === 'ai') mainView.value = 'terminal'
 }
 // 容器卡片菜单「AI 配置…」：覆盖模式打开（面板只显智能体配置页签，编辑该容器的覆盖绑定）。
 const aiOverrideFor = ref<string | null>(null)
@@ -813,8 +812,10 @@ function setFileBrowseMode(m: FileBrowseMode) {
 // 每个 tab 一个常驻 FileEditorPane（v-show 切换，保 Monaco 撤销栈/滚动位——同终端组机制）。
 // diff 存在 = git 变更对比模式（只读快照分支）；line/col 来自终端 Ctrl+点击 `:行:列` 后缀。
 // tab 身份 = containerId+path：diff/普通是同一 tab 的两种形态，重复打开即更新并激活。
-// 主区归属（areaMode）：文件 tab 栏在上、终端 tab 栏在下，同区切换——点谁主区给谁；
-// 开文件切到编辑器，动终端 tab 切回终端，最后一个文件 tab 关掉时回落终端。
+// 主区归属（mainView）：三值互斥——'terminal' | 'file' | 'ai'。所有显示条件都是
+// 对它的等式比较（结构上不可能两区同显），写入点只赋自己的值、不存在「清别人的
+// 标志」。文件 tab 栏在上、终端 tab 栏在下，同区切换——点谁主区给谁；开文件切
+// 'file'，动终端 tab 切 'terminal'，最后一个文件 tab 关掉时回落终端。
 type EditorTab = {
   containerId: string
   containerName: string
@@ -869,20 +870,21 @@ const activeEditorIdx = ref(
     return 0
   })(),
 )
-function loadAreaMode(): 'editor' | 'terminal' {
+function loadMainView(): 'file' | 'terminal' {
   try {
-    return localStorage.getItem(EDITOR_AREA_KEY) === 'editor' && editorTabs.value.length ? 'editor' : 'terminal'
+    // 'ai' 不持久化（aiOpen 会话级）：落盘时已折成 'file'，这里只认 file/terminal
+    return localStorage.getItem(EDITOR_AREA_KEY) === 'file' && editorTabs.value.length ? 'file' : 'terminal'
   } catch {
     return 'terminal'
   }
 }
-const areaMode = ref<'editor' | 'terminal'>(loadAreaMode())
+const mainView = ref<'terminal' | 'ai' | 'file'>(loadMainView())
 watch(
-  [editorTabs, activeEditorIdx, areaMode],
+  [editorTabs, activeEditorIdx, mainView],
   () => {
     try {
       localStorage.setItem(EDITOR_TABS_KEY, JSON.stringify(editorTabs.value))
-      localStorage.setItem(EDITOR_AREA_KEY, areaMode.value)
+      localStorage.setItem(EDITOR_AREA_KEY, mainView.value === 'ai' ? 'file' : mainView.value)
       localStorage.setItem(EDITOR_ACTIVE_KEY, String(activeEditorIdx.value))
     } catch {
       /* localStorage 不可用就跳过 */
@@ -918,13 +920,11 @@ function openFile(cId: string, cName: string, path: string, opts?: { diff?: { he
     editorTabs.value.push({ containerId: cId, containerName: cName, path, diff: opts?.diff, line: opts?.line, col: opts?.col, editing: opts?.editing === true ? true : undefined })
     activeEditorIdx.value = editorTabs.value.length - 1
   }
-  aiActive.value = false
-  areaMode.value = 'editor'
+  mainView.value = 'file'
 }
 function onFileTabClick(i: number) {
   activeEditorIdx.value = i
-  aiActive.value = false
-  areaMode.value = 'editor'
+  mainView.value = 'file'
 }
 // tab X：pane 冲刷后自己 close；这里不直接摘（冲刷失败/冲突要留在原处裁决）
 function closeFileTab(t: EditorTab) {
@@ -941,7 +941,7 @@ function closeFileTab(t: EditorTab) {
 // - 终端激活时 Esc 是普通键（vim/shell），整条不介入。
 function onEscCloseFile(e: KeyboardEvent) {
   if (e.key !== 'Escape' || e.repeat) return
-  if (areaMode.value !== 'editor' || !editorTabs.value.length) return
+  if (mainView.value !== 'file' || !editorTabs.value.length) return
   const target = e.target
   if (target instanceof HTMLElement) {
     const inMonaco = !!target.closest('.monaco-editor')
@@ -1027,7 +1027,7 @@ function removeTab(t: EditorTab) {
   delete tabDirty.value[tabId(t)]
   delete tabMode.value[tabId(t)]
   editorTabs.value.splice(i, 1)
-  if (!editorTabs.value.length) areaMode.value = 'terminal' // 最后一个文件 tab 关掉，主区还给终端
+  if (!editorTabs.value.length) mainView.value = 'terminal' // 最后一个文件 tab 关掉，主区还给终端
 }
 // tab 右键「编辑/预览」（状态感知项，pane 右下角按钮的第二入口）：先激活该 tab，
 // 再按当前形态调 pane——渲染视图/只读进编辑，md/svg 源码态回预览。
@@ -1377,7 +1377,7 @@ function createGroup(containerId: string, name: string, kind?: 'host' | 'service
   }
   groups.value.splice(at, 0, g)
   activeIdx.value = groups.value.indexOf(g)
-  areaMode.value = 'terminal' // 任何终端组动作（建组/恢复/接入）都意味着主区该归终端
+  mainView.value = 'terminal' // 任何终端组动作（建组/恢复/接入）都意味着主区该归终端
   return g
 }
 // 组显示名：同容器多组并存时带稳定序号（dev·1 / dev·2 …），单一组就是原名。
@@ -1665,7 +1665,7 @@ function onTabClick(idx: number) {
     return
   }
   activeIdx.value = idx
-  areaMode.value = 'terminal' // 点终端 tab = 主区切回终端（同区切换）
+  mainView.value = 'terminal' // 点终端 tab = 主区切回终端（同区切换）
 }
 
 // —— 卡片长按（触屏）= 右键 ——
@@ -2173,7 +2173,7 @@ const hiddenAttentionIds = computed(() => {
 // 激活组 / 主区形态变化 = 「在看」关系变化。首跑（页面加载恢复的 tabs）统一落基线：
 // 激活组在看，其余组从加载起就没看过（它们常驻挂载、此后有输出就能积资格）。
 watch(
-  () => [groups.value[activeIdx.value]?.id ?? '', areaMode.value] as const,
+  () => [groups.value[activeIdx.value]?.id ?? '', mainView.value] as const,
   ([gid, mode], prev) => {
     if (!prev) {
       const now = Date.now()
@@ -3170,7 +3170,7 @@ onUnmounted(() => {
                 // tab 时无限拉宽；min-w-0 是 truncate 生效前提。手机不收缩（shrink-0），
                 // 横向滚动——窄屏压到几十像素不可读。
                 'flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm relative md:shrink md:max-w-44',
-                idx === activeIdx && areaMode === 'terminal'
+                idx === activeIdx && mainView === 'terminal'
                   ? 'bg-card text-foreground shadow-[inset_0_-2px_0_0_var(--primary)] font-medium'
                   : 'text-muted-foreground hover:bg-accent/50',
                 dragTabIdx === idx ? 'opacity-40' : '',
@@ -3383,7 +3383,7 @@ onUnmounted(() => {
                隐藏保留布局盒，尺寸恒定，彻底绕开 0 尺寸 layout。 -->
           <!-- AI 工具工作区：与文件编辑器同区切换（AI tab 激活 = 主区给它）。全尺寸
                页面——技能库/provider/工具分配/下发结果这些管理面板体量的内容在这里舒展。 -->
-          <div v-show="areaMode === 'editor' && aiActive" class="absolute inset-0">
+          <div v-show="mainView === 'ai'" class="absolute inset-0">
             <AiWorkspace
               :override-for="aiOverrideFor"
               @close="closeAi()"
@@ -3391,7 +3391,7 @@ onUnmounted(() => {
               @unauthorized="emit('unauthorized')"
             />
           </div>
-          <div v-show="areaMode === 'editor' && !aiActive && editorTabs.length" class="absolute inset-0">
+          <div v-show="mainView === 'file' && editorTabs.length" class="absolute inset-0">
             <FileEditorPane
               v-for="(t, i) in editorTabs"
               :key="tabId(t)"
@@ -3405,7 +3405,7 @@ onUnmounted(() => {
               :line="t.line"
               :col="t.col"
               :editing="t.editing === true"
-              :active="areaMode === 'editor' && i === activeEditorIdx"
+              :active="mainView === 'file' && i === activeEditorIdx"
               @close="removeTab(t)"
               @open-normal="onOpenNormal(t)"
               @saved="onEditorSaved"
@@ -3415,7 +3415,7 @@ onUnmounted(() => {
           </div>
           <!-- 终端区可见 = 编辑器模式下没有可显示的东西（无文件 tab 且 AI 未激活）；
                条件必须与上面两个 v-show 互补，否则叠放时终端压住 AI 工作区。 -->
-          <div v-show="!(areaMode === 'editor' && (aiActive || editorTabs.length))" class="absolute inset-0 bg-zinc-950">
+          <div v-show="mainView === 'terminal'" class="absolute inset-0 bg-zinc-950">
           <div
             v-for="(g, gIdx) in groups"
             :key="g.id"
@@ -3455,7 +3455,7 @@ onUnmounted(() => {
         <div
           class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
           :class="
-            areaMode === 'editor' && aiActive
+            mainView === 'ai'
               ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
               : 'text-muted-foreground hover:bg-accent/50'
           "
@@ -3477,7 +3477,7 @@ onUnmounted(() => {
             <div
               class="flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm md:shrink md:max-w-56"
               :class="
-                i === activeEditorIdx && areaMode === 'editor' && !aiActive
+                i === activeEditorIdx && mainView === 'file'
                   ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
                   : 'text-muted-foreground hover:bg-accent/50'
               "
