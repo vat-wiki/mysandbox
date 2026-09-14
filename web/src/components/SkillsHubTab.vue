@@ -1,13 +1,15 @@
 <script setup lang="ts">
-// 技能中心（AI 工具面板页签）。**技能库是中心**，交互三层、全部上下文就地：
-// ① 技能行 = 单层清单，一眼全览。点击行 → Popover「安装位置」勾选器：勾/取消即装/卸
-//    （勾选 = 并进规则，取消 = 摘出，下次同步从容器清理），行内顺手管位置（范围切换/
-//    删除/新建位置）——一个心智模型：「这个技能装到哪」。
-// ② 行尾 ⋯ 菜单收低频动作：更新（显式重拉快照并分发）/ 移除（confirm）。
+// 技能中心（AI 工具面板页签）。**技能库是个人技能池**——总数有限、都是自己挑的，
+// 不摆列表：pill 流式一墙排开，一眼全览。点击 pill → Popover 就地全管：
+// ① 安装位置勾选器：勾/取消即装/卸（勾选 = 并进规则，取消 = 摘出，下次同步从容器
+//    清理），行内顺手管位置（范围切换/删除/新建位置）；
+// ② 底部动作行：更新（显式重拉快照并分发）/ 移除（confirm）——一个 popover = 一个
+//    技能的全部操作面。
 // ③ 安装位置（规则清单）降级为底部折叠条：范围切换 / 成员数 / 清缺失 / 删位置。
-// 添加面板（扫描/目录/git）是头部「+ 添加」Popover，不挤占列表空间。
-// 库语义：静态快照——来源改动不自动进库，更新 = ⋯「更新」。安装位置订阅库：
-// 库一变自动跟走；容器新建/重启全自动追平。
+// 添加面板（扫描/目录/git）是头部「+ 添加」Popover。pill 状态语言：实线 = 已装
+// （名字后 ·N = 装了几处），虚线灰 = 未安装，红 = 内容缺失。
+// 库语义：静态快照——来源改动不自动进库，更新 = 显式动作。安装位置订阅库：库一变
+// 自动跟走；容器新建/重启全自动追平。
 import { ref, computed, onMounted } from 'vue'
 import {
   getSkillHub,
@@ -37,13 +39,6 @@ import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
   RefreshCw,
   Trash2,
   FolderSync,
@@ -54,7 +49,6 @@ import {
   ChevronDown,
   ChevronRight,
   Info,
-  MoreHorizontal,
   Loader2,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -71,11 +65,9 @@ const hub = ref<SkillHubView | null>(null)
 const inv = ref<SkillInventoryView | null>(null)
 const invLoading = ref(false)
 const invErr = ref('')
-const loading = ref(false)
 const err = ref('')
 
 async function load() {
-  loading.value = true
   err.value = ''
   try {
     hub.value = await getSkillHub()
@@ -85,8 +77,6 @@ async function load() {
       return
     }
     err.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    loading.value = false
   }
 }
 
@@ -168,6 +158,27 @@ function sourceHost(s: SkillRegistryItem): string {
   const idx = s.from.indexOf(':')
   if (idx > 0 && /^[a-z0-9]/.test(s.from.slice(0, idx))) return s.from.slice(0, idx)
   return 'host'
+}
+
+// —— pill 状态语言 ——
+
+// 装到几处（= 含它的规则数）。
+function installedCount(s: SkillRegistryItem): number {
+  return rulesOf(s.name).length
+}
+
+function pillClass(s: SkillRegistryItem): string {
+  if (!s.exists) return 'border-destructive/30 bg-destructive/5 text-destructive/80'
+  if (!installedCount(s)) return 'border-dashed text-muted-foreground hover:text-foreground'
+  return 'border-line text-foreground hover:bg-accent/40'
+}
+
+function pillTitle(s: SkillRegistryItem): string {
+  const desc = s.description ? `${s.description}` : ''
+  if (!s.exists) return `${s.name}（内容缺失——点击更新重拉或移除）`
+  const n = installedCount(s)
+  const where = n ? `已装 ${n} 处` : '未安装——点击安装'
+  return desc ? `${s.name}：${desc}（${where}）` : `${s.name}（${where}）`
 }
 
 // —— 行内「安装位置」勾选器 ——（一个技能一个 popover，单开）
@@ -473,17 +484,14 @@ async function doDeleteRule() {
       class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
     >{{ err }}</p>
 
-    <!-- ① 技能清单：单层，点击行 = 安装位置勾选器，⋯ = 更新/移除 -->
+    <!-- ① 技能 pill 墙：个人技能池，数目有限——流式排开一眼全览，点击 pill 就地全管 -->
     <div class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <Library class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="text-xs font-semibold">技能库</span>
-        <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
-          {{ reg?.filter((s) => s.exists).length ?? 0 }}
-        </Badge>
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="库是静态快照中心：点技能行管「装到哪」（勾选即装/卸），⋯ 菜单更新/移除。来源改动不自动进库，更新走显式动作；位置订阅库——库一变装出去的自动跟走。"
+          title="个人技能池——pill 一眼全览：实线 = 已装（·N = 装了几处），虚线灰 = 未安装，红 = 缺失。点击 pill 管「装到哪」/ 更新 / 移除；来源改动不自动进库，更新走显式动作。"
         ><Info class="size-3.5" /></span>
         <div class="flex-1" />
         <Button
@@ -593,7 +601,7 @@ async function doDeleteRule() {
                 <Button size="sm" class="h-8 shrink-0" :disabled="impBusy || !impDir.trim()" @click="submitImportDir">添加</Button>
               </div>
               <p class="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/70">
-                拷一份快照进库，与来源解耦；要更新在技能行 ⋯ 菜单「更新」。
+                拷一份快照进库，与来源解耦；要更新点 pill 弹层里的「更新」。
               </p>
             </template>
             <template v-else>
@@ -622,157 +630,132 @@ async function doDeleteRule() {
                 <Button size="sm" class="mt-1.5 h-7" :disabled="impBusy || !impPicked" @click="doImportGit">导入选中</Button>
               </div>
               <p class="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/70">
-                导入 = 快照（版本在仓库侧）；要更新在技能行 ⋯ 菜单「更新」。库内同名会提示覆盖。
+                导入 = 快照（版本在仓库侧）；要更新点 pill 弹层里的「更新」。库内同名会提示覆盖。
               </p>
             </template>
           </PopoverContent>
         </Popover>
       </div>
 
-      <!-- 空库 -->
+      <!-- 空库 / 报错 -->
       <div v-if="regErr" class="px-3 py-4 text-center text-[11px] text-destructive">{{ regErr }}</div>
       <div v-else-if="!reg?.length" class="px-3 py-4 text-center text-[11px] text-muted-foreground/70">
         还没有添加任何技能——点「添加」从扫描/本地目录/git 仓库收进库。
       </div>
 
-      <!-- 技能行：一行一技能；存在 → 点击行开勾选器；缺失 → 只剩 ⋯（更新可重拉恢复） -->
-      <div
-        v-for="(s, si) in reg ?? []"
-        :key="s.name"
-        class="px-1.5"
-        :class="si > 0 ? 'border-t' : ''"
-      >
-        <div class="group flex items-center gap-0.5 rounded px-1.5 py-0.5 hover:bg-accent/40">
-          <template v-if="s.exists">
-            <Popover :open="openSkill === s.name" @update:open="(v: boolean) => (v ? openInstall(s.name) : (openSkill = null))">
-              <PopoverTrigger as-child>
+      <!-- pill 墙：实线 = 已装（·N 处），虚线 = 未安装，红 = 缺失；点击 pill = popover 全管 -->
+      <div v-else class="flex flex-wrap gap-1.5 px-3 py-3">
+        <Popover
+          v-for="s in reg"
+          :key="s.name"
+          :open="openSkill === s.name"
+          @update:open="(v: boolean) => (v ? openInstall(s.name) : (openSkill = null))"
+        >
+          <PopoverTrigger as-child>
+            <button
+              type="button"
+              class="flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors"
+              :class="pillClass(s)"
+              :title="pillTitle(s)"
+            >
+              <Loader2
+                v-if="updatingSkill === s.name"
+                class="size-2.5 shrink-0 animate-spin text-muted-foreground"
+              />
+              <span
+                v-else
+                class="size-1.5 shrink-0 rounded-full"
+                :style="{ backgroundColor: containerColor(sourceHost(s)) }"
+              />
+              <span class="font-mono">{{ s.name }}</span>
+              <span v-if="s.exists && installedCount(s)" class="text-[9px] opacity-60">·{{ installedCount(s) }}</span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent side="bottom" align="start" class="w-80 p-2">
+            <div v-if="hub?.rules.length" class="flex flex-col">
+              <div
+                v-for="r in [...rulesOf(s.name), ...otherRulesOf(s.name)]"
+                :key="r.id"
+                class="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/50"
+              >
                 <button
                   type="button"
-                  class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1.5 text-left"
-                  title="安装位置——点开勾选/取消（勾 = 装，取消 = 下次同步从容器清理）"
+                  class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded py-0.5 text-left"
+                  :title="`已安装到 ${r.to}${r.all ? '（全部受管容器）' : '（仅已有该项目的容器）'}——点击勾/取消（取消后下次同步从容器清理）`"
+                  @click="toggleRuleSkill(r, s.name, !declaredOf(r).includes(s.name))"
                 >
-                  <Loader2
-                    v-if="updatingSkill === s.name"
-                    class="size-2 shrink-0 animate-spin text-muted-foreground"
+                  <Checkbox
+                    :model-value="declaredOf(r).includes(s.name)"
+                    tabindex="-1"
+                    class="pointer-events-none shrink-0"
                   />
-                  <span
-                    v-else
-                    class="size-1.5 shrink-0 rounded-full"
-                    :style="{ backgroundColor: containerColor(sourceHost(s)) }"
-                    :title="`来源：${s.from}`"
-                  />
-                  <span class="shrink-0 font-mono text-xs font-medium">{{ s.name }}</span>
-                  <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
-                  <span
-                    v-if="!rulesOf(s.name).length"
-                    class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-                  >未安装</span>
-                  <template v-else>
-                    <span
-                      v-for="r in rulesOf(s.name).slice(0, 2)"
-                      :key="r.id"
-                      class="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-                      :title="`已安装到 ${r.to}${r.all ? '（全部受管容器）' : '（仅已有该项目的容器）'}`"
-                    >{{ r.all ? '全部容器' : r.to }}</span>
-                    <span v-if="rulesOf(s.name).length > 2" class="shrink-0 text-[10px] text-muted-foreground">+{{ rulesOf(s.name).length - 2 }}</span>
-                  </template>
+                  <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ r.to }}</span>
                 </button>
-              </PopoverTrigger>
-              <PopoverContent side="bottom" align="start" class="w-80 p-2">
-                <div v-if="hub?.rules.length" class="flex flex-col">
-                  <div
-                    v-for="r in [...rulesOf(s.name), ...otherRulesOf(s.name)]"
-                    :key="r.id"
-                    class="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/50"
-                  >
-                    <button
-                      type="button"
-                      class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded py-0.5 text-left"
-                      :title="`已安装到 ${r.to}${r.all ? '（全部受管容器）' : '（仅已有该项目的容器）'}——点击勾/取消（取消后下次同步从容器清理）`"
-                      @click="toggleRuleSkill(r, s.name, !declaredOf(r).includes(s.name))"
-                    >
-                      <Checkbox
-                        :model-value="declaredOf(r).includes(s.name)"
-                        tabindex="-1"
-                        class="pointer-events-none shrink-0"
-                      />
-                      <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ r.to }}</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors"
-                      :class="r.all
-                        ? 'border-primary/40 bg-primary/10 text-primary'
-                        : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-                      :title="r.all ? '装进全部受管容器——点击改为仅已有该项目的容器' : '只装已有该项目的容器——点击改为全部容器'"
-                      @click="toggleScope(r)"
-                    >
-                      {{ r.all ? '全部容器' : '仅项目' }}
-                    </button>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      class="shrink-0 text-muted-foreground/50 hover:text-destructive"
-                      title="删除此安装位置（它装出去的 skill 按清单从容器清理；用户自装的其他 skill 不动）"
-                      @click="delRule = r"
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                </div>
-                <p v-else class="px-1 py-1 text-[10px] text-muted-foreground/70">还没有安装位置——下面新建一个。</p>
-                <div class="mt-1.5 flex items-center gap-1.5 border-t pt-1.5">
-                  <Input
-                    v-model="nfTo"
-                    placeholder="新位置：~/proj/.claude/skills"
-                    class="h-7 flex-1 font-mono text-[11px]"
-                    @keydown.enter="createRuleFor(s.name)"
-                  />
-                  <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进全部受管容器；不勾 = 只装已有该项目的容器">
-                    <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
-                    全部
-                  </label>
-                  <Button size="xs" class="shrink-0" :disabled="nfBusy || !nfTo.trim()" @click="createRuleFor(s.name)">安装</Button>
-                </div>
-              </PopoverContent>
-            </Popover>
-          </template>
-          <template v-else>
-            <div class="flex min-w-0 flex-1 items-center gap-2 py-1.5">
-              <span class="size-1.5 shrink-0 rounded-full bg-muted-foreground/30" title="内容缺失" />
-              <span class="shrink-0 font-mono text-xs text-muted-foreground/50 line-through">{{ s.name }}</span>
-              <Badge variant="outline" class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive">缺失</Badge>
-              <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/50" :title="`来源 ${s.from}——⋯ 菜单「更新」可重拉`">{{ s.from }}</span>
+                <button
+                  type="button"
+                  class="shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors"
+                  :class="r.all
+                    ? 'border-primary/40 bg-primary/10 text-primary'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
+                  :title="r.all ? '装进全部受管容器——点击改为仅已有该项目的容器' : '只装已有该项目的容器——点击改为全部容器'"
+                  @click="toggleScope(r)"
+                >
+                  {{ r.all ? '全部容器' : '仅项目' }}
+                </button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  class="shrink-0 text-muted-foreground/50 hover:text-destructive"
+                  title="删除此安装位置（它装出去的 skill 按清单从容器清理；用户自装的其他 skill 不动）"
+                  @click="delRule = r"
+                >
+                  <Trash2 />
+                </Button>
+              </div>
             </div>
-          </template>
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
+            <p v-else class="px-1 py-1 text-[10px] text-muted-foreground/70">还没有安装位置——下面新建一个。</p>
+            <div class="mt-1.5 flex items-center gap-1.5 border-t pt-1.5">
+              <Input
+                v-model="nfTo"
+                placeholder="新位置：~/proj/.claude/skills"
+                class="h-7 flex-1 font-mono text-[11px]"
+                @keydown.enter="createRuleFor(s.name)"
+              />
+              <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进全部受管容器；不勾 = 只装已有该项目的容器">
+                <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
+                全部
+              </label>
+              <Button size="xs" class="shrink-0" :disabled="nfBusy || !nfTo.trim()" @click="createRuleFor(s.name)">安装</Button>
+            </div>
+            <!-- 动作行：更新（显式重拉快照并分发）+ 来源备忘 + 移除 -->
+            <div class="mt-1.5 flex items-center gap-1 border-t pt-1.5">
               <Button
                 variant="ghost"
-                size="icon-xs"
-                class="shrink-0 text-muted-foreground/40 hover:text-foreground"
-                title="更新 / 移除"
-              >
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
+                size="xs"
+                class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                title="从来源重拉快照并全量分发（来源改动不自动进库——这是唯一更新通道）"
                 :disabled="!!updatingSkill"
                 @click="updateSkill(s)"
               >
-                <RefreshCw /> {{ updatingSkill === s.name ? '更新中…' : '更新' }}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                class="text-destructive focus:text-destructive"
+                <RefreshCw class="size-3" :class="updatingSkill === s.name ? 'animate-spin' : ''" />
+                {{ updatingSkill === s.name ? '更新中…' : '更新' }}
+              </Button>
+              <span
+                class="min-w-0 flex-1 truncate text-right font-mono text-[9px] text-muted-foreground/40"
+                :title="s.from"
+              >{{ s.from }}</span>
+              <Button
+                variant="ghost"
+                size="xs"
+                class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-destructive"
+                title="移除（已安装到各处的会在下次同步时从容器清理）"
                 @click="delReg = s"
               >
-                <Trash2 /> 移除
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+                <Trash2 class="size-3" /> 移除
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
 
