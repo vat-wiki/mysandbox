@@ -3477,7 +3477,7 @@ onUnmounted(() => {
             <div
               class="flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm md:shrink md:max-w-56"
               :class="
-                i === activeEditorIdx && areaMode === 'editor'
+                i === activeEditorIdx && areaMode === 'editor' && !aiActive
                   ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
                   : 'text-muted-foreground hover:bg-accent/50'
               "
