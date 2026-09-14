@@ -918,6 +918,7 @@ function openFile(cId: string, cName: string, path: string, opts?: { diff?: { he
     editorTabs.value.push({ containerId: cId, containerName: cName, path, diff: opts?.diff, line: opts?.line, col: opts?.col, editing: opts?.editing === true ? true : undefined })
     activeEditorIdx.value = editorTabs.value.length - 1
   }
+  aiActive.value = false
   areaMode.value = 'editor'
 }
 function onFileTabClick(i: number) {
