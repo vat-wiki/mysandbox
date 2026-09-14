@@ -793,30 +793,6 @@ async function cleanMissing(r: SkillRuleResult) {
         >
           <Globe class="size-3.5" /> 全局安装<span v-if="globalCount" class="text-[10px] text-muted-foreground">·{{ globalCount }}</span>
         </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          class="shrink-0 text-muted-foreground hover:text-foreground"
-          title="立即同步（平时随动作分发/启动追平/建容器补发；这里是手动兜底）"
-          :disabled="syncing"
-          @click="syncNow"
-        >
-          <FolderSync :class="syncing ? 'animate-pulse' : ''" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
-          title="逐个比对来源与库的内容指纹（git 源查远端 commit 快路径），有更新的卡片标「有更新」——只比对，不动库不分发"
-          :disabled="checking"
-          @click="checkAll"
-        >
-          <Loader2 v-if="checking" class="size-3.5 animate-spin" />
-          <SearchCheck v-else class="size-3.5" /> 检查更新<span
-            v-if="changedCount"
-            class="text-[10px] text-amber-600 dark:text-amber-400"
-          >·{{ changedCount }}</span>
-        </Button>
         <Popover :open="showImport" @update:open="toggleImport">
           <PopoverTrigger as-child>
             <Button variant="ghost" size="xs" class="h-6 shrink-0 gap-1 px-1.5 text-[11px]">
@@ -948,6 +924,37 @@ async function cleanMissing(r: SkillRuleResult) {
             </template>
           </PopoverContent>
         </Popover>
+        <!-- 低频动作收 ⋯ 溢出菜单（头部只留全局安装/添加两个高频主操作）：检查更新
+             是批量只读比对，立即同步是手动兜底（平时分发随动作/启动/建容器自动发生）。
+             amber 计数跟到菜单项上；同步/检查进行中菜单项转圈禁用。 -->
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              class="shrink-0 text-muted-foreground/70 hover:text-foreground"
+              title="检查更新 / 立即同步"
+            >
+              <Loader2 v-if="checking || syncing" class="animate-spin" />
+              <MoreHorizontal v-else />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="bottom" align="end">
+            <DropdownMenuItem
+              :disabled="checking"
+              title="逐个比对来源与库的内容指纹（git 源查远端 commit 快路径），有更新的卡片标「有更新」——只比对，不动库不分发"
+              @click="checkAll"
+            >
+              <SearchCheck /> 检查更新<span
+                v-if="changedCount"
+                class="ml-auto text-[10px] text-amber-600 dark:text-amber-400"
+              >·{{ changedCount }}</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem :disabled="syncing" title="手动兜底——平时随动作分发/启动追平/建容器补发自动发生" @click="syncNow">
+              <FolderSync :class="syncing ? 'animate-pulse' : ''" /> 立即同步
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <!-- 空库 / 报错 -->
