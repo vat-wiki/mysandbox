@@ -3,7 +3,7 @@
 // 用大卡片铺开：名称/描述在卡面，操作收敛两级——
 // ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 全局徽标 / 红调缺失）+ 描述，零杂音；
 // ② 安装是显式动作：头部「全局安装」开弹框多选技能、双向同步（勾上 = 装到
-//    ~/.agents/skills 铺本机+全部容器，取消勾选 = 移除）；「选择位置…」开安装弹框——
+//    ~/.agents/skills 铺本机+全部容器，取消勾选 = 移除）；卡脚「安装」开安装弹框——
 //    本机 + 运行中容器混成一棵目录树（各端 home 起步，展开懒加载；停着的容器列不了
 //    目录故不出现），整行点击 = 选落点、可多选（选中高亮 + ✓，不满屏勾选框）：命中
 //    既有位置并进该规则（沿用其范围），没命中的新建规则（范围由弹框底部「新位置范围」
@@ -762,7 +762,7 @@ async function doDeleteRule() {
         <span class="text-xs font-semibold">技能库</span>
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="个人技能池——每张卡一件技能。日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）；这里管库本身：全局安装一键铺开、选择位置集中补装、⋯ 菜单管安装位置/更新/移除。来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
+          title="个人技能池——每张卡一件技能。日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）；这里管库本身：全局安装一键铺开、卡脚「安装」集中补装、⋯ 菜单管安装位置/更新/移除。来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
         ><Info class="size-3.5" /></span>
         <div class="flex-1" />
         <Button
@@ -939,7 +939,7 @@ async function doDeleteRule() {
             <span
               v-else-if="s.exists && !installedCount(s)"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没装到任何位置——头部「全局安装」一键铺开，或「选择位置…」指定落点"
+              title="还没装到任何位置——头部「全局安装」一键铺开，或卡脚「安装」指定落点"
             >未安装</span>
             <span
               v-if="s.exists && installedAt(s.name, GLOBAL_TO)"
@@ -989,7 +989,8 @@ async function doDeleteRule() {
           <!-- 描述：完整铺开（卡片够大，不折叠不藏气泡） -->
           <p v-if="s.description" class="text-xs leading-relaxed text-muted-foreground">{{ s.description }}</p>
 
-          <!-- 卡脚：左来源备忘 / 右「选择位置…」开目录树弹框管指定落点。全局安装
+          <!-- 卡脚：左来源备忘 / 右「安装」开目录树弹框管指定落点（全局安装挪去头部后，
+               这是卡上唯一安装入口——用动作词，不叫「选择位置…」描述实现）。全局安装
                统一走头部按钮 + 弹框（多选双向同步），卡面只以「全局」徽标示状态。 -->
           <div class="mt-auto flex items-center gap-1 border-t pt-2.5">
             <span
@@ -1000,11 +1001,11 @@ async function doDeleteRule() {
               v-if="s.exists"
               variant="outline"
               size="xs"
-              class="h-6 shrink-0 px-2.5 text-[11px]"
-              title="安装到指定位置——目录树里选（本机/容器、新建落点都行）"
+              class="h-6 shrink-0 gap-1 px-2.5 text-[11px]"
+              title="安装到指定位置——弹框目录树里选（本机/容器、可多选）"
               @click="openInstall(s.name)"
             >
-              选择位置…
+              <FolderOpen class="size-3" /> 安装
             </Button>
           </div>
 
@@ -1022,7 +1023,7 @@ async function doDeleteRule() {
                 <X class="size-3" />
               </button>
             </div>
-            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——头部「全局安装」一键铺开，或「选择位置…」指定落点。</p>
+            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——头部「全局安装」一键铺开，或卡脚「安装」指定落点。</p>
             <div
               v-for="r in rulesOf(s.name)"
               :key="r.id"
