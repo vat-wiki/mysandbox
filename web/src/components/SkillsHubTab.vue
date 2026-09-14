@@ -1,14 +1,15 @@
 <script setup lang="ts">
 // 技能中心（AI 工具面板页签）。**技能库是个人技能池**——就几个、都是自己挑的，
-// 用大卡片铺开：名称/描述/安装位置全在卡面上，状态零折叠、操作零弹层——
-// ① 卡面 = 全部状态：身份点 + 名称 + 描述 + 安装位置勾选行（勾/取消即装/卸，
-//    取消后下次同步从容器清理），位置行内顺手范围切换/删除；
-// ② 卡内动作：＋ 新位置（就地展开输入行）/ 更新（显式重拉快照并分发）/ 移除（confirm）。
-// ③ 安装位置（规则清单）总览降级为底部折叠条：范围切换 / 成员数 / 清缺失 / 删位置。
-// 添加面板（扫描/目录/git）是头部「+ 添加」Popover。卡片状态语言：默认 = 已装，
-// 名称旁 amber「未安装」= 一处都没装，整卡红调 = 内容缺失。
+// 用大卡片铺开：名称/描述/安装位置全在卡面上，零折叠——
+// ① 卡面 = 全部状态：身份点 + 名称 + 描述 + 已装位置行（范围切换就地完成）；
+// ② 安装是显式动作：卡上「＋ 安装」就地展开——选既有位置（下拉，沿用其范围）
+//    或填新路径（选范围），确认才装；「卸载」按行摘掉当前技能（不删位置，
+//    位置级删除集中在底部安装位置条——行级动作只对当前技能负责）。
+// ③ 添加面板（扫描/目录/git）是头部「+ 添加」Popover。卡片状态语言：默认 = 已装，
+//    名称旁 amber「未安装」= 一处都没装，整卡红调 = 内容缺失。
 // 库语义：静态快照——来源改动不自动进库，更新 = 显式动作。安装位置订阅库：库一变
-// 自动跟走；容器新建/重启全自动追平。
+// 自动跟走；容器新建/重启全自动追平。规则 CRUD 的响应即全量同步（hubView 顺带跑），
+// 卸载后的清理、孤儿收回都在这一次同步里落地。
 import { ref, computed, onMounted } from 'vue'
 import {
   getSkillHub,
@@ -36,6 +37,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   RefreshCw,
@@ -49,6 +57,7 @@ import {
   ChevronRight,
   Info,
   Loader2,
+  X,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { toast } from 'vue-sonner'
@@ -137,7 +146,7 @@ function rulesOf(name: string): SkillRuleResult[] {
   return (hub.value?.rules ?? []).filter((r) => declaredOf(r).includes(name))
 }
 
-// 某技能尚未装到的其他位置（勾选器里未勾的行）。
+// 某技能尚未装到的其他位置（「＋ 安装」下拉的可选项）。
 function otherRulesOf(name: string): SkillRuleResult[] {
   return (hub.value?.rules ?? []).filter((r) => !declaredOf(r).includes(name))
 }
@@ -166,22 +175,8 @@ function installedCount(s: SkillRegistryItem): number {
   return rulesOf(s.name).length
 }
 
-// 该技能的全部位置（已装的在前），卡面位置区按此渲染。
-function allRulesOf(name: string): SkillRuleResult[] {
-  return [...rulesOf(name), ...otherRulesOf(name)]
-}
-
-// 勾/取消 = 并进/摘出规则（摘出后下次同步按清单从容器清理）。
-async function toggleRuleSkill(r: SkillRuleResult, name: string, on: boolean) {
-  const declared = declaredOf(r)
-  const next = on ? (declared.includes(name) ? declared : [...declared, name]) : declared.filter((n) => n !== name)
-  err.value = ''
-  try {
-    hub.value = await updateSkillRule(r.id, { skills: next })
-  } catch (e) {
-    fail(e)
-  }
-}
+// 卡面位置区只列已装位置（装/卸都是显式动作，未装位置不铺在卡面）。
+const allRulesOf = rulesOf
 
 // 范围切换：本机 + 全部容器 ⇄ 仅已有该项目的机器。
 async function toggleScope(r: SkillRuleResult) {
@@ -193,29 +188,60 @@ async function toggleScope(r: SkillRuleResult) {
   }
 }
 
-// 卡内「＋ 新位置」：就地展开一行输入，新建并装上当前技能。
+// 卸载 = 从该位置摘掉当前技能（规则保留——位置级删除在底部安装位置条）。
+// 响应即全量同步，摘掉的下一次清理从容器收回。
+const unloadingRule = ref('')
+async function unloadSkill(r: SkillRuleResult, name: string) {
+  if (unloadingRule.value) return
+  unloadingRule.value = r.id
+  err.value = ''
+  try {
+    hub.value = await updateSkillRule(r.id, {
+      skills: declaredOf(r).filter((n) => n !== name),
+    })
+    toast(`已卸载：${name} ✕ ${r.to}（下次同步从容器清理）`)
+  } catch (e) {
+    fail(e)
+  } finally {
+    unloadingRule.value = ''
+  }
+}
+
+// 卡上「＋ 安装」：就地展开安装行——选既有位置（下拉，沿用其范围）或填新路径。
+const NEW_SPOT = '__new__' // 下拉的哨兵项 = 填新路径
+const installOpenFor = ref<string | null>(null)
+const pickRuleId = ref<string>(NEW_SPOT)
 const nfTo = ref('')
 const nfAll = ref(true)
 const nfBusy = ref(false)
-const nfOpenFor = ref<string | null>(null)
 
-function openNf(name: string) {
+function openInstall(name: string) {
+  pickRuleId.value = NEW_SPOT
   nfTo.value = ''
   nfAll.value = true
-  nfOpenFor.value = name
+  installOpenFor.value = name
 }
 
-async function createRuleFor(name: string) {
-  const to = nfTo.value.trim()
-  if (!to) return
+async function doInstall(name: string) {
+  const target = installOpenFor.value
+  if (!target || nfBusy.value) return
   nfBusy.value = true
   err.value = ''
   try {
-    hub.value = await addSkillRule(to, nfAll.value, [name])
-    nfTo.value = ''
-    nfAll.value = true
-    nfOpenFor.value = null
-    toast(`已安装：${name} → ${to}`)
+    const rule = (hub.value?.rules ?? []).find((r) => r.id === pickRuleId.value)
+    if (rule) {
+      const declared = declaredOf(rule)
+      if (!declared.includes(name)) {
+        hub.value = await updateSkillRule(rule.id, { skills: [...declared, name] })
+      }
+      toast(`已安装：${name} → ${rule.to}`)
+    } else {
+      const to = nfTo.value.trim()
+      if (!to) return
+      hub.value = await addSkillRule(to, nfAll.value, [name])
+      toast(`已安装：${name} → ${to}`)
+    }
+    installOpenFor.value = null
   } catch (e) {
     fail(e)
   } finally {
@@ -479,7 +505,7 @@ async function doDeleteRule() {
         <span class="text-xs font-semibold">技能库</span>
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="个人技能池——每张卡一件技能：勾选位置即装/卸（取消后下次同步从容器清理），卡脚更新/移除；来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
+          title="个人技能池——每张卡一件技能：「＋ 安装」选位置（既有位置或新路径）落装，「卸载」按行摘除（位置保留）；来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
         ><Info class="size-3.5" /></span>
         <div class="flex-1" />
         <Button
@@ -653,7 +679,7 @@ async function doDeleteRule() {
             <span
               v-else-if="s.exists && !installedCount(s)"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没装到任何位置——勾选下方位置即装"
+              title="还没装到任何位置——点下方「＋ 安装」选择位置"
             >未安装</span>
             <Badge
               v-if="!s.exists"
@@ -666,26 +692,17 @@ async function doDeleteRule() {
           <!-- 描述：完整铺开（卡片够大，不折叠不藏气泡） -->
           <p v-if="s.description" class="text-xs leading-relaxed text-muted-foreground">{{ s.description }}</p>
 
-          <!-- 安装位置：勾/取消即装/卸，行内范围切换与删除 -->
+          <!-- 已装位置：纯展示行 + 行内动作（范围切换 / 卸载）——装卸都是显式动作 -->
           <div v-if="s.exists && allRulesOf(s.name).length" class="flex flex-col gap-0.5">
             <div
               v-for="r in allRulesOf(s.name)"
               :key="r.id"
               class="flex items-center gap-1 rounded-md px-1.5 py-1 -mx-1.5 hover:bg-accent/40"
             >
-              <button
-                type="button"
-                class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded py-0.5 text-left"
-                :title="`已安装到 ${r.to}${r.all ? '（本机 + 全部受管容器）' : '（已有该项目的机器）'}——点击勾/取消（取消后下次同步从容器清理）`"
-                @click="toggleRuleSkill(r, s.name, !declaredOf(r).includes(s.name))"
-              >
-                <Checkbox
-                  :model-value="declaredOf(r).includes(s.name)"
-                  tabindex="-1"
-                  class="pointer-events-none shrink-0"
-                />
-                <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ r.to }}</span>
-              </button>
+              <span
+                class="min-w-0 flex-1 truncate font-mono text-[11px]"
+                :title="`已安装到 ${r.to}${r.all ? '（本机 + 全部受管容器）' : '（已有该项目的机器）'}`"
+              >{{ r.to }}</span>
               <button
                 type="button"
                 class="shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors"
@@ -701,38 +718,56 @@ async function doDeleteRule() {
                 variant="ghost"
                 size="icon-xs"
                 class="shrink-0 text-muted-foreground/50 hover:text-destructive"
-                title="删除此安装位置（它装出去的 skill 按清单从容器清理；用户自装的其他 skill 不动）"
-                @click="delRule = r"
+                :title="`从该位置卸载（位置保留，下次同步从容器清理）`"
+                :disabled="!!unloadingRule"
+                @click="unloadSkill(r, s.name)"
               >
-                <Trash2 />
+                <Loader2 v-if="unloadingRule === r.id" class="animate-spin" />
+                <X v-else />
               </Button>
             </div>
           </div>
-          <p v-else-if="s.exists" class="text-[11px] text-muted-foreground/60">还没有安装位置——加一个。</p>
+          <p v-else-if="s.exists" class="text-[11px] text-muted-foreground/60">还没有安装——点「＋ 安装」选择落点。</p>
 
-          <!-- ＋ 新位置：就地展开输入行 -->
-          <div v-if="s.exists && nfOpenFor === s.name" class="flex items-center gap-1.5">
-            <Input
-              v-model="nfTo"
-              placeholder="~/proj/.claude/skills"
-              class="h-7 min-w-0 flex-1 font-mono text-[11px]"
-              @keydown.enter="createRuleFor(s.name)"
-            />
-            <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
-              <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
-              全部
-            </label>
-            <Button size="xs" class="shrink-0" :disabled="nfBusy || !nfTo.trim()" @click="createRuleFor(s.name)">安装</Button>
-            <Button variant="ghost" size="xs" class="h-7 shrink-0 px-1.5 text-[11px] text-muted-foreground" @click="nfOpenFor = null">取消</Button>
+          <!-- ＋ 安装：就地展开——选既有位置（沿用其范围）或填新路径（选范围） -->
+          <div v-if="s.exists && installOpenFor === s.name" class="flex flex-wrap items-center gap-1.5">
+            <Select v-model="pickRuleId">
+              <SelectTrigger size="sm" class="h-7 min-w-0 max-w-52 flex-1 text-[11px]">
+                <SelectValue placeholder="选安装位置" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem
+                  v-for="r in otherRulesOf(s.name)"
+                  :key="r.id"
+                  :value="r.id"
+                  class="text-[11px]"
+                >{{ r.to }}（{{ r.all ? '本机+全部容器' : '有该项目' }}）</SelectItem>
+                <SelectItem :value="NEW_SPOT" class="text-[11px]">＋ 新位置…</SelectItem>
+              </SelectContent>
+            </Select>
+            <template v-if="pickRuleId === NEW_SPOT">
+              <Input
+                v-model="nfTo"
+                placeholder="~/proj/.claude/skills"
+                class="h-7 min-w-40 flex-1 font-mono text-[11px]"
+                @keydown.enter="doInstall(s.name)"
+              />
+              <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
+                <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
+                全部
+              </label>
+            </template>
+            <Button size="xs" class="shrink-0" :disabled="nfBusy || (pickRuleId === NEW_SPOT && !nfTo.trim())" @click="doInstall(s.name)">安装</Button>
+            <Button variant="ghost" size="xs" class="h-7 shrink-0 px-1.5 text-[11px] text-muted-foreground" @click="installOpenFor = null">取消</Button>
           </div>
           <button
             v-else-if="s.exists"
             type="button"
             class="w-fit cursor-pointer rounded px-1 py-0.5 text-[10px] text-muted-foreground/50 transition-colors hover:text-foreground"
-            title="新建一个安装位置并把这个技能装上"
-            @click="openNf(s.name)"
+            title="安装到某个位置——选既有位置或填新路径"
+            @click="openInstall(s.name)"
           >
-            ＋ 新位置
+            ＋ 安装
           </button>
 
           <!-- 卡脚：更新 / 来源备忘 / 移除 -->

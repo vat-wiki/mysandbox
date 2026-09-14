@@ -1,12 +1,12 @@
 <script setup lang="ts">
 // AI 工具工作区：主区级页面（文件 tab 栏的单例 tab，VSCode 设置页模式）——管理面板
 // 的体量（技能库/扫描/provider/工具分配/下发结果）早已超出对话框，直接占主区：
-// 全尺寸、不遮挡侧栏、与文件 tab 同一套切换心智。两个页签：
+// 全尺寸、不遮挡侧栏、与文件 tab 同一套切换心智。头部只有页签行——页的身份由底部
+// tab 栏的「AI 工具」页签表达，工作区内不再重复一行标题。两个页签：
 //   技能     = SkillsHubTab（技能库/扫描/安装位置）
 //   模型接入 = AiAccessTab（provider 库 + 工具分配一条流水线）
 // 覆盖配置（容器/本机的临时任务）不在这里——走 AiOverrideDialog 弹框，按任务体量分层。
 import { ref } from 'vue'
-import { Bot } from 'lucide-vue-next'
 import SkillsHubTab from './SkillsHubTab.vue'
 import AiAccessTab from './AiAccessTab.vue'
 
@@ -22,13 +22,9 @@ const tab = ref<'skills' | 'access'>('skills')
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
-    <!-- 头部：标题 + 页签 -->
+    <!-- 头部：只有页签行——页的身份由底部 tab 栏的「AI 工具」页签表达，不再重复标题 -->
     <div class="shrink-0 border-b">
-      <div class="flex items-center gap-2 px-5 pt-3">
-        <Bot class="size-4 shrink-0" />
-        <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">AI 工具</h2>
-      </div>
-      <div class="flex gap-1 px-5 pt-1.5">
+      <div class="flex gap-1 px-5 pt-2.5">
         <button
           type="button"
           class="border-b-2 px-3 pb-2 text-xs transition-colors"

@@ -296,7 +296,7 @@ const ruleSummary = (r: AiBinding) => {
       </div>
 
       <p v-if="noProviders" class="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-        模型服务库还是空的——先在「AI 工具 → 模型服务」添加提供商（端点 + key），再回来绑定工具。
+        模型服务库还是空的——先添加提供商（端点 + key），再回来绑定工具。
       </p>
 
       <!-- claude -->
