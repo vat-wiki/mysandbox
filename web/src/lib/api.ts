@@ -412,6 +412,38 @@ export const installSkills = (container: string, spot: string, skills: string[])
     ruleId: string
   }>
 
+// —— TestLens 批量配置（设置弹框「TestLens」分区，server/testlens.ts）——
+// 往目标 home 写两份种子文件（~/.agent-browser/config.json 的 cdp + ~/.testlens.json
+// 的 host）；文件即真相（view 读实际值），本机地址由后端换算（testlens 服务名宿主
+// 不可解析 → localhost）。
+export interface TestlensTargetView {
+  id: string
+  name: string
+  agentBrowser: string | null
+  testlensJson: string | null
+  error?: string
+}
+export interface TestlensView {
+  targets: TestlensTargetView[]
+  suggestedHost: string | null
+}
+export interface TestlensInstallItem {
+  id: string
+  name: string
+  ok: boolean
+  files: { file: string; action: 'created' | 'merged' | 'overwritten' | 'same' }[]
+  error?: string
+}
+export interface TestlensInstallResult {
+  total: number
+  ok: number
+  failed: number
+  items: TestlensInstallItem[]
+}
+export const getTestlensView = () => api('/api/testlens/view') as Promise<TestlensView>
+export const installTestlens = (host: string, targets: string[]) =>
+  postJson('/api/testlens/install', { host, targets }, 60_000) as Promise<TestlensInstallResult>
+
 // —— 终端会话（跨窗口/浏览器找回 tmux 会话）——
 // 后端 TermSessionView（server/terminal.ts）。cwd = 会话活跃 pane 当前目录（识别用）；
 // title = pane 动态标题（命令行/空闲路径/CC·opencode 任务标题，比 cwd 更好认）。

@@ -41,6 +41,7 @@ import {
   PROVIDER_ID_RE,
   HOST_TARGET,
 } from './aiconfig.js';
+import { testlensView, testlensInstall } from './testlens.js';
 import {
   syncSkillsAll,
   hubView,
@@ -685,6 +686,24 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     } catch (e) {
       throw badRequest(e instanceof Error ? e.message : String(e));
     }
+  });
+
+  // —— TestLens 批量配置（设置弹框「TestLens」分区，server/testlens.ts）——
+  // 往目标 home 写两份种子文件（agent-browser cdp + testlens CLI host）；文件即
+  // 真相（view 读实际值），install 读-改-写合并只动 cdp/host 键。
+  app.get('/api/testlens/view', async () => {
+    return testlensView(cfg);
+  });
+
+  app.post('/api/testlens/install', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const items = await testlensInstall(cfg, body);
+    return {
+      total: items.length,
+      ok: items.filter((i) => i.ok).length,
+      failed: items.filter((i) => !i.ok).length,
+      items,
+    };
   });
 
   // —— hosts 覆写（批量配置 tab） ——

@@ -77,7 +77,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -87,6 +87,7 @@ import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
 import SshTargetsDialog from '@/components/SshTargetsDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
+import SettingsDialog from '@/components/SettingsDialog.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
 import TermLayoutNode from '@/components/TermLayoutNode.vue'
 import FilePanel from '@/components/FilePanel.vue'
@@ -1570,6 +1571,8 @@ function restoreHidden(g: TermGroup) {
 
 // 会话对话框：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
 const showSessions = ref(false)
+// 设置弹框（侧栏底部「设置」入口，展开行与 rail 各一枚）
+const showSettings = ref(false)
 // SSH 目标管理对话框（侧栏终端区「添加 / 管理」入口）。
 const showSshTargets = ref(false)
 // 打开时剪掉容器已删的隐藏组：会话随容器消亡，留着只会恢复出连不上的空 tab。
@@ -2514,7 +2517,16 @@ onUnmounted(() => {
           >
             <img src="/docker.svg" alt="" class="size-4" />
           </button>
-          <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部 -->
+          <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部；
+               设置入口与展开态收起行右侧那枚互为镜像（同一位置，肌肉记忆一致） -->
+          <button
+            type="button"
+            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="设置"
+            @click="showSettings = true"
+          >
+            <Settings class="size-4" />
+          </button>
           <button
             type="button"
             class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
@@ -3093,16 +3105,26 @@ onUnmounted(() => {
       </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
-           与收缩态 rail 底部的展开键互为镜像。 -->
-      <button
-        type="button"
-        class="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-        title="收起侧栏（窄边）"
-        @click="collapseSidebar"
-      >
-        <PanelLeftClose class="size-3.5 shrink-0" />
-        <span class="min-w-0 flex-1 truncate text-xs">收起侧栏</span>
-      </button>
+           与收缩态 rail 底部的展开键互为镜像；设置入口钉在它右边（全局配置集中地）。 -->
+      <div class="flex shrink-0 items-stretch border-t border-border">
+        <button
+          type="button"
+          class="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="收起侧栏（窄边）"
+          @click="collapseSidebar"
+        >
+          <PanelLeftClose class="size-3.5 shrink-0" />
+          <span class="min-w-0 truncate text-xs">收起侧栏</span>
+        </button>
+        <button
+          type="button"
+          class="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="设置"
+          @click="showSettings = true"
+        >
+          <Settings class="size-3.5" />
+        </button>
+      </div>
       </template>
     </aside>
 
@@ -3724,6 +3746,13 @@ onUnmounted(() => {
     @changed="refreshSshTargets()"
     @open="openSshTerm($event)"
     @close="showSshTargets = false"
+    @unauthorized="emit('unauthorized')"
+  />
+
+  <!-- 设置（侧栏底部入口）：全局性配置集中地，TestLens 批量下发等分区 -->
+  <SettingsDialog
+    v-if="showSettings"
+    @close="showSettings = false"
     @unauthorized="emit('unauthorized')"
   />
 </template>

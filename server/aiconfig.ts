@@ -720,7 +720,8 @@ async function probePlan(
 // —— 目标应用 ——
 
 // 目标定位：'__host__' = 本机 home；否则容器名（D1 直通宿主可直写 rootfs home）。
-function homeOf(cfg: Config, target: string): string | null {
+// 导出共用：testlens 种子等同形 home 直写模块复用（testlens.ts）。
+export function homeOf(cfg: Config, target: string): string | null {
   if (target === HOST_TARGET) return homedir();
   return getEngine(cfg).hostHomePath(cfg, target);
 }
