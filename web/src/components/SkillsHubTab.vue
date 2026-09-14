@@ -33,7 +33,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { RefreshCw, Trash2, FolderSync, Globe, Plus, PackageSearch, CornerDownRight, Library, ChevronDown, ChevronRight, Info } from 'lucide-vue-next'
+import { RefreshCw, Trash2, FolderSync, Globe, Plus, PackageSearch, CornerDownRight, Library, ChevronDown, ChevronRight, Info, Share2 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { toast } from 'vue-sonner'
 
@@ -332,14 +332,19 @@ async function doDeleteRule() {
 }
 
 // —— 渐进式披露：技能行默认一行薄行，点行展开（来源 + 分发管理 + 操作）；
-//    分发去向规则默认收起（有库缺失残留时 badge 提醒）；概念说明收头部 ？tooltip。 ——
+//    分发去向/发现散装不常驻主视图——头部图标钮唤出（打开即内容态），有事时
+//    钮上挂 amber 点（散装待筛选 / 缺失残留）；概念说明收头部 ？tooltip。 ——
 const expandedSkill = ref<string | null>(null)
 const showRules = ref(false)
 const missingTotal = computed(
   () => (hub.value?.rules ?? []).reduce((n, r) => n + r.skills.filter((k) => !k.ok).length, 0),
 )
+// 单条规则的库缺失残留数（行上 amber 计数）。
+function ruleMissing(r: SkillRuleResult): number {
+  return r.skills.filter((k) => !k.ok).length
+}
 
-// —— 发现散装（Inbox，默认收起） ——
+// —— 发现散装（头部钮按需唤出） ——
 
 const showDiscover = ref(false)
 
@@ -417,6 +422,28 @@ async function syncNow() {
           class="shrink-0 cursor-help text-muted-foreground/50"
           title="已注册技能是中心——入库的每个技能看它分发到哪。目录来源跟随源更新，git 导入为快照；分发、容器新建/重启全自动追平。最顺手的安装入口在文件面板：进到项目目录点「安装技能」就地装。"
         ><Info class="size-3.5" /></span>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="relative shrink-0 text-muted-foreground hover:text-foreground"
+          :class="showDiscover ? 'bg-accent text-foreground' : ''"
+          :title="looseTotal ? `发现散装（${looseTotal} 待筛选）——本机/容器里还没入库的 skill` : '发现散装：扫描本机/各容器里还没入库的 skill'"
+          @click="showDiscover = !showDiscover"
+        >
+          <PackageSearch />
+          <span v-if="looseTotal" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="relative shrink-0 text-muted-foreground hover:text-foreground"
+          :class="showRules ? 'bg-accent text-foreground' : ''"
+          :title="missingTotal ? `分发去向规则（${missingTotal} 缺失待清）` : '分发去向规则：范围 / 成员 / 删除'"
+          @click="showRules = !showRules"
+        >
+          <Share2 />
+          <span v-if="missingTotal" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
+        </Button>
         <Button
           variant="ghost"
           size="icon-xs"
@@ -637,30 +664,21 @@ async function syncNow() {
       </div>
     </div>
 
-    <!-- ② 辅助：分发去向（规则级管理，低频——默认收起；有库缺失残留时 amber 提醒） -->
-    <div class="rounded-md border">
-      <button
-        type="button"
-        class="flex w-full items-center gap-2 bg-muted/30 px-3 py-2 text-left"
-        @click="showRules = !showRules"
-      >
-        <FolderSync class="size-3.5 shrink-0 text-muted-foreground" />
+    <!-- ② 辅助：分发去向（规则级管理）——不常驻，头部 Share2 钮唤出（打开即内容态） -->
+    <div v-if="showRules" class="rounded-md border">
+      <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+        <Share2 class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="text-xs font-semibold">分发去向</span>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ hub?.rules.length ?? 0 }}
         </Badge>
-        <Badge
-          v-if="missingTotal"
-          variant="outline"
-          class="shrink-0 border-transparent bg-amber-500/10 px-1 text-[10px] text-amber-600 dark:text-amber-400"
-        >{{ missingTotal }} 缺失</Badge>
+        <span class="hidden text-[10px] text-muted-foreground/70 md:inline">成员在技能行展开里管理</span>
         <div class="flex-1" />
-        <component :is="showRules ? ChevronDown : ChevronRight" class="size-3.5 shrink-0 text-muted-foreground" />
-      </button>
-      <template v-if="showRules">
-        <div v-if="!hub?.rules.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
-          还没有去向——展开技能行添加分发位置（新建即建规则）。
-        </div>
+      </div>
+
+      <div v-if="!hub?.rules.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
+        还没有去向——展开技能行添加分发位置（新建即建规则）。
+      </div>
       <div
         v-for="(t, ti) in hub?.rules ?? []"
         :key="t.id"
@@ -690,6 +708,7 @@ async function syncNow() {
           >
             <component :is="expandedRule === t.id ? ChevronDown : ChevronRight" class="size-3" />
             {{ t.skills.length }} skill
+            <span v-if="ruleMissing(t)" class="text-amber-600 dark:text-amber-400">·{{ ruleMissing(t) }} 缺失</span>
           </button>
           <Button
             variant="ghost"
@@ -716,16 +735,11 @@ async function syncNow() {
           <span v-if="!t.skills.length" class="text-[10px] text-muted-foreground/70">还没有成员</span>
         </div>
       </div>
-      </template>
     </div>
 
-    <!-- ③ 发现散装（Inbox，默认收起） -->
-    <div class="rounded-md border">
-      <button
-        type="button"
-        class="flex w-full items-center gap-2 bg-muted/30 px-3 py-2 text-left"
-        @click="showDiscover = !showDiscover"
-      >
+    <!-- ③ 发现散装——不常驻，头部 PackageSearch 钮唤出（打开即内容态） -->
+    <div v-if="showDiscover" class="rounded-md border">
+      <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <PackageSearch class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="text-xs font-semibold">发现散装</span>
         <Badge
@@ -736,40 +750,37 @@ async function syncNow() {
           {{ looseTotal }} 待筛选
         </Badge>
         <div class="flex-1" />
-        <component :is="showDiscover ? ChevronDown : ChevronRight" class="size-3.5 shrink-0 text-muted-foreground" />
-      </button>
-      <template v-if="showDiscover">
-        <p v-if="invErr" class="px-3 py-2 text-[11px] text-destructive">{{ invErr }}</p>
-        <div v-if="!invLocations.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
-          没有散装的 skill——扫到的都已注册。
-        </div>
-        <div
-          v-for="(loc, li) in invLocations"
-          :key="loc.name"
-          class="px-3 py-1.5"
-          :class="li > 0 ? 'border-t' : ''"
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="shrink-0 text-muted-foreground"
+          title="重新扫描"
+          :disabled="invLoading"
+          @click="loadInv"
         >
-          <div class="flex items-center gap-2">
-            <span
-              class="h-2 w-2 shrink-0 rounded-full"
-              :style="{ backgroundColor: loc.kind === 'host' ? 'var(--color-primary)' : containerColor(loc.name) }"
-            />
-            <span class="text-xs font-medium">{{ loc.kind === 'host' ? '本机' : loc.name }}</span>
-            <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
-              {{ loc.skills.length }}
-            </Badge>
-            <div class="flex-1" />
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              class="shrink-0 text-muted-foreground"
-              title="重新扫描"
-              :disabled="invLoading"
-              @click.stop="loadInv"
-            >
-              <RefreshCw :class="invLoading ? 'animate-spin' : ''" />
-            </Button>
-          </div>
+          <RefreshCw :class="invLoading ? 'animate-spin' : ''" />
+        </Button>
+      </div>
+      <p v-if="invErr" class="px-3 py-2 text-[11px] text-destructive">{{ invErr }}</p>
+      <div v-if="!invLocations.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
+        没有散装的 skill——扫到的都已注册。
+      </div>
+      <div
+        v-for="(loc, li) in invLocations"
+        :key="loc.name"
+        class="px-3 py-1.5"
+        :class="li > 0 ? 'border-t' : ''"
+      >
+        <div class="flex items-center gap-2">
+          <span
+            class="h-2 w-2 shrink-0 rounded-full"
+            :style="{ backgroundColor: loc.kind === 'host' ? 'var(--color-primary)' : containerColor(loc.name) }"
+          />
+          <span class="text-xs font-medium">{{ loc.kind === 'host' ? '本机' : loc.name }}</span>
+          <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
+            {{ loc.skills.length }}
+          </Badge>
+        </div>
           <div v-if="!loc.ok" class="pl-4 text-[11px] text-destructive">{{ loc.error }}</div>
           <div v-for="row in spotRows(loc)" :key="row.spot" class="mt-1 pl-4">
             <div class="font-mono text-[10px] text-muted-foreground/70" title="skills 目录位置">~/{{ row.spot }}</div>
@@ -801,7 +812,6 @@ async function syncNow() {
             </div>
           </div>
         </div>
-      </template>
     </div>
 
     <ConfirmDialog
