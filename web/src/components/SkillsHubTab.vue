@@ -13,9 +13,9 @@
 // ④ 位置治理（查看/范围切换/卸载/清缺失）收敛进卡头「N 处」计数弹出的轻量
 //    Popover——一行一个位置，就地操作；不设独立的规则清单面板（库缺失残留
 //    自愈：同步的有效集 = 与库的交集，残留无害）。
-// 库语义：静态快照——来源改动不自动进库，更新 = 显式动作。安装位置订阅库：库一变
-// 自动跟走；容器新建/重启全自动追平。规则 CRUD 的响应即全量同步（hubView 顺带跑），
-// 卸载后的清理、孤儿收回都在这一次同步里落地。
+// 库语义：静态快照——来源改动不自动进库，更新/入库/出库都是显式动作且自带分发。
+// 安装位置订阅库：库一变自动跟走；容器新建/重启全自动追平。规则 CRUD 的响应即
+// 全量同步（hubView 顺带跑），卸载后的清理、孤儿收回都在这一次同步里落地。
 import { ref, computed, onMounted } from 'vue'
 import {
   getSkillHub,
@@ -729,7 +729,7 @@ function spotRows(loc: SkillInventoryLocation): InvSpotRow[] {
   return [...map.values()]
 }
 
-// —— 立即同步（watch/启动追平之外的手动兜底）——
+// —— 立即同步（动作分发/启动追平之外的手动兜底）——
 const syncing = ref(false)
 async function syncNow() {
   if (syncing.value) return
@@ -797,7 +797,7 @@ async function cleanMissing(r: SkillRuleResult) {
           variant="ghost"
           size="icon-xs"
           class="shrink-0 text-muted-foreground hover:text-foreground"
-          title="立即同步（平时全自动——watch/启动追平/建容器补发；这里是手动兜底）"
+          title="立即同步（平时随动作分发/启动追平/建容器补发；这里是手动兜底）"
           :disabled="syncing"
           @click="syncNow"
         >

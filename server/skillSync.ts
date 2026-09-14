@@ -26,11 +26,13 @@
 // 模型下挂的目录源，逐技能入库（快照）后并进对应规则；'registry' 源展开为库成员
 // 名单。迁移后 config 键被忽略（state.staticMigratedAt 记账），双真相源不复存在。
 //
-// 触发点（全自动）：服务启动 sweep（cli.ts）+ fs.watch（库目录——手改库也分发出去）
-// + create() 建容器后补发 + 容器 start 事件补发（lifecycle.ts / startSkillSyncEvents）。
-// 手动：mysandbox skills sync / POST /api/skills/sync / 面板「立即同步」。同步全程
-// 互斥（模块级 promise 链）。
-import { existsSync, lstatSync, realpathSync, watch as fsWatch, type Dirent, type FSWatcher, type Stats } from 'node:fs';
+// 触发点（全自动）：服务启动 sweep（cli.ts）+ create() 建容器后补发 + 容器 start
+// 事件补发（lifecycle.ts / startSkillSyncEvents）。显式：入库/出库/git 导入由路由层
+// 触发全量分发，更新（registryUpdate）自带分发，手动 mysandbox skills sync /
+// POST /api/skills/sync / 面板「立即同步」。来源不 watch（静态快照），库目录也
+// 不 watch——一切流向由动作驱动，手改库目录需手动同步。同步全程互斥（模块级
+// promise 链）。
+import { existsSync, lstatSync, realpathSync, type Dirent, type Stats } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join, dirname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -50,9 +52,6 @@ const SKILLS_DIR = join(AI_DIR, 'skills');
 // 相对软链（compat shim，claude 等工具读软链）——规则/盘点/范围判定都只认真身，
 // 避免同目录双份记账。软链由 seedHome（新容器）与一次性迁移（存量环境）落地。
 const GLOBAL_RELS = ['.agents/skills'];
-// 源变化 → 实际同步的 debounce（编辑器保存往往连发多个事件）。
-const WATCH_DEBOUNCE_MS = 500;
-
 export interface SkillSyncContainerResult {
   name: string;
   ok: boolean;
@@ -666,58 +665,6 @@ export async function deleteSkillRule(_cfg: Config, id: string): Promise<void> {
   await setSkillHub(hub);
 }
 
-// —— watch（实时分发的自动触发器）——
-
-// watcher 注册表：key = 'registry'（库目录——库是分发源头，显式更新写进来的与
-// 用户手改的都从这里触发再分发）。值 = watcher + debounce timer。
-const watchers = new Map<string, { w: FSWatcher; timer?: ReturnType<typeof setTimeout> }>();
-// CLI 一次性命令（mysandbox skills sync 迁移入库会走 registryAdd）不挂 watch——
-// Node v24 的 recursive fs.watch 连 unref 都释放不了事件循环，挂了进程就退不出去。
-let watchAllowed = true;
-export function disableSkillWatch(): void {
-  watchAllowed = false;
-}
-
-function scheduleSync(cfg: Config, key: string): void {
-  const e = watchers.get(key);
-  if (!e) return;
-  if (e.timer) clearTimeout(e.timer);
-  e.timer = setTimeout(() => {
-    if (e) e.timer = undefined;
-    void syncSkillsAll(cfg).catch((err) => log.warn({ err: String(err) }, 'skills watch sync failed'));
-  }, WATCH_DEBOUNCE_MS);
-  e.timer.unref?.(); // 不占事件循环——CLI 一次性命令（skills sync 迁移入库）能正常退出
-}
-
-function watchSkillSource(cfg: Config, key: string, from: string): void {
-  if (!watchAllowed || watchers.has(key)) return;
-  let source: string;
-  try {
-    source = resolveSyncSource(cfg, from).hostPath;
-  } catch (e) {
-    log.warn({ from, err: String(e) }, 'skills watch: source resolve failed');
-    return;
-  }
-  if (!existsSync(source)) {
-    log.warn({ from, source }, 'skills watch: source missing, watch not set');
-    return;
-  }
-  try {
-    const w = fsWatch(source, { recursive: true }, () => scheduleSync(cfg, key));
-    w.on('error', (e) => log.warn({ from, err: String(e) }, 'skills watch error'));
-    w.unref?.(); // 同上：常驻服务里无感，一次性 CLI 里不该被 watcher 拖住
-    watchers.set(key, { w });
-  } catch (e) {
-    log.warn({ from, err: String(e) }, 'skills watch setup failed');
-  }
-}
-
-// 服务启动：技能库目录挂 watch（库目录不存在时挂不上——首次入库时 registryAdd
-// 会兜底补挂）。
-export function startSkillSyncWatch(cfg: Config): void {
-  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
-}
-
 // 容器 start/restart 事件补发（startSkillSyncEvents，cli.ts 装配）：项目目标的
 // 「只同步到已有该项目的容器」语义靠它闭环——容器停机期间克隆了项目，下次启动
 // 自动补齐，不用手动同步。断线指数退避重连（hosts-sync 同款骨架）。
@@ -755,7 +702,6 @@ export function startSkillSyncEvents(cfg: Config): void {
 // —— CLI：mysandbox skills sync ——
 
 export async function runSkillsCommand(cfg: Config): Promise<void> {
-  disableSkillWatch(); // 一次性命令：迁移入库不挂 watcher（见 disableSkillWatch 注释）
   const r = await syncSkillsAll(cfg);
   const reg = await getSkillRegistry();
   if (!r.rules.length && !Object.keys(reg.skills).length) {
@@ -782,7 +728,6 @@ export async function runSkillsCommand(cfg: Config): Promise<void> {
 // CLI：mysandbox skills update [名…]——显式更新库条目（快照语义下库不会自己变；
 // 不带名字 = 全部）。更新完统一同步分发一次。
 export async function runSkillsUpdateCommand(cfg: Config, args: string[]): Promise<void> {
-  disableSkillWatch();
   const reg = await getSkillRegistry();
   const names = args.length ? args : Object.keys(reg.skills);
   if (!names.length) {
@@ -900,14 +845,12 @@ export async function registryAdd(cfg: Config, from: string, force = false): Pro
   const meta = await readRegistryMeta();
   meta[name] = { from, importedAt: new Date().toISOString(), hash: await libraryHash(name) };
   await setSkillRegistry({ skills: meta });
-  // watch 兜底挂上（库目录可能刚创建；幂等，已挂 key 直接返回）。
-  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
   log.info({ name, from }, 'skill added to registry');
   return { name, replaced };
 }
 
-// 出库：删目录 + 删元数据。已在分发中的不受影响——下次同步按「聚合副本里已消失」
-// 从容器清理。
+// 出库：删目录 + 删元数据。分发清理由调用方触发（路由层出库后 distributeSkills）——
+// 全量同步按「聚合副本里已消失」把分发过的条目从容器收回。
 export async function registryRemove(name: string): Promise<void> {
   if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
   await rm(join(REGISTRY_DIR, name), { recursive: true, force: true });
@@ -960,7 +903,6 @@ export async function registryUpdate(
   // 显式重建字段（不 spread）——旧 meta 里可能残留已废弃的 follow 键，顺手洗掉。
   meta[name] = { from: m.from, importedAt: new Date().toISOString(), hash: await libraryHash(name), gitCommit: commit };
   await setSkillRegistry({ skills: meta });
-  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
   log.info({ name, from: m.from }, 'skill updated in registry');
   const sync = opts.sync === false ? null : await syncSkillsAll(cfg);
   return { name, changed: true, sync };
@@ -1146,7 +1088,6 @@ export async function registryImportGit(
     gitCommit: await gitRepoCommit(repo),
   };
   await setSkillRegistry({ skills: meta });
-  watchSkillSource(cfg, 'registry', REGISTRY_FROM);
   log.info({ name, url, subPath }, 'skill imported to registry from git');
   return { name, replaced };
 }

@@ -10,7 +10,7 @@ import { runOpenCommand } from './open.js';
 import { runStatusCommand } from './status.js';
 import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
-import { runSkillsCommand, runSkillsListCommand, runSkillsUpdateCommand, startSkillSyncWatch, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
+import { runSkillsCommand, runSkillsListCommand, runSkillsUpdateCommand, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { applyAiAll, startAiConfigEvents } from './aiconfig.js';
 import { proxyBases } from './proxy.js';
@@ -235,12 +235,11 @@ async function main(): Promise<void> {
   const app = await buildServer(config);
   // 存量容器补种子容器内 mysandbox 命令（幂等；sidecar 已知且 dataRoot 可见的才写）。
   await sweepContainerCli(config);
-  // skills 同步：启动追平一次（旧版迁移 + 规则分发，容器不必在跑），随后 watch
-  // （库目录）实时分发；容器 start 事件补发（项目目标「只同步到已有该项目的容器」
-  // 的闭环——停机期间克隆的项目，启动即补齐）。库是静态快照：来源不 watch，更新
-  // 走显式动作（mysandbox skills update / 面板「更新」）。
+  // skills 同步：启动追平一次（旧版迁移 + 规则分发，容器不必在跑）+ 容器 start
+  // 事件补发（项目目标「只同步到已有该项目的容器」的闭环——停机期间克隆的项目，
+  // 启动即补齐）。库是静态快照：来源与库目录都不 watch——更新/入库/出库走显式
+  // 动作（mysandbox skills update / 面板「更新」「入库」「移除」，动作自带分发）。
   void syncSkillsAll(config);
-  startSkillSyncWatch(config);
   startSkillSyncEvents(config);
   // AI 配置声明式追平：启动 sweep 一次（绑定（覆盖 ?? 全局）→ 全部受管容器，rootfs
   // 直写；本机不进 sweep），容器 start 事件补发闭环停机期间的变化（绑定 + 项目规则）。

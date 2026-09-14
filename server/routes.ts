@@ -17,6 +17,7 @@ import {
 import { setMeta, getMeta, deleteMeta } from './state.js';
 import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiProjectRules, setAiProvider, setAiBinding, type AiProvider, type AiBinding } from './aiState.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
+import { log } from './logger.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
 import { listSshSessions, killSshSession } from './sshTerminal.js';
@@ -367,6 +368,13 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return syncSkillsAll(cfg);
   });
 
+  // 库内容动作（入库/出库/git 导入）后的显式分发——库目录不再挂 fs.watch（同步语义
+  // 全显式化），这三个动作是原先靠 watch 兜底分发的唯一入口。不等待：同步耗时随
+  // 容器数线性涨，别拖住 HTTP 响应；互斥链保证与手动同步串行。
+  function distributeSkills(cfg: Config): void {
+    void syncSkillsAll(cfg).catch((err) => log.warn({ err: String(err) }, 'skills distribute after registry change failed'));
+  }
+
   // —— 技能分发规则 CRUD。规则 = {库内技能集合, 去向, 范围}，库（registry）是唯一
   // 技能真相源。表单校验在此处转 4xx，重复去向转 409；视图（GET /hub）是一次全量
   // 同步的返回（聚合副本刷新 + 分发结果）。——
@@ -424,7 +432,9 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const from = String(body.from ?? '').trim();
     if (!from) throw new HttpError(400, 'from 必填（技能目录：<容器名>:<路径> 或宿主路径）', 'bad_request');
     try {
-      return await registryAdd(cfg, from, body.force === true);
+      const r = await registryAdd(cfg, from, body.force === true);
+      distributeSkills(cfg); // 入库后显式分发（不等待——同步耗时随容器数，别拖住响应）
+      return r;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('不合法') || msg.includes('不存在') || msg.includes('缺 SKILL.md')) {
@@ -441,6 +451,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     } catch (e) {
       throw new HttpError(400, e instanceof Error ? e.message : String(e), 'bad_request');
     }
+    distributeSkills(cfg); // 出库后显式分发（孤儿清理按清单收回容器上的旧条目）
     return registryList();
   });
 
@@ -480,7 +491,9 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const path = typeof body.path === 'string' && body.path.trim() ? body.path.trim() : undefined;
     try {
       if (!path) return { candidates: await registryProbeGit(url) };
-      return await registryImportGit(cfg, url, path, body.force === true);
+      const r = await registryImportGit(cfg, url, path, body.force === true);
+      distributeSkills(cfg); // git 导入后显式分发（同入库）
+      return r;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('已有同名')) throw new HttpError(409, msg, 'conflict');
