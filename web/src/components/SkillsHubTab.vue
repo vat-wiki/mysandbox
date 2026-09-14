@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// 技能中心（AI 工具面板页签）。**已注册技能（库）是中心**——每个技能一行，直接看
-// 它分发到哪（去向 chips）、行内勾选分发位置；其余都是辅助：
-// ① 分发去向（规则）：{去向, 范围} + 成员清单，规则级管理（范围切换/删/清理缺失）。
-// ② 发现散装（已安装扫描）：Inbox 形态默认收起——本机/各容器里未被规则管理的
-//    skill，一键入库 / 入库并装到全局。
+// 技能中心（AI 工具面板页签）。**已注册技能（库）是中心**，但展示走渐进式披露：
+// ① 中心列表默认一行薄行（名称/状态/去向概要），点行才展开 = 来源 + 分发管理
+//    （去向 chips ✕ 收回 / 虚线 + 加入其他去向 / 新建去向）+ 刷新/出库；
+// ② 分发去向（规则级管理：范围切换/删/清缺失）默认收起——Inbox 形态，有库缺失
+//    残留时 badge amber 提醒；③ 发现散装同 Inbox 形态默认收起。
+// 顶部不再铺概念说明——收在头部 ？tooltip（空态引导见空库文案）。
 // 库语义：目录来源入库 = 跟随刷新（源改库跟，源删冻结）；git 导入 = 快照。库内同名
 // 唯一，无冲突概念。全自动触发（watch + 启动追平 + 建容器/容器 start 补发）。
 import { ref, computed, onMounted } from 'vue'
@@ -32,7 +33,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { RefreshCw, Trash2, FolderSync, Globe, Plus, PackageSearch, CornerDownRight, Library, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { RefreshCw, Trash2, FolderSync, Globe, Plus, PackageSearch, CornerDownRight, Library, ChevronDown, ChevronRight, Info } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { toast } from 'vue-sonner'
 
@@ -122,6 +123,11 @@ function declaredOf(r: SkillRuleResult): string[] {
 // 某技能所在的去向（规则）。
 function rulesOf(name: string): SkillRuleResult[] {
   return (hub.value?.rules ?? []).filter((r) => declaredOf(r).includes(name))
+}
+
+// 某技能尚未加入的其他去向（展开态里虚线 + 加入）。
+function otherRulesOf(name: string): SkillRuleResult[] {
+  return (hub.value?.rules ?? []).filter((r) => !declaredOf(r).includes(name))
 }
 
 // 来源形态 → 身份色（与容器身份色同机制）：容器来源用容器色，宿主/git 用主色。
@@ -261,9 +267,8 @@ async function doDeleteReg() {
   }
 }
 
-// —— 技能行「分发…」面板：勾选去向 + 新建去向 ——
+// —— 技能行「分发管理」（展开态内）：勾选收回（chips ✕）+ 新建去向 ——
 
-const distributing = ref<string | null>(null) // 展开分发面板的技能名
 const nfTo = ref('')
 const nfAll = ref(true)
 const nfBusy = ref(false)
@@ -326,6 +331,14 @@ async function doDeleteRule() {
   }
 }
 
+// —— 渐进式披露：技能行默认一行薄行，点行展开（来源 + 分发管理 + 操作）；
+//    分发去向规则默认收起（有库缺失残留时 badge 提醒）；概念说明收头部 ？tooltip。 ——
+const expandedSkill = ref<string | null>(null)
+const showRules = ref(false)
+const missingTotal = computed(
+  () => (hub.value?.rules ?? []).reduce((n, r) => n + r.skills.filter((k) => !k.ok).length, 0),
+)
+
 // —— 发现散装（Inbox，默认收起） ——
 
 const showDiscover = ref(false)
@@ -386,18 +399,12 @@ async function syncNow() {
 
 <template>
   <div class="space-y-4">
-    <p class="text-xs leading-relaxed text-muted-foreground">
-      <b class="font-medium">已注册技能</b>是中心——入库的每个技能看它分发到哪。
-      目录来源跟随源更新，git 导入为快照；分发、容器新建/重启全自动追平。
-      最顺手的安装入口在<b class="font-medium">文件面板</b>：进到项目目录点「安装技能」就地装。
-    </p>
-
     <p
       v-if="err"
       class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
     >{{ err }}</p>
 
-    <!-- ① 中心：已注册技能 -->
+    <!-- ① 中心：已注册技能。渐进式：列表默认薄行，概念说明收 ？tooltip（空态引导见空库文案） -->
     <div class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <Library class="size-3.5 shrink-0 text-muted-foreground" />
@@ -406,6 +413,20 @@ async function syncNow() {
           {{ reg?.filter((s) => s.exists).length ?? 0 }}
         </Badge>
         <div class="flex-1" />
+        <span
+          class="shrink-0 cursor-help text-muted-foreground/50"
+          title="已注册技能是中心——入库的每个技能看它分发到哪。目录来源跟随源更新，git 导入为快照；分发、容器新建/重启全自动追平。最顺手的安装入口在文件面板：进到项目目录点「安装技能」就地装。"
+        ><Info class="size-3.5" /></span>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          class="shrink-0 text-muted-foreground hover:text-foreground"
+          title="立即同步（平时全自动——watch/启动追平/建容器补发；这里是手动兜底，顺带刷新跟随条目）"
+          :disabled="syncing"
+          @click="syncNow"
+        >
+          <FolderSync :class="syncing ? 'animate-pulse' : ''" />
+        </Button>
         <Button variant="ghost" size="xs" class="h-6 shrink-0 gap-1 px-1.5 text-[11px]" @click="showImport = !showImport">
           <Plus class="size-3.5" /> 入库
         </Button>
@@ -477,14 +498,24 @@ async function syncNow() {
         还没有注册任何技能——点「入库」从目录/git 导入，或在下面「发现散装」里一键入库。
       </div>
 
-      <!-- 技能行 -->
+      <!-- 技能行：收起 = 一行薄行（身份/状态/去向概要），点行展开 = 来源 + 分发管理 + 操作 -->
       <div
         v-for="(s, si) in reg ?? []"
         :key="s.name"
         class="px-3 py-2"
         :class="si > 0 ? 'border-t' : ''"
       >
-        <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="flex w-full cursor-pointer items-center gap-2 text-left"
+          :title="expandedSkill === s.name ? '收起' : '展开：来源 · 分发管理 · 操作'"
+          @click="expandedSkill = expandedSkill === s.name ? null : s.name"
+        >
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full"
+            :style="{ backgroundColor: containerColor(sourceHost(s)) }"
+            :title="`来源：${s.from}`"
+          />
           <span class="shrink-0 font-mono text-xs" :class="s.exists ? 'font-medium' : 'text-muted-foreground/50 line-through'">{{ s.name }}</span>
           <Badge
             v-if="s.exists"
@@ -495,111 +526,141 @@ async function syncNow() {
           >{{ s.follow ? '跟随' : '快照' }}</Badge>
           <Badge v-else variant="outline" class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive">缺失</Badge>
           <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
-          <!-- 分发位置 chips -->
+          <!-- 去向概要：核心语义是「看它分发到哪」，收起态也要能瞥见；多则截断，行展开看全 -->
           <template v-if="s.exists">
             <span
               v-if="!rulesOf(s.name).length"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没有分发到任何去向——点「分发…」选择位置"
+              title="还没有分发到任何去向——展开行配置"
             >未分发</span>
-            <span
-              v-for="r in rulesOf(s.name)"
-              :key="r.id"
-              class="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-              :title="`分发到 ${r.to}${r.all ? '（全部容器）' : '（仅已有该项目的容器）'}`"
-            >{{ r.to }}</span>
+            <template v-else>
+              <span
+                v-for="r in rulesOf(s.name).slice(0, 2)"
+                :key="r.id"
+                class="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                :title="`分发到 ${r.to}${r.all ? '（全部容器）' : '（仅已有该项目的容器）'}`"
+              >{{ r.to }}</span>
+              <span v-if="rulesOf(s.name).length > 2" class="shrink-0 text-[10px] text-muted-foreground">+{{ rulesOf(s.name).length - 2 }}</span>
+            </template>
           </template>
-          <Button
-            v-if="s.exists && s.follow"
-            variant="ghost"
-            size="icon-xs"
-            class="shrink-0 text-muted-foreground hover:text-foreground"
-            title="立即从来源刷新这个技能（全量同步）"
-            :disabled="syncing"
-            @click="syncNow"
-          >
-            <RefreshCw :class="syncing ? 'animate-spin' : ''" />
-          </Button>
-          <Button
-            v-if="s.exists"
-            variant="ghost"
-            size="xs"
-            class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-            @click="distributing = distributing === s.name ? null : s.name"
-          >
-            <component :is="distributing === s.name ? ChevronDown : CornerDownRight" class="size-3" />
-            分发…
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            class="shrink-0 text-muted-foreground hover:text-destructive"
-            title="出库（已在分发中的会在下次同步时从容器清理）"
-            @click="delReg = s"
-          >
-            <Trash2 />
-          </Button>
-        </div>
-        <div class="mt-0.5 flex items-center gap-1.5 pl-0.5">
-          <span
-            class="h-1.5 w-1.5 shrink-0 rounded-full"
-            :style="{ backgroundColor: containerColor(sourceHost(s)) }"
-            :title="`来源：${s.from}`"
-          />
-          <span class="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/50" :title="s.from">{{ s.from }}</span>
-        </div>
+          <component :is="expandedSkill === s.name ? ChevronDown : ChevronRight" class="size-3 shrink-0 text-muted-foreground" />
+        </button>
 
-        <!-- 分发面板：勾选去向 + 新建去向 -->
-        <div v-if="distributing === s.name && s.exists" class="mt-2 space-y-2 rounded border bg-muted/20 px-3 py-2">
-          <label
-            v-for="r in hub?.rules ?? []"
-            :key="r.id"
-            class="flex cursor-pointer items-center gap-2 text-[11px]"
-          >
-            <Checkbox
-              :model-value="declaredOf(r).includes(s.name)"
-              @update:model-value="(v) => toggleRuleSkill(r, s.name, !!v)"
+        <!-- 展开态：来源 + 分发去向管理 + 操作（低频细节都住这里） -->
+        <div v-if="expandedSkill === s.name" class="mt-2 space-y-2 rounded border bg-muted/20 px-3 py-2">
+          <div class="flex items-center gap-1.5">
+            <span
+              class="h-1.5 w-1.5 shrink-0 rounded-full"
+              :style="{ backgroundColor: containerColor(sourceHost(s)) }"
             />
-            <span class="font-mono">{{ r.to }}</span>
-            <span class="text-muted-foreground">{{ r.all ? '全部容器' : '仅已有该项目' }}</span>
-          </label>
-          <div class="flex items-center gap-2 border-t pt-2">
-            <Input
-              v-model="nfTo"
-              placeholder="新去向（容器内路径，如 ~/proj/.claude/skills）"
-              class="h-7 flex-1 font-mono text-[11px]"
-              @keydown.enter="createRuleFor(s.name)"
-            />
-            <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-muted-foreground" title="勾选 = 装进全部受管容器；不勾 = 只装已有该项目的容器">
-              <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
-              全部容器
-            </label>
-            <Button size="xs" class="shrink-0 gap-1" :disabled="nfBusy || !nfTo.trim()" @click="createRuleFor(s.name)">
-              <Plus class="size-3" /> 分发
-            </Button>
+            <span class="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/50" :title="s.from">{{ s.from }}</span>
           </div>
-          <p class="text-[10px] leading-relaxed text-muted-foreground/70">
-            取消勾选即从该去向收回（下次同步按清单从容器清理）。
-          </p>
+
+          <template v-if="s.exists">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span
+                v-for="r in rulesOf(s.name)"
+                :key="r.id"
+                class="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
+                :title="`分发到 ${r.to}${r.all ? '（全部容器）' : '（仅已有该项目的容器）'}——✕ 收回（下次同步按清单从容器清理）`"
+              >
+                {{ r.to }}
+                <button type="button" class="text-muted-foreground/60 hover:text-destructive" @click="removeFromRule(r, s.name)">✕</button>
+              </span>
+              <span
+                v-for="r in otherRulesOf(s.name)"
+                :key="r.id"
+                class="flex items-center gap-1 rounded border border-dashed px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground"
+                title="尚未分发到这个去向——+ 加入"
+              >
+                {{ r.to }}
+                <button type="button" class="text-muted-foreground/60 hover:text-primary" @click="toggleRuleSkill(r, s.name, true)">+</button>
+              </span>
+              <span v-if="!hub?.rules.length" class="text-[10px] text-muted-foreground/70">还没有分发到任何去向</span>
+            </div>
+
+            <div class="flex items-center gap-2 border-t pt-2">
+              <Input
+                v-model="nfTo"
+                placeholder="新去向（容器内路径，如 ~/proj/.claude/skills）"
+                class="h-7 flex-1 font-mono text-[11px]"
+                @keydown.enter="createRuleFor(s.name)"
+              />
+              <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-muted-foreground" title="勾选 = 装进全部受管容器；不勾 = 只装已有该项目的容器">
+                <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
+                全部容器
+              </label>
+              <Button size="xs" class="shrink-0 gap-1" :disabled="nfBusy || !nfTo.trim()" @click="createRuleFor(s.name)">
+                <Plus class="size-3" /> 分发
+              </Button>
+            </div>
+
+            <div class="flex items-center gap-1">
+              <Button
+                v-if="s.follow"
+                variant="ghost"
+                size="xs"
+                class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                title="立即从来源刷新这个技能（全量同步）"
+                :disabled="syncing"
+                @click="syncNow"
+              >
+                <RefreshCw class="size-3" :class="syncing ? 'animate-spin' : ''" /> 刷新
+              </Button>
+              <div class="flex-1" />
+              <Button
+                variant="ghost"
+                size="xs"
+                class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-destructive"
+                title="出库（已在分发中的会在下次同步时从容器清理）"
+                @click="delReg = s"
+              >
+                <Trash2 class="size-3" /> 出库
+              </Button>
+            </div>
+          </template>
+          <template v-else>
+            <p class="text-[10px] leading-relaxed text-muted-foreground/70">库内容缺失（来源不在了）——出库后可重新入库。</p>
+            <div class="flex justify-end">
+              <Button
+                variant="ghost"
+                size="xs"
+                class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-destructive"
+                title="出库（分发去向里对它的引用会变成缺失，下次同步清理）"
+                @click="delReg = s"
+              >
+                <Trash2 class="size-3" /> 出库
+              </Button>
+            </div>
+          </template>
         </div>
       </div>
     </div>
 
-    <!-- ② 辅助：分发去向（规则级管理） -->
+    <!-- ② 辅助：分发去向（规则级管理，低频——默认收起；有库缺失残留时 amber 提醒） -->
     <div class="rounded-md border">
-      <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 bg-muted/30 px-3 py-2 text-left"
+        @click="showRules = !showRules"
+      >
         <FolderSync class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="text-xs font-semibold">分发去向</span>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ hub?.rules.length ?? 0 }}
         </Badge>
-        <span class="hidden text-[10px] text-muted-foreground/70 md:inline">成员在技能行「分发…」里勾选</span>
+        <Badge
+          v-if="missingTotal"
+          variant="outline"
+          class="shrink-0 border-transparent bg-amber-500/10 px-1 text-[10px] text-amber-600 dark:text-amber-400"
+        >{{ missingTotal }} 缺失</Badge>
         <div class="flex-1" />
-      </div>
-
-      <div v-if="!hub?.rules.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
-        还没有去向——在技能行点「分发…」选择位置（新建即建规则）。
-      </div>
+        <component :is="showRules ? ChevronDown : ChevronRight" class="size-3.5 shrink-0 text-muted-foreground" />
+      </button>
+      <template v-if="showRules">
+        <div v-if="!hub?.rules.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
+          还没有去向——展开技能行添加分发位置（新建即建规则）。
+        </div>
       <div
         v-for="(t, ti) in hub?.rules ?? []"
         :key="t.id"
@@ -655,6 +716,7 @@ async function syncNow() {
           <span v-if="!t.skills.length" class="text-[10px] text-muted-foreground/70">还没有成员</span>
         </div>
       </div>
+      </template>
     </div>
 
     <!-- ③ 发现散装（Inbox，默认收起） -->
@@ -740,12 +802,6 @@ async function syncNow() {
           </div>
         </div>
       </template>
-    </div>
-
-    <div class="flex justify-end">
-      <Button size="sm" :disabled="syncing" @click="syncNow">
-        <FolderSync :class="syncing ? 'animate-pulse' : ''" /> {{ syncing ? '同步中…' : '立即同步' }}
-      </Button>
     </div>
 
     <ConfirmDialog
