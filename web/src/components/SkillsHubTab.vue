@@ -251,6 +251,23 @@ async function doInstall(name: string) {
 // ⋯ 菜单里的「安装位置」：查看/卸载/范围切换/清缺失收在这里管（卡面不铺位置行）。
 const spotsOpenFor = ref<string | null>(null)
 
+// 卡上「全局安装」：一键装到 ~/.claude/skills（本机 + 全部受管容器）——技能全局
+// 安装的独立快捷形式，点完即走不开弹框。ensureGlobalHas 找既有全局规则并进、
+// 没有就建（all=true）。
+const globalInstalling = ref('')
+async function installGlobal(s: SkillRegistryItem) {
+  if (globalInstalling.value || installedAt(s.name, GLOBAL_TO)) return
+  globalInstalling.value = s.name
+  err.value = ''
+  try {
+    await ensureGlobalHas(s.name)
+  } catch (e) {
+    fail(e)
+  } finally {
+    globalInstalling.value = ''
+  }
+}
+
 // —— 安装弹框的目录树（file API：宿主 HOST_ID / 运行中容器，停着列不了） ——
 
 // 树节点：根 = 本机 + 各运行中容器；目录子节点展开时懒加载（只列目录）。
@@ -705,7 +722,7 @@ async function doDeleteRule() {
         <span class="text-xs font-semibold">技能库</span>
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="个人技能池——每张卡一件技能：右下「安装」选位置落装；⋯ 菜单管安装位置/更新/移除；来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
+          title="个人技能池——每张卡一件技能：右下「全局安装」一键铺本机+全部容器，「选择位置…」进目录树落指定位置；⋯ 菜单管安装位置/更新/移除；来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
         ><Info class="size-3.5" /></span>
         <div class="flex-1" />
         <Button
@@ -873,7 +890,7 @@ async function doDeleteRule() {
             <span
               v-else-if="s.exists && !installedCount(s)"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没装到任何位置——卡脚「安装」选择位置"
+              title="还没装到任何位置——卡脚「全局安装」一键铺开，或「选择位置…」指定落点"
             >未安装</span>
             <Badge
               v-if="!s.exists"
@@ -918,8 +935,9 @@ async function doDeleteRule() {
           <!-- 描述：完整铺开（卡片够大，不折叠不藏气泡） -->
           <p v-if="s.description" class="text-xs leading-relaxed text-muted-foreground">{{ s.description }}</p>
 
-          <!-- 卡脚：左来源备忘 / 右「安装」主按钮（主要动作，实色显眼）——
-               点击开安装弹框（选落点：既有位置一行一条，或新位置浏览目录） -->
+          <!-- 卡脚：左来源备忘 / 右两个安装动作——「全局安装」一键铺本机+全部容器
+               （~/.claude/skills，技能全局安装的独立快捷形式，点完即走不开弹框）；
+               「选择位置…」开目录树弹框管特殊落点。已全局安装的置灰 + ✓。 -->
           <div class="mt-auto flex items-center gap-1 border-t pt-2.5">
             <span
               class="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/40"
@@ -928,11 +946,27 @@ async function doDeleteRule() {
             <Button
               v-if="s.exists"
               size="xs"
+              class="h-6 shrink-0 gap-1 px-2.5 text-[11px]"
+              :disabled="installedAt(s.name, GLOBAL_TO) || globalInstalling === s.name"
+              :title="installedAt(s.name, GLOBAL_TO)
+                ? '已全局安装（~/.claude/skills · 本机+全部容器）'
+                : '一键装到 ~/.claude/skills——本机 + 全部受管容器（技能全局安装）'"
+              @click="installGlobal(s)"
+            >
+              <Loader2 v-if="globalInstalling === s.name" class="animate-spin" />
+              <Check v-else-if="installedAt(s.name, GLOBAL_TO)" />
+              <Globe v-else />
+              全局安装
+            </Button>
+            <Button
+              v-if="s.exists"
+              variant="outline"
+              size="xs"
               class="h-6 shrink-0 px-2.5 text-[11px]"
-              title="安装到某个位置——选既有位置或浏览目录新建落点"
+              title="安装到指定位置——目录树里选（本机/容器、新建落点都行）"
               @click="openInstall(s.name)"
             >
-              安装
+              选择位置…
             </Button>
           </div>
 
@@ -950,7 +984,7 @@ async function doDeleteRule() {
                 <X class="size-3" />
               </button>
             </div>
-            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——点「安装」。</p>
+            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——卡脚「全局安装」一键铺开，或「选择位置…」指定落点。</p>
             <div
               v-for="r in rulesOf(s.name)"
               :key="r.id"
