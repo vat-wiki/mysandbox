@@ -657,7 +657,8 @@ const showCreate = ref(false)
 // 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
 // 侧栏不再有选择态。
 const showBatch = ref(false)
-// AI 工具面板（技能中心 + 模型服务 + 智能体配置）；侧栏自挂对话框，TermSessionsDialog 同模式。
+// AI 工具面板（技能中心 + 模型服务 + 智能体配置）：环境级全局资产，入口在 tab 栏左侧
+// 全局区（与「所有终端」并列），不挂任何分区；侧栏自挂对话框，TermSessionsDialog 同模式。
 const showAi = ref(false)
 // 容器卡片菜单「AI 配置…」：覆盖模式打开（面板只显智能体配置页签，编辑该容器的覆盖绑定）。
 const aiOverrideFor = ref<string | null>(null)
@@ -2471,9 +2472,6 @@ onUnmounted(() => {
               >
                 <ListChecks /> 批量配置
               </DropdownMenuItem>
-              <DropdownMenuItem title="技能中心 · 模型服务 · 智能体配置" @click="showAi = true">
-                <Bot /> AI 工具
-              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <button
@@ -2578,9 +2576,6 @@ onUnmounted(() => {
                 @click="showBatch = true"
               >
                 <ListChecks /> 批量配置
-              </DropdownMenuItem>
-              <DropdownMenuItem title="技能中心 · 模型服务 · 智能体配置" @click="showAi = true">
-                <Bot /> AI 工具
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -3102,9 +3097,10 @@ onUnmounted(() => {
            色条=容器色，·N=pane 数（>1 才显示）。
            右键（触屏长按合成同款事件）弹菜单：独立窗口（popout 该容器/宿主的工作区，容器
            要 running）/ 隐藏（保留会话，会话对话框可恢复）/ 关闭（真杀）。
-           最左「所有终端」：本机全部活跃终端会话（服务端扫描，跨窗口跨浏览器），常驻入口；
-           手机：汉堡键开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
-           文件面板按钮固定右侧。
+            最左「所有终端」：本机全部活跃终端会话（服务端扫描，跨窗口跨浏览器），常驻入口；
+            次位「AI 工具」：环境级全局面板常驻入口（不挂任何分区）；
+            手机：汉堡键开侧栏抽屉、tab 序列横向滚动（shrink-0 保单个 tab 不被压扁）、
+            文件面板按钮固定右侧。
            min-h-7：桌面 28px 托底，= 有 tab 时 tab 项（text-xs + py-1.5）撑出的行高——groups
            全关/全隐藏时只剩图标按钮（无纵向 padding），不托底整条栏会塌到 ~14px。
            max-md:min-h-10：手机 40px，对应 max-md:py-2.5 + text-sm。 -->
@@ -3128,6 +3124,15 @@ onUnmounted(() => {
             v-if="hiddenAttentionIds.size"
             class="absolute right-1 top-1 inline-flex h-1.5 w-1.5 rounded-full bg-amber-400 ring-1 ring-background"
           />
+        </button>
+        <!-- AI 工具入口：环境级全局面板（技能中心/模型服务/智能体配置），与「所有终端」
+             同为常驻全局钮——不挂任何分区（从容器分区头挪出，全局功能不借容器菜单位）。 -->
+        <button
+          class="flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="AI 工具（技能中心 · 模型服务 · 智能体配置）"
+          @click="showAi = true"
+        >
+          <Bot class="size-3.5 max-md:size-5" />
         </button>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin">
         <ContextMenu v-for="(g, idx) in groups" :key="g.id">
@@ -3635,7 +3640,7 @@ onUnmounted(() => {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- AI 工具面板：全局 = 技能中心 + 模型服务 + 智能体配置；overrideFor = 容器覆盖模式（仅智能体配置页签） -->
+  <!-- AI 工具面板（入口 = tab 栏左侧全局区）：全局 = 技能中心 + 模型服务 + 智能体配置；overrideFor = 容器覆盖模式（仅智能体配置页签） -->
   <AiPanel
     v-if="showAi || aiOverrideFor"
     :override-for="aiOverrideFor"
