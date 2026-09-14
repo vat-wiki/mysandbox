@@ -22,7 +22,7 @@ import {
 } from '@/lib/api'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import SkillPickList from '@/components/SkillPickList.vue'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -34,7 +34,6 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { Search, Loader2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 
 const props = defineProps<{
@@ -163,13 +162,6 @@ const skills = ref<SkillRegistryItem[] | null>(null)
 const instBusy = ref(false)
 const instErr = ref('')
 const picked = ref<string[]>([])
-const filter = ref('')
-
-const filtered = computed(() =>
-  (skills.value ?? []).filter(
-    (s) => s.exists && (!filter.value.trim() || s.name.includes(filter.value.trim())),
-  ),
-)
 
 async function installSkillsAt() {
   if (!picked.value.length) return
@@ -349,47 +341,17 @@ onMounted(async () => {
             <span v-if="homeRoot" class="block text-muted-foreground/70">home 根下 .claude/skills 是 ~/.agents/skills 的软链，直接落真身</span>
           </p>
 
-          <div class="flex h-7 items-center gap-1.5 rounded-md border bg-muted/30 px-2">
-            <Search class="size-3 shrink-0 text-muted-foreground" />
-            <input
-              v-model="filter"
-              class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
-              placeholder="过滤技能名…"
-              @keydown.esc="filter = ''"
-            />
-          </div>
-          <p v-if="instErr" class="text-xs text-destructive">{{ instErr }}</p>
-          <p v-if="skills === null && !instErr" class="flex items-center gap-1.5 py-2 text-xs text-muted-foreground">
-            <Loader2 class="size-3 animate-spin" /> 读取技能库…
-          </p>
-          <div
-            v-else-if="!filtered.length"
-            class="rounded-md border border-dashed px-4 py-6 text-center text-xs leading-relaxed text-muted-foreground"
+          <!-- 库技能多选列表：行形状/过滤/加载空态收在共享组件（与技能中心全局安装弹框同款） -->
+          <SkillPickList
+            :skills="skills"
+            :picked="picked"
+            empty-text="技能库是空的——在文件面板里看到技能目录可右键「添加为技能」就地收进库，或去「AI 工具 → 技能中心」管理。"
+            @toggle="togglePick"
           >
-            技能库是空的——在文件面板里看到技能目录可右键「添加为技能」就地收进库，
-            或去「AI 工具 → 技能中心」管理。
-          </div>
-          <div v-else class="scroll-thin max-h-72 space-y-0.5 overflow-y-auto pr-1">
-            <label
-              v-for="s in filtered"
-              :key="s.name"
-              class="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent/50"
-            >
-              <Checkbox class="mt-0.5" :model-value="picked.includes(s.name)" @update:model-value="(v) => togglePick(s.name, !!v)" />
-              <!-- 名字+快照一行、描述下方全宽两行截断（title 看全文）——描述挤名字右侧窄条会把每行撑到七八行高（实测走形） -->
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-1.5">
-                  <span class="shrink-0 font-mono">{{ s.name }}</span>
-                  <Badge
-                    variant="outline"
-                    class="shrink-0 border-transparent bg-muted px-1 text-[9px] text-muted-foreground"
-                    title="静态快照——来源改动不自动进库，更新在技能中心"
-                  >快照</Badge>
-                </div>
-                <p class="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</p>
-              </div>
-            </label>
-          </div>
+            <template #error>
+              <p v-if="instErr" class="text-xs text-destructive">{{ instErr }}</p>
+            </template>
+          </SkillPickList>
           <p class="text-[11px] leading-snug text-muted-foreground/70">
             安装 = 拷进该落点并自动登记为安装位置；此后库更新自动跟走，移除自动清理。
           </p>

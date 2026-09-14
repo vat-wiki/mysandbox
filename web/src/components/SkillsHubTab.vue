@@ -68,13 +68,13 @@ import {
   ChevronRight,
   Info,
   Loader2,
-  Search,
   Folder,
   MoreHorizontal,
   Check,
   X,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import SkillPickList from '@/components/SkillPickList.vue'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from 'vue-sonner'
 
@@ -263,7 +263,6 @@ const spotsOpenFor = ref<string | null>(null)
 const globalOpen = ref(false)
 const globalBusy = ref(false)
 const globalErr = ref('')
-const globalFilter = ref('')
 const globalPicked = ref<string[]>([])
 // 打开时刻的全局集——保存时对比算增量（toast 报 新增/移除）。
 const globalInitial = ref<string[]>([])
@@ -271,16 +270,9 @@ const globalInitial = ref<string[]>([])
 const globalRule = computed(() => (hub.value?.rules ?? []).find((r) => r.to === GLOBAL_TO))
 const globalCount = computed(() => (globalRule.value ? declaredOf(globalRule.value).length : 0))
 
-const globalFiltered = computed(() =>
-  (reg.value ?? []).filter(
-    (s) => s.exists && (!globalFilter.value.trim() || s.name.includes(globalFilter.value.trim())),
-  ),
-)
-
 function openGlobal() {
   globalInitial.value = globalRule.value ? declaredOf(globalRule.value) : []
   globalPicked.value = [...globalInitial.value]
-  globalFilter.value = ''
   globalErr.value = ''
   globalOpen.value = true
 }
@@ -1253,33 +1245,17 @@ async function doDeleteRule() {
         </DialogHeader>
 
         <div class="space-y-2">
-          <div class="flex h-7 items-center gap-1.5 rounded-md border bg-muted/30 px-2">
-            <Search class="size-3 shrink-0 text-muted-foreground" />
-            <input
-              v-model="globalFilter"
-              class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
-              placeholder="过滤技能名…"
-              @keydown.esc="globalFilter = ''"
-            />
-          </div>
-          <p v-if="globalErr" class="text-xs text-destructive">{{ globalErr }}</p>
-          <div
-            v-if="!reg?.length"
-            class="rounded-md border border-dashed px-4 py-6 text-center text-xs leading-relaxed text-muted-foreground"
+          <!-- 库技能多选列表：与文件面板「AI 配置 → 技能」共用组件（行形状/过滤/空态单源） -->
+          <SkillPickList
+            :skills="reg"
+            :picked="globalPicked"
+            empty-text="技能库是空的——先用头部「添加」把技能收进库。"
+            @toggle="toggleGlobalPick"
           >
-            技能库是空的——先用头部「添加」把技能收进库。
-          </div>
-          <div v-else class="scroll-thin max-h-72 space-y-0.5 overflow-y-auto pr-1">
-            <label
-              v-for="s in globalFiltered"
-              :key="s.name"
-              class="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent/50"
-            >
-              <Checkbox class="mt-0.5" :model-value="globalPicked.includes(s.name)" @update:model-value="(v) => toggleGlobalPick(s.name, !!v)" />
-              <span class="shrink-0 pt-0.5 font-mono">{{ s.name }}</span>
-              <span class="min-w-0 flex-1 pt-0.5 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</span>
-            </label>
-          </div>
+            <template #error>
+              <p v-if="globalErr" class="text-xs text-destructive">{{ globalErr }}</p>
+            </template>
+          </SkillPickList>
           <p class="text-[11px] leading-snug text-muted-foreground/70">
             勾选 = 安装，取消勾选 = 从全局移除（下次同步从各处清理）；保存即全量同步。
           </p>
