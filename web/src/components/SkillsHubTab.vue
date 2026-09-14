@@ -2,9 +2,9 @@
 // 技能中心（AI 工具面板页签）。**技能库是个人技能池**——就几个、都是自己挑的，
 // 用大卡片铺开：名称/描述在卡面，操作收敛两级——
 // ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 红调缺失）+ 描述，零杂音；
-// ② 安装是显式动作：卡脚左下「＋ 安装」就地展开——选既有位置（下拉，沿用其范围）
-//    或「新位置」：选目标（本机 / 运行中容器）+ 可视化浏览目录选落点（不手填；
-//    停着的容器列不了目录故不出现，浏览从各端 home 起步）；
+// ② 安装是显式动作：卡脚右下「＋ 安装」实色主按钮（这张卡的主要动作）就地展开——
+//    选既有位置（下拉，沿用其范围）或「新位置」：选目标（本机 / 运行中容器）+
+//    可视化浏览目录选落点（不手填；停着的容器列不了目录故不出现，浏览从各端 home 起步）；
 // ③ 卡脚右侧 ⋯ 菜单收低频动作：安装位置（就地展开该技能的位置视图——范围切换/
 //    卸载）、更新（显式重拉快照并分发）、移除（confirm）。
 // ④ 添加面板（扫描/目录/git）是头部「+ 添加」Popover；位置级删除（整条规则）在底部
@@ -214,7 +214,7 @@ async function unloadSkill(r: SkillRuleResult, name: string) {
   }
 }
 
-// 卡上「＋ 安装」（卡脚左下角）：就地展开安装面板——选既有位置（下拉，沿用其范围）
+// 卡上「＋ 安装」（卡脚右下角主按钮）：就地展开安装面板——选既有位置（下拉，沿用其范围）
 // 或「新位置」（选目标 + 浏览目录选落点，不手填）。
 const NEW_SPOT = '__new__' // 下拉的哨兵项 = 新位置
 const installOpenFor = ref<string | null>(null)
@@ -602,7 +602,7 @@ async function doDeleteRule() {
         <span class="text-xs font-semibold">技能库</span>
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="个人技能池——每张卡一件技能：左下「＋ 安装」选位置落装；⋯ 菜单管安装位置/更新/移除；来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
+          title="个人技能池——每张卡一件技能：右下「＋ 安装」选位置落装；⋯ 菜单管安装位置/更新/移除；来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
         ><Info class="size-3.5" /></span>
         <div class="flex-1" />
         <Button
@@ -862,7 +862,7 @@ async function doDeleteRule() {
             </template>
           </div>
           <!-- ＋ 安装面板：就地展开——选既有位置（沿用其范围）或新位置（选目标+浏览目录）。
-               展开时替换卡脚的「＋ 安装」钮（左下角入口，展开方向朝上占满卡内余量）。 -->
+               展开时替换卡脚的「＋ 安装」主按钮（右下角入口，占满卡内余量）。 -->
           <div v-if="s.exists && installOpenFor === s.name" class="flex flex-col gap-1.5 rounded-md border bg-muted/20 p-2">
             <div class="flex items-center gap-1.5">
               <Select v-model="pickRuleId">
@@ -936,19 +936,11 @@ async function doDeleteRule() {
             </template>
           </div>
 
-          <!-- 卡脚：左「＋ 安装」/ 右来源备忘 + ⋯ 菜单（安装位置 · 更新 · 移除） -->
+          <!-- 卡脚：左来源备忘 / 右 ⋯ 菜单（安装位置 · 更新 · 移除）+ 主按钮「＋ 安装」——
+               安装是这张卡的主要动作，实色按钮放右下角最显眼处 -->
           <div class="mt-auto flex items-center gap-1 border-t pt-2.5">
-            <button
-              v-if="s.exists && installOpenFor !== s.name"
-              type="button"
-              class="w-fit cursor-pointer rounded px-1 py-0.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-foreground"
-              title="安装到某个位置——选既有位置或浏览目录新建落点"
-              @click="openInstall(s.name)"
-            >
-              ＋ 安装
-            </button>
             <span
-              class="min-w-0 flex-1 truncate text-right font-mono text-[10px] text-muted-foreground/40"
+              class="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/40"
               :title="s.from"
             >{{ s.from }}</span>
             <DropdownMenu>
@@ -978,6 +970,15 @@ async function doDeleteRule() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            <Button
+              v-if="s.exists && installOpenFor !== s.name"
+              size="xs"
+              class="h-6 shrink-0 gap-1 px-2.5 text-[11px]"
+              title="安装到某个位置——选既有位置或浏览目录新建落点"
+              @click="openInstall(s.name)"
+            >
+              <Plus class="size-3" /> 安装
+            </Button>
           </div>
 
           <!-- ⋯ 菜单「安装位置」：该技能的位置视图——查看 / 范围切换 / 卸载，就地管理 -->
@@ -989,7 +990,7 @@ async function doDeleteRule() {
                 <X class="size-3" />
               </button>
             </div>
-            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——用左下角「＋ 安装」。</p>
+            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——点「＋ 安装」。</p>
             <div
               v-for="r in rulesOf(s.name)"
               :key="r.id"
