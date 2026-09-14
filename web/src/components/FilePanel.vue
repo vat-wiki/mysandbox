@@ -36,7 +36,6 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import SkillsInstallDialog from '@/components/SkillsInstallDialog.vue'
 import NameDialog from '@/components/NameDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import AiSpotDialog from '@/components/AiSpotDialog.vue'
@@ -59,7 +58,6 @@ import {
   Loader2,
   ClipboardPaste,
   Copy,
-  Library,
   BookPlus,
   Sparkles,
   MoreHorizontal,
@@ -112,22 +110,14 @@ function targetId(): string {
 // 宿主面板（HOST_ID 哨兵）：路径本来就是宿主路径，弹框里不重复展示容器路径行。
 const isHost = computed(() => targetId() === HOST_ID)
 
-// —— 安装技能（pull 入口）：库技能装进当前浏览位置下的 .claude/skills，自动落规则
-// （库更新跟走 / 移除自动清）；规则系统接管后续，这里不产生第二套记账。表单走
-// SkillsInstallDialog（与 AI 配置同款居中弹窗，窄条展不开）。——
-const showInstall = ref(false)
-
-// 安装目标：当前目录下的 .claude/skills（已在其中则就地）。容器走 home 契约前缀；
-// 宿主面板的 path 本身就是宿主路径（home 内与否由后端 hostHomeRel 校验）。
-const installTarget = computed<string | null>(() => {
-  const p = path.value
-  if (!p) return null
-  if (/\/\.claude\/skills$/.test(p)) return p
-  if (!isHost.value && p !== '/home/dev' && !p.startsWith('/home/dev/')) return null
-  return `${p}/.claude/skills`
-})
-// 服务组没有规则模型；容器与宿主（本机）都可作为安装目标。
-const canInstall = computed(() => !targetId().startsWith('s:') && !!installTarget.value)
+// —— AI 配置（pull 入口，✨ 按钮）：单弹框 Tabs 合并「模型绑定」与「技能」两块 pull
+// 配置（AiSpotDialog，表单在窄面板条里展不开，走居中弹窗）。落点 = 当前目录（假定人在
+// 项目根）：模型绑定写进当前目录本身，技能装进当前目录下的 .claude/skills / .agents/skills
+// （子目录在弹框里选）。容器与宿主（本机）都可用；home 内与否的细分判定在弹框里按 tab 做。——
+const showAiCfg = ref(false)
+const canAiCfg = computed(
+  () => !targetId().startsWith('s:') && !!path.value && (isHost.value || path.value.startsWith('/home/dev')),
+)
 
 // —— 添加为技能（pull 反向：就地收进库）——把一个含 SKILL.md 的目录直接收进技能库
 // （拷一份静态快照，与来源解耦；此后任何目标都能「安装技能」拉它，更新在技能中心）。
@@ -168,20 +158,6 @@ async function registerSkillFrom(fromPath: string) {
     regBusy.value = false
   }
 }
-
-// —— AI 配置（pull 入口）：✨ 按钮开 AiSpotDialog（表单在窄面板条里展不开，走居中
-// 弹窗）。落点 = 当前目录（假定人在项目根）；home 根是 home 级语义，不可配。——
-const showAiCfg = ref(false)
-
-// 配置落点 = 当前目录（假定人在项目根；进到哪配到哪）。容器 home 根不可配（home 级
-// 走智能体配置）；宿主面板的 path 本身就是宿主路径，home 内与否由后端校验。
-const aiSpot = computed<string | null>(() => {
-  const p = path.value
-  if (!p) return null
-  if (!isHost.value && (p === '/home/dev' || !p.startsWith('/home/dev/'))) return null
-  return p
-})
-const canAiCfg = computed(() => !targetId().startsWith('s:') && !!aiSpot.value)
 
 // —— 路径复制 ——
 // navigator.clipboard 不可用（http 局域网访问）时走 execCommand 兜底，必须同步在
@@ -1154,22 +1130,9 @@ function fmtSize(n: number): string {
       >
         <BookPlus class="size-3.5" />
       </Button>
-      <!-- 安装技能（pull 入口）：库技能装进当前浏览位置下的 .claude/skills。
-           容器与宿主（本机）都可用（服务组没有规则模型），home 外禁用。 -->
-      <Button
-        v-if="canInstall || showInstall"
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :class="showInstall ? 'bg-accent text-foreground' : ''"
-        :disabled="!canInstall"
-        :title="canInstall ? `安装技能（库 → ${installTarget}）` : '进到 home 内可安装技能'"
-        @click="showInstall = !showInstall"
-      >
-        <Library class="size-3.5" />
-      </Button>
-      <!-- AI 配置（pull 入口）：项目级配置写进当前目录 + 落规则（跟项目走）。
-           容器与宿主都可用；home 根是 home 级语义，走「AI 工具 → 智能体配置」。 -->
+      <!-- AI 配置（pull 入口）：单弹框 Tabs——模型绑定（项目级 provider + 规则）与技能
+           （库 → 当前目录下 .claude/skills 或 .agents/skills，弹框里选子目录）。
+           容器与宿主都可用（服务组没有规则模型），home 外不出现。 -->
       <Button
         v-if="canAiCfg || showAiCfg"
         variant="ghost"
@@ -1177,7 +1140,7 @@ function fmtSize(n: number): string {
         class="shrink-0"
         :class="showAiCfg ? 'bg-accent text-foreground' : ''"
         :disabled="!canAiCfg"
-        :title="canAiCfg ? `AI 配置（项目级 → ${aiSpot}）` : '进到项目目录再配置'"
+        title="AI 配置（模型绑定 / 技能）"
         @click="showAiCfg = !showAiCfg"
       >
         <Sparkles class="size-3.5" />
@@ -1556,24 +1519,15 @@ function fmtSize(n: number): string {
       @confirm="confirmDelete"
       @close="delTarget = null"
     />
-    <!-- 项目级 AI 配置（✨ 按钮）：居中弹窗，表单不塞面板窄条 -->
+    <!-- AI 配置（✨ 按钮）：居中弹窗 Tabs 合并模型绑定与技能安装，表单不塞面板窄条。
+         spot = 当前目录（模型绑定落点 = 它本身；技能落点 = 它 + 子目录，弹框内选）。 -->
     <AiSpotDialog
-      v-if="showAiCfg && aiSpot"
+      v-if="showAiCfg && path"
       :container-id="targetId()"
       :container-name="containerName"
-      :spot="aiSpot"
+      :spot="path"
       @done="refresh()"
       @close="showAiCfg = false"
-      @unauthorized="emit('close')"
-    />
-    <!-- 安装技能（📚 按钮）：居中弹窗，库清单勾选（与 AI 配置同款交互） -->
-    <SkillsInstallDialog
-      v-if="showInstall && installTarget"
-      :container-id="targetId()"
-      :container-name="containerName"
-      :spot="installTarget"
-      @done="refresh()"
-      @close="showInstall = false"
       @unauthorized="emit('close')"
     />
   </div>
