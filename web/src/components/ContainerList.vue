@@ -660,9 +660,15 @@ const showCreate = ref(false)
 // 侧栏不再有选择态。
 const showBatch = ref(false)
 // AI 工具工作区（技能 / 模型接入）：主区级页面——文件 tab 栏的单例 tab（VSCode
-// 设置页模式）。aiOpen = tab 存在（会话级，不持久化——「有事才出现」）；激活与否
-// 由主区归属 mainView 表达（'ai'），与终端/文件天然互斥。Bot 钮 = 全局管理入口。
-const aiOpen = ref(false)
+// 设置页模式）。aiOpen = tab 存在；激活与否由主区归属 mainView 表达（'ai'），与
+// 终端/文件天然互斥。Bot 钮 = 全局管理入口。tab 存在性持久化（独立 key）：刷新后
+// AI 页原样回来——与文件 tab 同一恢复语义，平级互切就不能只有它刷新即丢；
+// popout 独立 key，与主窗口互不读写（同 tabs/editor-tabs 约定）。
+const AI_OPEN_KEY =
+  props.popout && props.popoutTarget
+    ? `mysandbox:ai-open-popout-${props.popoutTarget}`
+    : 'mysandbox:ai-open'
+const aiOpen = ref(loadBool(AI_OPEN_KEY))
 function openAi() {
   aiOpen.value = true
   mainView.value = 'ai'
@@ -867,22 +873,27 @@ const activeEditorIdx = ref(
     return 0
   })(),
 )
-function loadMainView(): 'file' | 'terminal' {
+function loadMainView(): 'file' | 'terminal' | 'ai' {
   try {
-    // 'ai' 不持久化（aiOpen 会话级）：落盘时已折成 'file'，这里只认 file/terminal
-    return localStorage.getItem(EDITOR_AREA_KEY) === 'file' && editorTabs.value.length ? 'file' : 'terminal'
+    // 'ai' 原样落盘，恢复时以 aiOpen 存档校验 tab 还在（closeAi 两键一致清，正常不会有
+    // area=ai 而 aiOpen=0 的残局；旧存档/手清兜底回落文件或终端）
+    const area = localStorage.getItem(EDITOR_AREA_KEY)
+    if (area === 'ai') return aiOpen.value ? 'ai' : editorTabs.value.length ? 'file' : 'terminal'
+    return area === 'file' && editorTabs.value.length ? 'file' : 'terminal'
   } catch {
     return 'terminal'
   }
 }
 const mainView = ref<'terminal' | 'ai' | 'file'>(loadMainView())
 watch(
-  [editorTabs, activeEditorIdx, mainView],
+  [editorTabs, activeEditorIdx, mainView, aiOpen],
   () => {
     try {
       localStorage.setItem(EDITOR_TABS_KEY, JSON.stringify(editorTabs.value))
-      localStorage.setItem(EDITOR_AREA_KEY, mainView.value === 'ai' ? 'file' : mainView.value)
+      // 'ai' 原样落盘（恢复时 loadMainView 以 aiOpen 存档校验），不再折成 'file'
+      localStorage.setItem(EDITOR_AREA_KEY, mainView.value)
       localStorage.setItem(EDITOR_ACTIVE_KEY, String(activeEditorIdx.value))
+      localStorage.setItem(AI_OPEN_KEY, aiOpen.value ? '1' : '0')
     } catch {
       /* localStorage 不可用就跳过 */
     }
