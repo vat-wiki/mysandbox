@@ -2,10 +2,11 @@
 // 技能中心（AI 工具面板页签）。**技能库是个人技能池**——就几个、都是自己挑的，
 // 用大卡片铺开：名称/描述在卡面，操作收敛两级——
 // ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 红调缺失）+ 描述，零杂音；
-// ② 安装是显式动作：卡脚右下「安装」实色主按钮（这张卡的主要动作）就地展开——
-//    选既有位置（下拉，沿用其范围）或「新位置」：选目标（本机 / 运行中容器）+
-//    可视化浏览目录选落点（不手填；停着的容器列不了目录故不出现，浏览从各端 home 起步）；
-// ③ 卡脚右侧 ⋯ 菜单收低频动作：安装位置（就地展开该技能的位置视图——范围切换/
+// ② 安装是显式动作：卡脚右下「安装」实色主按钮（这张卡的主要动作）开安装弹框——
+//    第一步只选落点（既有位置单选行，沿用其范围；或「新位置」）；选新位置才展开
+//    目标（本机 / 运行中容器）+ 可视化浏览目录选落点（不手填；停着的容器列不了
+//    目录故不出现，浏览从各端 home 起步）。
+// ③ 卡头右上 ⋯ 菜单收低频动作：安装位置（就地展开该技能的位置视图——范围切换/
 //    卸载）、更新（显式重拉快照并分发）、移除（confirm）。
 // ④ 添加面板（扫描/目录/git）是头部「+ 添加」Popover；位置级删除（整条规则）在底部
 //    安装位置折叠条。
@@ -78,6 +79,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from 'vue-sonner'
 
 const emit = defineEmits<{
@@ -214,15 +216,16 @@ async function unloadSkill(r: SkillRuleResult, name: string) {
   }
 }
 
-// 卡上「安装」（卡脚右下角主按钮）：就地展开安装面板——选既有位置（下拉，沿用其范围）
-// 或「新位置」（选目标 + 浏览目录选落点，不手填）。
-const NEW_SPOT = '__new__' // 下拉的哨兵项 = 新位置
+// 卡上「安装」（卡脚右下角主按钮）：开安装弹框——第一步只选落点（既有位置单选行，
+// 单选）；选「新位置」才展开目标选择 + 目录浏览（第二层输入按需出现，不一次全铺）。
+const NEW_SPOT = '__new__' // 落点单选的哨兵项 = 新位置
 const installOpenFor = ref<string | null>(null)
 const pickRuleId = ref<string>(NEW_SPOT)
 const nfBusy = ref(false)
 
 function openInstall(name: string) {
-  pickRuleId.value = NEW_SPOT
+  const others = otherRulesOf(name)
+  pickRuleId.value = others.length ? others[0].id : NEW_SPOT
   installOpenFor.value = name
   void ensureBrowseTargets()
 }
@@ -763,7 +766,7 @@ async function doDeleteRule() {
           class="relative flex flex-col gap-2.5 overflow-hidden rounded-xl border p-4 transition-colors"
           :class="!s.exists ? 'border-destructive/30 bg-destructive/5' : 'hover:border-line hover:bg-accent/20'"
         >
-          <!-- 卡头：名称 + 状态 -->
+          <!-- 卡头：名称 + 状态 + 右上 ⋯ 菜单（安装位置 · 更新 · 移除） -->
           <div class="flex min-w-0 items-center gap-2">
             <span class="min-w-0 truncate font-mono text-sm font-medium" :class="!s.exists ? 'text-destructive/80 line-through' : ''">{{ s.name }}</span>
             <Loader2 v-if="updatingSkill === s.name" class="size-3.5 shrink-0 animate-spin text-muted-foreground" />
@@ -783,173 +786,13 @@ async function doDeleteRule() {
               class="shrink-0 cursor-help text-[10px] text-muted-foreground/50"
               :title="rulesOf(s.name).map((r) => `${r.to}${r.all ? '（本机+全部容器）' : '（有该项目）'}`).join('\n')"
             >{{ installedCount(s) }} 处</span>
-          </div>
-
-          <!-- 描述：完整铺开（卡片够大，不折叠不藏气泡） -->
-          <p v-if="s.description" class="text-xs leading-relaxed text-muted-foreground">{{ s.description }}</p>
-
-          <!-- 安装：就地展开——选既有位置（沿用其范围）或新位置（选目标+浏览目录） -->
-          <div v-if="s.exists && installOpenFor === s.name" class="flex flex-col gap-1.5 rounded-md border bg-muted/20 p-2">
-            <div class="flex items-center gap-1.5">
-              <Select v-model="pickRuleId">
-                <SelectTrigger size="sm" class="h-7 min-w-0 max-w-52 flex-1 text-[11px]">
-                  <SelectValue placeholder="选安装位置" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem
-                    v-for="r in otherRulesOf(s.name)"
-                    :key="r.id"
-                    :value="r.id"
-                    class="text-[11px]"
-                  >{{ r.to }}（{{ r.all ? '本机+全部容器' : '有该项目' }}）</SelectItem>
-                  <SelectItem :value="NEW_SPOT" class="text-[11px]">＋ 新位置…</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button size="xs" class="shrink-0" :disabled="nfBusy" @click="doInstall(s.name)">安装</Button>
-              <Button variant="ghost" size="xs" class="h-7 shrink-0 px-1.5 text-[11px] text-muted-foreground" @click="installOpenFor = null">取消</Button>
-            </div>
-
-            <!-- 新位置：目标（本机/运行中容器）+ 目录浏览选落点 -->
-            <template v-if="pickRuleId === NEW_SPOT">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <Select
-                  :model-value="brTarget?.id ?? ''"
-                  @update:model-value="(v) => setBrTarget(brTargets.find((t) => t.id === v) ?? null)"
-                >
-                  <SelectTrigger size="sm" class="h-6 w-40 text-[11px]">
-                    <SelectValue placeholder="目标" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem v-for="t in brTargets" :key="t.id" :value="t.id" class="text-[11px]">{{ t.label }}</SelectItem>
-                  </SelectContent>
-                </Select>
-                <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
-                  <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
-                  全部
-                </label>
-                <span class="ml-auto min-w-0 truncate font-mono text-[10px] text-muted-foreground/70" :title="ruleToOf(brTarget, brPath) ?? ''">
-                  {{ ruleToOf(brTarget, brPath) }}
-                </span>
-              </div>
-              <!-- 面包屑 -->
-              <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-[10px] text-muted-foreground">
-                <template v-for="(c, i) in brCrumbs" :key="c.path">
-                  <span v-if="i > 0" class="opacity-50">/</span>
-                  <button
-                    type="button"
-                    class="cursor-pointer rounded px-0.5 hover:text-foreground"
-                    :class="i === brCrumbs.length - 1 ? 'text-foreground' : ''"
-                    @click="loadBrDir(c.path)"
-                  >{{ c.label }}</button>
-                </template>
-                <Loader2 v-if="brLoading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
-              </div>
-              <p v-if="brErr" class="text-[10px] text-destructive">{{ brErr }}</p>
-              <!-- 目录列表：只列目录（落点是目录），当前目录即落点 -->
-              <div class="scroll-thin max-h-40 min-h-12 overflow-y-auto rounded border bg-card">
-                <p v-if="!brDirs.length && !brLoading" class="px-2 py-2 text-center text-[10px] text-muted-foreground/60">没有子目录——就装在当前目录。</p>
-                <button
-                  v-for="d in brDirs"
-                  :key="d.name"
-                  type="button"
-                  class="flex w-full cursor-pointer items-center gap-1.5 px-2 py-1 text-left text-[11px] hover:bg-accent/50"
-                  @click="loadBrDir(brPath === '/' ? '/' + d.name : brPath + '/' + d.name)"
-                >
-                  <Folder class="size-3 shrink-0 text-muted-foreground/70" />
-                  <span class="min-w-0 truncate font-mono">{{ d.name }}</span>
-                </button>
-              </div>
-            </template>
-          </div>
-          <!-- 安装面板：就地展开——选既有位置（沿用其范围）或新位置（选目标+浏览目录）。
-               展开时替换卡脚的「安装」主按钮（右下角入口，占满卡内余量）。 -->
-          <div v-if="s.exists && installOpenFor === s.name" class="flex flex-col gap-1.5 rounded-md border bg-muted/20 p-2">
-            <div class="flex items-center gap-1.5">
-              <Select v-model="pickRuleId">
-                <SelectTrigger size="sm" class="h-7 min-w-0 max-w-52 flex-1 text-[11px]">
-                  <SelectValue placeholder="选安装位置" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem
-                    v-for="r in otherRulesOf(s.name)"
-                    :key="r.id"
-                    :value="r.id"
-                    class="text-[11px]"
-                  >{{ r.to }}（{{ r.all ? '本机+全部容器' : '有该项目' }}）</SelectItem>
-                  <SelectItem :value="NEW_SPOT" class="text-[11px]">＋ 新位置…</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button size="xs" class="shrink-0" :disabled="nfBusy" @click="doInstall(s.name)">安装</Button>
-              <Button variant="ghost" size="xs" class="h-7 shrink-0 px-1.5 text-[11px] text-muted-foreground" @click="installOpenFor = null">取消</Button>
-            </div>
-
-            <!-- 新位置：目标（本机/运行中容器）+ 目录浏览选落点 -->
-            <template v-if="pickRuleId === NEW_SPOT">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <Select
-                  :model-value="brTarget?.id ?? ''"
-                  @update:model-value="(v) => setBrTarget(brTargets.find((t) => t.id === v) ?? null)"
-                >
-                  <SelectTrigger size="sm" class="h-6 w-40 text-[11px]">
-                    <SelectValue placeholder="目标" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem v-for="t in brTargets" :key="t.id" :value="t.id" class="text-[11px]">{{ t.label }}</SelectItem>
-                  </SelectContent>
-                </Select>
-                <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
-                  <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
-                  全部
-                </label>
-                <span class="ml-auto min-w-0 truncate font-mono text-[10px] text-muted-foreground/70" :title="ruleToOf(brTarget, brPath) ?? ''">
-                  {{ ruleToOf(brTarget, brPath) }}
-                </span>
-              </div>
-              <!-- 面包屑 -->
-              <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-[10px] text-muted-foreground">
-                <template v-for="(c, i) in brCrumbs" :key="c.path">
-                  <span v-if="i > 0" class="opacity-50">/</span>
-                  <button
-                    type="button"
-                    class="cursor-pointer rounded px-0.5 hover:text-foreground"
-                    :class="i === brCrumbs.length - 1 ? 'text-foreground' : ''"
-                    @click="loadBrDir(c.path)"
-                  >{{ c.label }}</button>
-                </template>
-                <Loader2 v-if="brLoading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
-              </div>
-              <p v-if="brErr" class="text-[10px] text-destructive">{{ brErr }}</p>
-              <!-- 目录列表：只列目录（落点是目录），当前目录即落点 -->
-              <div class="scroll-thin max-h-40 min-h-12 overflow-y-auto rounded border bg-card">
-                <p v-if="!brDirs.length && !brLoading" class="px-2 py-2 text-center text-[10px] text-muted-foreground/60">没有子目录——就装在当前目录。</p>
-                <button
-                  v-for="d in brDirs"
-                  :key="d.name"
-                  type="button"
-                  class="flex w-full cursor-pointer items-center gap-1.5 px-2 py-1 text-left text-[11px] hover:bg-accent/50"
-                  @click="loadBrDir(brPath === '/' ? '/' + d.name : brPath + '/' + d.name)"
-                >
-                  <Folder class="size-3 shrink-0 text-muted-foreground/70" />
-                  <span class="min-w-0 truncate font-mono">{{ d.name }}</span>
-                </button>
-              </div>
-            </template>
-          </div>
-
-          <!-- 卡脚：左来源备忘 / 右 ⋯ 菜单（安装位置 · 更新 · 移除）+ 主按钮「安装」——
-               安装是这张卡的主要动作，实色按钮放右下角最显眼处 -->
-          <div class="mt-auto flex items-center gap-1 border-t pt-2.5">
-            <span
-              class="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/40"
-              :title="s.from"
-            >{{ s.from }}</span>
             <DropdownMenu>
               <DropdownMenuTrigger as-child>
-                <Button variant="ghost" size="icon-xs" class="shrink-0 text-muted-foreground hover:text-foreground" title="更多操作">
+                <Button variant="ghost" size="icon-xs" class="shrink-0 text-muted-foreground/70 hover:text-foreground" title="更多操作">
                   <MoreHorizontal />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="end">
+              <DropdownMenuContent side="bottom" align="end">
                 <DropdownMenuItem
                   v-if="s.exists"
                   :disabled="!installedCount(s) && !hub?.rules.length"
@@ -970,8 +813,20 @@ async function doDeleteRule() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+          </div>
+
+          <!-- 描述：完整铺开（卡片够大，不折叠不藏气泡） -->
+          <p v-if="s.description" class="text-xs leading-relaxed text-muted-foreground">{{ s.description }}</p>
+
+          <!-- 卡脚：左来源备忘 / 右「安装」主按钮（主要动作，实色显眼）——
+               点击开安装弹框（选落点：既有位置一行一条，或新位置浏览目录） -->
+          <div class="mt-auto flex items-center gap-1 border-t pt-2.5">
+            <span
+              class="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/40"
+              :title="s.from"
+            >{{ s.from }}</span>
             <Button
-              v-if="s.exists && installOpenFor !== s.name"
+              v-if="s.exists"
               size="xs"
               class="h-6 shrink-0 px-2.5 text-[11px]"
               title="安装到某个位置——选既有位置或浏览目录新建落点"
@@ -980,6 +835,11 @@ async function doDeleteRule() {
               安装
             </Button>
           </div>
+
+
+
+
+
 
           <!-- ⋯ 菜单「安装位置」：该技能的位置视图——查看 / 范围切换 / 卸载，就地管理 -->
           <div v-if="s.exists && spotsOpenFor === s.name" class="flex flex-col gap-0.5 rounded-md border bg-muted/20 p-2">
@@ -1089,6 +949,108 @@ async function doDeleteRule() {
         </div>
       </div>
     </div>
+
+    <!-- 安装弹框：第一步只选落点（既有位置单选行 / 新位置）；选「新位置」才展开
+         目标 + 目录浏览——第二层输入按需出现，不一次全铺（卡内就地展开体量展不开，
+         弹框与文件面板安装技能/项目级 AI 配置同语言）。 -->
+    <Dialog :open="!!installOpenFor" @update:open="(v: boolean) => v || (installOpenFor = null)">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>安装 · {{ installOpenFor }}</DialogTitle>
+          <DialogDescription class="font-mono">选落点——既有位置沿用其范围；新位置浏览目录选定</DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-2">
+          <!-- 落点单选：既有位置（不含该技能的） + 新位置 -->
+          <div class="space-y-0.5">
+            <button
+              v-for="r in otherRulesOf(installOpenFor ?? '')"
+              :key="r.id"
+              type="button"
+              class="flex w-full cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors"
+              :class="pickRuleId === r.id ? 'border-primary/50 bg-primary/10' : 'hover:bg-accent/40'"
+              @click="pickRuleId = r.id"
+            >
+              <span class="min-w-0 flex-1 truncate font-mono">{{ r.to }}</span>
+              <span
+                class="shrink-0 rounded border px-1 py-0.5 text-[9px]"
+                :class="r.all
+                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
+              >{{ r.all ? '本机+全部容器' : '有该项目' }}</span>
+            </button>
+            <button
+              type="button"
+              class="flex w-full cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors"
+              :class="pickRuleId === NEW_SPOT ? 'border-primary/50 bg-primary/10' : 'hover:bg-accent/40'"
+              @click="pickRuleId = NEW_SPOT"
+            >
+              <Plus class="size-3.5 shrink-0" />
+              <span>新位置（浏览目录选定）</span>
+            </button>
+          </div>
+
+          <!-- 新位置：目标（本机/运行中容器）+ 目录浏览选落点 -->
+          <template v-if="pickRuleId === NEW_SPOT">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <Select
+                :model-value="brTarget?.id ?? ''"
+                @update:model-value="(v) => setBrTarget(brTargets.find((t) => t.id === v) ?? null)"
+              >
+                <SelectTrigger size="sm" class="h-7 w-40 text-[11px]">
+                  <SelectValue placeholder="目标" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="t in brTargets" :key="t.id" :value="t.id" class="text-[11px]">{{ t.label }}</SelectItem>
+                </SelectContent>
+              </Select>
+              <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
+                <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
+                全部
+              </label>
+              <span class="ml-auto min-w-0 truncate font-mono text-[10px] text-muted-foreground/70" :title="ruleToOf(brTarget, brPath) ?? ''">
+                {{ ruleToOf(brTarget, brPath) }}
+              </span>
+            </div>
+            <!-- 面包屑 -->
+            <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-[10px] text-muted-foreground">
+              <template v-for="(c, i) in brCrumbs" :key="c.path">
+                <span v-if="i > 0" class="opacity-50">/</span>
+                <button
+                  type="button"
+                  class="cursor-pointer rounded px-0.5 hover:text-foreground"
+                  :class="i === brCrumbs.length - 1 ? 'text-foreground' : ''"
+                  @click="loadBrDir(c.path)"
+                >{{ c.label }}</button>
+              </template>
+              <Loader2 v-if="brLoading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
+            </div>
+            <p v-if="brErr" class="text-[10px] text-destructive">{{ brErr }}</p>
+            <!-- 目录列表：只列目录（落点是目录），当前目录即落点 -->
+            <div class="scroll-thin max-h-52 min-h-12 overflow-y-auto rounded border bg-card">
+              <p v-if="!brDirs.length && !brLoading" class="px-2 py-2 text-center text-[10px] text-muted-foreground/60">没有子目录——就装在当前目录。</p>
+              <button
+                v-for="d in brDirs"
+                :key="d.name"
+                type="button"
+                class="flex w-full cursor-pointer items-center gap-1.5 px-2 py-1 text-left text-[11px] hover:bg-accent/50"
+                @click="loadBrDir(brPath === '/' ? '/' + d.name : brPath + '/' + d.name)"
+              >
+                <Folder class="size-3 shrink-0 text-muted-foreground/70" />
+                <span class="min-w-0 truncate font-mono">{{ d.name }}</span>
+              </button>
+            </div>
+          </template>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="xs" :disabled="nfBusy" @click="installOpenFor = null">取消</Button>
+          <Button size="xs" :disabled="nfBusy || !installOpenFor" @click="doInstall(installOpenFor ?? '')">
+            {{ nfBusy ? '安装中…' : '安装' }}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
 
     <ConfirmDialog
       v-if="delRule"
