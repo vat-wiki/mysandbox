@@ -115,15 +115,17 @@ peer:
   port: 7331
 
 # Skills 分发（server/skillSync.ts）——技能库（面板「AI 工具 → 技能中心」）是唯一
-# 技能真相源，安装规则把库技能装进全部受管容器。宿主直读直写 rootfs（D1 uid 直通），
-# 容器不必在跑。模型两条：
+# 技能真相源，安装规则把库技能装进宿主与全部受管容器。宿主直读直写 rootfs（D1 uid
+# 直通），容器不必在跑。存储在 AI 板块专用目录 ~/.local/share/mysandbox/ai/ 下
+# （skills/ 文件本体 + skills.json 规则与元数据；AI 配置在 ai/ai-config.json，
+# server/aiState.ts）。模型两条：
 #   技能库：静态快照中心——入库（目录/git）一律拷贝快照，来源改动**不**订阅、不
-#     自动进库；更新 = 显式动作（面板行「更新」/ mysandbox skills update，从来源
+#     自动进库；更新 = 显式动作（面板卡片「更新」/ mysandbox skills update，从来源
 #     重拉并分发）。库内同名唯一，无冲突概念。
-#   安装规则：{库内技能集合, 去向, 范围}。全局去向（~/.claude/skills）铺全部受管
-#     容器；项目去向（如 ~/proj/.claude/skills）只装已有该项目的容器（项目克隆到哪
-#     skill 跟到哪，容器 start 自动补齐）。订阅单向：只订阅库（库一变自动跟走），
-#     不订阅来源。
+#   安装规则：{库内技能集合, 去向, 范围}。全局去向（~/.claude/skills）铺本机 +
+#     全部受管容器；项目去向（如 ~/proj/.claude/skills）只装已有该项目的机器
+#     （项目克隆到哪 skill 跟到哪，容器 start 自动补齐）。订阅单向：只订阅库
+#     （库一变自动跟走），不订阅来源。
 # 全自动触发：服务启动追平 + watch（库目录）+ 新建容器补发 + 容器 start 补发。手动：
 # 面板「立即同步」/ 侧栏 ⋯「同步 skills」/ mysandbox skills sync。文件级比对、变才写；
 # 规则里摘掉的 skill 按清单从容器同步删除（用户自装的其他 skills 不动）。

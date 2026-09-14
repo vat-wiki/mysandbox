@@ -57,7 +57,7 @@ const emit = defineEmits<{
   (e: 'unauthorized'): void
 }>()
 
-// 全局位置（铺全部受管容器）的缺省范围。
+// 全局位置（铺本机 + 全部受管容器）的缺省范围。
 const GLOBAL_TO = '~/.claude/skills'
 
 const hub = ref<SkillHubView | null>(null)
@@ -183,7 +183,7 @@ async function toggleRuleSkill(r: SkillRuleResult, name: string, on: boolean) {
   }
 }
 
-// 范围切换：全部容器 ⇄ 仅已有该项目的容器。
+// 范围切换：本机 + 全部容器 ⇄ 仅已有该项目的机器。
 async function toggleScope(r: SkillRuleResult) {
   err.value = ''
   try {
@@ -331,8 +331,8 @@ async function doImportGit() {
   }
 }
 
-// 从扫描行添加。thenGlobal = 添加后并进全局位置（一步到位装到全部容器）。
-// 同名 → 确认后覆盖（确认框记住 thenGlobal，覆盖后继续装到全部容器）。
+// 从扫描行添加。thenGlobal = 添加后并进全局位置（一步到位装到本机 + 全部容器）。
+// 同名 → 确认后覆盖（确认框记住 thenGlobal，覆盖后继续装到本机 + 全部容器）。
 const regConfirm = ref<{ from: string; name: string; thenGlobal?: boolean } | null>(null)
 async function addToRegistry(loc: SkillInventoryLocation, dir: string, spot: string, thenGlobal = false) {
   const from = (loc.kind === 'host' ? '~' : `${loc.name}:~`) + `/${spot}/${dir}`
@@ -378,7 +378,7 @@ async function ensureGlobalHas(name: string) {
   } else {
     hub.value = await addSkillRule(GLOBAL_TO, true, [name])
   }
-  toast(`已装到全部容器（${GLOBAL_TO}）`)
+  toast(`已装到本机 + 全部容器（${GLOBAL_TO}）`)
 }
 
 // —— 扫描页数据源（本机/容器里已装、未纳管的技能） ——
@@ -569,7 +569,7 @@ async function doDeleteRule() {
                       variant="ghost"
                       size="icon-xs"
                       class="shrink-0 text-muted-foreground hover:text-foreground"
-                      title="收进库并装到全部容器（~/.claude/skills）"
+                      title="收进库并装到本机 + 全部容器（~/.claude/skills）"
                       @click="addToRegistry(loc, s.dir, row.spot, true)"
                     >
                       <CornerDownRight class="size-3" />
@@ -676,7 +676,7 @@ async function doDeleteRule() {
               <button
                 type="button"
                 class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded py-0.5 text-left"
-                :title="`已安装到 ${r.to}${r.all ? '（全部受管容器）' : '（仅已有该项目的容器）'}——点击勾/取消（取消后下次同步从容器清理）`"
+                :title="`已安装到 ${r.to}${r.all ? '（本机 + 全部受管容器）' : '（已有该项目的机器）'}——点击勾/取消（取消后下次同步从容器清理）`"
                 @click="toggleRuleSkill(r, s.name, !declaredOf(r).includes(s.name))"
               >
                 <Checkbox
@@ -692,10 +692,10 @@ async function doDeleteRule() {
                 :class="r.all
                   ? 'border-primary/40 bg-primary/10 text-primary'
                   : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-                :title="r.all ? '装进全部受管容器——点击改为仅已有该项目的容器' : '只装已有该项目的容器——点击改为全部容器'"
+                :title="r.all ? '装进本机 + 全部受管容器——点击改为仅已有该项目的机器' : '只装已有该项目的机器——点击改回本机 + 全部容器'"
                 @click="toggleScope(r)"
               >
-                {{ r.all ? '全部容器' : '仅项目' }}
+                {{ r.all ? '本机+全部容器' : '有该项目' }}
               </button>
               <Button
                 variant="ghost"
@@ -718,7 +718,7 @@ async function doDeleteRule() {
               class="h-7 min-w-0 flex-1 font-mono text-[11px]"
               @keydown.enter="createRuleFor(s.name)"
             />
-            <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进全部受管容器；不勾 = 只装已有该项目的容器">
+            <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
               <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
               全部
             </label>
@@ -802,10 +802,10 @@ async function doDeleteRule() {
             :class="t.all
               ? 'border-primary/40 bg-primary/10 text-primary'
               : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-            :title="t.all ? '装进全部受管容器——点击改为仅已有该项目的容器' : '只装已有该项目的容器——点击改为全部容器'"
+            :title="t.all ? '装进本机 + 全部受管容器——点击改为仅已有该项目的机器' : '只装已有该项目的机器——点击改回本机 + 全部容器'"
             @click="toggleScope(t)"
           >
-            {{ t.all ? '全部容器' : '仅已有该项目' }}
+            {{ t.all ? '本机+全部容器' : '有该项目' }}
           </button>
           <span class="shrink-0 text-[10px] text-muted-foreground">
             {{ t.skills.length }} skill<span v-if="ruleMissing(t)" class="text-amber-600 dark:text-amber-400"> ·{{ ruleMissing(t) }} 缺失</span>
@@ -843,7 +843,7 @@ async function doDeleteRule() {
     <ConfirmDialog
       v-if="regConfirm"
       title="覆盖添加"
-      :description="`技能库里已有「${regConfirm.name}」。用 ${regConfirm.from} 的内容覆盖它？${regConfirm.thenGlobal ? '覆盖后会继续装到全部容器。' : ''}`"
+      :description="`技能库里已有「${regConfirm.name}」。用 ${regConfirm.from} 的内容覆盖它？${regConfirm.thenGlobal ? '覆盖后会继续装到本机 + 全部容器。' : ''}`"
       confirm-text="覆盖"
       variant="destructive"
       @confirm="doConfirmRegistry"

@@ -13,7 +13,8 @@ import {
   type CreateSource,
   type BaseProgress,
 } from './engine/index.js';
-import { setMeta, deleteMeta, deleteAiTargetOverride } from './state.js';
+import { setMeta, deleteMeta } from './state.js';
+import { deleteAiTargetOverride } from './aiState.js';
 import { allocate, isFree } from './network.js';
 import { conflict, notFound } from './errors.js';
 import { readHostHosts } from './hosts.js';

@@ -33,8 +33,8 @@ import { randomBytes } from 'node:crypto';
 import pLimit from 'p-limit';
 import type { Config } from './config.js';
 import { execRun, getEngine, inspectContainer, listManaged, subscribeEvents } from './engine/index.js';
+import { HOST_TARGET } from './state.js';
 import {
-  HOST_TARGET,
   getAiGateway,
   getAiGatewayOverrides,
   getAiProviders,
@@ -55,11 +55,11 @@ import {
   type AiProjectRule,
   type AiGatewayState,
   type GatewayWire,
-} from './state.js';
+} from './aiState.js';
 import type { BatchItemResult, BatchResult } from './batch.js';
 import { log } from './logger.js';
 
-export type { GatewayWire } from './state.js';
+export type { GatewayWire } from './aiState.js';
 export { HOST_TARGET } from './state.js';
 
 // 旧档迁移出的内置 provider id：与旧版写死的 provider 名一致，存量容器里的

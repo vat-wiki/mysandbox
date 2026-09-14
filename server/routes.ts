@@ -14,7 +14,8 @@ import {
   execRun,
   getEngine,
 } from './engine/index.js';
-import { setMeta, getMeta, deleteMeta, getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiProjectRules, setAiProvider, setAiBinding, type AiProvider, type AiBinding } from './state.js';
+import { setMeta, getMeta, deleteMeta } from './state.js';
+import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiProjectRules, setAiProvider, setAiBinding, type AiProvider, type AiBinding } from './aiState.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';

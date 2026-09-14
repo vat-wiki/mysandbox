@@ -39,10 +39,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Config } from './config.js';
 import { STATE_DIR, expandTilde } from './config.js';
 import { getEngine, subscribeEvents } from './engine/index.js';
-import { getAllMeta, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, HOST_TARGET, type SkillHubState, type SkillRule, type SkillRegistryMeta } from './state.js';
+import { getAllMeta, HOST_TARGET } from './state.js';
+import { AI_DIR, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, type SkillHubState, type SkillRule, type SkillRegistryMeta } from './aiState.js';
 import { log } from './logger.js';
 
-const SKILLS_DIR = join(STATE_DIR, 'skills');
+const SKILLS_DIR = join(AI_DIR, 'skills');
 // 源变化 → 实际同步的 debounce（编辑器保存往往连发多个事件）。
 const WATCH_DEBOUNCE_MS = 500;
 
