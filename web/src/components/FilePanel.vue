@@ -27,6 +27,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -126,6 +127,32 @@ const regBusy = ref(false)
 const canRegistry = computed(() => !targetId().startsWith('s:'))
 // 当前目录本身是技能（含 SKILL.md）→ 工具栏露出「就地添加」快捷钮。
 const hasSkillMd = computed(() => entries.value.some((e) => e.name === 'SKILL.md' && e.type === 'file'))
+
+// —— 「添加为技能」的右键门控 ——只有含 SKILL.md 的目录才是技能，菜单项跟着出现
+// （与工具栏 hasSkillMd 同一门控，非技能目录的右键恢复纯净）。判定优先吃现成数据：
+// 当前目录看 hasSkillMd、已展开目录看展开缓存，都没有才异步探一次并缓存结果
+// （探过即不再探，失败按非技能目录处理）。路径是容器相对的，切容器随 expanded 一起清。
+const skillDirs = reactive(new Set<string>())
+const skillProbeSeq = new Map<string, number>()
+function hasSkillMdIn(list: FileEntry[]): boolean {
+  return list.some((e) => e.name === 'SKILL.md' && e.type === 'file')
+}
+function isSkillDir(p: string): boolean {
+  if (p === path.value) return hasSkillMd.value
+  const st = expanded.get(p)
+  if (st?.entries.length) return hasSkillMdIn(st.entries)
+  return skillDirs.has(p)
+}
+function probeSkillDir(p: string) {
+  if (p === path.value || expanded.get(p)?.entries.length || skillProbeSeq.has(p)) return
+  const seq = (skillProbeSeq.get(p) ?? 0) + 1
+  skillProbeSeq.set(p, seq)
+  void listFiles(targetId(), p)
+    .then((v) => {
+      if (seq === skillProbeSeq.get(p) && hasSkillMdIn(v.entries)) skillDirs.add(p)
+    })
+    .catch(() => {}) // 探测失败当作非技能目录：菜单不出该项即可
+}
 
 async function registerSkillFrom(fromPath: string) {
   // from 形态：宿主 = 绝对路径；容器 = <名>:/home/dev/…（resolveSyncSource 两种都吃）。
@@ -607,6 +634,8 @@ watch(
     hostPath.value = null
     entries.value = []
     expanded.clear() // 展开状态不跨容器保留（路径是容器相对的，撞名纯属巧合）
+    skillDirs.clear() // 右键门控的探测缓存同路径体系，一并清
+    skillProbeSeq.clear()
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
     q.value = '' // 搜索是当前目录视图，切容器一并清掉
     tick()
@@ -772,10 +801,12 @@ function onCtxMenu(ev: MouseEvent) {
   ctxTarget.value = p
     ? (rows.value.find((r): r is EntryRow => r.kind === 'entry' && r.path === p) ?? null)
     : null
+  if (ctxTarget.value?.entry.type === 'dir' && canRegistry.value) probeSkillDir(ctxTarget.value.path)
 }
 // 触屏行内 ⋯ 菜单（手机右键不可达）：与 ContextMenu 同一批动作/处理器，只是入口不同。
 function onRowMenu(row: EntryRow) {
   ctxTarget.value = row
+  if (row.entry.type === 'dir' && canRegistry.value) probeSkillDir(row.path)
 }
 // 命名弹窗：mode 区分三个操作；entry 为重命名/删除目标。err 是异步结果回显。
 // dir = 新建的父目录：右键/⋯ 命中文件夹时建在该文件夹内（VS Code 同语义），
@@ -1390,13 +1421,12 @@ function fmtSize(n: number): string {
                     <DropdownMenuItem v-if="row.entry.type === 'file'" :disabled="isMultiHit(row)" @click="emit('open-file', row.path, { editing: true })">
                       <Pencil /> 编辑
                     </DropdownMenuItem>
-                    <DropdownMenuItem
-                      v-if="row.entry.type === 'dir' && canRegistry"
-                      :disabled="regBusy || isMultiHit(row)"
-                      @click="registerSkillFrom(row.path)"
-                    >
-                      <BookPlus /> 注册为技能
-                    </DropdownMenuItem>
+                    <template v-if="row.entry.type === 'dir' && canRegistry && isSkillDir(row.path)">
+                      <DropdownMenuItem :disabled="regBusy || isMultiHit(row)" @click="registerSkillFrom(row.path)">
+                        <BookPlus /> 添加为技能
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </template>
                     <DropdownMenuItem :disabled="isMultiHit(row)" @click="download(row)">
                       <Download /> 下载
                     </DropdownMenuItem>
@@ -1430,13 +1460,14 @@ function fmtSize(n: number): string {
           <ContextMenuItem v-if="ctxTarget.entry.type === 'file'" :disabled="ctxMulti" @click="emit('open-file', ctxTarget.path, { editing: true })">
             编辑
           </ContextMenuItem>
-          <ContextMenuItem
-            v-if="ctxTarget.entry.type === 'dir' && canRegistry"
-            :disabled="regBusy || ctxMulti"
-            @click="registerSkillFrom(ctxTarget.path)"
-          >
-            注册为技能
-          </ContextMenuItem>
+          <!-- 添加为技能：只对含 SKILL.md 的目录显示（isSkillDir 门控），文案与工具栏按钮一致。
+               separator 放项下不放上——目录没有「编辑」项，放上方它会贴住菜单顶缘。 -->
+          <template v-if="ctxTarget.entry.type === 'dir' && canRegistry && isSkillDir(ctxTarget.path)">
+            <ContextMenuItem :disabled="regBusy || ctxMulti" @click="registerSkillFrom(ctxTarget.path)">
+              添加为技能
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </template>
           <ContextMenuItem @click="copyToClipboard(ctxTarget)">
             {{ copyLabel(ctxTarget) }}
           </ContextMenuItem>
