@@ -2,8 +2,10 @@
 // 技能中心（AI 工具面板页签）。**已注册技能（库）是中心**，但展示走渐进式披露：
 // ① 中心列表默认一行薄行（名称/状态/去向概要），点行才展开 = 来源 + 分发管理
 //    （去向 chips ✕ 收回 / 虚线 + 加入其他去向 / 新建去向）+ 刷新/出库；
-// ② 分发去向（规则级管理：范围切换/删/清缺失）默认收起——Inbox 形态，有库缺失
-//    残留时 badge amber 提醒；③ 发现散装同 Inbox 形态默认收起。
+// ② 分发去向（规则级管理：范围切换/删/清缺失）不常驻——头部 Share2 钮唤出，
+//    打开即内容态，有库缺失残留时钮挂 amber 提醒。
+// 入库面板三来源：散装扫描（本机/容器里已装未入库的 skill，有货时打开默认落此页）
+// / 目录 / git——「发现散装」只是入库的发现型入口，与手填路径走同一 API。
 // 顶部不再铺概念说明——收在头部 ？tooltip（空态引导见空库文案）。
 // 库语义：目录来源入库 = 跟随刷新（源改库跟，源删冻结）；git 导入 = 快照。库内同名
 // 唯一，无冲突概念。全自动触发（watch + 启动追平 + 建容器/容器 start 补发）。
@@ -33,7 +35,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { RefreshCw, Trash2, FolderSync, Globe, Plus, PackageSearch, CornerDownRight, Library, ChevronDown, ChevronRight, Info, Share2 } from 'lucide-vue-next'
+import { RefreshCw, Trash2, FolderSync, Globe, Plus, CornerDownRight, Library, ChevronDown, ChevronRight, Info, Share2 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { toast } from 'vue-sonner'
 
@@ -140,9 +142,14 @@ function sourceHost(s: SkillRegistryItem): string {
 
 // —— 库条目操作：入库 / 出库 / 刷新 / 分发 ——
 
-// 入库面板（两种来源：目录 / git 仓库）。
+// 入库面板：三来源——散装扫描（自动发现，有货时打开默认落这里）/ 目录 / git 仓库。
+// 「发现散装」不是独立概念，就是入库的发现型入口：扫到的行点入库与手填路径走同一 API。
 const showImport = ref(false)
-const importMode = ref<'dir' | 'git'>('dir')
+const importMode = ref<'loose' | 'dir' | 'git'>('dir')
+function openImport() {
+  showImport.value = !showImport.value
+  if (showImport.value && looseTotal.value) importMode.value = 'loose'
+}
 const impDir = ref('')
 const impUrl = ref('')
 const impCandidates = ref<SkillGitCandidate[] | null>(null)
@@ -344,9 +351,7 @@ function ruleMissing(r: SkillRuleResult): number {
   return r.skills.filter((k) => !k.ok).length
 }
 
-// —— 发现散装（头部钮按需唤出） ——
-
-const showDiscover = ref(false)
+// —— 发现散装：入库面板「散装扫描」页的数据源 ——
 
 interface InvSpotRow {
   spot: string
@@ -426,18 +431,6 @@ async function syncNow() {
           variant="ghost"
           size="icon-xs"
           class="relative shrink-0 text-muted-foreground hover:text-foreground"
-          :class="showDiscover ? 'bg-accent text-foreground' : ''"
-          :title="looseTotal ? `发现散装（${looseTotal} 待筛选）——本机/容器里还没入库的 skill` : '发现散装：扫描本机/各容器里还没入库的 skill'"
-          @click="showDiscover = !showDiscover"
-        >
-          <PackageSearch />
-          <span v-if="looseTotal" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          class="relative shrink-0 text-muted-foreground hover:text-foreground"
-          :class="showRules ? 'bg-accent text-foreground' : ''"
           :title="missingTotal ? `分发去向规则（${missingTotal} 缺失待清）` : '分发去向规则：范围 / 成员 / 删除'"
           @click="showRules = !showRules"
         >
@@ -454,14 +447,27 @@ async function syncNow() {
         >
           <FolderSync :class="syncing ? 'animate-pulse' : ''" />
         </Button>
-        <Button variant="ghost" size="xs" class="h-6 shrink-0 gap-1 px-1.5 text-[11px]" @click="showImport = !showImport">
+        <Button
+          variant="ghost"
+          size="xs"
+          class="relative h-6 shrink-0 gap-1 px-1.5 text-[11px]"
+          :title="looseTotal ? `入库（${looseTotal} 个散装待收编）` : '入库：从散装扫描 / 目录 / git 仓库'"
+          @click="openImport"
+        >
           <Plus class="size-3.5" /> 入库
+          <span v-if="looseTotal" class="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
         </Button>
       </div>
 
-      <!-- 入库面板：目录 / git 仓库 -->
+      <!-- 入库面板：散装扫描 / 目录 / git 仓库 -->
       <div v-if="showImport" class="space-y-2 border-b bg-muted/20 px-3 py-2.5">
         <div class="flex gap-1">
+          <button
+            type="button"
+            class="rounded border px-2 py-0.5 text-[11px] transition-colors"
+            :class="importMode === 'loose' ? 'border-primary/40 bg-primary/10 text-primary' : 'border-line text-muted-foreground hover:text-foreground'"
+            @click="importMode = 'loose'"
+          >散装扫描<span v-if="looseTotal" class="text-amber-600 dark:text-amber-400"> ·{{ looseTotal }}</span></button>
           <button
             type="button"
             class="rounded border px-2 py-0.5 text-[11px] transition-colors"
@@ -475,6 +481,62 @@ async function syncNow() {
             @click="importMode = 'git'"
           >从 git 仓库</button>
         </div>
+        <template v-if="importMode === 'loose'">
+          <div class="flex items-center gap-2">
+            <span class="min-w-0 flex-1 text-[10px] leading-relaxed text-muted-foreground/70">
+              本机/各容器里已装但未入库的 skill——一键收编进库（点 <CornerDownRight class="inline size-3" /> 顺带装到全局）。
+            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+              :disabled="invLoading"
+              @click="loadInv"
+            >
+              <RefreshCw class="size-3" :class="invLoading ? 'animate-spin' : ''" /> 重扫
+            </Button>
+          </div>
+          <p v-if="invErr" class="text-[11px] text-destructive">{{ invErr }}</p>
+          <p v-if="!invLocations.length" class="text-[11px] text-muted-foreground/70">没有散装的 skill——扫到的都已注册。</p>
+          <div v-for="loc in invLocations" :key="loc.name" class="space-y-1">
+            <div class="flex items-center gap-2">
+              <span
+                class="h-2 w-2 shrink-0 rounded-full"
+                :style="{ backgroundColor: loc.kind === 'host' ? 'var(--color-primary)' : containerColor(loc.name) }"
+              />
+              <span class="text-xs font-medium">{{ loc.kind === 'host' ? '本机' : loc.name }}</span>
+              <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
+                {{ loc.skills.length }}
+              </Badge>
+            </div>
+            <div v-if="!loc.ok" class="text-[11px] text-destructive">{{ loc.error }}</div>
+            <div v-for="row in spotRows(loc)" :key="row.spot" class="pl-3">
+              <div class="font-mono text-[10px] text-muted-foreground/70" title="skills 目录位置">~/{{ row.spot }}</div>
+              <div v-for="s in row.skills" :key="s.dir" class="flex items-baseline gap-2 pl-3">
+                <span class="shrink-0 font-mono text-[11px]">{{ s.name }}</span>
+                <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  class="shrink-0 text-muted-foreground hover:text-foreground"
+                  title="入库：拷一份进技能库（目录来源，跟随源更新）"
+                  @click="addToRegistry(loc, s.dir, row.spot)"
+                >
+                  <Library class="size-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  class="shrink-0 text-muted-foreground hover:text-foreground"
+                  title="入库并装到全局（~/.claude/skills，全部容器）"
+                  @click="addToRegistry(loc, s.dir, row.spot, true)"
+                >
+                  <CornerDownRight class="size-3" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </template>
         <template v-if="importMode === 'dir'">
           <div class="flex gap-2">
             <Input
@@ -489,7 +551,7 @@ async function syncNow() {
             目录来源 = 跟随：源目录改动自动刷新库并分发；源删了库内容冻结保留。
           </p>
         </template>
-        <template v-else>
+        <template v-if="importMode === 'git'">
           <div class="flex gap-2">
             <Input
               v-model="impUrl"
@@ -522,7 +584,7 @@ async function syncNow() {
 
       <!-- 空库 -->
       <div v-if="!reg?.length" class="px-3 py-4 text-center text-[11px] text-muted-foreground/70">
-        还没有注册任何技能——点「入库」从目录/git 导入，或在下面「发现散装」里一键入库。
+        还没有注册任何技能——点「入库」从散装扫描/目录/git 导入。
       </div>
 
       <!-- 技能行：收起 = 一行薄行（身份/状态/去向概要），点行展开 = 来源 + 分发管理 + 操作 -->
@@ -735,83 +797,6 @@ async function syncNow() {
           <span v-if="!t.skills.length" class="text-[10px] text-muted-foreground/70">还没有成员</span>
         </div>
       </div>
-    </div>
-
-    <!-- ③ 发现散装——不常驻，头部 PackageSearch 钮唤出（打开即内容态） -->
-    <div v-if="showDiscover" class="rounded-md border">
-      <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
-        <PackageSearch class="size-3.5 shrink-0 text-muted-foreground" />
-        <span class="text-xs font-semibold">发现散装</span>
-        <Badge
-          variant="outline"
-          class="shrink-0 border-transparent px-1 text-[10px]"
-          :class="looseTotal ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'bg-muted text-muted-foreground'"
-        >
-          {{ looseTotal }} 待筛选
-        </Badge>
-        <div class="flex-1" />
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          class="shrink-0 text-muted-foreground"
-          title="重新扫描"
-          :disabled="invLoading"
-          @click="loadInv"
-        >
-          <RefreshCw :class="invLoading ? 'animate-spin' : ''" />
-        </Button>
-      </div>
-      <p v-if="invErr" class="px-3 py-2 text-[11px] text-destructive">{{ invErr }}</p>
-      <div v-if="!invLocations.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
-        没有散装的 skill——扫到的都已注册。
-      </div>
-      <div
-        v-for="(loc, li) in invLocations"
-        :key="loc.name"
-        class="px-3 py-1.5"
-        :class="li > 0 ? 'border-t' : ''"
-      >
-        <div class="flex items-center gap-2">
-          <span
-            class="h-2 w-2 shrink-0 rounded-full"
-            :style="{ backgroundColor: loc.kind === 'host' ? 'var(--color-primary)' : containerColor(loc.name) }"
-          />
-          <span class="text-xs font-medium">{{ loc.kind === 'host' ? '本机' : loc.name }}</span>
-          <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
-            {{ loc.skills.length }}
-          </Badge>
-        </div>
-          <div v-if="!loc.ok" class="pl-4 text-[11px] text-destructive">{{ loc.error }}</div>
-          <div v-for="row in spotRows(loc)" :key="row.spot" class="mt-1 pl-4">
-            <div class="font-mono text-[10px] text-muted-foreground/70" title="skills 目录位置">~/{{ row.spot }}</div>
-            <div
-              v-for="s in row.skills"
-              :key="s.dir"
-              class="flex items-baseline gap-2 pl-3"
-            >
-              <span class="shrink-0 font-mono text-[11px]">{{ s.name }}</span>
-              <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                class="shrink-0 text-muted-foreground hover:text-foreground"
-                title="入库：拷一份进技能库（目录来源，跟随源更新）"
-                @click="addToRegistry(loc, s.dir, row.spot)"
-              >
-                <Library class="size-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                class="shrink-0 text-muted-foreground hover:text-foreground"
-                title="入库并装到全局（~/.claude/skills，全部容器）"
-                @click="addToRegistry(loc, s.dir, row.spot, true)"
-              >
-                <CornerDownRight class="size-3" />
-              </Button>
-            </div>
-          </div>
-        </div>
     </div>
 
     <ConfirmDialog
