@@ -22,6 +22,7 @@ import { Badge } from '@/components/ui/badge'
 import { ChevronDown, CloudDownload, Pencil, Plus, Radar, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import AiBindingTab from './AiBindingTab.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const props = defineProps<{
   target?: string
@@ -176,8 +177,12 @@ async function save() {
   }
 }
 
-async function remove(p: AiProvider) {
-  if (!confirm(`删除「${p.name}」？本机与全部容器里它写入的接入条目会被回收（claude 的 env 注入不在此列）。`)) return
+// 删除走 ConfirmDialog（项目标准确认件）：目标挂 ref，确认才执行。
+const delProvider = ref<AiProvider | null>(null)
+async function doRemoveProvider() {
+  const p = delProvider.value
+  if (!p) return
+  delProvider.value = null
   busy.value = true
   try {
     await deleteAiProvider(p.id)
@@ -282,7 +287,7 @@ const bindingRef = ref<InstanceType<typeof AiBindingTab> | null>(null)
             <Badge v-if="p.models?.length" variant="outline" class="px-1.5 text-[10px] text-muted-foreground">{{ p.models.length }} 模型</Badge>
             <div class="ml-auto flex gap-1">
               <Button variant="ghost" size="icon-xs" title="编辑" @click="startEdit(p)"><Pencil class="size-3.5" /></Button>
-              <Button variant="ghost" size="icon-xs" class="text-destructive" title="删除（回收全部落盘条目）" @click="remove(p)">
+              <Button variant="ghost" size="icon-xs" class="text-destructive" title="删除（回收全部落盘条目）" @click="delProvider = p">
                 <Trash2 class="size-3.5" />
               </Button>
             </div>
@@ -315,5 +320,15 @@ const bindingRef = ref<InstanceType<typeof AiBindingTab> | null>(null)
         @back="emit('back')"
       />
     </section>
+
+    <ConfirmDialog
+      v-if="delProvider"
+      title="删除模型服务"
+      :description="`删除「${delProvider.name}」？本机与全部容器里它写入的接入条目会被回收（claude 的 env 注入不在此列）。`"
+      confirm-text="删除"
+      variant="destructive"
+      @confirm="doRemoveProvider"
+      @close="delProvider = null"
+    />
   </div>
 </template>

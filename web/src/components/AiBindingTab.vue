@@ -44,6 +44,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ArrowLeft, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const props = defineProps<{
   // 传入 = 目标覆盖模式（编辑/保存对象是该目标的覆盖绑定，不是全局）。
@@ -198,8 +199,9 @@ async function submit() {
   }
 }
 
-async function removeRule(id: string) {
-  if (!confirm('删除这条项目级配置规则？已写入项目的接入条目会被回收。')) return
+// 删除走 ConfirmDialog：目标挂 ref，确认才执行。
+const ruleDelId = ref<string | null>(null)
+async function doRemoveRule(id: string) {
   try {
     const r = await deleteAiProjectRule(id)
     if (view.value) view.value = { ...view.value, projectRules: r.projectRules }
@@ -429,12 +431,22 @@ const ruleSummary = (r: AiBinding) => {
             <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.to }}</span>
             <span class="min-w-0 truncate text-[11px] text-muted-foreground">{{ ruleSummary(r) }}</span>
             <Badge variant="outline" class="shrink-0 px-1.5 text-[10px] text-muted-foreground">项目</Badge>
-            <Button variant="ghost" size="icon-xs" class="shrink-0 text-destructive" title="删除规则并回收条目" @click="removeRule(r.id)">
+            <Button variant="ghost" size="icon-xs" class="shrink-0 text-destructive" title="删除规则并回收条目" @click="ruleDelId = r.id">
               <Trash2 class="size-3.5" />
             </Button>
           </div>
         </div>
       </template>
+
+      <ConfirmDialog
+        v-if="ruleDelId"
+        title="删除项目级配置规则"
+        description="已写入项目的接入条目会被回收。"
+        confirm-text="删除"
+        variant="destructive"
+        @confirm="doRemoveRule(ruleDelId); ruleDelId = null"
+        @close="ruleDelId = null"
+      />
 
       <details v-if="!isTarget" class="group rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
         <summary class="cursor-pointer select-none list-none marker:hidden">

@@ -23,6 +23,7 @@ import {
   listTermActivity,
   termSessionKey,
   HOST_ID,
+  HOST_TARGET,
   serviceFileId,
   sshGroupId,
   sshTargetName,
@@ -80,6 +81,7 @@ import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Mon
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
+import AiOverrideDialog from '@/components/AiOverrideDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
@@ -659,23 +661,18 @@ const showCreate = ref(false)
 const showBatch = ref(false)
 // AI 工具工作区（技能 / 模型接入）：主区级页面——文件 tab 栏的单例 tab（VSCode
 // 设置页模式）。aiOpen = tab 存在（会话级，不持久化——「有事才出现」）；激活与否
-// 由主区归属 mainView 表达（'ai'），与终端/文件天然互斥。Bot 钮与容器卡片
-// 「AI 配置…」都是开它。
+// 由主区归属 mainView 表达（'ai'），与终端/文件天然互斥。Bot 钮 = 全局管理入口。
 const aiOpen = ref(false)
 function openAi() {
   aiOpen.value = true
   mainView.value = 'ai'
 }
-function openAiOverride(name: string) {
-  aiOverrideFor.value = name
-  openAi()
-}
 function closeAi() {
   aiOpen.value = false
-  aiOverrideFor.value = null
   if (mainView.value === 'ai') mainView.value = 'terminal'
 }
-// 容器卡片菜单「AI 配置…」：覆盖模式打开（面板只显智能体配置页签，编辑该容器的覆盖绑定）。
+// AI 配置覆盖弹框目标（容器名 / HOST_TARGET 本机哨兵）：容器右键「AI 配置…」与本机
+// 「为本机配置」都是临时任务——AiOverrideDialog 弹框承载，即来即走不劫持主区。
 const aiOverrideFor = ref<string | null>(null)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
@@ -2414,7 +2411,7 @@ onUnmounted(() => {
                 <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
                 <ContextMenuItem
                   title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
-                  @click="openAiOverride(c.name)"
+                  @click="aiOverrideFor = c.name"
                 >
                   <Bot /> AI 配置…
                 </ContextMenuItem>
@@ -2719,7 +2716,7 @@ onUnmounted(() => {
               <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
               <ContextMenuItem
                 title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
-                @click="openAiOverride(c.name)"
+                @click="aiOverrideFor = c.name"
               >
                 <Bot /> AI 配置…
               </ContextMenuItem>
@@ -3147,7 +3144,7 @@ onUnmounted(() => {
              同为常驻全局钮——不挂任何分区（从容器分区头挪出，全局功能不借容器菜单位）。 -->
         <button
           class="flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="AI 工具（技能中心 · 模型服务 · 智能体配置）"
+          title="AI 工具（技能 / 模型接入）"
           @click="openAi()"
         >
           <Bot class="size-3.5 max-md:size-5" />
@@ -3385,9 +3382,9 @@ onUnmounted(() => {
                页面——技能库/provider/工具分配/下发结果这些管理面板体量的内容在这里舒展。 -->
           <div v-show="mainView === 'ai'" class="absolute inset-0">
             <AiWorkspace
-              :override-for="aiOverrideFor"
               @close="closeAi()"
               @changed="refresh()"
+              @configure-host="aiOverrideFor = HOST_TARGET"
               @unauthorized="emit('unauthorized')"
             />
           </div>
@@ -3689,6 +3686,15 @@ onUnmounted(() => {
     "
     @done="refresh()"
     @close="showBatch = false"
+    @unauthorized="emit('unauthorized')"
+  />
+
+  <!-- AI 配置覆盖弹框：容器右键「AI 配置…」/ 本机「为本机配置」——临时任务走弹框，即来即走 -->
+  <AiOverrideDialog
+    v-if="aiOverrideFor"
+    :target="aiOverrideFor"
+    @changed="refresh()"
+    @close="aiOverrideFor = null"
     @unauthorized="emit('unauthorized')"
   />
 

@@ -1,44 +1,34 @@
 <script setup lang="ts">
 // AI 工具工作区：主区级页面（文件 tab 栏的单例 tab，VSCode 设置页模式）——管理面板
-// 的体量（技能库/扫描/provider/工具分配/下发结果）早已超出对话框，抽屉也只是折中，
-// 直接占主区：全尺寸、不遮挡侧栏、与文件 tab 同一套切换心智。
-// 两个页签：技能（SkillsHubTab）/ 模型接入（AiAccessTab：provider 库+工具分配流水线）。
-// 覆盖模式：容器卡片菜单「AI 配置…」（props.overrideFor）直落「模型接入」页签，
-// 编辑对象是该目标的覆盖绑定（本机哨兵 __host__ 同页签，可返回全局）。
-import { ref, computed } from 'vue'
+// 的体量（技能库/扫描/provider/工具分配/下发结果）早已超出对话框，直接占主区：
+// 全尺寸、不遮挡侧栏、与文件 tab 同一套切换心智。两个页签：
+//   技能     = SkillsHubTab（技能库/扫描/安装位置）
+//   模型接入 = AiAccessTab（provider 库 + 工具分配一条流水线）
+// 覆盖配置（容器/本机的临时任务）不在这里——走 AiOverrideDialog 弹框，按任务体量分层。
+import { ref } from 'vue'
 import { Bot } from 'lucide-vue-next'
 import SkillsHubTab from './SkillsHubTab.vue'
 import AiAccessTab from './AiAccessTab.vue'
-import { HOST_TARGET } from '@/lib/api'
 
-const props = defineProps<{
-  // 传入 = 覆盖模式（直落模型接入页签，表单编辑该目标的覆盖绑定）。
-  overrideFor?: string | null
-}>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'unauthorized'): void
   (e: 'changed'): void // 配置保存（父级可刷新）
+  (e: 'configure-host'): void // 「为本机配置」：父级开覆盖弹框（本机是弹框任务不是页面任务）
 }>()
 
-// 本机配置从全局面板内进入（localTarget），容器卡片菜单进来是 props.overrideFor。
-const localTarget = ref<string | null>(null)
-const activeTarget = computed(() => props.overrideFor ?? localTarget.value)
-const tab = ref<'skills' | 'access'>(props.overrideFor ? 'access' : 'skills')
-const targetLabel = (t: string) => (t === HOST_TARGET ? '本机' : t)
+const tab = ref<'skills' | 'access'>('skills')
 </script>
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
-    <!-- 头部：标题 + 页签（覆盖模式免页签——只有模型接入一个任务） -->
+    <!-- 头部：标题 + 页签 -->
     <div class="shrink-0 border-b">
       <div class="flex items-center gap-2 px-5 pt-3">
         <Bot class="size-4 shrink-0" />
-        <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">
-          {{ activeTarget ? `AI 配置 · ${targetLabel(activeTarget)}` : 'AI 工具' }}
-        </h2>
+        <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">AI 工具</h2>
       </div>
-      <div v-if="!activeTarget" class="flex gap-1 px-5 pt-1.5">
+      <div class="flex gap-1 px-5 pt-1.5">
         <button
           type="button"
           class="border-b-2 px-3 pb-2 text-xs transition-colors"
@@ -60,12 +50,9 @@ const targetLabel = (t: string) => (t === HOST_TARGET ? '本机' : t)
         <SkillsHubTab v-if="tab === 'skills'" @unauthorized="emit('unauthorized')" />
         <AiAccessTab
           v-else
-          :target="activeTarget ?? undefined"
-          :allow-back="!props.overrideFor && !!localTarget"
           @unauthorized="emit('unauthorized')"
           @done="emit('changed')"
-          @configure-host="localTarget = HOST_TARGET"
-          @back="localTarget = null"
+          @configure-host="emit('configure-host')"
         />
       </div>
     </div>
