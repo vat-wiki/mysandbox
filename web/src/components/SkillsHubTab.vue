@@ -9,10 +9,10 @@
 //    既有位置并进该规则（沿用其范围），没命中的新建规则（范围由弹框底部「新位置范围」
 //    chip 统一管）。全局与按位置两套入口不冲突——底层都是同一条规则模型，全局只是
 //    to=~/.agents/skills + all=true 的特例。
-// ③ 卡头右上 ⋯ 菜单收低频动作：安装位置（就地展开该技能的位置视图——范围切换/
-//    卸载）、更新（显式重拉快照并分发）、移除（confirm）。
-// ④ 添加面板（扫描/目录/git）是头部「+ 添加」Popover；位置级删除（整条规则）在底部
-//    安装位置折叠条。
+// ③ 卡头右上 ⋯ 菜单收低频动作：更新（显式重拉快照并分发）、移除（confirm）。
+// ④ 位置治理（查看/范围切换/卸载/清缺失）收敛进卡头「N 处」计数弹出的轻量
+//    Popover——一行一个位置，就地操作；不设独立的规则清单面板（库缺失残留
+//    自愈：同步的有效集 = 与库的交集，残留无害）。
 // 库语义：静态快照——来源改动不自动进库，更新 = 显式动作。安装位置订阅库：库一变
 // 自动跟走；容器新建/重启全自动追平。规则 CRUD 的响应即全量同步（hubView 顺带跑），
 // 卸载后的清理、孤儿收回都在这一次同步里落地。
@@ -29,7 +29,6 @@ import {
   registryImportGit,
   addSkillRule,
   updateSkillRule,
-  deleteSkillRule,
   syncSkills,
   listContainers,
   listFiles,
@@ -163,14 +162,10 @@ function rulesOf(name: string): SkillRuleResult[] {
   return (hub.value?.rules ?? []).filter((r) => declaredOf(r).includes(name))
 }
 
-// 单条规则的库缺失残留数（折叠条 amber 计数）。
+// 单条规则的库缺失残留数（popover amber 计数；残留自愈——同步有效集 = 与库的交集）。
 function ruleMissing(r: SkillRuleResult): number {
   return r.skills.filter((k) => !k.ok).length
 }
-
-const missingTotal = computed(
-  () => (hub.value?.rules ?? []).reduce((n, r) => n + ruleMissing(r), 0),
-)
 
 // —— 卡面状态 ——
 
@@ -252,14 +247,14 @@ async function doInstall(name: string) {
   }
 }
 
-// ⋯ 菜单里的「安装位置」：查看/卸载/范围切换/清缺失收在这里管（卡面不铺位置行）。
-const spotsOpenFor = ref<string | null>(null)
+// 卡头「N 处」计数弹出的位置 Popover（key = 技能名，同时只开一个）。
+const spotsFor = ref<string | null>(null)
 
 // 全局安装 = 库技能铺到 ~/.agents/skills（~/.claude/skills 软链到它）——本机 +
 // 全部受管容器。入口收在头部「全局安装」按钮：弹框里库技能多选、双向同步——勾上 =
 // 装，取消勾选 = 从全局摘掉（规则/位置保留，下次同步从各处清理）。保存是一次规则
 // 技能集替换（PATCH skills），范围顺手拉回 all=true（规则可能被范围切换动过）；
-// 库里已缺失的残留不在列表里、保持原样（清理走底部安装位置的「清缺失」）。
+// 库里已缺失的残留不在列表里、保持原样（清理走卡头「N 处」popover 的「清缺失」）。
 const globalOpen = ref(false)
 const globalBusy = ref(false)
 const globalErr = ref('')
@@ -719,29 +714,12 @@ async function syncNow() {
   }
 }
 
-// —— 底部折叠条：安装位置（规则清单，低频整理）——
-
-const showRules = ref(false)
-
 // 清掉规则里库里已缺失的残留成员（库出库/目录被外部删后的死引用）。
 async function cleanMissing(r: SkillRuleResult) {
   const keep = r.skills.filter((k) => k.ok).map((k) => k.name)
   err.value = ''
   try {
     hub.value = await updateSkillRule(r.id, { skills: keep })
-  } catch (e) {
-    fail(e)
-  }
-}
-
-const delRule = ref<SkillRuleResult | null>(null)
-async function doDeleteRule() {
-  const r = delRule.value
-  if (!r) return
-  delRule.value = null
-  err.value = ''
-  try {
-    hub.value = await deleteSkillRule(r.id)
   } catch (e) {
     fail(e)
   }
@@ -932,7 +910,7 @@ async function doDeleteRule() {
           class="relative flex flex-col gap-2.5 overflow-hidden rounded-xl border p-4 transition-colors"
           :class="!s.exists ? 'border-destructive/30 bg-destructive/5' : 'hover:border-line hover:bg-accent/20'"
         >
-          <!-- 卡头：名称 + 状态 + 右上 ⋯ 菜单（安装位置 · 更新 · 移除） -->
+          <!-- 卡头：名称 + 状态 + 「N 处」位置 popover + 右上 ⋯ 菜单（更新 · 移除） -->
           <div class="flex min-w-0 items-center gap-2">
             <span class="min-w-0 truncate font-mono text-sm font-medium" :class="!s.exists ? 'text-destructive/80 line-through' : ''">{{ s.name }}</span>
             <Loader2 v-if="updatingSkill === s.name" class="size-3.5 shrink-0 animate-spin text-muted-foreground" />
@@ -952,11 +930,59 @@ async function doDeleteRule() {
               class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive"
             >缺失</Badge>
             <div class="flex-1" />
-            <span
+            <!-- 「N 处」计数：弹出该技能的位置 popover（查看/切范围/清缺失/卸载）——
+                 位置治理就地完成，不设独立规则清单面板 -->
+            <Popover
               v-if="s.exists && installedCount(s)"
-              class="shrink-0 cursor-help text-[10px] text-muted-foreground/50"
-              :title="rulesOf(s.name).map((r) => `${r.to}${r.all ? '（本机+全部容器）' : '（有该项目）'}`).join('\n')"
-            >{{ installedCount(s) }} 处</span>
+              :open="spotsFor === s.name"
+              @update:open="(v: boolean) => (spotsFor = v ? s.name : null)"
+            >
+              <PopoverTrigger as-child>
+                <button
+                  type="button"
+                  class="shrink-0 rounded text-[10px] text-muted-foreground/50 transition-colors hover:text-foreground"
+                  title="安装位置——点范围 chip 切换，✕ 卸载该处"
+                >{{ installedCount(s) }} 处</button>
+              </PopoverTrigger>
+              <PopoverContent side="bottom" align="end" class="w-80 p-2">
+                <div
+                  v-for="r in rulesOf(s.name)"
+                  :key="r.id"
+                  class="flex items-center gap-1 rounded-md px-1.5 py-1 -mx-1 hover:bg-accent/40"
+                >
+                  <span class="min-w-0 flex-1 truncate font-mono text-[11px]" :title="r.to">{{ r.to }}</span>
+                  <button
+                    v-if="ruleMissing(r)"
+                    type="button"
+                    class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] text-amber-600 dark:text-amber-400"
+                    title="库里已不存在的残留引用——点击清掉"
+                    @click="cleanMissing(r)"
+                  >{{ ruleMissing(r) }} 缺失</button>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors"
+                    :class="r.all
+                      ? 'border-primary/40 bg-primary/10 text-primary'
+                      : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
+                    :title="r.all ? '装进本机 + 全部受管容器——点击改为仅已有该项目的机器' : '只装已有该项目的机器——点击改回本机 + 全部容器'"
+                    @click="toggleScope(r)"
+                  >
+                    {{ r.all ? '本机+全部容器' : '有该项目' }}
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    class="shrink-0 text-muted-foreground/50 hover:text-destructive"
+                    title="从该位置卸载（位置保留，下次同步从容器清理）"
+                    :disabled="!!unloadingRule"
+                    @click="unloadSkill(r, s.name)"
+                  >
+                    <Loader2 v-if="unloadingRule === r.id" class="animate-spin" />
+                    <X v-else />
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
             <DropdownMenu>
               <DropdownMenuTrigger as-child>
                 <Button variant="ghost" size="icon-xs" class="shrink-0 text-muted-foreground/70 hover:text-foreground" title="更多操作">
@@ -964,13 +990,6 @@ async function doDeleteRule() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="bottom" align="end">
-                <DropdownMenuItem
-                  v-if="s.exists"
-                  :disabled="!installedCount(s) && !hub?.rules.length"
-                  @click="spotsOpenFor = s.name"
-                >
-                  <FolderOpen /> 安装位置<span v-if="installedCount(s)" class="ml-auto pl-3 text-[10px] text-muted-foreground">{{ installedCount(s) }}</span>
-                </DropdownMenuItem>
                 <DropdownMenuItem
                   :disabled="!!updatingSkill"
                   :title="!s.exists ? '从来源重拉快照恢复（来源还在的话）' : '从来源重拉快照并全量分发（来源改动不自动进库——这是唯一更新通道）'"
@@ -1008,117 +1027,6 @@ async function doDeleteRule() {
               <FolderOpen class="size-3" /> 安装
             </Button>
           </div>
-
-
-
-
-
-
-          <!-- ⋯ 菜单「安装位置」：该技能的位置视图——查看 / 范围切换 / 卸载，就地管理 -->
-          <div v-if="s.exists && spotsOpenFor === s.name" class="flex flex-col gap-0.5 rounded-md border bg-muted/20 p-2">
-            <div class="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <span>安装位置</span>
-              <div class="flex-1" />
-              <button type="button" class="cursor-pointer rounded px-1 hover:text-foreground" title="收起" @click="spotsOpenFor = null">
-                <X class="size-3" />
-              </button>
-            </div>
-            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——头部「全局安装」一键铺开，或卡脚「安装」指定落点。</p>
-            <div
-              v-for="r in rulesOf(s.name)"
-              :key="r.id"
-              class="flex items-center gap-1 rounded-md px-1.5 py-1 -mx-1 hover:bg-accent/40"
-            >
-              <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ r.to }}</span>
-              <button
-                type="button"
-                class="shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors"
-                :class="r.all
-                  ? 'border-primary/40 bg-primary/10 text-primary'
-                  : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-                :title="r.all ? '装进本机 + 全部受管容器——点击改为仅已有该项目的机器' : '只装已有该项目的机器——点击改回本机 + 全部容器'"
-                @click="toggleScope(r)"
-              >
-                {{ r.all ? '本机+全部容器' : '有该项目' }}
-              </button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                class="shrink-0 text-muted-foreground/50 hover:text-destructive"
-                title="从该位置卸载（位置保留，下次同步从容器清理）"
-                :disabled="!!unloadingRule"
-                @click="unloadSkill(r, s.name)"
-              >
-                <Loader2 v-if="unloadingRule === r.id" class="animate-spin" />
-                <X v-else />
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-
-    <!-- ② 安装位置（规则清单）：低频整理，底部折叠条 -->
-    <div v-if="hub?.rules.length" class="rounded-md border">
-      <button
-        type="button"
-        class="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left"
-        :title="showRules ? '收起' : '展开：范围 / 清缺失 / 删除位置'"
-        @click="showRules = !showRules"
-      >
-        <Globe class="size-3.5 shrink-0 text-muted-foreground" />
-        <span class="text-xs text-muted-foreground">安装位置</span>
-        <span class="text-xs">{{ hub.rules.length }}</span>
-        <span
-          v-if="missingTotal"
-          class="text-[10px] text-amber-600 dark:text-amber-400"
-          title="规则里有库里已不存在的技能残留——展开后可清掉"
-        >·{{ missingTotal }} 缺失</span>
-        <div class="flex-1" />
-        <component :is="showRules ? ChevronDown : ChevronRight" class="size-3 shrink-0 text-muted-foreground" />
-      </button>
-      <div v-if="showRules" class="border-t">
-        <div
-          v-for="(t, ti) in hub.rules"
-          :key="t.id"
-          class="flex items-center gap-2 px-3 py-1.5"
-          :class="ti > 0 ? 'border-t' : ''"
-        >
-          <Globe v-if="t.all" class="size-3.5 shrink-0 text-muted-foreground" />
-          <FolderSync v-else class="size-3.5 shrink-0 text-muted-foreground" />
-          <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="t.to">{{ t.to }}</span>
-          <button
-            type="button"
-            class="shrink-0 rounded border px-1.5 py-0.5 text-[10px] transition-colors"
-            :class="t.all
-              ? 'border-primary/40 bg-primary/10 text-primary'
-              : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-            :title="t.all ? '装进本机 + 全部受管容器——点击改为仅已有该项目的机器' : '只装已有该项目的机器——点击改回本机 + 全部容器'"
-            @click="toggleScope(t)"
-          >
-            {{ t.all ? '本机+全部容器' : '有该项目' }}
-          </button>
-          <span class="shrink-0 text-[10px] text-muted-foreground">
-            {{ t.skills.length }} skill<span v-if="ruleMissing(t)" class="text-amber-600 dark:text-amber-400"> ·{{ ruleMissing(t) }} 缺失</span>
-          </span>
-          <Button
-            v-if="ruleMissing(t)"
-            variant="ghost"
-            size="xs"
-            class="h-5 shrink-0 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-            title="清掉库里已不存在的残留引用"
-            @click="cleanMissing(t)"
-          >清缺失</Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            class="shrink-0 text-muted-foreground/40 hover:text-destructive"
-            title="删除此安装位置（它装出去的 skill 按清单从容器清理；用户自装的其他 skill 不动）"
-            @click="delRule = t"
-          >
-            <Trash2 />
-          </Button>
         </div>
       </div>
     </div>
@@ -1271,15 +1179,6 @@ async function doDeleteRule() {
       </DialogContent>
     </Dialog>
 
-    <ConfirmDialog
-      v-if="delRule"
-      title="删除安装位置"
-      :description="`删除安装位置 ${delRule.to}？它装出去的 skill 将按清单从对应容器中清理（容器里用户自装的其他 skill 不动）。`"
-      confirm-text="删除"
-      variant="destructive"
-      @confirm="doDeleteRule"
-      @close="delRule = null"
-    />
     <ConfirmDialog
       v-if="regConfirm"
       title="覆盖添加"
