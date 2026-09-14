@@ -164,7 +164,7 @@ function onTab(v: string | number) {
 }
 
 // 通用命令排首位（无预设意图的高频动作）；git/ssh 是「装完配一次」类相邻；
-// hosts 覆写殿后（一次性显式动作）。AI 网关/技能中心在「AI 工具」面板（AiPanel.vue）。
+// hosts 覆写殿后（一次性显式动作）。AI 网关/技能中心在「AI 工具」工作区（AiWorkspace.vue，文件 tab 栏单例页）。
 const tabs: { key: string; label: string }[] = [
   { key: 'exec', label: '通用命令' },
   { key: 'git', label: 'Git 身份' },

@@ -1,7 +1,10 @@
 <script setup lang="ts">
-// 模型服务页签（AI 工具面板）：模型服务提供商库——N 个 OpenAI/Anthropic 兼容网关的
-// 凭据与端点。智能体配置（AiBindingTab）只引用这里的 id；改 key 重推即全局生效，
-// 删 provider 自动回收本机与全部容器的落盘条目。探测/拉模型直接吃表单端点，不必先入库。
+// 模型接入页签（AI 工具）：一条流水线——上半「模型服务」库（provider 薄行常驻，
+// 添加/编辑表单内联展开），下半「工具分配」（AiBindingTab：工具 → provider，
+// 全局/本机/容器覆盖三形态）。旧设计把两者拆成平级页签靠文字互相指路（「先去
+// 模型服务添加」），现合一个页签消掉导航负担：没有 provider 时分配段自然空态，
+// 添加完分配段的选项即时可用（provider 变更 → AiBindingTab.reload()，只刷数据
+// 不重填表单，编辑中的绑定草稿保住）。
 import { ref, computed, onMounted } from 'vue'
 import {
   getAiView,
@@ -18,14 +21,22 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { ChevronDown, CloudDownload, Pencil, Plus, Radar, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
+import AiBindingTab from './AiBindingTab.vue'
 
+const props = defineProps<{
+  target?: string
+  allowBack?: boolean
+}>()
 const emit = defineEmits<{
+  (e: 'done'): void
   (e: 'unauthorized'): void
-  (e: 'changed'): void
+  (e: 'configure-host'): void
+  (e: 'back'): void
 }>()
 
+// —— 模型服务（provider 库）段 ——
+
 const providers = ref<AiProvider[]>([])
-const loading = ref(false)
 const busy = ref(false)
 const err = ref('')
 
@@ -43,7 +54,6 @@ const probeRes = ref<{ openai?: string; anthropic?: string } | null>(null)
 const fetchNote = ref('')
 
 async function load() {
-  loading.value = true
   try {
     providers.value = (await getAiView()).providers
   } catch (e) {
@@ -52,8 +62,6 @@ async function load() {
       return
     }
     err.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    loading.value = false
   }
 }
 onMounted(load)
@@ -155,7 +163,8 @@ async function save() {
     toast(`已保存模型服务：${provider.name}（${provider.id}）`)
     draft.value = null
     await load()
-    emit('changed')
+    bindingRef.value?.reload()
+    emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -174,7 +183,8 @@ async function remove(p: AiProvider) {
     await deleteAiProvider(p.id)
     toast(`已删除：${p.id}`)
     await load()
-    emit('changed')
+    bindingRef.value?.reload()
+    emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -185,76 +195,85 @@ async function remove(p: AiProvider) {
     busy.value = false
   }
 }
+
+// —— 工具分配段（AiBindingTab 承载）——
+
+const bindingRef = ref<InstanceType<typeof AiBindingTab> | null>(null)
 </script>
 
 <template>
-  <div class="space-y-3">
-    <div class="flex items-center justify-between gap-2">
-      <p class="text-xs leading-relaxed text-muted-foreground">
-        模型服务 = 接入凭据与端点的库，可加多个；「智能体配置」按工具挑选用哪个。
-      </p>
-      <Button v-if="!draft" size="xs" :disabled="busy" @click="startAdd"><Plus class="size-3.5" /> 添加提供商</Button>
-    </div>
+  <div class="space-y-5">
+    <!-- ① 模型服务（provider 库）：薄行常驻，表单内联展开 -->
+    <section class="space-y-2">
+      <div class="flex items-center gap-2">
+        <h3 class="text-xs font-semibold">模型服务</h3>
+        <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
+          {{ providers.length }}
+        </Badge>
+        <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">接入凭据与端点的库，分配给下面的工具</span>
+        <Button v-if="!draft" size="xs" variant="outline" :disabled="busy" @click="startAdd">
+          <Plus class="size-3.5" /> 添加
+        </Button>
+      </div>
 
-    <!-- 编辑/新建表单 -->
-    <div v-if="draft" class="space-y-3 rounded-md border p-3">
-      <div class="grid gap-3 sm:grid-cols-2">
-        <div v-if="!draft.id" class="space-y-1.5">
-          <Label for="ai-p-id">ID（配置里的 provider 名）</Label>
-          <Input id="ai-p-id" v-model="draft.wantId" placeholder="myapikey" class="font-mono" />
+      <p v-if="err" class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{{ err }}</p>
+
+      <!-- 编辑/新建表单（内联展开） -->
+      <div v-if="draft" class="space-y-3 rounded-md border p-3">
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div v-if="!draft.id" class="space-y-1.5">
+            <Label for="ai-p-id">ID（配置里的 provider 名）</Label>
+            <Input id="ai-p-id" v-model="draft.wantId" placeholder="myapikey" class="font-mono" />
+          </div>
+          <div class="space-y-1.5">
+            <Label for="ai-p-name">显示名</Label>
+            <Input id="ai-p-name" v-model="draft.name" placeholder="myapikey 中转" />
+          </div>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="space-y-1.5">
+            <Label for="ai-p-anthropic">Anthropic 兼容 Base URL</Label>
+            <Input id="ai-p-anthropic" v-model="draft.anthropicUrl" placeholder="http://…/anthropic（claude 用，不含 /v1）" />
+          </div>
+          <div class="space-y-1.5">
+            <Label for="ai-p-openai">OpenAI 兼容 Base URL</Label>
+            <Input id="ai-p-openai" v-model="draft.openaiUrl" placeholder="http://…/openai/v1（codex/opencode/pi 用）" />
+          </div>
         </div>
         <div class="space-y-1.5">
-          <Label for="ai-p-name">显示名</Label>
-          <Input id="ai-p-name" v-model="draft.name" placeholder="myapikey 中转" />
-        </div>
-      </div>
-      <div class="grid gap-3 sm:grid-cols-2">
-        <div class="space-y-1.5">
-          <Label for="ai-p-anthropic">Anthropic 兼容 Base URL</Label>
-          <Input id="ai-p-anthropic" v-model="draft.anthropicUrl" placeholder="http://…/anthropic（claude 用，不含 /v1）" />
+          <Label for="ai-p-key">API Key</Label>
+          <Input id="ai-p-key" v-model="draft.apiKey" type="password" placeholder="sk-…" />
         </div>
         <div class="space-y-1.5">
-          <Label for="ai-p-openai">OpenAI 兼容 Base URL</Label>
-          <Input id="ai-p-openai" v-model="draft.openaiUrl" placeholder="http://…/openai/v1（codex/opencode/pi 用）" />
+          <div class="flex items-center justify-between">
+            <Label for="ai-p-models">模型 ID（逗号分隔；opencode/pi 的变体下挂）</Label>
+            <Button variant="outline" size="xs" :disabled="busy" @click="doFetchModels">
+              <CloudDownload class="size-3.5" /> 从网关拉取
+            </Button>
+          </div>
+          <Input id="ai-p-models" v-model="draft.models" placeholder="claude-sonnet-4-5, gpt-5" />
+          <p v-if="fetchNote" class="text-[11px] text-muted-foreground">{{ fetchNote }}</p>
         </div>
-      </div>
-      <div class="space-y-1.5">
-        <Label for="ai-p-key">API Key</Label>
-        <Input id="ai-p-key" v-model="draft.apiKey" type="password" placeholder="sk-…" />
-      </div>
-      <div class="space-y-1.5">
+        <div v-if="probeRes" class="space-y-0.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed">
+          <p v-if="probeRes.anthropic">{{ probeRes.anthropic }}</p>
+          <p v-if="probeRes.openai">{{ probeRes.openai }}</p>
+        </div>
+        <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
         <div class="flex items-center justify-between">
-          <Label for="ai-p-models">模型 ID（逗号分隔；opencode/pi 的变体下挂）</Label>
-          <Button variant="outline" size="xs" :disabled="busy" @click="doFetchModels">
-            <CloudDownload class="size-3.5" /> 从网关拉取
-          </Button>
-        </div>
-        <Input id="ai-p-models" v-model="draft.models" placeholder="claude-sonnet-4-5, gpt-5" />
-        <p v-if="fetchNote" class="text-[11px] text-muted-foreground">{{ fetchNote }}</p>
-      </div>
-      <div v-if="probeRes" class="space-y-0.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed">
-        <p v-if="probeRes.anthropic">{{ probeRes.anthropic }}</p>
-        <p v-if="probeRes.openai">{{ probeRes.openai }}</p>
-      </div>
-      <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
-      <div class="flex items-center justify-between">
-        <Button variant="outline" size="xs" :disabled="busy" @click="doProbe"><Radar class="size-3.5" /> 探测连通</Button>
-        <div class="flex gap-2">
-          <Button variant="outline" size="xs" :disabled="busy" @click="draft = null">取消</Button>
-          <Button size="xs" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存' }}</Button>
+          <Button variant="outline" size="xs" :disabled="busy" @click="doProbe"><Radar class="size-3.5" /> 探测连通</Button>
+          <div class="flex gap-2">
+            <Button variant="outline" size="xs" :disabled="busy" @click="draft = null">取消</Button>
+            <Button size="xs" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存' }}</Button>
+          </div>
         </div>
       </div>
-    </div>
 
-    <!-- 库列表 -->
-    <template v-else>
-      <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
-      <p v-if="loading" class="text-xs text-muted-foreground">读取中…</p>
-      <div v-else-if="!providers.length" class="rounded-md border border-dashed px-4 py-6 text-center text-xs text-muted-foreground">
-        还没有模型服务——点「添加提供商」把网关的端点与 key 存进来。
-      </div>
-      <div v-else class="space-y-2">
-        <div v-for="p in providers" :key="p.id" class="rounded-md border px-3 py-2.5">
+      <!-- 库列表（常驻） -->
+      <p v-if="!providers.length && !draft" class="rounded-md border border-dashed px-3 py-3 text-xs text-muted-foreground">
+        还没有模型服务——点「添加」把网关的端点与 key 存进来。
+      </p>
+      <div v-else class="space-y-1.5">
+        <div v-for="p in providers" :key="p.id" class="rounded-md border px-3 py-2">
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-sm font-medium">{{ p.name }}</span>
             <Badge variant="outline" class="px-1.5 font-mono text-[10px] text-muted-foreground">{{ p.id }}</Badge>
@@ -281,6 +300,20 @@ async function remove(p: AiProvider) {
           </details>
         </div>
       </div>
-    </template>
+    </section>
+
+    <!-- ② 工具分配：全局 / 本机 / 容器覆盖（AiBindingTab 承载全部形态） -->
+    <section class="space-y-2">
+      <h3 class="text-xs font-semibold">工具分配</h3>
+      <AiBindingTab
+        ref="bindingRef"
+        :target="props.target"
+        :allow-back="props.allowBack"
+        @done="emit('done')"
+        @unauthorized="emit('unauthorized')"
+        @configure-host="emit('configure-host')"
+        @back="emit('back')"
+      />
+    </section>
   </div>
 </template>

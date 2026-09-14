@@ -101,7 +101,11 @@ function fillFrom(b: AiBinding | null | undefined) {
   piWires.value = b?.pi?.wires?.length ? [...b.pi.wires] : ['openai-chat']
 }
 
-onMounted(async () => {
+onMounted(() => loadView(true))
+
+// 数据加载。fill=true 重填表单（首挂载）；provider 库变更后父级调 reload() 只刷
+// providers/overrides——编辑中的绑定草稿是本地 ref，不被重置。
+async function loadView(fill: boolean) {
   try {
     view.value = await getAiView()
     // 目标模式无覆盖时以全局绑定为编辑底稿（保存才落覆盖）；本机同样——预填只是底稿，
@@ -110,7 +114,7 @@ onMounted(async () => {
       ? (view.value.overrides[props.target] ?? view.value.binding)
       : view.value.binding
     overrideExists.value = !!(props.target && view.value.overrides[props.target])
-    fillFrom(base)
+    if (fill) fillFrom(base)
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -118,7 +122,9 @@ onMounted(async () => {
     }
     err.value = e instanceof Error ? e.message : String(e)
   }
-})
+}
+
+defineExpose({ reload: () => loadView(false) })
 
 // 清除覆盖（恢复跟随全局 / 本机回收条目）
 async function clearOverride() {

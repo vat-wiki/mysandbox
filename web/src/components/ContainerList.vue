@@ -79,7 +79,7 @@ import {
 import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
-import AiPanel from '@/components/AiPanel.vue'
+import AiWorkspace from '@/components/AiWorkspace.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
@@ -657,9 +657,25 @@ const showCreate = ref(false)
 // 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
 // 侧栏不再有选择态。
 const showBatch = ref(false)
-// AI 工具面板（技能中心 + 模型服务 + 智能体配置）：环境级全局资产，入口在 tab 栏左侧
-// 全局区（与「所有终端」并列），不挂任何分区；侧栏自挂对话框，TermSessionsDialog 同模式。
-const showAi = ref(false)
+// AI 工具工作区（技能 / 模型接入）：主区级页面——文件 tab 栏的单例 tab（VSCode
+// 设置页模式），与文件编辑器/终端同区切换。aiOpen = tab 存在（会话级，不持久化——
+// 「有事才出现」），aiActive = 主区当前给它。Bot 钮与容器卡片「AI 配置…」都是开它。
+const aiOpen = ref(false)
+const aiActive = ref(false)
+function openAi() {
+  aiOpen.value = true
+  aiActive.value = true
+  areaMode.value = 'editor'
+}
+function openAiOverride(name: string) {
+  aiOverrideFor.value = name
+  openAi()
+}
+function closeAi() {
+  aiOpen.value = false
+  aiActive.value = false
+  aiOverrideFor.value = null
+}
 // 容器卡片菜单「AI 配置…」：覆盖模式打开（面板只显智能体配置页签，编辑该容器的覆盖绑定）。
 const aiOverrideFor = ref<string | null>(null)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
@@ -906,6 +922,7 @@ function openFile(cId: string, cName: string, path: string, opts?: { diff?: { he
 }
 function onFileTabClick(i: number) {
   activeEditorIdx.value = i
+  aiActive.value = false
   areaMode.value = 'editor'
 }
 // tab X：pane 冲刷后自己 close；这里不直接摘（冲刷失败/冲突要留在原处裁决）
@@ -2396,7 +2413,7 @@ onUnmounted(() => {
                 <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
                 <ContextMenuItem
                   title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
-                  @click="aiOverrideFor = c.name"
+                  @click="openAiOverride(c.name)"
                 >
                   <Bot /> AI 配置…
                 </ContextMenuItem>
@@ -2701,7 +2718,7 @@ onUnmounted(() => {
               <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
               <ContextMenuItem
                 title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
-                @click="aiOverrideFor = c.name"
+                @click="openAiOverride(c.name)"
               >
                 <Bot /> AI 配置…
               </ContextMenuItem>
@@ -3130,7 +3147,7 @@ onUnmounted(() => {
         <button
           class="flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           title="AI 工具（技能中心 · 模型服务 · 智能体配置）"
-          @click="showAi = true"
+          @click="openAi()"
         >
           <Bot class="size-3.5 max-md:size-5" />
         </button>
@@ -3363,7 +3380,17 @@ onUnmounted(() => {
                monaco 的 automaticLayout 在容器塌成 0×0 时对带标记（json 校验 squiggle 等
                glyph margin 装饰）的编辑器做 layout 会死循环（实测整页冻结）。visibility
                隐藏保留布局盒，尺寸恒定，彻底绕开 0 尺寸 layout。 -->
-          <div v-show="areaMode === 'editor' && editorTabs.length" class="absolute inset-0">
+          <!-- AI 工具工作区：与文件编辑器同区切换（AI tab 激活 = 主区给它）。全尺寸
+               页面——技能库/provider/工具分配/下发结果这些管理面板体量的内容在这里舒展。 -->
+          <div v-show="areaMode === 'editor' && aiActive" class="absolute inset-0">
+            <AiWorkspace
+              :override-for="aiOverrideFor"
+              @close="closeAi()"
+              @changed="refresh()"
+              @unauthorized="emit('unauthorized')"
+            />
+          </div>
+          <div v-show="areaMode === 'editor' && !aiActive && editorTabs.length" class="absolute inset-0">
             <FileEditorPane
               v-for="(t, i) in editorTabs"
               :key="tabId(t)"
@@ -3385,7 +3412,9 @@ onUnmounted(() => {
               @mode="(m) => (tabMode[tabId(t)] = m)"
             />
           </div>
-          <div v-show="!(areaMode === 'editor' && editorTabs.length)" class="absolute inset-0 bg-zinc-950">
+          <!-- 终端区可见 = 编辑器模式下没有可显示的东西（无文件 tab 且 AI 未激活）；
+               条件必须与上面两个 v-show 互补，否则叠放时终端压住 AI 工作区。 -->
+          <div v-show="!(areaMode === 'editor' && (aiActive || editorTabs.length))" class="absolute inset-0 bg-zinc-950">
           <div
             v-for="(g, gIdx) in groups"
             :key="g.id"
@@ -3419,7 +3448,29 @@ onUnmounted(() => {
            不占终端区高度；激活样式用上缘色条（栏在底部，压边方向反转）。
            多 tab 收缩同终端 tab（浏览器式，桌面收缩/手机滚动）；右键菜单承载
            tab 管理（关闭系）+ 形态动作（编辑⇄预览/下载/普通打开）+ 复制路径。 -->
-      <div v-if="editorTabs.length" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
+      <div v-if="editorTabs.length || aiOpen" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
+        <!-- AI 工具 tab（单例，恒在文件 tab 最左）：Bot 钮打开的页面在这里落位，
+             与文件 tab 平级互切；X 关闭整个 AI 工作区（覆盖模式一并清）。 -->
+        <div
+          class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
+          :class="
+            areaMode === 'editor' && aiActive
+              ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
+              : 'text-muted-foreground hover:bg-accent/50'
+          "
+          title="AI 工具（技能 / 模型接入）"
+          @click="openAi()"
+        >
+          <Bot class="size-3.5 shrink-0 max-md:size-4" />
+          <span class="min-w-0">AI 工具</span>
+          <button
+            class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
+            title="关闭 AI 工具页"
+            @click.stop="closeAi()"
+          >
+            <X class="size-3 max-md:size-3.5" />
+          </button>
+        </div>
         <ContextMenu v-for="(t, i) in editorTabs" :key="tabId(t)">
           <ContextMenuTrigger as-child>
             <div
@@ -3637,15 +3688,6 @@ onUnmounted(() => {
     "
     @done="refresh()"
     @close="showBatch = false"
-    @unauthorized="emit('unauthorized')"
-  />
-
-  <!-- AI 工具面板（入口 = tab 栏左侧全局区）：全局 = 技能中心 + 模型服务 + 智能体配置；overrideFor = 容器覆盖模式（仅智能体配置页签） -->
-  <AiPanel
-    v-if="showAi || aiOverrideFor"
-    :override-for="aiOverrideFor"
-    @close="showAi = false; aiOverrideFor = null"
-    @changed="refresh()"
     @unauthorized="emit('unauthorized')"
   />
 
