@@ -553,10 +553,13 @@ async function checkAll() {
     for (const r of results) next[r.name] = r
     checkRes.value = next
     const changed = results.filter((r) => r.status === 'changed').length
-    const failed = results.filter((r) => r.status === 'error').length
+    const failedItems = results.filter((r) => r.status === 'error')
+    const failed = failedItems.length
+    // 失败原因直接进 toast（首行摘要）——细节点卡片「检查失败」徽标看原文。
+    const reasons = failedItems.map((r) => `${r.name}：${(r.message ?? '未知错误').split('\n')[0]}`).join('；')
     if (!results.length) toast('库是空的——先「添加」收技能进库')
-    else if (changed) toast(`检查完成：${changed} 个有更新${failed ? `，${failed} 个检查失败` : ''}`)
-    else if (failed) toast.error(`全部无更新，${failed} 个检查失败`)
+    else if (changed) toast(`检查完成：${changed} 个有更新${failed ? `，${failed} 个检查失败（点卡片徽标看原因）` : ''}`)
+    else if (failed) toast.error(`${failed} 个检查失败（点卡片「检查失败」徽标看原因）`, { description: reasons.slice(0, 300) })
     else toast('检查完成：全部已是最新')
   } catch (e) {
     fail(e)
@@ -987,11 +990,20 @@ async function cleanMissing(r: SkillRuleResult) {
               class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] text-amber-600 dark:text-amber-400"
               title="来源有更新——⋯ 菜单「更新」拉取并分发（更新前会再比对，不白拉）"
             >有更新</span>
-            <span
-              v-else-if="checkRes[s.name]?.status === 'error'"
-              class="shrink-0 cursor-help rounded border border-dashed border-muted-foreground/30 px-1 text-[10px] text-muted-foreground/60"
-              :title="checkRes[s.name]?.message || '检查失败'"
-            >检查失败</span>
+            <!-- 检查失败：可点开看原因（tooltip 藏着等于没有——点开 popover 显原文） -->
+            <Popover v-else-if="checkRes[s.name]?.status === 'error'">
+              <PopoverTrigger as-child>
+                <button
+                  type="button"
+                  class="shrink-0 cursor-pointer rounded border border-dashed border-muted-foreground/30 px-1 text-[10px] text-muted-foreground/60 transition-colors hover:border-destructive/40 hover:text-destructive"
+                  title="查看失败原因"
+                >检查失败</button>
+              </PopoverTrigger>
+              <PopoverContent side="bottom" align="end" class="w-80 p-2">
+                <p class="px-1 pb-1 text-[10px] text-muted-foreground">检查失败 · {{ s.name }}</p>
+                <p class="scroll-thin max-h-40 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] px-1 font-mono text-[11px] leading-relaxed text-destructive/90">{{ checkRes[s.name]?.message || '未知错误' }}</p>
+              </PopoverContent>
+            </Popover>
             <div class="flex-1" />
             <!-- 「N 处」计数：弹出该技能的位置 popover（查看/切范围/清缺失/卸载）——
                  位置治理就地完成，不设独立规则清单面板 -->
