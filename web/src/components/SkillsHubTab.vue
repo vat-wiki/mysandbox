@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // 技能中心（AI 工具面板页签）。**技能库是个人技能池**——就几个、都是自己挑的，
 // 用大卡片铺开：名称/描述在卡面，操作收敛两级——
-// ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 红调缺失）+ 描述，零杂音；
-// ② 安装是显式动作：卡脚「全局安装」实色主钮一键铺本机+全部容器（~/.agents/skills，
-//    两态开关——已全局再点即取消）；「选择位置…」开安装弹框——本机 + 运行中容器混成
-//    一棵目录树（各端 home 起步，展开懒加载；停着的容器列不了目录故不出现），整行
-//    点击 = 选落点、可多选（选中高亮 + ✓，不满屏勾选框）：命中既有位置并进该规则
-//    （沿用其范围），没命中的新建规则（范围由弹框底部「新位置范围」chip 统一管）。
+// ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 全局徽标 / 红调缺失）+ 描述，零杂音；
+// ② 安装是显式动作：头部「全局安装」开弹框多选技能、双向同步（勾上 = 装到
+//    ~/.agents/skills 铺本机+全部容器，取消勾选 = 移除）；「选择位置…」开安装弹框——
+//    本机 + 运行中容器混成一棵目录树（各端 home 起步，展开懒加载；停着的容器列不了
+//    目录故不出现），整行点击 = 选落点、可多选（选中高亮 + ✓，不满屏勾选框）：命中
+//    既有位置并进该规则（沿用其范围），没命中的新建规则（范围由弹框底部「新位置范围」
+//    chip 统一管）。全局与按位置两套入口不冲突——底层都是同一条规则模型，全局只是
+//    to=~/.agents/skills + all=true 的特例。
 // ③ 卡头右上 ⋯ 菜单收低频动作：安装位置（就地展开该技能的位置视图——范围切换/
 //    卸载）、更新（显式重拉快照并分发）、移除（confirm）。
 // ④ 添加面板（扫描/目录/git）是头部「+ 添加」Popover；位置级删除（整条规则）在底部
@@ -66,6 +68,7 @@ import {
   ChevronRight,
   Info,
   Loader2,
+  Search,
   Folder,
   MoreHorizontal,
   Check,
@@ -252,32 +255,64 @@ async function doInstall(name: string) {
 // ⋯ 菜单里的「安装位置」：查看/卸载/范围切换/清缺失收在这里管（卡面不铺位置行）。
 const spotsOpenFor = ref<string | null>(null)
 
-// 卡上「全局安装」：一键装到 ~/.claude/skills（本机 + 全部受管容器）——技能全局
-// 安装的独立快捷形式，点完即走不开弹框。两态开关：已全局再点一下 = 取消（从全局
-// 规则摘掉该技能，规则/位置保留，下次同步从各处清理）。装的时候顺手把范围拉回
-// all=true（规则可能被范围切换动过）。
-const globalInstalling = ref('')
-async function installGlobal(s: SkillRegistryItem) {
-  if (globalInstalling.value) return
-  const has = installedAt(s.name, GLOBAL_TO)
-  globalInstalling.value = s.name
-  err.value = ''
+// 全局安装 = 库技能铺到 ~/.agents/skills（~/.claude/skills 软链到它）——本机 +
+// 全部受管容器。入口收在头部「全局安装」按钮：弹框里库技能多选、双向同步——勾上 =
+// 装，取消勾选 = 从全局摘掉（规则/位置保留，下次同步从各处清理）。保存是一次规则
+// 技能集替换（PATCH skills），范围顺手拉回 all=true（规则可能被范围切换动过）；
+// 库里已缺失的残留不在列表里、保持原样（清理走底部安装位置的「清缺失」）。
+const globalOpen = ref(false)
+const globalBusy = ref(false)
+const globalErr = ref('')
+const globalFilter = ref('')
+const globalPicked = ref<string[]>([])
+// 打开时刻的全局集——保存时对比算增量（toast 报 新增/移除）。
+const globalInitial = ref<string[]>([])
+
+const globalRule = computed(() => (hub.value?.rules ?? []).find((r) => r.to === GLOBAL_TO))
+const globalCount = computed(() => (globalRule.value ? declaredOf(globalRule.value).length : 0))
+
+const globalFiltered = computed(() =>
+  (reg.value ?? []).filter(
+    (s) => s.exists && (!globalFilter.value.trim() || s.name.includes(globalFilter.value.trim())),
+  ),
+)
+
+function openGlobal() {
+  globalInitial.value = globalRule.value ? declaredOf(globalRule.value) : []
+  globalPicked.value = [...globalInitial.value]
+  globalFilter.value = ''
+  globalErr.value = ''
+  globalOpen.value = true
+}
+
+function toggleGlobalPick(name: string, on: boolean) {
+  globalPicked.value = on ? [...globalPicked.value, name] : globalPicked.value.filter((n) => n !== name)
+}
+
+async function saveGlobal() {
+  if (globalBusy.value) return
+  globalBusy.value = true
+  globalErr.value = ''
   try {
-    const rule = (hub.value?.rules ?? []).find((r) => r.to === GLOBAL_TO)
-    if (rule) {
-      const declared = declaredOf(rule)
-      hub.value = await updateSkillRule(rule.id, {
-        ...(has ? {} : { all: true }),
-        skills: has ? declared.filter((n) => n !== s.name) : [...declared, s.name],
-      })
+    const picked = [...globalPicked.value]
+    const added = picked.filter((n) => !globalInitial.value.includes(n))
+    const removed = globalInitial.value.filter((n) => !picked.includes(n))
+    if (globalRule.value) {
+      hub.value = await updateSkillRule(globalRule.value.id, { all: true, skills: picked })
+    } else if (picked.length) {
+      hub.value = await addSkillRule(GLOBAL_TO, true, picked)
     } else {
-      hub.value = await addSkillRule(GLOBAL_TO, true, [s.name])
+      globalOpen.value = false
+      return
     }
-    toast(has ? `已取消全局：${s.name}（下次同步从各处清理）` : `已全局安装：${s.name} → ${GLOBAL_TO}`)
+    globalOpen.value = false
+    const parts = [added.length ? `新增 ${added.length}` : '', removed.length ? `移除 ${removed.length}` : ''].filter(Boolean)
+    toast(parts.length ? `全局安装已更新（${parts.join('，')}）${removed.length ? '——移除的下次同步从各处清理' : ''}` : '全局技能集未变化')
   } catch (e) {
     fail(e)
+    globalErr.value = e instanceof Error ? e.message : String(e)
   } finally {
-    globalInstalling.value = ''
+    globalBusy.value = false
   }
 }
 
@@ -740,6 +775,15 @@ async function doDeleteRule() {
         <div class="flex-1" />
         <Button
           variant="ghost"
+          size="xs"
+          class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
+          title="管理全局技能集：勾选 = 装到 ~/.agents/skills（本机 + 全部受管容器），取消勾选 = 移除"
+          @click="openGlobal"
+        >
+          <Globe class="size-3.5" /> 全局安装<span v-if="globalCount" class="text-[10px] text-muted-foreground">·{{ globalCount }}</span>
+        </Button>
+        <Button
+          variant="ghost"
           size="icon-xs"
           class="shrink-0 text-muted-foreground hover:text-foreground"
           title="立即同步（平时全自动——watch/启动追平/建容器补发；这里是手动兜底）"
@@ -825,7 +869,7 @@ async function doDeleteRule() {
                       variant="ghost"
                       size="icon-xs"
                       class="shrink-0 text-muted-foreground hover:text-foreground"
-                      title="收进库并装到本机 + 全部容器（~/.claude/skills）"
+                      title="收进库并装到本机 + 全部容器（~/.agents/skills）"
                       @click="addToRegistry(loc, s.dir, row.spot, true)"
                     >
                       <CornerDownRight class="size-3" />
@@ -903,8 +947,13 @@ async function doDeleteRule() {
             <span
               v-else-if="s.exists && !installedCount(s)"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没装到任何位置——卡脚「全局安装」一键铺开，或「选择位置…」指定落点"
+              title="还没装到任何位置——头部「全局安装」一键铺开，或「选择位置…」指定落点"
             >未安装</span>
+            <span
+              v-if="s.exists && installedAt(s.name, GLOBAL_TO)"
+              class="shrink-0 cursor-help rounded border border-primary/40 bg-primary/10 px-1 text-[10px] text-primary"
+              title="已全局安装（~/.agents/skills，本机 + 全部受管容器）——头部「全局安装」统一管理"
+            >全局</span>
             <Badge
               v-if="!s.exists"
               variant="outline"
@@ -948,33 +997,13 @@ async function doDeleteRule() {
           <!-- 描述：完整铺开（卡片够大，不折叠不藏气泡） -->
           <p v-if="s.description" class="text-xs leading-relaxed text-muted-foreground">{{ s.description }}</p>
 
-          <!-- 卡脚：左来源备忘 / 右两个安装动作——「全局安装」一键铺本机+全部容器
-               （~/.claude/skills，技能全局安装的独立快捷形式，点完即走不开弹框）；
-               「选择位置…」开目录树弹框管特殊落点。已全局安装的置灰 + ✓。 -->
+          <!-- 卡脚：左来源备忘 / 右「选择位置…」开目录树弹框管指定落点。全局安装
+               统一走头部按钮 + 弹框（多选双向同步），卡面只以「全局」徽标示状态。 -->
           <div class="mt-auto flex items-center gap-1 border-t pt-2.5">
             <span
               class="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/40"
               :title="s.from"
             >{{ s.from }}</span>
-            <Button
-              v-if="s.exists"
-              size="xs"
-              :variant="installedAt(s.name, GLOBAL_TO) ? 'outline' : 'default'"
-              class="h-6 shrink-0 gap-1 px-2.5 text-[11px]"
-              :disabled="globalInstalling === s.name"
-              :title="installedAt(s.name, GLOBAL_TO)
-                ? '已全局安装——点击取消（从本机+全部容器移除，下次同步清理）'
-                : '一键装到 ~/.agents/skills（~/.claude/skills 软链到它）——本机 + 全部受管容器'"
-              @click="installGlobal(s)"
-            >
-              <Loader2 v-if="globalInstalling === s.name" class="animate-spin" />
-              <template v-else-if="installedAt(s.name, GLOBAL_TO)">
-                <Check /> 取消全局
-              </template>
-              <template v-else>
-                <Globe /> 全局安装
-              </template>
-            </Button>
             <Button
               v-if="s.exists"
               variant="outline"
@@ -1001,7 +1030,7 @@ async function doDeleteRule() {
                 <X class="size-3" />
               </button>
             </div>
-            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——卡脚「全局安装」一键铺开，或「选择位置…」指定落点。</p>
+            <p v-if="!installedCount(s)" class="px-1 py-1 text-[11px] text-muted-foreground/60">还没有安装——头部「全局安装」一键铺开，或「选择位置…」指定落点。</p>
             <div
               v-for="r in rulesOf(s.name)"
               :key="r.id"
@@ -1205,6 +1234,61 @@ async function doDeleteRule() {
           <Button variant="outline" size="xs" :disabled="nfBusy" @click="installOpenFor = null">取消</Button>
           <Button size="xs" :disabled="nfBusy || !pickedCount" @click="doInstall(installOpenFor ?? '')">
             {{ nfBusy ? '安装中…' : `安装（${pickedCount}）` }}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 全局安装弹框：库技能多选、双向同步——勾上 = 装到 ~/.agents/skills（本机+
+         全部受管容器），取消勾选 = 从全局摘掉（下次同步清理）。保存 = 一次规则
+         技能集替换（PATCH），响应即全量同步。按位置安装与它不冲突——底层同一条
+         规则模型，全局只是 to=~/.agents/skills + all=true 的特例。 -->
+    <Dialog :open="globalOpen" @update:open="(v: boolean) => v || (globalOpen = false)">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>全局安装</DialogTitle>
+          <DialogDescription class="font-mono">
+            {{ GLOBAL_TO }}（~/.claude/skills 软链到它）· 本机 + 全部受管容器
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-2">
+          <div class="flex h-7 items-center gap-1.5 rounded-md border bg-muted/30 px-2">
+            <Search class="size-3 shrink-0 text-muted-foreground" />
+            <input
+              v-model="globalFilter"
+              class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+              placeholder="过滤技能名…"
+              @keydown.esc="globalFilter = ''"
+            />
+          </div>
+          <p v-if="globalErr" class="text-xs text-destructive">{{ globalErr }}</p>
+          <div
+            v-if="!reg?.length"
+            class="rounded-md border border-dashed px-4 py-6 text-center text-xs leading-relaxed text-muted-foreground"
+          >
+            技能库是空的——先用头部「添加」把技能收进库。
+          </div>
+          <div v-else class="scroll-thin max-h-72 space-y-0.5 overflow-y-auto pr-1">
+            <label
+              v-for="s in globalFiltered"
+              :key="s.name"
+              class="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent/50"
+            >
+              <Checkbox class="mt-0.5" :model-value="globalPicked.includes(s.name)" @update:model-value="(v) => toggleGlobalPick(s.name, !!v)" />
+              <span class="shrink-0 pt-0.5 font-mono">{{ s.name }}</span>
+              <span class="min-w-0 flex-1 pt-0.5 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</span>
+            </label>
+          </div>
+          <p class="text-[11px] leading-snug text-muted-foreground/70">
+            勾选 = 安装，取消勾选 = 从全局移除（下次同步从各处清理）；保存即全量同步。
+          </p>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="xs" :disabled="globalBusy" @click="globalOpen = false">取消</Button>
+          <Button size="xs" :disabled="globalBusy" @click="saveGlobal">
+            {{ globalBusy ? '保存中…' : '保存' }}
           </Button>
         </div>
       </DialogContent>
