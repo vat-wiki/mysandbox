@@ -29,7 +29,7 @@
 // + create() 建容器后补发 + 容器 start 事件补发（lifecycle.ts / startSkillSyncEvents）。
 // 手动：mysandbox skills sync / POST /api/skills/sync / 面板「立即同步」。同步全程
 // 互斥（模块级 promise 链）。
-import { existsSync, watch as fsWatch, type Dirent, type FSWatcher } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, watch as fsWatch, type Dirent, type FSWatcher, type Stats } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join, dirname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -44,6 +44,10 @@ import { AI_DIR, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, t
 import { log } from './logger.js';
 
 const SKILLS_DIR = join(AI_DIR, 'skills');
+// 全局落点的唯一真身：~/.agents/skills（跨工具标准）。~/.claude/skills 是指向它的
+// 相对软链（compat shim，claude 等工具读软链）——规则/盘点/范围判定都只认真身，
+// 避免同目录双份记账。软链由 seedHome（新容器）与一次性迁移（存量环境）落地。
+const GLOBAL_RELS = ['.agents/skills'];
 // 源变化 → 实际同步的 debounce（编辑器保存往往连发多个事件）。
 const WATCH_DEBOUNCE_MS = 500;
 
@@ -223,8 +227,23 @@ async function distributeDir(
   for (const { name, home } of targets) {
     const c: SkillSyncContainerResult = { name, ok: true, changed: 0, removed: 0 };
     results.push(c);
+    const target = join(home, rel);
+    // 落点本体是符号链接 → 整台跳过（写/删都会穿透到软链指向的真身目录）。
+    // 实测踩坑：改规则的 to 后旧清单成孤儿，孤儿清理按旧路径（.claude/skills 软链）
+    // rm 把真身 ~/.agents/skills 里的内容清空了。
+    let lst: Stats | undefined;
     try {
-      const target = join(home, rel);
+      lst = lstatSync(target);
+    } catch {
+      /* 不存在 = 交给后面的 mkdir/syncTree */
+    }
+    if (lst?.isSymbolicLink()) {
+      c.ok = false;
+      c.error = `落点是符号链接（${target} → ${realpathSync(target)}），跳过分发防穿透`;
+      log.warn({ container: name, manifestId, err: c.error }, 'skills distribute skipped');
+      continue;
+    }
+    try {
       for (const n of names) {
         const [w] = await syncTree(join(dir, n), join(target, n));
         c.changed += w;
@@ -559,14 +578,18 @@ export async function installSkillsToSpot(
     throw new Error(isHost ? '本机 home 不可见' : `容器 ${container} 的 home 不可见`);
   }
   // rel：宿主 spot 是真实宿主路径（相对 $HOME）；容器 spot 走契约前缀（/home/dev）。
-  const rel = isHost ? hostHomeRel(spot) : containerRel(spot);
+  let rel = isHost ? hostHomeRel(spot) : containerRel(spot);
   if (!rel) throw new Error('安装位置不能是 home 根');
+  // 归一到全局真身：home 直下的 ~/.claude/skills 是 ~/.agents/skills 的软链，
+  // 规则统一落真身路径，防止同目录两条规则互相打架。
+  if (rel === '.claude/skills') rel = '.agents/skills';
   const to = `~/${rel}`;
   const reg = await getSkillRegistry();
   const missing = skills.filter((n) => !reg.skills[n] || !existsSync(join(REGISTRY_DIR, n)));
   if (missing.length) throw new Error(`库中没有这些技能：${missing.join('、')}`);
-  // 范围：仅规范的 ~/.claude/skills 是全局（铺全部容器）；其余落点一律项目范围。
-  const all = rel === '.claude/skills';
+  // 范围：规范的全局落点（~/.claude/skills、~/.agents/skills）铺全部容器；其余落点
+  // 一律项目范围。
+  const all = GLOBAL_RELS.includes(rel);
   const hub = await getSkillHub();
   let rule = hub.rules.find((r) => r.to === to);
   let created = false;
@@ -994,7 +1017,7 @@ export async function registryImportGit(
 
 // 落点（相对 home）。加新工具支持 = 加一行；不存在/不可读的落点静默跳过。
 // 宿主与容器同一份清单（契约 home=/home/dev，宿主 $HOME 同形）。
-const INVENTORY_SPOTS = ['.claude/skills', '.agents/skills'];
+const INVENTORY_SPOTS = ['.agents/skills'];
 
 // 项目级落点动态发现：home 顶层非隐藏目录下的 .claude/skills（存在才列）。
 // 项目的 skills 也是「能用的 skills」（agent 在项目内加载），不扫就答不全；

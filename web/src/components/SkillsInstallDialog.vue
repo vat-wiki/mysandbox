@@ -33,7 +33,7 @@ const isHost = computed(() => props.containerId === '__host__')
 const scopeText = computed(() =>
   isHost.value
     ? '范围随落点自动判定'
-    : props.spot === '/home/dev/.claude/skills'
+    : props.spot === '/home/dev/.claude/skills' || props.spot === '/home/dev/.agents/skills'
       ? '全局 · 本机+全部容器'
       : '项目落点 · 跟项目走',
 )

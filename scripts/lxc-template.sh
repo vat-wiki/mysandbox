@@ -251,6 +251,20 @@ mkdir -p /etc/skel-home
 EOS
 fi
 
+# ---------- 全局技能目录：~/.agents/skills 真身 + ~/.claude/skills 兼容软链 ----------
+# ~/.agents/skills 是全局技能唯一真身（跨工具标准，mysandbox 同步/盘点只认它）；
+# ~/.claude/skills 是指向它的相对软链（claude 等工具读软链；相对路径宿主侧直写
+# rootfs 也能解析）。存量非软链目录先并入。
+step global-skills
+attsh <<'EOS'
+mkdir -p /home/dev/.agents/skills
+if [ -d /home/dev/.claude/skills ] && [ ! -L /home/dev/.claude/skills ]; then
+  cp -a /home/dev/.claude/skills/. /home/dev/.agents/skills/
+  rm -rf /home/dev/.claude/skills
+fi
+[ -L /home/dev/.claude/skills ] || ln -s ../.agents/skills /home/dev/.claude/skills
+EOS
+
 # ---------- home 归属：/home/dev 全量归还 dev ----------
 # 构建过程以 root 落在 /home/dev 下的文件（.local/.config 等），克隆后宿主 seed（uid 1000
 # 直读直写）会 EACCES——实测踩坑：.local 卡死容器 CLI/peer.json 种子。统一归还。

@@ -2,7 +2,7 @@
 // 技能中心（AI 工具面板页签）。**技能库是个人技能池**——就几个、都是自己挑的，
 // 用大卡片铺开：名称/描述在卡面，操作收敛两级——
 // ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 红调缺失）+ 描述，零杂音；
-// ② 安装是显式动作：卡脚「全局安装」实色主钮一键铺本机+全部容器（~/.claude/skills，
+// ② 安装是显式动作：卡脚「全局安装」实色主钮一键铺本机+全部容器（~/.agents/skills，
 //    两态开关——已全局再点即取消）；「选择位置…」开安装弹框——本机 + 运行中容器混成
 //    一棵目录树（各端 home 起步，展开懒加载；停着的容器列不了目录故不出现），整行
 //    点击 = 选落点、可多选（选中高亮 + ✓，不满屏勾选框）：命中既有位置并进该规则
@@ -79,8 +79,9 @@ const emit = defineEmits<{
   (e: 'unauthorized'): void
 }>()
 
-// 全局位置（铺本机 + 全部受管容器）的缺省范围。
-const GLOBAL_TO = '~/.claude/skills'
+// 全局位置（铺本机 + 全部受管容器）的唯一真身——~/.claude/skills 是指向它的软链
+// （seedHome/模板落地），规则只认真身。
+const GLOBAL_TO = '~/.agents/skills'
 
 const hub = ref<SkillHubView | null>(null)
 const inv = ref<SkillInventoryView | null>(null)
@@ -963,7 +964,7 @@ async function doDeleteRule() {
               :disabled="globalInstalling === s.name"
               :title="installedAt(s.name, GLOBAL_TO)
                 ? '已全局安装——点击取消（从本机+全部容器移除，下次同步清理）'
-                : '一键装到 ~/.claude/skills——本机 + 全部受管容器（技能全局安装）'"
+                : '一键装到 ~/.agents/skills（~/.claude/skills 软链到它）——本机 + 全部受管容器'"
               @click="installGlobal(s)"
             >
               <Loader2 v-if="globalInstalling === s.name" class="animate-spin" />
