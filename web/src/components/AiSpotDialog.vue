@@ -346,7 +346,7 @@ onMounted(async () => {
           <p v-else class="text-[11px] text-muted-foreground">
             落点 <span class="font-mono">{{ skillsSpot }}</span>
             <span class="ml-1 text-[10px] text-amber-500/90">{{ scopeText }}</span>
-            <span v-if="homeRoot">（home 根下 .claude/skills 是 ~/.agents/skills 的软链，直接落真身）</span>
+            <span v-if="homeRoot" class="block text-muted-foreground/70">home 根下 .claude/skills 是 ~/.agents/skills 的软链，直接落真身</span>
           </p>
 
           <div class="flex h-7 items-center gap-1.5 rounded-md border bg-muted/30 px-2">
@@ -376,13 +376,18 @@ onMounted(async () => {
               class="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent/50"
             >
               <Checkbox class="mt-0.5" :model-value="picked.includes(s.name)" @update:model-value="(v) => togglePick(s.name, !!v)" />
-              <span class="shrink-0 pt-0.5 font-mono">{{ s.name }}</span>
-              <Badge
-                variant="outline"
-                class="mt-0.5 shrink-0 border-transparent bg-muted px-1 text-[9px] text-muted-foreground"
-                title="静态快照——来源改动不自动进库，更新在技能中心"
-              >快照</Badge>
-              <span class="min-w-0 flex-1 pt-0.5 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</span>
+              <!-- 名字+快照一行、描述下方全宽两行截断（title 看全文）——描述挤名字右侧窄条会把每行撑到七八行高（实测走形） -->
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5">
+                  <span class="shrink-0 font-mono">{{ s.name }}</span>
+                  <Badge
+                    variant="outline"
+                    class="shrink-0 border-transparent bg-muted px-1 text-[9px] text-muted-foreground"
+                    title="静态快照——来源改动不自动进库，更新在技能中心"
+                  >快照</Badge>
+                </div>
+                <p class="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</p>
+              </div>
             </label>
           </div>
           <p class="text-[11px] leading-snug text-muted-foreground/70">
