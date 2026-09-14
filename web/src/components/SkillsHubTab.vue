@@ -352,6 +352,7 @@ async function ensureTree() {
     ]
     treeReady.value = true
     // 预展开各根（首屏即见 home 直下的目录，勾选不用多点一层）。
+    expanded.value = new Set(treeRoots.value.map((r) => r.key))
     await Promise.all(treeRoots.value.map((r) => expandNode(r)))
   } catch (e) {
     if (e instanceof Unauthorized) emit('unauthorized')
@@ -407,7 +408,6 @@ async function expandNode(node: TreeNode) {
         error: '',
       }))
     node.loaded = true
-    expanded.value = new Set(expanded.value).add(node.key)
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -420,13 +420,15 @@ async function expandNode(node: TreeNode) {
 }
 
 function toggleExpand(node: TreeNode) {
-  if (!expanded.value.has(node.key)) {
-    void expandNode(node)
-  } else {
-    const next = new Set(expanded.value)
+  const next = new Set(expanded.value)
+  if (next.has(node.key)) {
     next.delete(node.key)
     expanded.value = next
+    return
   }
+  next.add(node.key)
+  expanded.value = next
+  if (!node.loaded) void expandNode(node) // 没加载过才拉目录（已加载的纯开关）
 }
 
 function toggleCheck(node: TreeNode) {
