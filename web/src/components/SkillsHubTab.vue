@@ -1,13 +1,13 @@
 <script setup lang="ts">
-// 技能中心（AI 工具面板页签）。**已注册技能（库）是中心**，但展示走渐进式披露：
-// ① 中心列表默认一行薄行（名称/状态/去向概要），点行才展开 = 来源 + 分发管理
-//    （去向 chips ✕ 收回 / 虚线 + 加入其他去向 / 新建去向）+ 刷新/出库；
-// ② 分发去向（规则级管理：范围切换/删/清缺失）不常驻——头部 Share2 钮唤出，
-//    打开即内容态，有库缺失残留时钮挂 amber 提醒。
-// 入库面板三来源：散装扫描（本机/容器里已装未入库的 skill，有货时打开默认落此页）
-// / 目录 / git——「发现散装」只是入库的发现型入口，与手填路径走同一 API。
+// 技能中心（AI 工具面板页签）。**技能库是中心**，但展示走渐进式披露：
+// ① 中心列表默认一行薄行（名称/状态/安装位置概要），点行才展开 = 来源 + 安装管理
+//    （位置 chips ✕ 移除 / 虚线 + 装到其他位置 / 新建位置）+ 刷新/移除；
+// ② 安装位置（规则级管理：范围切换/删/清缺失）不常驻——头部 Share2 钮唤出，
+//    打开即内容态，有缺失残留时钮挂 amber 提醒。
+// 添加面板三来源：扫描（本机/容器里已装、未纳管的技能，有货时打开默认落此页）
+// / 目录 / git——「扫描」只是添加的发现型入口，与手填路径走同一 API。
 // 顶部不再铺概念说明——收在头部 ？tooltip（空态引导见空库文案）。
-// 库语义：目录来源入库 = 跟随刷新（源改库跟，源删冻结）；git 导入 = 快照。库内同名
+// 库语义：目录来源 = 自动更新（源改库跟，源删冻结）；git 导入 = 快照。库内同名
 // 唯一，无冲突概念。全自动触发（watch + 启动追平 + 建容器/容器 start 补发）。
 import { ref, computed, onMounted } from 'vue'
 import {
@@ -43,7 +43,7 @@ const emit = defineEmits<{
   (e: 'unauthorized'): void
 }>()
 
-// 全局规则的缺省去向（铺全部受管容器）。
+// 全局位置（铺全部受管容器）的缺省范围。
 const GLOBAL_TO = '~/.claude/skills'
 
 const hub = ref<SkillHubView | null>(null)
@@ -115,19 +115,19 @@ function fail(e: unknown) {
   err.value = e instanceof Error ? e.message : String(e)
 }
 
-// —— 技能 ↔ 去向（中心视图的映射） ——
+// —— 技能 ↔ 安装位置（中心视图的映射） ——
 
 // 规则的声明技能集（视图 skills 含库里缺失的条目）。
 function declaredOf(r: SkillRuleResult): string[] {
   return r.skills.map((s) => s.name)
 }
 
-// 某技能所在的去向（规则）。
+// 某技能已安装到的位置（规则）。
 function rulesOf(name: string): SkillRuleResult[] {
   return (hub.value?.rules ?? []).filter((r) => declaredOf(r).includes(name))
 }
 
-// 某技能尚未加入的其他去向（展开态里虚线 + 加入）。
+// 某技能尚未装到的其他位置（展开态里虚线 + 装上）。
 function otherRulesOf(name: string): SkillRuleResult[] {
   return (hub.value?.rules ?? []).filter((r) => !declaredOf(r).includes(name))
 }
@@ -140,10 +140,10 @@ function sourceHost(s: SkillRegistryItem): string {
   return 'host'
 }
 
-// —— 库条目操作：入库 / 出库 / 刷新 / 分发 ——
+// —— 库条目操作：添加 / 移除 / 刷新 / 安装 ——
 
-// 入库面板：三来源——散装扫描（自动发现，有货时打开默认落这里）/ 目录 / git 仓库。
-// 「发现散装」不是独立概念，就是入库的发现型入口：扫到的行点入库与手填路径走同一 API。
+// 添加面板：三来源——扫描（自动发现，有货时打开默认落这里）/ 目录 / git 仓库。
+// 「扫描」不是独立概念，就是添加的发现型入口：扫到的行点添加与手填路径走同一 API。
 const showImport = ref(false)
 const importMode = ref<'loose' | 'dir' | 'git'>('dir')
 function openImport() {
@@ -163,7 +163,7 @@ async function submitImportDir() {
   err.value = ''
   try {
     const r = await registryAddSkill(from)
-    toast(`${r.replaced ? '已覆盖入库' : '已入库'}：${r.name}（目录来源，跟随源更新）`)
+    toast(`${r.replaced ? '已覆盖添加' : '已添加'}：${r.name}（目录来源，自动更新）`)
     impDir.value = ''
     await loadReg()
   } catch (e) {
@@ -197,7 +197,7 @@ async function doImportGit() {
   err.value = ''
   try {
     const r = await registryImportGit(url, impPicked.value)
-    toast(`${r.replaced ? '已覆盖入库' : '已入库'}：${r.name}（git 快照，更新请重新导入）`)
+    toast(`${r.replaced ? '已覆盖添加' : '已添加'}：${r.name}（git 快照，更新请重新导入）`)
     impUrl.value = ''
     impCandidates.value = null
     impPicked.value = ''
@@ -209,14 +209,14 @@ async function doImportGit() {
   }
 }
 
-// 从散装行入库。thenGlobal = 入库后并进全局规则（一步到位装到全部容器）。
-// 同名 → 确认后覆盖（确认框记住 thenGlobal，覆盖后继续装到全局）。
+// 从扫描行添加。thenGlobal = 添加后并进全局位置（一步到位装到全部容器）。
+// 同名 → 确认后覆盖（确认框记住 thenGlobal，覆盖后继续装到全部容器）。
 const regConfirm = ref<{ from: string; name: string; thenGlobal?: boolean } | null>(null)
 async function addToRegistry(loc: SkillInventoryLocation, dir: string, spot: string, thenGlobal = false) {
   const from = (loc.kind === 'host' ? '~' : `${loc.name}:~`) + `/${spot}/${dir}`
   try {
     const r = await registryAddSkill(from)
-    toast(`已入库：${r.name}`)
+    toast(`已添加：${r.name}`)
     if (thenGlobal) await ensureGlobalHas(r.name)
     await Promise.all([loadReg(), load()])
   } catch (e) {
@@ -235,7 +235,7 @@ async function doConfirmRegistry() {
   regConfirm.value = null
   try {
     const r = await registryAddSkill(c.from, true)
-    toast(`已覆盖入库：${c.name}`)
+    toast(`已覆盖添加：${c.name}`)
     if (c.thenGlobal) await ensureGlobalHas(r.name)
     await Promise.all([loadReg(), load()])
   } catch (e) {
@@ -256,7 +256,7 @@ async function ensureGlobalHas(name: string) {
   } else {
     hub.value = await addSkillRule(GLOBAL_TO, true, [name])
   }
-  toast(`已装到全局（${GLOBAL_TO}，全部容器）`)
+  toast(`已装到全部容器（${GLOBAL_TO}）`)
 }
 
 const delReg = ref<SkillRegistryItem | null>(null)
@@ -267,14 +267,14 @@ async function doDeleteReg() {
   err.value = ''
   try {
     reg.value = await registryRemoveSkill(s.name)
-    toast(`已出库：${s.name}（已在分发中的会在下次同步时从容器清理）`)
+    toast(`已移除：${s.name}（已安装到各处的会在下次同步时从容器清理）`)
     await load()
   } catch (e) {
     fail(e)
   }
 }
 
-// —— 技能行「分发管理」（展开态内）：勾选收回（chips ✕）+ 新建去向 ——
+// —— 技能行「安装管理」（展开态内）：chips ✕ 移除 / + 装到其他位置 / 新建位置 ——
 
 const nfTo = ref('')
 const nfAll = ref(true)
@@ -300,7 +300,7 @@ async function createRuleFor(name: string) {
     hub.value = await addSkillRule(to, nfAll.value, [name])
     nfTo.value = ''
     nfAll.value = true
-    toast(`已分发：${name} → ${to}`)
+    toast(`已安装：${name} → ${to}`)
   } catch (e) {
     fail(e)
   } finally {
@@ -338,9 +338,9 @@ async function doDeleteRule() {
   }
 }
 
-// —— 渐进式披露：技能行默认一行薄行，点行展开（来源 + 分发管理 + 操作）；
-//    分发去向/发现散装不常驻主视图——头部图标钮唤出（打开即内容态），有事时
-//    钮上挂 amber 点（散装待筛选 / 缺失残留）；概念说明收头部 ？tooltip。 ——
+// —— 渐进式披露：技能行默认一行薄行，点行展开（来源 + 安装管理 + 操作）；
+//    安装位置/扫描不常驻主视图——头部图标钮唤出（打开即内容态），有事时
+//    钮上挂 amber 点（待纳管 / 缺失残留）；概念说明收头部 ？tooltip。 ——
 const expandedSkill = ref<string | null>(null)
 const showRules = ref(false)
 const missingTotal = computed(
@@ -351,7 +351,7 @@ function ruleMissing(r: SkillRuleResult): number {
   return r.skills.filter((k) => !k.ok).length
 }
 
-// —— 发现散装：入库面板「散装扫描」页的数据源 ——
+// —— 扫描：添加面板「扫描」页的数据源（本机/容器里已装、未纳管的技能） ——
 
 interface InvSpotRow {
   spot: string
@@ -360,7 +360,7 @@ interface InvSpotRow {
 const looseTotal = computed(
   () => inv.value?.locations.reduce((n, l) => n + l.skills.filter((s) => !s.managed).length, 0) ?? 0,
 )
-// 只展示带散装 skill 的位置（分发了的位置没有筛选价值）。
+// 只展示带未纳管技能的位置（已纳管的位置没有筛选价值）。
 const invLocations = computed<SkillInventoryLocation[]>(() => {
   const locs = inv.value?.locations ?? []
   return locs
@@ -414,24 +414,24 @@ async function syncNow() {
       class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
     >{{ err }}</p>
 
-    <!-- ① 中心：已注册技能。渐进式：列表默认薄行，概念说明收 ？tooltip（空态引导见空库文案） -->
+    <!-- ① 中心：技能库。渐进式：列表默认薄行，概念说明收 ？tooltip（空态引导见空库文案） -->
     <div class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <Library class="size-3.5 shrink-0 text-muted-foreground" />
-        <span class="text-xs font-semibold">已注册技能</span>
+        <span class="text-xs font-semibold">技能库</span>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ reg?.filter((s) => s.exists).length ?? 0 }}
         </Badge>
         <div class="flex-1" />
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="已注册技能是中心——入库的每个技能看它分发到哪。目录来源跟随源更新，git 导入为快照；分发、容器新建/重启全自动追平。最顺手的安装入口在文件面板：进到项目目录点「安装技能」就地装。"
+          title="技能库是中心——库里的每个技能看它装到了哪。目录来源自动更新（源改动库跟着刷新再安装），git 导入是快照；安装、容器新建/重启全自动追平。最顺手的添加入口在文件面板：进到项目目录点「安装技能」就地添加。"
         ><Info class="size-3.5" /></span>
         <Button
           variant="ghost"
           size="icon-xs"
           class="relative shrink-0 text-muted-foreground hover:text-foreground"
-          :title="missingTotal ? `分发去向规则（${missingTotal} 缺失待清）` : '分发去向规则：范围 / 成员 / 删除'"
+          :title="missingTotal ? `安装位置（${missingTotal} 缺失待清）` : '安装位置：范围 / 成员 / 删除'"
           @click="showRules = !showRules"
         >
           <Share2 />
@@ -441,7 +441,7 @@ async function syncNow() {
           variant="ghost"
           size="icon-xs"
           class="shrink-0 text-muted-foreground hover:text-foreground"
-          title="立即同步（平时全自动——watch/启动追平/建容器补发；这里是手动兜底，顺带刷新跟随条目）"
+          title="立即同步（平时全自动——watch/启动追平/建容器补发；这里是手动兜底，顺带刷新自动更新条目）"
           :disabled="syncing"
           @click="syncNow"
         >
@@ -451,15 +451,15 @@ async function syncNow() {
           variant="ghost"
           size="xs"
           class="relative h-6 shrink-0 gap-1 px-1.5 text-[11px]"
-          :title="looseTotal ? `入库（${looseTotal} 个散装待收编）` : '入库：从散装扫描 / 目录 / git 仓库'"
+          :title="looseTotal ? `添加（${looseTotal} 个未纳管技能待处理）` : '添加技能：从扫描 / 目录 / git 仓库'"
           @click="openImport"
         >
-          <Plus class="size-3.5" /> 入库
+          <Plus class="size-3.5" /> 添加
           <span v-if="looseTotal" class="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
         </Button>
       </div>
 
-      <!-- 入库面板：散装扫描 / 目录 / git 仓库 -->
+      <!-- 添加面板：扫描 / 目录 / git 仓库 -->
       <div v-if="showImport" class="space-y-2 border-b bg-muted/20 px-3 py-2.5">
         <div class="flex gap-1">
           <button
@@ -467,7 +467,7 @@ async function syncNow() {
             class="rounded border px-2 py-0.5 text-[11px] transition-colors"
             :class="importMode === 'loose' ? 'border-primary/40 bg-primary/10 text-primary' : 'border-line text-muted-foreground hover:text-foreground'"
             @click="importMode = 'loose'"
-          >散装扫描<span v-if="looseTotal" class="text-amber-600 dark:text-amber-400"> ·{{ looseTotal }}</span></button>
+          >扫描<span v-if="looseTotal" class="text-amber-600 dark:text-amber-400"> ·{{ looseTotal }}</span></button>
           <button
             type="button"
             class="rounded border px-2 py-0.5 text-[11px] transition-colors"
@@ -484,7 +484,7 @@ async function syncNow() {
         <template v-if="importMode === 'loose'">
           <div class="flex items-center gap-2">
             <span class="min-w-0 flex-1 text-[10px] leading-relaxed text-muted-foreground/70">
-              本机/各容器里已装但未入库的 skill——一键收编进库（点 <CornerDownRight class="inline size-3" /> 顺带装到全局）。
+              扫描本机和各容器里已有的技能——还没纳管的一键添加进库（点 <CornerDownRight class="inline size-3" /> 顺带装到全部容器）。
             </span>
             <Button
               variant="ghost"
@@ -497,7 +497,7 @@ async function syncNow() {
             </Button>
           </div>
           <p v-if="invErr" class="text-[11px] text-destructive">{{ invErr }}</p>
-          <p v-if="!invLocations.length" class="text-[11px] text-muted-foreground/70">没有散装的 skill——扫到的都已注册。</p>
+          <p v-if="!invLocations.length" class="text-[11px] text-muted-foreground/70">没有待纳管的技能——扫到的都已在库里。</p>
           <div v-for="loc in invLocations" :key="loc.name" class="space-y-1">
             <div class="flex items-center gap-2">
               <span
@@ -519,7 +519,7 @@ async function syncNow() {
                   variant="ghost"
                   size="icon-xs"
                   class="shrink-0 text-muted-foreground hover:text-foreground"
-                  title="入库：拷一份进技能库（目录来源，跟随源更新）"
+                  title="添加：拷一份进技能库（目录来源，自动更新）"
                   @click="addToRegistry(loc, s.dir, row.spot)"
                 >
                   <Library class="size-3" />
@@ -528,7 +528,7 @@ async function syncNow() {
                   variant="ghost"
                   size="icon-xs"
                   class="shrink-0 text-muted-foreground hover:text-foreground"
-                  title="入库并装到全局（~/.claude/skills，全部容器）"
+                  title="添加并装到全部容器（~/.claude/skills）"
                   @click="addToRegistry(loc, s.dir, row.spot, true)"
                 >
                   <CornerDownRight class="size-3" />
@@ -545,10 +545,10 @@ async function syncNow() {
               class="h-8 flex-1 font-mono text-xs"
               @keydown.enter="submitImportDir"
             />
-            <Button size="sm" class="h-8 shrink-0" :disabled="impBusy || !impDir.trim()" @click="submitImportDir">入库</Button>
+            <Button size="sm" class="h-8 shrink-0" :disabled="impBusy || !impDir.trim()" @click="submitImportDir">添加</Button>
           </div>
           <p class="text-[10px] leading-relaxed text-muted-foreground/70">
-            目录来源 = 跟随：源目录改动自动刷新库并分发；源删了库内容冻结保留。
+            目录来源 = 自动更新：源目录改动自动刷新库再安装；源删了库内容冻结保留。
           </p>
         </template>
         <template v-if="importMode === 'git'">
@@ -584,10 +584,10 @@ async function syncNow() {
 
       <!-- 空库 -->
       <div v-if="!reg?.length" class="px-3 py-4 text-center text-[11px] text-muted-foreground/70">
-        还没有注册任何技能——点「入库」从散装扫描/目录/git 导入。
+        还没有添加任何技能——点「添加」从扫描/本地目录/git 仓库添加。
       </div>
 
-      <!-- 技能行：收起 = 一行薄行（身份/状态/去向概要），点行展开 = 来源 + 分发管理 + 操作 -->
+      <!-- 技能行：收起 = 一行薄行（身份/状态/安装位置概要），点行展开 = 来源 + 安装管理 + 操作 -->
       <div
         v-for="(s, si) in reg ?? []"
         :key="s.name"
@@ -597,7 +597,7 @@ async function syncNow() {
         <button
           type="button"
           class="flex w-full cursor-pointer items-center gap-2 text-left"
-          :title="expandedSkill === s.name ? '收起' : '展开：来源 · 分发管理 · 操作'"
+          :title="expandedSkill === s.name ? '收起' : '展开：来源 · 安装位置 · 操作'"
           @click="expandedSkill = expandedSkill === s.name ? null : s.name"
         >
           <span
@@ -611,23 +611,23 @@ async function syncNow() {
             variant="outline"
             class="shrink-0 border-transparent px-1 text-[10px]"
             :class="s.follow ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'"
-            :title="s.follow ? '跟随源目录：源改动自动刷新库并分发' : '快照：git 导入的副本，更新请重新导入'"
-          >{{ s.follow ? '跟随' : '快照' }}</Badge>
+            :title="s.follow ? '自动更新：源目录改动，库跟着刷新再安装' : '快照：git 导入的副本，更新请重新导入'"
+          >{{ s.follow ? '自动更新' : '快照' }}</Badge>
           <Badge v-else variant="outline" class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive">缺失</Badge>
           <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" :title="s.description">{{ s.description }}</span>
-          <!-- 去向概要：核心语义是「看它分发到哪」，收起态也要能瞥见；多则截断，行展开看全 -->
+          <!-- 安装位置概要：核心语义是「看它装到了哪」，收起态也要能瞥见；多则截断，行展开看全 -->
           <template v-if="s.exists">
             <span
               v-if="!rulesOf(s.name).length"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没有分发到任何去向——展开行配置"
-            >未分发</span>
+              title="还没装到任何位置——展开行配置"
+            >未安装</span>
             <template v-else>
               <span
                 v-for="r in rulesOf(s.name).slice(0, 2)"
                 :key="r.id"
                 class="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-                :title="`分发到 ${r.to}${r.all ? '（全部容器）' : '（仅已有该项目的容器）'}`"
+                :title="`已安装到 ${r.to}${r.all ? '（全部容器）' : '（仅已有该项目的容器）'}`"
               >{{ r.to }}</span>
               <span v-if="rulesOf(s.name).length > 2" class="shrink-0 text-[10px] text-muted-foreground">+{{ rulesOf(s.name).length - 2 }}</span>
             </template>
@@ -635,7 +635,7 @@ async function syncNow() {
           <component :is="expandedSkill === s.name ? ChevronDown : ChevronRight" class="size-3 shrink-0 text-muted-foreground" />
         </button>
 
-        <!-- 展开态：来源 + 分发去向管理 + 操作（低频细节都住这里） -->
+        <!-- 展开态：来源 + 安装位置管理 + 操作（低频细节都住这里） -->
         <div v-if="expandedSkill === s.name" class="mt-2 space-y-2 rounded border bg-muted/20 px-3 py-2">
           <div class="flex items-center gap-1.5">
             <span
@@ -651,7 +651,7 @@ async function syncNow() {
                 v-for="r in rulesOf(s.name)"
                 :key="r.id"
                 class="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]"
-                :title="`分发到 ${r.to}${r.all ? '（全部容器）' : '（仅已有该项目的容器）'}——✕ 收回（下次同步按清单从容器清理）`"
+                :title="`已安装到 ${r.to}${r.all ? '（全部容器）' : '（仅已有该项目的容器）'}——✕ 移除（下次同步按清单从容器清理）`"
               >
                 {{ r.to }}
                 <button type="button" class="text-muted-foreground/60 hover:text-destructive" @click="removeFromRule(r, s.name)">✕</button>
@@ -660,18 +660,18 @@ async function syncNow() {
                 v-for="r in otherRulesOf(s.name)"
                 :key="r.id"
                 class="flex items-center gap-1 rounded border border-dashed px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:text-foreground"
-                title="尚未分发到这个去向——+ 加入"
+                title="尚未安装到这个位置——+ 装上"
               >
                 {{ r.to }}
                 <button type="button" class="text-muted-foreground/60 hover:text-primary" @click="toggleRuleSkill(r, s.name, true)">+</button>
               </span>
-              <span v-if="!hub?.rules.length" class="text-[10px] text-muted-foreground/70">还没有分发到任何去向</span>
+              <span v-if="!hub?.rules.length" class="text-[10px] text-muted-foreground/70">还没装到任何位置</span>
             </div>
 
             <div class="flex items-center gap-2 border-t pt-2">
               <Input
                 v-model="nfTo"
-                placeholder="新去向（容器内路径，如 ~/proj/.claude/skills）"
+                placeholder="新位置（容器内路径，如 ~/proj/.claude/skills）"
                 class="h-7 flex-1 font-mono text-[11px]"
                 @keydown.enter="createRuleFor(s.name)"
               />
@@ -680,7 +680,7 @@ async function syncNow() {
                 全部容器
               </label>
               <Button size="xs" class="shrink-0 gap-1" :disabled="nfBusy || !nfTo.trim()" @click="createRuleFor(s.name)">
-                <Plus class="size-3" /> 分发
+                <Plus class="size-3" /> 安装
               </Button>
             </div>
 
@@ -701,24 +701,24 @@ async function syncNow() {
                 variant="ghost"
                 size="xs"
                 class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-destructive"
-                title="出库（已在分发中的会在下次同步时从容器清理）"
+                title="移除（已安装到各处的会在下次同步时从容器清理）"
                 @click="delReg = s"
               >
-                <Trash2 class="size-3" /> 出库
+                <Trash2 class="size-3" /> 移除
               </Button>
             </div>
           </template>
           <template v-else>
-            <p class="text-[10px] leading-relaxed text-muted-foreground/70">库内容缺失（来源不在了）——出库后可重新入库。</p>
+            <p class="text-[10px] leading-relaxed text-muted-foreground/70">内容缺失（来源不在了）——移除后可重新添加。</p>
             <div class="flex justify-end">
               <Button
                 variant="ghost"
                 size="xs"
                 class="h-5 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-destructive"
-                title="出库（分发去向里对它的引用会变成缺失，下次同步清理）"
+                title="移除（安装位置里对它的引用会变成缺失，下次同步清理）"
                 @click="delReg = s"
               >
-                <Trash2 class="size-3" /> 出库
+                <Trash2 class="size-3" /> 移除
               </Button>
             </div>
           </template>
@@ -726,11 +726,11 @@ async function syncNow() {
       </div>
     </div>
 
-    <!-- ② 辅助：分发去向（规则级管理）——不常驻，头部 Share2 钮唤出（打开即内容态） -->
+    <!-- ② 辅助：安装位置（规则级管理）——不常驻，头部 Share2 钮唤出（打开即内容态） -->
     <div v-if="showRules" class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <Share2 class="size-3.5 shrink-0 text-muted-foreground" />
-        <span class="text-xs font-semibold">分发去向</span>
+        <span class="text-xs font-semibold">安装位置</span>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ hub?.rules.length ?? 0 }}
         </Badge>
@@ -739,7 +739,7 @@ async function syncNow() {
       </div>
 
       <div v-if="!hub?.rules.length" class="px-3 py-2.5 text-[11px] text-muted-foreground/70">
-        还没有去向——展开技能行添加分发位置（新建即建规则）。
+        还没有安装位置——展开技能行添加（新建即建规则）。
       </div>
       <div
         v-for="(t, ti) in hub?.rules ?? []"
@@ -776,7 +776,7 @@ async function syncNow() {
             variant="ghost"
             size="icon-xs"
             class="shrink-0 text-muted-foreground hover:text-destructive"
-            title="删除此去向（它装出去的 skill 按清单从容器清理；容器里用户自装的其他 skill 不动）"
+            title="删除此安装位置（它装出去的 skill 按清单从容器清理；容器里用户自装的其他 skill 不动）"
             @click="delRule = t"
           >
             <Trash2 />
@@ -789,20 +789,20 @@ async function syncNow() {
             :key="k.name"
             class="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px]"
             :class="k.ok ? 'text-foreground' : 'text-destructive'"
-            :title="k.ok ? '点击 ✕ 从该去向收回' : '库里没有这个技能（残留）——✕ 清掉'"
+            :title="k.ok ? '点击 ✕ 从该位置移除' : '库里没有这个技能（残留）——✕ 清掉'"
           >
             {{ k.name }}
-            <button type="button" class="text-muted-foreground/60 hover:text-destructive" @click="removeFromRule(t, k.name)">✕</button>
+            <button type="button" class="text-muted-foreground/60 hover:text-destructive" title="从该位置移除" @click="removeFromRule(t, k.name)">✕</button>
           </span>
-          <span v-if="!t.skills.length" class="text-[10px] text-muted-foreground/70">还没有成员</span>
+          <span v-if="!t.skills.length" class="text-[10px] text-muted-foreground/70">还没有装任何技能</span>
         </div>
       </div>
     </div>
 
     <ConfirmDialog
       v-if="delRule"
-      title="删除分发去向"
-      :description="`删除去往 ${delRule.to} 的规则？它装出去的 skill 将按清单从对应容器中清理（容器里用户自装的其他 skill 不动）。`"
+      title="删除安装位置"
+      :description="`删除安装位置 ${delRule.to}？它装出去的 skill 将按清单从对应容器中清理（容器里用户自装的其他 skill 不动）。`"
       confirm-text="删除"
       variant="destructive"
       @confirm="doDeleteRule"
@@ -810,8 +810,8 @@ async function syncNow() {
     />
     <ConfirmDialog
       v-if="regConfirm"
-      title="覆盖入库"
-      :description="`技能库里已有「${regConfirm.name}」。用 ${regConfirm.from} 的内容覆盖它？${regConfirm.thenGlobal ? '覆盖后会继续装到全局。' : ''}`"
+      title="覆盖添加"
+      :description="`技能库里已有「${regConfirm.name}」。用 ${regConfirm.from} 的内容覆盖它？${regConfirm.thenGlobal ? '覆盖后会继续装到全部容器。' : ''}`"
       confirm-text="覆盖"
       variant="destructive"
       @confirm="doConfirmRegistry"
@@ -819,9 +819,9 @@ async function syncNow() {
     />
     <ConfirmDialog
       v-if="delReg"
-      title="出库"
-      :description="`把「${delReg.name}」移出技能库？分发去向里对它的引用会变成「缺失」，下次同步时从对应容器清理。`"
-      confirm-text="出库"
+      title="移除技能"
+      :description="`把「${delReg.name}」从技能库移除？安装位置里对它的引用会变成「缺失」，下次同步时从对应容器清理。`"
+      confirm-text="移除"
       variant="destructive"
       @confirm="doDeleteReg"
       @close="delReg = null"

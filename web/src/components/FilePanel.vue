@@ -113,7 +113,7 @@ function targetId(): string {
 const isHost = computed(() => targetId() === HOST_ID)
 
 // —— 安装技能（pull 入口）：库技能装进当前浏览位置下的 .claude/skills，自动落规则
-// （库更新跟走 / 出库自动清）；规则系统接管后续，这里不产生第二套记账。表单走
+// （库更新跟走 / 移除自动清）；规则系统接管后续，这里不产生第二套记账。表单走
 // SkillsInstallDialog（与 AI 配置同款居中弹窗，窄条展不开）。——
 const showInstall = ref(false)
 
@@ -126,15 +126,15 @@ const installTarget = computed<string | null>(() => {
   if (!isHost.value && p !== '/home/dev' && !p.startsWith('/home/dev/')) return null
   return `${p}/.claude/skills`
 })
-// 服务组没有规则模型；容器与宿主（本机）都可作为分发目标。
+// 服务组没有规则模型；容器与宿主（本机）都可作为安装目标。
 const canInstall = computed(() => !targetId().startsWith('s:') && !!installTarget.value)
 
-// —— 注册为技能（pull 反向：就地入库）——把一个含 SKILL.md 的目录直接注册进技能库
-// （目录来源 = 跟随：源改了库里跟走；此后任何目标都能「安装技能」拉它）。服务组没有
+// —— 添加为技能（pull 反向：就地收进库）——把一个含 SKILL.md 的目录直接收进技能库
+// （目录来源 = 自动更新：源改了库里跟走；此后任何目标都能「安装技能」拉它）。服务组没有
 // 可解析的来源形态，不出现入口。
 const regBusy = ref(false)
 const canRegistry = computed(() => !targetId().startsWith('s:'))
-// 当前目录本身是技能（含 SKILL.md）→ 工具栏露出「就地入库」快捷钮。
+// 当前目录本身是技能（含 SKILL.md）→ 工具栏露出「就地添加」快捷钮。
 const hasSkillMd = computed(() => entries.value.some((e) => e.name === 'SKILL.md' && e.type === 'file'))
 
 async function registerSkillFrom(fromPath: string) {
@@ -143,7 +143,7 @@ async function registerSkillFrom(fromPath: string) {
   regBusy.value = true
   try {
     const r = await registryAddSkill(from)
-    toast(`已入库：${r.name}（目录来源，跟随源更新）`)
+    toast(`已添加：${r.name}（目录来源，自动更新）`)
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('close')
@@ -153,7 +153,7 @@ async function registerSkillFrom(fromPath: string) {
     if (msg.includes('已有同名') && confirm(`${msg}——覆盖库里的同名技能？`)) {
       try {
         const r = await registryAddSkill(from, true)
-        toast(`已覆盖入库：${r.name}`)
+        toast(`已覆盖添加：${r.name}`)
       } catch (e2) {
         if (e2 instanceof Unauthorized) {
           emit('close')
@@ -1141,15 +1141,15 @@ function fmtSize(n: number): string {
       >
         <FolderPlus class="size-3.5" />
       </Button>
-      <!-- 注册为技能（就地入库）：当前目录含 SKILL.md = 本身就是技能，一键进库
-           （目录来源跟随）。与「安装技能」方向相反：库 ← 目录。 -->
+      <!-- 添加为技能（就地收进库）：当前目录含 SKILL.md = 本身就是技能，一键进库
+           （目录来源自动更新）。与「安装技能」方向相反：库 ← 目录。 -->
       <Button
         v-if="canRegistry && hasSkillMd"
         variant="ghost"
         size="icon-xs"
         class="shrink-0"
         :disabled="regBusy || !path"
-        :title="regBusy ? '入库中…' : `注册为技能（${path.split('/').filter(Boolean).pop() ?? path}）`"
+        :title="regBusy ? '添加中…' : `添加为技能（${path.split('/').filter(Boolean).pop() ?? path}）`"
         @click="registerSkillFrom(path)"
       >
         <BookPlus class="size-3.5" />

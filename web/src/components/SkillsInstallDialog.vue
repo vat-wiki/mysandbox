@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 安装技能对话框（文件面板「安装技能」入口）：库技能勾选 → 装进指定落点 + 自动落
-// 分发规则（pull 语义：人到哪个项目就装到哪）。用居中弹窗与 AI 配置（AiSpotDialog）
+// 安装技能对话框（文件面板「安装技能」入口）：库技能勾选 → 装进指定落点 + 自动登记安装位置
+// 安装位置（pull 语义：人到哪个项目就装到哪）。用居中弹窗与 AI 配置（AiSpotDialog）
 // 统一交互语言——内嵌窄条展不开描述与筛选（实测挤）。v-if 挂载天然重置状态。
 import { ref, computed, onMounted } from 'vue'
 import {
@@ -122,7 +122,7 @@ async function install() {
           v-else-if="!filtered.length"
           class="rounded-md border border-dashed px-4 py-6 text-center text-xs leading-relaxed text-muted-foreground"
         >
-          技能库是空的——在文件面板里看到技能目录可右键「注册为技能」就地入库，
+          技能库是空的——在文件面板里看到技能目录可右键「添加为技能」就地收进库，
           或去「AI 工具 → 技能中心」管理。
         </div>
         <div v-else class="scroll-thin max-h-72 space-y-0.5 overflow-y-auto pr-1">
@@ -137,12 +137,12 @@ async function install() {
               variant="outline"
               class="mt-0.5 shrink-0 border-transparent px-1 text-[9px]"
               :class="s.follow ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'"
-            >{{ s.follow ? '跟随' : '快照' }}</Badge>
+            >{{ s.follow ? '自动更新' : '快照' }}</Badge>
             <span class="min-w-0 flex-1 pt-0.5 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</span>
           </label>
         </div>
         <p class="text-[11px] leading-snug text-muted-foreground/70">
-          安装 = 拷进该落点并自动登记为分发规则；此后库更新自动跟走，出库自动清理。
+          安装 = 拷进该落点并自动登记为安装位置；此后库更新自动跟走，移除自动清理。
         </p>
       </div>
 
