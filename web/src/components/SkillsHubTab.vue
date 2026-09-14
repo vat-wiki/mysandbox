@@ -722,7 +722,7 @@ async function doDeleteRule() {
         <span class="text-xs font-semibold">技能库</span>
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="个人技能池——每张卡一件技能：右下「全局安装」一键铺本机+全部容器，「选择位置…」进目录树落指定位置；⋯ 菜单管安装位置/更新/移除；来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
+          title="个人技能池——每张卡一件技能。日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）；这里管库本身：全局安装一键铺开、选择位置集中补装、⋯ 菜单管安装位置/更新/移除。来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
         ><Info class="size-3.5" /></span>
         <div class="flex-1" />
         <Button
@@ -1092,7 +1092,9 @@ async function doDeleteRule() {
       <DialogContent class="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>安装 · {{ installOpenFor }}</DialogTitle>
-          <DialogDescription>点目录行选安装落点，可多选；箭头展开子目录</DialogDescription>
+          <DialogDescription>
+            日常装到项目：到文件面板进目录点 📚 就地装（人在哪装到哪）。这里是集中补装——点目录行选落点，可多选
+          </DialogDescription>
         </DialogHeader>
 
         <div class="space-y-2">
