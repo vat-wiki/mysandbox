@@ -3749,10 +3749,12 @@ onUnmounted(() => {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- 设置（侧栏底部入口）：全局性配置集中地，TestLens 批量下发等分区 -->
+  <!-- 设置（侧栏底部入口）：全局性配置目录页——AI 行跳主区工作区页签（openAi 先行、
+       弹框随后关），TestLens 等轻量分区弹框内就地操作 -->
   <SettingsDialog
     v-if="showSettings"
     @close="showSettings = false"
+    @open-ai="openAi(); showSettings = false"
     @unauthorized="emit('unauthorized')"
   />
 </template>

@@ -1,15 +1,17 @@
 <script setup lang="ts">
-// 设置弹框（侧栏底部「设置」入口）：全局性配置的集中地，按分区堆叠，当前只有
-// 「TestLens」。体量刻意小——弹框即来即走；将来分区多了再考虑主区工作区形态
-// （参考 AiWorkspace 的页签升级路径）。
+// 设置弹框（侧栏底部「设置」入口）：全局性配置的目录页——两层结构：
+// 列表层给各配置的入口行（行尾带状态摘要，一眼看全）；轻量配置（TestLens）点进
+// 弹框内就地操作，大体量配置（AI 工具）只给跳转入口——主区工作区页签（AiWorkspace，
+// VSCode 设置页模式）才是它的家，弹框不复制内容免得双载体同步维护。就地/上下文
+// 配置（文件面板 ✨、容器右键覆盖、Inbox 收编）是 pull 语义，不进这里。
 //
 // TestLens 分区：往所选目标（本机 + 受管容器）的 home 写两份种子文件（agent-browser
 // 的 cdp + testlens CLI 的 host）。约定地址 http://testlens:10004（容器内走 hosts
 // 服务块；本机由后端换算 localhost）。项目级 .testlens.json 靠 CLI 的 cwd 向上查找
 // 天然优先于 home 种子，不被这里破坏。
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { Globe, Loader2 } from 'lucide-vue-next'
+import { Bot, ChevronLeft, ChevronRight, Globe, Loader2 } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -32,9 +34,15 @@ import {
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'unauthorized'): void
+  // AI 配置入口行：跳转主区 AI 工具页签（ContainerList 的 openAi()），弹框随之关闭
+  (e: 'open-ai'): void
 }>()
 
 const DEFAULT_HOST = 'http://testlens:10004'
+
+// 两层导航：'list' 目录页 / 'testlens' TestLens 详情。将来加分区 = 加一个 section 值
+// + 一条入口行。
+const section = ref<'list' | 'testlens'>('list')
 
 const view = ref<TestlensView | null>(null)
 const loading = ref(false)
@@ -68,6 +76,13 @@ const STATUS_META: Record<Status, { label: string; cls: string }> = {
   error: { label: '不可达', cls: 'bg-destructive/15 text-destructive' },
 }
 
+// 列表层状态摘要：N/M 台已配置（列表打开时 view 可能还没回来，兜底「…」）。
+const testlensSummary = computed(() => {
+  if (!view.value || loading.value) return '…'
+  const ok = view.value.targets.filter((t) => statusOf(t) === 'match').length
+  return `${ok}/${view.value.targets.length} 台已配置`
+})
+
 async function load() {
   loading.value = true
   try {
@@ -84,7 +99,6 @@ async function load() {
     loading.value = false
   }
 }
-watch(() => host.value, () => {/* 值变化只影响状态徽标（computed），无需动作 */})
 
 async function apply() {
   if (!picked.value.size) return
@@ -116,22 +130,61 @@ onMounted(load)
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
     <DialogContent class="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
-      <div class="border-b px-5 py-3 pr-10">
-        <DialogTitle class="flex items-center gap-2 text-lg font-semibold">
-          设置
+      <div class="flex items-center border-b px-5 py-3 pr-10">
+        <!-- TestLens 详情层给返回键回目录页 -->
+        <button
+          v-if="section !== 'list'"
+          type="button"
+          class="mr-1 -ml-1 rounded p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="返回"
+          @click="section = 'list'"
+        >
+          <ChevronLeft class="size-4" />
+        </button>
+        <DialogTitle class="text-lg font-semibold">
+          {{ section === 'list' ? '设置' : 'TestLens' }}
         </DialogTitle>
-        <DialogDescription class="sr-only">全局性配置：TestLens 批量下发等</DialogDescription>
+        <DialogDescription class="sr-only">
+          {{ section === 'list' ? '全局性配置的入口目录' : 'TestLens 配置批量下发' }}
+        </DialogDescription>
       </div>
 
-      <div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        <!-- TestLens 分区 -->
-        <section class="space-y-3">
-          <div class="flex items-center gap-2">
-            <Globe class="size-4 text-muted-foreground" />
-            <h3 class="text-sm font-medium">TestLens</h3>
-            <span class="text-[11px] text-muted-foreground">云端浏览器 · 会话录制 · 业务自测</span>
-          </div>
+      <!-- 目录页：各全局配置的入口行 -->
+      <div v-if="section === 'list'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
+          @click="emit('open-ai')"
+        >
+          <Bot class="size-4 shrink-0 text-muted-foreground" />
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-medium">AI 配置</span>
+            <span class="block truncate text-xs text-muted-foreground">
+              模型接入 · 技能库 · 智能体——在主区「AI 工具」页签管理
+            </span>
+          </span>
+          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
+        </button>
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
+          @click="section = 'testlens'"
+        >
+          <Globe class="size-4 shrink-0 text-muted-foreground" />
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-medium">TestLens</span>
+            <span class="block truncate text-xs text-muted-foreground">
+              云端浏览器 · 会话录制 · 业务自测——种子文件批量下发
+            </span>
+          </span>
+          <span class="shrink-0 text-xs text-muted-foreground">{{ testlensSummary }}</span>
+          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
+        </button>
+      </div>
 
+      <!-- TestLens 详情层 -->
+      <div v-else class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <section class="space-y-3">
           <p class="text-xs leading-relaxed text-muted-foreground">
             往所选目标的 home 写入两份配置：<code class="rounded bg-muted px-1">~/.agent-browser/config.json</code>
             与 <code class="rounded bg-muted px-1">~/.testlens.json</code>。项目级
