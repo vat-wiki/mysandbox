@@ -3,8 +3,9 @@
 // 用大卡片铺开：名称/描述/安装位置全在卡面上，零折叠——
 // ① 卡面 = 全部状态：身份点 + 名称 + 描述 + 已装位置行（范围切换就地完成）；
 // ② 安装是显式动作：卡上「＋ 安装」就地展开——选既有位置（下拉，沿用其范围）
-//    或填新路径（选范围），确认才装；「卸载」按行摘掉当前技能（不删位置，
-//    位置级删除集中在底部安装位置条——行级动作只对当前技能负责）。
+//    或「新位置」：选目标（本机 / 运行中容器）+ 可视化浏览目录选落点（不手填；
+//    停着的容器列不了目录故不出现，浏览从各端 home 起步）；「卸载」按行摘掉当前
+//    技能（不删位置，位置级删除集中在底部安装位置条——行级动作只对当前技能负责）。
 // ③ 添加面板（扫描/目录/git）是头部「+ 添加」Popover。卡片状态语言：默认 = 已装，
 //    名称旁 amber「未安装」= 一处都没装，整卡红调 = 内容缺失。
 // 库语义：静态快照——来源改动不自动进库，更新 = 显式动作。安装位置订阅库：库一变
@@ -15,6 +16,7 @@ import {
   getSkillHub,
   getSkillInventory,
   getSkillRegistry,
+  getAiView,
   registryAddSkill,
   registryRemoveSkill,
   registryUpdateSkill,
@@ -24,6 +26,9 @@ import {
   updateSkillRule,
   deleteSkillRule,
   syncSkills,
+  listContainers,
+  listFiles,
+  HOST_ID,
   Unauthorized,
   type SkillHubView,
   type SkillRuleResult,
@@ -31,6 +36,8 @@ import {
   type SkillInventoryLocation,
   type SkillRegistryItem,
   type SkillGitCandidate,
+  type ContainerView,
+  type FileEntry,
 } from '@/lib/api'
 import { containerColor } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -57,6 +64,7 @@ import {
   ChevronRight,
   Info,
   Loader2,
+  Folder,
   X,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -199,19 +207,17 @@ async function unloadSkill(r: SkillRuleResult, name: string) {
   }
 }
 
-// 卡上「＋ 安装」：就地展开安装行——选既有位置（下拉，沿用其范围）或填新路径。
-const NEW_SPOT = '__new__' // 下拉的哨兵项 = 填新路径
+// 卡上「＋ 安装」：就地展开安装行——选既有位置（下拉，沿用其范围）或「新位置」
+// （选目标 + 浏览目录选落点，不手填）。
+const NEW_SPOT = '__new__' // 下拉的哨兵项 = 新位置
 const installOpenFor = ref<string | null>(null)
 const pickRuleId = ref<string>(NEW_SPOT)
-const nfTo = ref('')
-const nfAll = ref(true)
 const nfBusy = ref(false)
 
 function openInstall(name: string) {
   pickRuleId.value = NEW_SPOT
-  nfTo.value = ''
-  nfAll.value = true
   installOpenFor.value = name
+  void ensureBrowseTargets()
 }
 
 async function doInstall(name: string) {
@@ -228,7 +234,7 @@ async function doInstall(name: string) {
       }
       toast(`已安装：${name} → ${rule.to}`)
     } else {
-      const to = nfTo.value.trim()
+      const to = ruleToOf(brTarget.value, brPath.value)
       if (!to) return
       hub.value = await addSkillRule(to, nfAll.value, [name])
       toast(`已安装：${name} → ${to}`)
@@ -239,6 +245,95 @@ async function doInstall(name: string) {
   } finally {
     nfBusy.value = false
   }
+}
+
+// —— 新位置的目标 + 目录浏览（file API：宿主 HOST_ID / 运行中容器，停着列不了） ——
+
+// 目标行：id 传 listFiles（HOST_ID 哨兵 / 容器名），label 展示。
+interface BrTarget { id: string; label: string }
+const brTargets = ref<BrTarget[]>([])
+const brTarget = ref<BrTarget | null>(null)
+// 浏览起步 = 各端 home 契约路径（容器 /home/dev；宿主 home 来自 /api/ai/view 的
+// hostHome——后端专门为「面板端不知宿主 home」下发的，探不中就落到 /）。
+const brPath = ref('')
+const brEntries = ref<FileEntry[]>([])
+const brParent = ref<string | null>(null)
+const brErr = ref('')
+const brLoading = ref(false)
+const nfAll = ref(true)
+const hostHome = ref('')
+// 浏览列只看目录（落点是目录），点进去换目录；面包屑逐级回跳。
+const brDirs = computed(() => brEntries.value.filter((e) => e.type === 'dir'))
+const brHome = computed(() => (brTarget.value?.id === HOST_ID ? hostHome.value || '/' : '/home/dev'))
+
+async function ensureBrowseTargets() {
+  if (brTargets.value.length) return
+  try {
+    const [ctrs, ai] = await Promise.all([listContainers(), getAiView()])
+    hostHome.value = ai.hostHome
+    // 文件 API 只对运行中容器可用（exec）；本机恒在首位。
+    brTargets.value = [
+      { id: HOST_ID, label: '本机' },
+      ...ctrs.items
+        .filter((c) => c.state === 'running')
+        .map((c) => ({ id: c.id, label: c.displayName || c.name })),
+    ]
+    if (!brTarget.value) setBrTarget(brTargets.value[0] ?? null)
+  } catch (e) {
+    if (e instanceof Unauthorized) emit('unauthorized')
+    else brErr.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function setBrTarget(t: BrTarget | null) {
+  brTarget.value = t
+  brErr.value = ''
+  if (!t) return
+  brPath.value = brHome.value
+  void loadBrDir(brPath.value)
+}
+
+async function loadBrDir(p: string) {
+  if (!brTarget.value) return
+  brLoading.value = true
+  brErr.value = ''
+  try {
+    const v = await listFiles(brTarget.value.id, p)
+    brPath.value = v.path
+    brEntries.value = v.entries
+    brParent.value = v.parent
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('unauthorized')
+      return
+    }
+    brErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    brLoading.value = false
+  }
+}
+
+// 面包屑段（浏览路径拆段，含根）。
+const brCrumbs = computed(() => {
+  const p = brPath.value || '/'
+  const parts = p.split('/').filter(Boolean)
+  return [
+    { label: '/', path: '/' },
+    ...parts.map((seg, i) => ({ label: seg, path: '/' + parts.slice(0, i + 1).join('/') })),
+  ]
+})
+
+// 浏览路径（容器绝对 /home/dev/x，宿主绝对 /home/leon/x）→ 规则 to（~ 形式，全局唯一）。
+function ruleToOf(t: BrTarget | null, p: string): string | null {
+  if (!t || !p) return null
+  if (t.id === HOST_ID) {
+    const home = hostHome.value
+    return home && (p === home || p.startsWith(home + '/')) ? '~' + p.slice(home.length) : p
+  }
+  const home = '/home/dev'
+  if (p === home) return '~'
+  if (p.startsWith(home + '/')) return '~' + p.slice(home.length)
+  return p
 }
 
 // —— 行 ⋯ 菜单：更新 / 移除 ——
@@ -714,36 +809,78 @@ async function doDeleteRule() {
           </div>
           <p v-else-if="s.exists" class="text-[11px] text-muted-foreground/60">还没有安装——点「＋ 安装」选择落点。</p>
 
-          <!-- ＋ 安装：就地展开——选既有位置（沿用其范围）或填新路径（选范围） -->
-          <div v-if="s.exists && installOpenFor === s.name" class="flex flex-wrap items-center gap-1.5">
-            <Select v-model="pickRuleId">
-              <SelectTrigger size="sm" class="h-7 min-w-0 max-w-52 flex-1 text-[11px]">
-                <SelectValue placeholder="选安装位置" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem
-                  v-for="r in otherRulesOf(s.name)"
-                  :key="r.id"
-                  :value="r.id"
-                  class="text-[11px]"
-                >{{ r.to }}（{{ r.all ? '本机+全部容器' : '有该项目' }}）</SelectItem>
-                <SelectItem :value="NEW_SPOT" class="text-[11px]">＋ 新位置…</SelectItem>
-              </SelectContent>
-            </Select>
+          <!-- ＋ 安装：就地展开——选既有位置（沿用其范围）或新位置（选目标+浏览目录） -->
+          <div v-if="s.exists && installOpenFor === s.name" class="flex flex-col gap-1.5 rounded-md border bg-muted/20 p-2">
+            <div class="flex items-center gap-1.5">
+              <Select v-model="pickRuleId">
+                <SelectTrigger size="sm" class="h-7 min-w-0 max-w-52 flex-1 text-[11px]">
+                  <SelectValue placeholder="选安装位置" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem
+                    v-for="r in otherRulesOf(s.name)"
+                    :key="r.id"
+                    :value="r.id"
+                    class="text-[11px]"
+                  >{{ r.to }}（{{ r.all ? '本机+全部容器' : '有该项目' }}）</SelectItem>
+                  <SelectItem :value="NEW_SPOT" class="text-[11px]">＋ 新位置…</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button size="xs" class="shrink-0" :disabled="nfBusy" @click="doInstall(s.name)">安装</Button>
+              <Button variant="ghost" size="xs" class="h-7 shrink-0 px-1.5 text-[11px] text-muted-foreground" @click="installOpenFor = null">取消</Button>
+            </div>
+
+            <!-- 新位置：目标（本机/运行中容器）+ 目录浏览选落点 -->
             <template v-if="pickRuleId === NEW_SPOT">
-              <Input
-                v-model="nfTo"
-                placeholder="~/proj/.claude/skills"
-                class="h-7 min-w-40 flex-1 font-mono text-[11px]"
-                @keydown.enter="doInstall(s.name)"
-              />
-              <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
-                <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
-                全部
-              </label>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <Select
+                  :model-value="brTarget?.id ?? ''"
+                  @update:model-value="(v) => setBrTarget(brTargets.find((t) => t.id === v) ?? null)"
+                >
+                  <SelectTrigger size="sm" class="h-6 w-40 text-[11px]">
+                    <SelectValue placeholder="目标" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="t in brTargets" :key="t.id" :value="t.id" class="text-[11px]">{{ t.label }}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <label class="flex shrink-0 cursor-pointer items-center gap-1 text-[10px] text-muted-foreground" title="勾选 = 装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器">
+                  <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
+                  全部
+                </label>
+                <span class="ml-auto min-w-0 truncate font-mono text-[10px] text-muted-foreground/70" :title="ruleToOf(brTarget, brPath) ?? ''">
+                  {{ ruleToOf(brTarget, brPath) }}
+                </span>
+              </div>
+              <!-- 面包屑 -->
+              <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-[10px] text-muted-foreground">
+                <template v-for="(c, i) in brCrumbs" :key="c.path">
+                  <span v-if="i > 0" class="opacity-50">/</span>
+                  <button
+                    type="button"
+                    class="cursor-pointer rounded px-0.5 hover:text-foreground"
+                    :class="i === brCrumbs.length - 1 ? 'text-foreground' : ''"
+                    @click="loadBrDir(c.path)"
+                  >{{ c.label }}</button>
+                </template>
+                <Loader2 v-if="brLoading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
+              </div>
+              <p v-if="brErr" class="text-[10px] text-destructive">{{ brErr }}</p>
+              <!-- 目录列表：只列目录（落点是目录），当前目录即落点 -->
+              <div class="scroll-thin max-h-40 min-h-12 overflow-y-auto rounded border bg-card">
+                <p v-if="!brDirs.length && !brLoading" class="px-2 py-2 text-center text-[10px] text-muted-foreground/60">没有子目录——就装在当前目录。</p>
+                <button
+                  v-for="d in brDirs"
+                  :key="d.name"
+                  type="button"
+                  class="flex w-full cursor-pointer items-center gap-1.5 px-2 py-1 text-left text-[11px] hover:bg-accent/50"
+                  @click="loadBrDir(brPath === '/' ? '/' + d.name : brPath + '/' + d.name)"
+                >
+                  <Folder class="size-3 shrink-0 text-muted-foreground/70" />
+                  <span class="min-w-0 truncate font-mono">{{ d.name }}</span>
+                </button>
+              </div>
             </template>
-            <Button size="xs" class="shrink-0" :disabled="nfBusy || (pickRuleId === NEW_SPOT && !nfTo.trim())" @click="doInstall(s.name)">安装</Button>
-            <Button variant="ghost" size="xs" class="h-7 shrink-0 px-1.5 text-[11px] text-muted-foreground" @click="installOpenFor = null">取消</Button>
           </div>
           <button
             v-else-if="s.exists"
