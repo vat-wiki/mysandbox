@@ -4,8 +4,9 @@
 // ① 卡面 = 名称 + 状态（amber「未安装」/ N 处计数 / 红调缺失）+ 描述，零杂音；
 // ② 安装是显式动作：卡脚右下「安装」实色主按钮（这张卡的主要动作）开安装弹框——
 //    本机 + 运行中容器混成一棵目录树（各端 home 起步，展开懒加载；停着的容器列不了
-//    目录故不出现），勾选目录 = 落点、可多选：命中既有位置并进该规则（沿用其范围），
-//    没命中的新建规则（范围用「全部」勾选，一次管住本批全部新落点）。
+//    目录故不出现），整行点击 = 选落点、可多选（选中高亮 + ✓，不满屏勾选框）：
+//    命中既有位置并进该规则（沿用其范围），没命中的新建规则（范围由弹框底部
+//    「新位置范围」chip 统一管）。
 // ③ 卡头右上 ⋯ 菜单收低频动作：安装位置（就地展开该技能的位置视图——范围切换/
 //    卸载）、更新（显式重拉快照并分发）、移除（confirm）。
 // ④ 添加面板（扫描/目录/git）是头部「+ 添加」Popover；位置级删除（整条规则）在底部
@@ -67,6 +68,7 @@ import {
   Loader2,
   Folder,
   MoreHorizontal,
+  Check,
   X,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -203,7 +205,7 @@ async function unloadSkill(r: SkillRuleResult, name: string) {
 }
 
 // 卡上「安装」（卡脚右下角主按钮）：开安装弹框——本机 + 运行中容器混成一棵目录树，
-// 勾选目录 = 落点、可多选。
+// 整行点击 = 选落点、可多选。
 const installOpenFor = ref<string | null>(null)
 const nfBusy = ref(false)
 
@@ -219,7 +221,7 @@ async function doInstall(name: string) {
   err.value = ''
   installErr.value = ''
   try {
-    // 按勾选落点逐条落规则：命中既有规则并进（全量替换语义）；没命中的新建。
+    // 按选中落点逐条落规则：命中既有规则并进（全量替换语义）；没命中的新建。
     // 每次调用的响应都是 hubView（顺带跑过一次全量同步），留最后一帧刷视图。
     let latest: SkillHubView | null = null
     let touched = 0
@@ -327,9 +329,14 @@ const visibleNodes = computed<VisibleNode[]>(() => {
   return out
 })
 
-// 该技能是否已装在 to（勾选框置灰——重复安装无意义）。
+// 该技能是否已装在 to（行置灰——重复安装无意义）。
 function installedAt(name: string, to: string): boolean {
   return rulesOf(name).some((r) => r.to === to)
+}
+
+// to 是否已被选为落点（行高亮 + 右侧 ✓）。
+function picked(to: string): boolean {
+  return checked.value.has(to)
 }
 
 // 勾选集按 to 记；展开/懒加载按节点 key 记。
@@ -1044,14 +1051,14 @@ async function doDeleteRule() {
     </div>
 
     <!-- 安装弹框：本机 + 运行中容器混成一棵目录树（各端 home 起步，展开懒加载），
-         勾选目录 = 落点、可多选——命中既有位置的并进该规则（沿用其范围），没命中的
-         新建规则（范围用「全部」勾选统一管）。规则 to 是 ~ 形式全局唯一，跨端勾同名
-         目录自然并成一处（弹框内每行展示归一后的 to，所见即所得）。 -->
+         整行点击 = 选落点、可多选——命中既有位置的并进该规则（沿用其范围），没命中的
+         新建规则（范围由「新位置范围」chip 统一管）。规则 to 是 ~ 形式全局唯一，跨端
+         选同名目录自然并成一处（弹框内每行展示归一后的 to，所见即所得）。 -->
     <Dialog :open="!!installOpenFor" @update:open="(v: boolean) => v || (installOpenFor = null)">
       <DialogContent class="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>安装 · {{ installOpenFor }}</DialogTitle>
-          <DialogDescription>勾选目录作为安装落点，可多选</DialogDescription>
+          <DialogDescription>点目录行选安装落点，可多选；箭头展开子目录</DialogDescription>
         </DialogHeader>
 
         <div class="space-y-2">
@@ -1059,47 +1066,51 @@ async function doDeleteRule() {
           <p v-else-if="!treeReady" class="flex items-center gap-1.5 py-2 text-xs text-muted-foreground">
             <Loader2 class="size-3 animate-spin" /> 读取目录树…
           </p>
-          <!-- 目录树：根行 = 机器（本机/容器），子行 = 目录；点名称展开，点框勾落点 -->
+          <!-- 目录树：根行 = 机器（本机/容器），子行 = 目录。整行点击 = 选中/取消
+               （VS Code 扩展多选那套，不用满屏勾选框）；展开收起只走左侧箭头。 -->
           <div v-else class="scroll-thin max-h-72 min-h-12 overflow-y-auto rounded border bg-card">
-            <div
+            <button
               v-for="{ node, depth } in visibleNodes"
               :key="node.key"
-              class="flex items-center gap-1.5 py-1 pr-2 text-[11px] hover:bg-accent/40"
+              type="button"
+              class="flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[11px] transition-colors"
+              :class="[
+                picked(node.to) ? 'bg-primary/10' : 'hover:bg-accent/40',
+                installedAt(installOpenFor ?? '', node.to) ? 'opacity-50' : '',
+              ]"
               :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
+              :title="installedAt(installOpenFor ?? '', node.to)
+                ? '已安装在这里'
+                : picked(node.to)
+                  ? '取消该落点'
+                  : '选为安装落点'"
+              @click="installedAt(installOpenFor ?? '', node.to) || toggleCheck(node)"
             >
-              <!-- 展开箭头：有子内容才显示（未加载过也算有——目录总有子目录的期望足够） -->
-              <button
-                type="button"
+              <!-- 展开箭头是唯一展开入口（点行是选落点），已加载的纯开关 -->
+              <span
                 class="flex size-4 shrink-0 cursor-pointer items-center justify-center text-muted-foreground/60 hover:text-foreground"
                 :title="expanded.has(node.key) ? '收起' : '展开'"
-                @click="toggleExpand(node)"
+                @click.stop="toggleExpand(node)"
               >
                 <component :is="expanded.has(node.key) ? ChevronDown : ChevronRight" class="size-3" />
-              </button>
-              <Checkbox
-                class="shrink-0"
-                :model-value="checked.has(node.to)"
-                :disabled="installedAt(installOpenFor ?? '', node.to)"
-                :title="installedAt(installOpenFor ?? '', node.to) ? '已安装在这里' : '勾选为安装落点'"
-                @update:model-value="(v) => toggleCheck(node)"
-              />
+              </span>
               <Folder class="size-3 shrink-0 text-muted-foreground/70" />
               <!-- 根行 = 机器名（+ to 备忘），子行 = 目录名 -->
-              <button
-                type="button"
-                class="min-w-0 flex-1 cursor-pointer truncate text-left"
-                :class="depth === 0 ? 'font-medium' : 'font-mono'"
-                @click="toggleExpand(node)"
-              >
+              <span class="min-w-0 flex-1 truncate" :class="depth === 0 ? 'font-medium' : 'font-mono'">
                 {{ depth === 0 ? node.targetLabel : node.path.split('/').pop() }}
-                <span v-if="depth === 0" class="ml-1 font-mono text-[10px] text-muted-foreground/50">{{ node.to }}</span>
-              </button>
+                <span v-if="depth === 0" class="ml-1 font-mono text-[10px] font-normal text-muted-foreground/50">{{ node.to }}</span>
+              </span>
               <Loader2 v-if="node.loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
               <span v-else-if="node.error" class="shrink-0 text-[10px] text-destructive" :title="node.error">列不出</span>
-            </div>
+              <span
+                v-else-if="installedAt(installOpenFor ?? '', node.to)"
+                class="shrink-0 text-[9px] text-muted-foreground/60"
+              >已装</span>
+              <Check v-else-if="picked(node.to)" class="size-3 shrink-0 text-primary" />
+            </button>
           </div>
 
-          <!-- 已勾落点摘要：既有位置沿用其范围；新位置范围用右侧「全部」统一管 -->
+          <!-- 已选落点摘要：既有位置沿用其范围；新位置范围由底部 chip 统一管 -->
           <div v-if="pickedCount" class="space-y-1 rounded-md border bg-muted/20 p-2">
             <div
               v-for="p in pickedPaths"
@@ -1109,7 +1120,7 @@ async function doDeleteRule() {
               <button
                 type="button"
                 class="size-3.5 shrink-0 cursor-pointer rounded-full bg-muted-foreground/25 leading-none text-[9px] hover:bg-destructive/60"
-                title="取消勾选"
+                title="取消该落点"
                 @click="checked = new Set([...checked].filter((x) => x !== p.to))"
               >✕</button>
               <span class="min-w-0 flex-1 truncate font-mono">{{ p.to }}</span>
@@ -1118,18 +1129,22 @@ async function doDeleteRule() {
                 :class="p.all
                   ? 'border-primary/40 bg-primary/10 text-primary'
                   : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-              >{{ p.existing ? (p.all ? '本机+全部容器' : '有该项目') : (nfAll ? '本机+全部容器' : '有该项目') }}</span>
+              >{{ p.all ? '本机+全部容器' : '有该项目' }}</span>
             </div>
           </div>
 
-          <!-- 新位置范围（只影响没命中既有规则的落点） -->
-          <label
-            class="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground"
-            title="勾选 = 新位置装进本机 + 全部受管容器；不勾 = 只装已有该项目的机器（既有位置沿用其原范围，不受此影响）"
-          >
-            <Checkbox :model-value="nfAll" @update:model-value="(v) => (nfAll = !!v)" />
-            新位置铺本机 + 全部容器
-          </label>
+          <!-- 新位置范围（只影响没命中既有规则的落点），沿用范围 chip 切换语言 -->
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[11px] text-muted-foreground" title="既有位置沿用其原范围，不受此影响">新位置范围</span>
+            <button
+              type="button"
+              class="shrink-0 rounded border px-1.5 py-0.5 text-[10px] transition-colors"
+              :class="nfAll
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
+              @click="nfAll = !nfAll"
+            >{{ nfAll ? '本机+全部容器' : '有该项目' }}</button>
+          </div>
           <p v-if="installErr" class="text-xs text-destructive">{{ installErr }}</p>
         </div>
 
