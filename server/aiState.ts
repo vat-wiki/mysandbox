@@ -113,6 +113,12 @@ export interface SkillHubState {
 export interface SkillRegistryMeta {
   from: string; // 导入来源（原样记录：<容器>:<路径> / 宿主路径 / git URL#子路径）
   importedAt: string;
+  // 内容指纹（hashTree：排序相对路径 + 文件内容的 sha256）——检查更新 = 来源指纹
+  // 与它比对，变了才重拉分发。旧数据没有此字段：首次检查对库副本现算补上（自愈）。
+  hash?: string;
+  // git 来源的导入/更新时 commit（ls-remote 快路径的比对基准：commit 没变 = 内容没变，
+  // 免 clone）。commit 变了 ≠ 子路径内容变了——慢路径仍要比内容 hash。
+  gitCommit?: string;
 }
 
 // —— 文件形状 ——

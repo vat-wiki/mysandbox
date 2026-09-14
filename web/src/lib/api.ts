@@ -241,7 +241,17 @@ export const registryAddSkill = (from: string, force = false) =>
 export const registryRemoveSkill = (name: string) =>
   api(`/api/skills/registry/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<SkillRegistryItem[]>
 export const registryUpdateSkill = (name: string) =>
-  postJson(`/api/skills/registry/${encodeURIComponent(name)}/update`, {}, 120_000) as Promise<{ name: string; sync: SkillSyncResult }>
+  postJson(`/api/skills/registry/${encodeURIComponent(name)}/update`, {}, 120_000) as Promise<{ name: string; changed: boolean; sync: SkillSyncResult | null }>
+// 检查更新：只读内容指纹比对（git 源 ls-remote 快路径），不动库不动分发。
+export interface SkillUpdateCheckResult {
+  name: string
+  status: 'changed' | 'same' | 'error'
+  message?: string // error 原因 / same 的判定路径
+}
+export const registryCheckSkillUpdate = (name: string) =>
+  postJson(`/api/skills/registry/${encodeURIComponent(name)}/check-update`, {}, 150_000) as Promise<SkillUpdateCheckResult>
+export const registryCheckSkillUpdates = () =>
+  postJson('/api/skills/registry/check-updates', {}, 300_000) as Promise<{ results: SkillUpdateCheckResult[] }>
 export const registryProbeGit = (url: string) =>
   postJson('/api/skills/registry/git', { url }, 120_000) as Promise<{ candidates: SkillGitCandidate[] }>
 export const registryImportGit = (url: string, path: string, force = false) =>

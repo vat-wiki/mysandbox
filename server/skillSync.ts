@@ -6,8 +6,9 @@
 // ① 技能库（STATE_DIR/skills/registry/<名>/）：**静态快照中心**——入库（目录/git）
 //    一律拷贝快照，与来源解耦；来源的改动**不**订阅、不自动进库，更新走显式动作
 //    （registryUpdate：面板行「更新」/ mysandbox skills update / POST .../update）
-//    ——从 meta.from 重拉一份替换库内容，更新即全量分发。源没了更新报错，库副本
-//    冻结保留。库内同名唯一 → 无冲突概念。
+//    ——先比对内容指纹（meta.hash，git 源外加 meta.gitCommit 快路径）再动手：
+//    来源没变幂等空转，变了才重拉替换 + 全量分发。检查更新（只读比对）见
+//    registryCheckUpdate(s)。源没了更新报错，库副本冻结保留。库内同名唯一 → 无冲突概念。
 // ② 安装规则（sidecar state.skillsHub.rules）：{库内技能集合, 去向, 范围}。去向
 //    唯一（同 to 不允许两条规则）；全局去向铺本机 + 全部受管容器，项目去向只装已有
 //    该项目的目标（落点逐级向上探测，项目克隆到哪 skill 跟到哪；宿主与容器共享同一条
@@ -36,6 +37,7 @@ import { homedir, tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomBytes } from 'node:crypto';
+import pLimit from 'p-limit';
 import type { Config } from './config.js';
 import { STATE_DIR, expandTilde } from './config.js';
 import { getEngine, subscribeEvents } from './engine/index.js';
@@ -790,8 +792,10 @@ export async function runSkillsUpdateCommand(cfg: Config, args: string[]): Promi
   let failed = false;
   for (const name of names) {
     try {
-      await registryUpdate(cfg, name, { sync: false });
-      process.stdout.write(`>> 已更新：${name}（来源 ${reg.skills[name]?.from ?? '?'})\n`);
+      const r = await registryUpdate(cfg, name, { sync: false });
+      process.stdout.write(r.changed
+        ? `>> 已更新：${name}（来源 ${reg.skills[name]?.from ?? '?'})\n`
+        : `>> 无变化：${name}（来源内容没变，已是最新）\n`);
     } catch (e) {
       failed = true;
       process.stdout.write(`>> 更新失败：${name} — ${e instanceof Error ? e.message : String(e)}\n`);
@@ -826,6 +830,61 @@ async function snapshotIntoLibrary(name: string, srcDir: string): Promise<void> 
   await syncTree(srcDir, join(REGISTRY_DIR, name));
 }
 
+// —— 内容指纹（检查更新 / 更新比对的基准，meta.hash / meta.gitCommit）——
+
+// 目录内容的规范 hash：排序相对路径 + \0 + 文件内容 逐段喂 sha256。跳过符号链接
+// （与 syncTree 同语义）。同树必同值（跨机器/容器可比），路径或内容任一变化都改 hash。
+async function hashTree(dir: string): Promise<string> {
+  const h = createHash('sha256');
+  const walk = async (rel: string): Promise<void> => {
+    const entries = await readdir(rel ? join(dir, rel) : dir, { withFileTypes: true });
+    for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      if (e.isSymbolicLink()) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        await walk(r);
+      } else if (e.isFile()) {
+        h.update(r);
+        h.update('\0');
+        h.update(await readFile(join(dir, r)));
+        h.update('\0');
+      }
+    }
+  };
+  await walk('');
+  return h.digest('hex');
+}
+
+// git from → { url, subPath }（'#' 分隔；registryUpdate 原内联逻辑提出共用）。
+function parseGitFrom(from: string): { url: string; subPath: string } {
+  const hash = from.indexOf('#');
+  return { url: hash > 0 ? from.slice(0, hash) : from, subPath: hash > 0 ? from.slice(hash + 1) : '.' };
+}
+
+// git 来源的远端 HEAD commit（ls-remote 一次网络往返，免 clone——检查更新的快路径）。
+async function gitRemoteCommit(url: string): Promise<string> {
+  const { stdout } = await execFileP('git', ['ls-remote', url, 'HEAD'], { timeout: 30_000 });
+  return stdout.split('\t')[0].trim();
+}
+
+// git clone 里记录的 commit（rev-parse HEAD；导入/更新时随指纹一起存 meta.gitCommit）。
+async function gitRepoCommit(repo: string): Promise<string> {
+  const { stdout } = await execFileP('git', ['-C', repo, 'rev-parse', 'HEAD'], { timeout: 30_000 });
+  return stdout.trim();
+}
+
+// 弃缓存重 clone（更新/检查慢路径都要最新内容），返回子路径目录。
+async function freshGitSubdir(url: string, subPath: string, timeoutMs = 300_000): Promise<string> {
+  await rm(gitTmpDir(url), { recursive: true, force: true }); // 缓存 clone 弃掉——要最新
+  const repo = await ensureGitClone(url, timeoutMs);
+  return subPath === '.' ? repo : join(repo, subPath);
+}
+
+// 库条目的内容 hash（meta.hash 缺失时对库副本现算——旧数据自愈，调用方负责落盘）。
+async function libraryHash(name: string): Promise<string> {
+  return hashTree(join(REGISTRY_DIR, name));
+}
+
 // 入库：把一个技能目录（必须含 SKILL.md）拷进库。**一律快照**——来源改动不自动
 // 进库（不订阅来源），更新走 registryUpdate。git 来源走 registryImportGit。
 // name = 目录末段；库内同名 = 覆盖（force=false 时拒绝，由调用方确认后重试）。
@@ -839,7 +898,7 @@ export async function registryAdd(cfg: Config, from: string, force = false): Pro
   if (replaced && !force) throw new Error(`库中已有同名技能：${name}（覆盖请确认）`);
   await snapshotIntoLibrary(name, hostPath);
   const meta = await readRegistryMeta();
-  meta[name] = { from, importedAt: new Date().toISOString() };
+  meta[name] = { from, importedAt: new Date().toISOString(), hash: await libraryHash(name) };
   await setSkillRegistry({ skills: meta });
   // watch 兜底挂上（库目录可能刚创建；幂等，已挂 key 直接返回）。
   watchSkillSource(cfg, 'registry', REGISTRY_FROM);
@@ -857,38 +916,111 @@ export async function registryRemove(name: string): Promise<void> {
   await setSkillRegistry({ skills: meta });
 }
 
-// 显式更新库条目（快照语义下库不会自己变——这是来源 →库的唯一更新通道）：从
-// meta.from 重拉一份替换库内容。git 源（url#subPath）弃 /tmp 缓存 clone 重拉最新；
-// 目录源重新镜像。源没了 → 报错（库副本冻结保留）。opts.sync = 更新后全量分发
-// （订阅侧语义：库变 → 安装位置跟走）；CLI 批量更新传 false，最后统一同步一次。
+// 显式更新库条目（快照语义下库不会自己变——这是来源 →库的唯一更新通道）。**先比对
+// 后动手**：来源内容指纹与库基线（meta.hash）一致 → 幂等空转（不重写库、不空转分发），
+// 返回 changed:false；有变化才重拉替换 + 全量分发。git 源两层：meta.gitCommit 与
+// ls-remote 一致 = 快路径直接判同（免 clone）；commit 前进了才 clone 下来比内容
+// （commit 变 ≠ 子路径变）。目录源 = hashTree(来源目录) 直比（容器源宿主直读 rootfs）。
+// 源没了 → 报错（库副本冻结保留）。opts.sync = 更新后全量分发（订阅侧语义：库变 →
+// 安装位置跟走）；CLI 批量更新传 false，最后统一同步一次。
 export async function registryUpdate(
   cfg: Config,
   name: string,
   opts: { sync?: boolean } = {},
-): Promise<{ name: string; sync: SkillSyncResult | null }> {
+): Promise<{ name: string; changed: boolean; sync: SkillSyncResult | null }> {
   if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
   const meta = await readRegistryMeta();
   const m = meta[name];
   if (!m) throw new Error(`库中没有这个技能：${name}`);
+  // 基线 = 库副本当前内容（meta.hash 缺失时现算——旧数据自愈，收尾统一落盘）。
+  const baseline = m.hash ?? (await libraryHash(name));
   let srcDir: string;
+  let commit: string | undefined;
   if (isGitFrom(m.from)) {
-    const hash = m.from.indexOf('#');
-    const url = hash > 0 ? m.from.slice(0, hash) : m.from;
-    const subPath = hash > 0 ? m.from.slice(hash + 1) : '.';
-    await rm(gitTmpDir(url), { recursive: true, force: true }); // 缓存 clone 弃掉——更新要最新
-    const repo = await ensureGitClone(url);
-    srcDir = subPath === '.' ? repo : join(repo, subPath);
+    const { url, subPath } = parseGitFrom(m.from);
+    if (m.gitCommit) {
+      const remote = await gitRemoteCommit(url);
+      if (remote === m.gitCommit) return { name, changed: false, sync: null };
+    }
+    srcDir = await freshGitSubdir(url, subPath);
+    commit = await gitRepoCommit(srcDir); // rev-parse 对 repo 内子目录同样有效
   } else {
     srcDir = resolveSyncSource(cfg, m.from).hostPath;
   }
+  // 内容没变：什么都不重铺。commit 基准跟上（下次走快路径），importedAt 不动（快照没换）。
+  if ((await hashTree(srcDir)) === baseline) {
+    if (commit) {
+      meta[name] = { from: m.from, importedAt: m.importedAt, hash: baseline, gitCommit: commit };
+      await setSkillRegistry({ skills: meta });
+    }
+    log.info({ name, from: m.from }, 'skill update: source unchanged, skipped');
+    return { name, changed: false, sync: null };
+  }
   await snapshotIntoLibrary(name, srcDir);
   // 显式重建字段（不 spread）——旧 meta 里可能残留已废弃的 follow 键，顺手洗掉。
-  meta[name] = { from: m.from, importedAt: new Date().toISOString() };
+  meta[name] = { from: m.from, importedAt: new Date().toISOString(), hash: await libraryHash(name), gitCommit: commit };
   await setSkillRegistry({ skills: meta });
   watchSkillSource(cfg, 'registry', REGISTRY_FROM);
   log.info({ name, from: m.from }, 'skill updated in registry');
   const sync = opts.sync === false ? null : await syncSkillsAll(cfg);
-  return { name, sync };
+  return { name, changed: true, sync };
+}
+
+// —— 检查更新（只读比对，不动库不动分发）——
+
+export interface SkillUpdateCheckResult {
+  name: string;
+  status: 'changed' | 'same' | 'error';
+  message?: string; // error 原因 / same 的判定路径（如「commit 变了但内容没变」）
+}
+
+// 单条检查：来源指纹 vs 库基线。除旧数据自愈（补 meta.hash）外不写任何状态。
+export async function registryCheckUpdate(_cfg: Config, name: string): Promise<SkillUpdateCheckResult> {
+  if (!SKILL_NAME_RE.test(name)) throw new Error(`技能名不合法："${name}"`);
+  const meta = await readRegistryMeta();
+  const m = meta[name];
+  if (!m) throw new Error(`库中没有这个技能：${name}`);
+  const libDir = join(REGISTRY_DIR, name);
+  if (!existsSync(libDir)) return { name, status: 'error', message: '库目录不在（元数据残留）' };
+  const baseline = m.hash ?? (await libraryHash(name));
+  if (!m.hash) {
+    meta[name] = { ...m, hash: baseline };
+    await setSkillRegistry({ skills: meta });
+  }
+  try {
+    if (isGitFrom(m.from)) {
+      const { url, subPath } = parseGitFrom(m.from);
+      let commit: string;
+      try {
+        commit = await gitRemoteCommit(url);
+      } catch (e) {
+        return { name, status: 'error', message: `ls-remote 失败：${e instanceof Error ? e.message : String(e)}` };
+      }
+      // 快路径：commit 没变 = 内容没变（subPath 属于该 commit）。
+      if (m.gitCommit && commit === m.gitCommit) return { name, status: 'same' };
+      // 慢路径：commit 前进了（或无基准）——clone 下来比内容（60s 超时：检查是
+      // 轻量动作，网络不通快速报错，别把批量检查拖几分钟）。
+      const srcDir = await freshGitSubdir(url, subPath, 60_000);
+      const changed = (await hashTree(srcDir)) !== baseline;
+      return { name, status: changed ? 'changed' : 'same', message: changed ? undefined : 'commit 变了但内容没变' };
+    }
+    const srcDir = resolveSyncSource(_cfg, m.from).hostPath;
+    if (!existsSync(srcDir)) return { name, status: 'error', message: `来源不在：${m.from}` };
+    const changed = (await hashTree(srcDir)) !== baseline;
+    return { name, status: changed ? 'changed' : 'same' };
+  } catch (e) {
+    return { name, status: 'error', message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// 批量检查（面板头部「检查更新」）：p-limit 并发（git 源有网络往返），单条失败
+// 不拖垮整批——每条独立 status，前端按卡片标徽标。
+export async function registryCheckUpdates(cfg: Config): Promise<SkillUpdateCheckResult[]> {
+  const meta = await readRegistryMeta();
+  const limit = pLimit(4);
+  return Promise.all(Object.keys(meta).map((n) => limit(() => registryCheckUpdate(cfg, n).catch(
+    (e): SkillUpdateCheckResult => ({ name: n, status: 'error', message: e instanceof Error ? e.message : String(e) }),
+  ))));
 }
 
 export interface SkillRegistryItem {
@@ -947,14 +1079,15 @@ function gitTmpDir(url: string): string {
 }
 
 // depth-1 clone（已存在则复用）。filter=blob:none 跳过非必要 blob——monorepo
-// （如 shadcn-vue）不带它 120s 都拉不完，带上后秒级。git 超时兜底 300s。
-async function ensureGitClone(url: string): Promise<string> {
+// （如 shadcn-vue）不带它 120s 都拉不完，带上后秒级。git 超时兜底 300s（检查更新
+// 的慢路径传更短的——网络不通时不该把批量检查拖住几分钟）。
+async function ensureGitClone(url: string, timeoutMs = 300_000): Promise<string> {
   if (!/^(https?:\/\/|git@|ssh:\/\/)/.test(url)) throw new Error(`git 地址不识别："${url}"`);
   const dst = gitTmpDir(url);
   if (existsSync(join(dst, '.git'))) return dst;
   await mkdir(dirname(dst), { recursive: true });
   await rm(dst, { recursive: true, force: true });
-  await execFileP('git', ['clone', '--depth', '1', '--filter=blob:none', url, dst], { timeout: 300_000 });
+  await execFileP('git', ['clone', '--depth', '1', '--filter=blob:none', url, dst], { timeout: timeoutMs });
   return dst;
 }
 
@@ -1006,7 +1139,12 @@ export async function registryImportGit(
   if (replaced && !force) throw new Error(`库中已有同名技能：${name}（覆盖请确认）`);
   await snapshotIntoLibrary(name, src);
   const meta = await readRegistryMeta();
-  meta[name] = { from: `${url}#${subPath}`, importedAt: new Date().toISOString() };
+  meta[name] = {
+    from: `${url}#${subPath}`,
+    importedAt: new Date().toISOString(),
+    hash: await libraryHash(name),
+    gitCommit: await gitRepoCommit(repo),
+  };
   await setSkillRegistry({ skills: meta });
   watchSkillSource(cfg, 'registry', REGISTRY_FROM);
   log.info({ name, url, subPath }, 'skill imported to registry from git');

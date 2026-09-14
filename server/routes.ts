@@ -53,6 +53,8 @@ import {
   registryAdd,
   registryRemove,
   registryUpdate,
+  registryCheckUpdate,
+  registryCheckUpdates,
   registryProbeGit,
   registryImportGit,
 } from './skillSync.js';
@@ -441,12 +443,27 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return registryList();
   });
 
-  // 显式更新库条目：库是静态快照（来源改动不自动进库），从导入来源重拉一份并全量
-  // 分发（订阅侧只认库）。
+  // 显式更新库条目：库是静态快照（来源改动不自动进库）。先比对内容指纹——来源没变
+  // 幂等空转（changed:false），变了才重拉 + 全量分发（订阅侧只认库）。
   app.post('/api/skills/registry/:name/update', async (req) => {
     const name = (req.params as { name: string }).name;
     try {
       return await registryUpdate(cfg, name);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('库中没有')) throw new HttpError(404, msg, 'not_found');
+      throw new HttpError(400, msg, 'bad_request');
+    }
+  });
+
+  // 检查更新（只读指纹比对，不动库不动分发）：单条 + 批量（头部「检查更新」，逐条
+  // 独立 status，git 源的 ls-remote 失败不拖垮整批）。
+  app.post('/api/skills/registry/check-updates', async () => ({ results: await registryCheckUpdates(cfg) }));
+
+  app.post('/api/skills/registry/:name/check-update', async (req) => {
+    const name = (req.params as { name: string }).name;
+    try {
+      return await registryCheckUpdate(cfg, name);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('库中没有')) throw new HttpError(404, msg, 'not_found');

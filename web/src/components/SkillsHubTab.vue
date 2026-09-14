@@ -25,6 +25,7 @@ import {
   registryAddSkill,
   registryRemoveSkill,
   registryUpdateSkill,
+  registryCheckSkillUpdates,
   registryProbeGit,
   registryImportGit,
   addSkillRule,
@@ -40,6 +41,7 @@ import {
   type SkillInventoryLocation,
   type SkillRegistryItem,
   type SkillGitCandidate,
+  type SkillUpdateCheckResult,
 } from '@/lib/api'
 import { containerColor } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -67,6 +69,7 @@ import {
   ChevronRight,
   Info,
   Loader2,
+  SearchCheck,
   Folder,
   MoreHorizontal,
   Check,
@@ -504,7 +507,8 @@ function joinPath(base: string, name: string): string {
 // —— 行 ⋯ 菜单：更新 / 移除 ——
 
 // 显式更新（库是静态快照：来源改动不自动进库，这是来源 → 库的唯一更新通道）。
-// 更新即全量分发——订阅侧只认库，装出去的自动跟走。
+// 服务端先比对内容指纹——来源没变幂等返回（不重写库、不空转分发），变了才重拉 +
+// 全量分发（订阅侧只认库，装出去的自动跟走）。
 const updatingSkill = ref('')
 async function updateSkill(s: SkillRegistryItem) {
   if (updatingSkill.value) return
@@ -512,18 +516,52 @@ async function updateSkill(s: SkillRegistryItem) {
   err.value = ''
   try {
     const r = await registryUpdateSkill(s.name)
-    const containers = r.sync.rules.flatMap((x) => x.containers)
-    const bad = containers.filter((c) => !c.ok)
-    if (bad.length) {
-      toast.error(`库已更新，分发部分失败：${bad.map((f) => `${f.name === '__host__' ? '本机' : f.name} — ${f.error}`).join('；')}`)
+    if (r.changed) {
+      const containers = r.sync?.rules.flatMap((x) => x.containers) ?? []
+      const bad = containers.filter((c) => !c.ok)
+      if (bad.length) {
+        toast.error(`库已更新，分发部分失败：${bad.map((f) => `${f.name === '__host__' ? '本机' : f.name} — ${f.error}`).join('；')}`)
+      } else {
+        toast(`已更新：${s.name}（已按安装位置分发）`)
+      }
+      await Promise.all([load(), loadReg(), loadInv()])
     } else {
-      toast(`已更新：${s.name}（已按安装位置分发）`)
+      toast(`来源无变化：${s.name} 已是最新`)
     }
-    await Promise.all([load(), loadReg(), loadInv()])
+    // 更新过（或确认无变化）= 库与来源一致——检查徽标随之消掉。
+    checkRes.value = { ...checkRes.value, [s.name]: { name: s.name, status: 'same' } }
   } catch (e) {
     fail(e)
   } finally {
     updatingSkill.value = ''
+  }
+}
+
+// —— 头部「检查更新」：批量只读指纹比对，结果按卡标徽标（不改动任何东西）——
+
+const checkRes = ref<Record<string, SkillUpdateCheckResult>>({})
+const checking = ref(false)
+const changedCount = computed(() => Object.values(checkRes.value).filter((r) => r.status === 'changed').length)
+
+async function checkAll() {
+  if (checking.value) return
+  checking.value = true
+  err.value = ''
+  try {
+    const { results } = await registryCheckSkillUpdates()
+    const next: Record<string, SkillUpdateCheckResult> = {}
+    for (const r of results) next[r.name] = r
+    checkRes.value = next
+    const changed = results.filter((r) => r.status === 'changed').length
+    const failed = results.filter((r) => r.status === 'error').length
+    if (!results.length) toast('库是空的——先「添加」收技能进库')
+    else if (changed) toast(`检查完成：${changed} 个有更新${failed ? `，${failed} 个检查失败` : ''}`)
+    else if (failed) toast.error(`全部无更新，${failed} 个检查失败`)
+    else toast('检查完成：全部已是最新')
+  } catch (e) {
+    fail(e)
+  } finally {
+    checking.value = false
   }
 }
 
@@ -740,7 +778,7 @@ async function cleanMissing(r: SkillRuleResult) {
         <span class="text-xs font-semibold">技能库</span>
         <span
           class="shrink-0 cursor-help text-muted-foreground/50"
-          title="个人技能池——每张卡一件技能。日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）；这里管库本身：全局安装一键铺开、卡脚「安装」集中补装、⋯ 菜单管安装位置/更新/移除。来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
+          title="个人技能池——每张卡一件技能。日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）；这里管库本身：全局安装一键铺开、卡脚「安装」集中补装、卡头「N 处」管位置、⋯ 菜单管更新/移除。来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
         ><Info class="size-3.5" /></span>
         <div class="flex-1" />
         <Button
@@ -761,6 +799,20 @@ async function cleanMissing(r: SkillRuleResult) {
           @click="syncNow"
         >
           <FolderSync :class="syncing ? 'animate-pulse' : ''" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
+          title="逐个比对来源与库的内容指纹（git 源查远端 commit 快路径），有更新的卡片标「有更新」——只比对，不动库不分发"
+          :disabled="checking"
+          @click="checkAll"
+        >
+          <Loader2 v-if="checking" class="size-3.5 animate-spin" />
+          <SearchCheck v-else class="size-3.5" /> 检查更新<span
+            v-if="changedCount"
+            class="text-[10px] text-amber-600 dark:text-amber-400"
+          >·{{ changedCount }}</span>
         </Button>
         <Popover :open="showImport" @update:open="toggleImport">
           <PopoverTrigger as-child>
@@ -929,6 +981,17 @@ async function cleanMissing(r: SkillRuleResult) {
               variant="outline"
               class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive"
             >缺失</Badge>
+            <!-- 检查更新结果（头部批量检查按卡标注；「更新」成功后自动消掉） -->
+            <span
+              v-if="checkRes[s.name]?.status === 'changed'"
+              class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] text-amber-600 dark:text-amber-400"
+              title="来源有更新——⋯ 菜单「更新」拉取并分发（更新前会再比对，不白拉）"
+            >有更新</span>
+            <span
+              v-else-if="checkRes[s.name]?.status === 'error'"
+              class="shrink-0 cursor-help rounded border border-dashed border-muted-foreground/30 px-1 text-[10px] text-muted-foreground/60"
+              :title="checkRes[s.name]?.message || '检查失败'"
+            >检查失败</span>
             <div class="flex-1" />
             <!-- 「N 处」计数：弹出该技能的位置 popover（查看/切范围/清缺失/卸载）——
                  位置治理就地完成，不设独立规则清单面板 -->
