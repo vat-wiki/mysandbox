@@ -722,7 +722,7 @@ onUnmounted(() => {
               <div v-if="openCfg && cfg && cfg.readonly" class="space-y-2 pt-1.5">
                 <div class="flex items-start gap-1.5">
                   <p class="flex-1 text-xs text-muted-foreground">
-                    收编的 compose 栈——配置回原文件改，改完在这里重启栈即可生效。
+                    收编的 compose 栈——配置回原文件改，这里重启栈生效。
                   </p>
                   <InfoHint label="原底账路径">
                     <p class="font-mono break-all">{{ cfg.path }}</p>
@@ -892,7 +892,7 @@ onUnmounted(() => {
         <ConfirmDialog
           v-if="pendingUnadopt"
           :title="`取消收编 ${pendingUnadopt}`"
-          description="将把该容器移出服务网络并清除登记，恢复为普通外部容器（容器本体与数据不动，LXC 内按名字解析随之消失）。"
+          description="将移出服务网络并清除登记，恢复为普通外部容器——容器与数据不动，hosts 解析随之消失。"
           confirm-text="取消收编"
           variant="destructive"
           @confirm="confirmUnadopt"

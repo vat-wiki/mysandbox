@@ -425,7 +425,7 @@ const ruleSummary = (r: AiBinding) => {
             v-if="!view.projectRules.length"
             class="flex items-start gap-1.5 rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground"
           >
-            <p class="flex-1">还没有项目级规则——写进项目目录，优先级高于 home 级绑定，克隆到别的容器跟着走。</p>
+            <p class="flex-1">还没有项目级规则——进项目目录保存即写入，优先级高于 home 级。</p>
             <InfoHint tip="claude 写 .claude/settings.json，opencode 写 opencode.json；start 时自动补齐。" />
           </div>
           <div v-for="r in view.projectRules" :key="r.id" class="flex items-center gap-2 rounded-md border px-3 py-2">

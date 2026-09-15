@@ -189,10 +189,10 @@ function revertTitle(c: GitChange): string {
 }
 function dirTitle(d: TreeNode): string {
   if (armed.value.has(d.path)) return '再次点击：撤销目录下全部变更'
-  return d.allUntracked ? '撤销（删除目录下全部未跟踪文件）' : '撤销目录下全部变更（未提交改动丢失，未跟踪文件删除）'
+  return d.allUntracked ? '撤销（删除目录下全部未跟踪文件）' : '撤销目录下全部变更（未提交改动将丢失）'
 }
 const allTitle = computed(() =>
-  armedAll.value ? '再次点击：撤销全部变更' : '撤销全部变更（未提交改动丢失，未跟踪文件删除）',
+  armedAll.value ? '再次点击：撤销全部变更' : '撤销全部变更（未提交改动将丢失）',
 )
 // file/dir 共用执行体：needArm 的目标首击只点亮确认态
 async function restoreByKey(key: string, needArm: boolean, target: GitRestoreTarget) {

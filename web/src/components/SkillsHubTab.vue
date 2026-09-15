@@ -921,7 +921,7 @@ async function cleanMissing(r: SkillRuleResult) {
                 <Button size="sm" class="mt-1.5 h-7" :disabled="impBusy || !impPicked" @click="doImportGit">导入选中</Button>
               </div>
               <p class="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/70">
-                导入 = 快照（版本在仓库侧）；要更新点卡片上的「更新」。库内同名会提示覆盖。
+                导入 = 快照；要更新点卡片上的「更新」。库内同名会提示覆盖。
               </p>
             </template>
           </PopoverContent>
@@ -1048,7 +1048,7 @@ async function cleanMissing(r: SkillRuleResult) {
                     :class="r.all
                       ? 'border-primary/40 bg-primary/10 text-primary'
                       : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-                    :title="r.all ? '装进本机 + 全部受管容器——点击改为仅已有该项目的机器' : '只装已有该项目的机器——点击改回本机 + 全部容器'"
+                    title="点击切换：本机+全部容器 ⇄ 仅已有该项目的机器"
                     @click="toggleScope(r)"
                   >
                     {{ r.all ? '本机+全部容器' : '有该项目' }}
@@ -1253,7 +1253,7 @@ async function cleanMissing(r: SkillRuleResult) {
             </template>
           </SkillPickList>
           <p class="text-[11px] leading-snug text-muted-foreground/70">
-            勾选 = 安装，取消勾选 = 从全局移除（下次同步从各处清理）；保存即全量同步。
+            勾选 = 安装，取消 = 移除（下次同步清理）；保存即全量同步。
           </p>
         </div>
 

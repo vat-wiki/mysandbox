@@ -3637,7 +3637,7 @@ onUnmounted(() => {
   <ConfirmDialog
     v-if="renameTarget"
     title="重命名容器"
-    description="修改显示名（终端 tab、侧栏、文件面板都用它），不影响容器本身的名称。"
+    description="修改显示名（终端 tab、侧栏、文件面板都用它），不改容器名。"
     confirm-text="重命名"
     :input="{ default: renameTarget.displayName || renameTarget.name, placeholder: renameTarget.name }"
     @confirm="doRename"
@@ -3649,7 +3649,7 @@ onUnmounted(() => {
   <ConfirmDialog
     v-if="svcRenameTarget"
     title="重命名服务"
-    description="修改显示名（侧栏卡片、服务终端 tab 用它），不影响服务本身的名称（容器内连接仍按真名解析）。"
+    description="修改显示名（侧栏卡片、服务终端 tab 用它），连接仍按服务真名解析。"
     confirm-text="重命名"
     :input="{ default: svcRenameTarget.displayName || svcRenameTarget.name, placeholder: svcRenameTarget.name }"
     @confirm="doSvcRename"
@@ -3694,7 +3694,7 @@ onUnmounted(() => {
   <ConfirmDialog
     v-if="pendingSvcUnadopt"
     :title="`取消收编 ${pendingSvcUnadopt}`"
-    description="将把该容器移出服务网络并清除登记，恢复为普通外部容器（容器本体与数据不动，LXC 内按名字解析随之消失）。"
+    description="将移出服务网络并清除登记，恢复为普通外部容器——容器与数据不动，hosts 解析随之消失。"
     confirm-text="取消收编"
     variant="destructive"
     @confirm="doSvcUnadopt"

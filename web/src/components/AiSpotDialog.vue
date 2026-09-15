@@ -352,7 +352,7 @@ onMounted(async () => {
           <SkillPickList
             :skills="skills"
             :picked="picked"
-            empty-text="技能库是空的——去「AI 工具 → 技能中心」添加，或在文件面板右键技能目录收进库。"
+            empty-text="技能库是空的——去「AI 工具 → 技能中心」添加，或右键技能目录收进库。"
             @toggle="togglePick"
           >
             <template #error>
