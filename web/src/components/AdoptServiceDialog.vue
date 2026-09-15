@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import InfoHint from '@/components/InfoHint.vue'
 import { stateLabel } from '@/lib/utils'
 
 const emit = defineEmits<{
@@ -110,11 +111,16 @@ async function doTakeover(row: AdoptableContainerView) {
         </DialogTitle>
       </DialogHeader>
 
-      <p class="text-xs text-muted-foreground">
-        裸容器（docker run 起家）收编 = <span class="text-foreground">接管</span>：启动方式复刻进
-        compose 底账（可查看/修改），之后由 compose 管理；compose 栈 = <span class="text-foreground">栈级收编</span>
-        （全体成员纳管、单入口展示，原底账不动）。都会接入服务网络、LXC 按名字可达。
-      </p>
+      <div class="flex items-start gap-1.5">
+        <p class="flex-1 text-xs text-muted-foreground">
+          收编 = 接管进 mysandbox 底账，之后由面板统一管理（容器与数据不动）。
+        </p>
+        <InfoHint label="收编方式说明">
+          <p><span class="text-foreground">裸容器（docker run 起家）→ 接管：</span>启动方式复刻进 compose 底账（可查看/修改），之后由 compose 管理，会重建容器。</p>
+          <p><span class="text-foreground">compose 栈 → 栈级收编：</span>全体成员纳管、单入口展示，原底账不动。</p>
+          <p>都会接入服务网络、LXC 按名字可达。</p>
+        </InfoHint>
+      </div>
 
       <p
         v-if="err"
@@ -154,7 +160,7 @@ async function doTakeover(row: AdoptableContainerView) {
             <div class="flex min-w-0 items-center gap-2">
               <Layers class="size-3.5 shrink-0 text-muted-foreground" />
               <span class="min-w-0 truncate text-sm font-medium" :title="row.project">{{ row.project }}</span>
-              <Badge variant="outline" class="shrink-0 text-[10px]" title="多容器 compose 项目——栈级收编，原底账不动">栈 · {{ row.containers.length }} 容器</Badge>
+              <Badge variant="outline" class="shrink-0 text-[10px]" title="多容器 compose 项目——栈级收编">栈 · {{ row.containers.length }} 容器</Badge>
               <span class="shrink-0 text-[10px]" :class="row.running > 0 ? 'text-emerald-600' : 'text-muted-foreground'">
                 {{ row.running > 0 ? `${row.running} 运行中` : '全部停止' }}
               </span>
@@ -168,7 +174,7 @@ async function doTakeover(row: AdoptableContainerView) {
             size="xs"
             class="shrink-0"
             :disabled="!!adopting"
-            title="栈级收编：全体成员接入服务网络 + 纳入面板（单入口展示），容器与原文件都不动"
+            title="全体成员接入服务网络、单入口展示，原文件不动"
             @click="doAdoptStack(row)"
           >
             {{ adopting === row.project ? '收编中…' : '收编栈' }}
@@ -205,7 +211,7 @@ async function doTakeover(row: AdoptableContainerView) {
             size="xs"
             class="shrink-0"
             :disabled="!!adopting"
-            title="接管式收编：复刻启动方式进 compose 底账（会重建容器）"
+            title="复刻启动方式进底账，会重建容器"
             @click="pendingTakeover = row"
           >
             {{ adopting === row.name ? '收编中…' : '接管收编' }}
@@ -216,7 +222,7 @@ async function doTakeover(row: AdoptableContainerView) {
       <ConfirmDialog
         v-if="pendingTakeover"
         :title="`接管收编 ${pendingTakeover.name}`"
-        :description="`将按当前容器形状生成 compose 底账（~/.config/mysandbox/compose/${pendingTakeover.name}/compose.yaml），然后重建容器由 compose 接管：数据卷无损，容器可写层里未挂载的数据会丢失，运行短暂中断。`"
+        :description="`将生成 compose 底账并重建容器由 compose 接管：数据卷无损，未挂载的容器可写层数据会丢失，期间短暂中断。`"
         :input="{ placeholder: '输入容器名确认', confirmCue: pendingTakeover.name }"
         confirm-text="生成底账并接管"
         @confirm="doTakeover(pendingTakeover!)"

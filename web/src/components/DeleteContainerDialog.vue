@@ -68,7 +68,7 @@ function submit() {
       <div class="space-y-3">
         <!-- LXC：数据在容器内，说明清楚而非给一个假的「保留数据」选项 -->
         <p v-if="dataAlwaysGone" class="text-sm text-destructive">
-          home 数据在容器内部，删除容器会<strong>同时删掉 /home/dev 下的全部数据</strong>，无法只删容器保留数据。
+          删除会<strong>同时清掉 /home/dev 下全部数据</strong>——无法只删容器保留数据。
         </p>
 
         <label v-else class="flex cursor-pointer items-start gap-2.5 text-sm">

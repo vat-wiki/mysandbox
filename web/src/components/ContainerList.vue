@@ -3245,7 +3245,7 @@ onUnmounted(() => {
             <ContextMenuItem
               :class="g.quietNotify !== false && 'bg-accent text-accent-foreground'"
               :title="g.quietNotify !== false
-                ? '已开启：切走后安静下来（可能已完成或等你输入）时挂琥珀标，切回即消。长驻进程 tab 可点此关闭'
+                ? '已开启——切走后有动静挂琥珀标，切回即消'
                 : '已关闭：点此开启'"
               @click="g.quietNotify = g.quietNotify === false"
             >
@@ -3455,7 +3455,7 @@ onUnmounted(() => {
           >
             <TerminalIcon class="size-8 opacity-40" />
             <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开终端' }}</p>
-            <p class="text-xs opacity-70">同一容器可左右/上下分屏（每组最多 {{ MAX_GROUP_PANES }} 块）；tab 右键随时新开一组</p>
+            <p class="text-xs opacity-70">同一容器可分屏（每组最多 {{ MAX_GROUP_PANES }} 块）</p>
           </div>
           </div>
         </div>
@@ -3660,7 +3660,7 @@ onUnmounted(() => {
   <ConfirmDialog
     v-if="powerTarget"
     :title="POWER_TEXT[powerTarget.action].verb + '容器'"
-    :description="`确定要${POWER_TEXT[powerTarget.action].verb} ${powerTarget.c.displayName || powerTarget.c.name} 吗？该容器不是 mysandbox 创建的${powerTarget.c.adopted ? '（adopted）' : '（外部）'}，可能是其他系统在用的服务。${POWER_TEXT[powerTarget.action].desc}。`"
+    :description="`该容器不是 mysandbox 创建的${powerTarget.c.adopted ? '（adopted）' : '（外部）'}，可能是其他系统在用的服务。${POWER_TEXT[powerTarget.action].desc}。`"
     :confirm-text="POWER_TEXT[powerTarget.action].verb"
     :variant="powerTarget.action === 'stop' ? 'destructive' : 'default'"
     @confirm="doPower"

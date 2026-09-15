@@ -265,7 +265,7 @@ function submit() {
                   </SelectContent>
                 </Select>
                 <p class="text-xs leading-relaxed text-amber-600 dark:text-amber-500">
-                  克隆要求源容器已停止：会先停止它，完成后不自动重启。
+                  源容器须已停止：会先停它，完成后不自动重启。
                 </p>
               </div>
               <div v-else-if="sourceKind === 'archive'" class="space-y-1">

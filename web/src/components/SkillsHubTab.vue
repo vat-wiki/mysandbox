@@ -67,7 +67,6 @@ import {
   Library,
   ChevronDown,
   ChevronRight,
-  Info,
   Loader2,
   SearchCheck,
   Folder,
@@ -77,6 +76,7 @@ import {
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import SkillPickList from '@/components/SkillPickList.vue'
+import InfoHint from '@/components/InfoHint.vue'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from 'vue-sonner'
 
@@ -779,16 +779,18 @@ async function cleanMissing(r: SkillRuleResult) {
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <Library class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="text-xs font-semibold">技能库</span>
-        <span
-          class="shrink-0 cursor-help text-muted-foreground/50"
-          title="个人技能池——每张卡一件技能。日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）；这里管库本身：全局安装一键铺开、卡脚「安装」集中补装、卡头「N 处」管位置、⋯ 菜单管更新/移除。来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。"
-        ><Info class="size-3.5" /></span>
+        <InfoHint label="技能库说明">
+          <p>个人技能池——每张卡一件技能。</p>
+          <p>日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）。</p>
+          <p>这里管库本身：全局安装一键铺开、卡脚「安装」集中补装、卡头「N 处」管位置、⋯ 菜单管更新/移除。</p>
+          <p>来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。</p>
+        </InfoHint>
         <div class="flex-1" />
         <Button
           variant="ghost"
           size="xs"
           class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
-          title="管理全局技能集：勾选 = 装到 ~/.agents/skills（本机 + 全部受管容器），取消勾选 = 移除"
+          title="勾选 = 装到 ~/.agents/skills（本机 + 全部受管容器）"
           @click="openGlobal"
         >
           <Globe class="size-3.5" /> 全局安装<span v-if="globalCount" class="text-[10px] text-muted-foreground">·{{ globalCount }}</span>
@@ -942,7 +944,7 @@ async function cleanMissing(r: SkillRuleResult) {
           <DropdownMenuContent side="bottom" align="end">
             <DropdownMenuItem
               :disabled="checking"
-              title="逐个比对来源与库的内容指纹（git 源查远端 commit 快路径），有更新的卡片标「有更新」——只比对，不动库不分发"
+              title="比对来源与库，有更新标在卡上——只比对不分发"
               @click="checkAll"
             >
               <SearchCheck /> 检查更新<span
@@ -950,7 +952,7 @@ async function cleanMissing(r: SkillRuleResult) {
                 class="ml-auto text-[10px] text-amber-600 dark:text-amber-400"
               >·{{ changedCount }}</span>
             </DropdownMenuItem>
-            <DropdownMenuItem :disabled="syncing" title="手动兜底——平时随动作分发/启动追平/建容器补发自动发生" @click="syncNow">
+            <DropdownMenuItem :disabled="syncing" title="手动兜底——平时随动作自动分发" @click="syncNow">
               <FolderSync :class="syncing ? 'animate-pulse' : ''" /> 立即同步
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -979,12 +981,12 @@ async function cleanMissing(r: SkillRuleResult) {
             <span
               v-else-if="s.exists && !installedCount(s)"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没装到任何位置——头部「全局安装」一键铺开，或卡脚「安装」指定落点"
+              title="还没装到任何位置——卡脚「安装」指定落点"
             >未安装</span>
             <span
               v-if="s.exists && installedAt(s.name, GLOBAL_TO)"
               class="shrink-0 cursor-help rounded border border-primary/40 bg-primary/10 px-1 text-[10px] text-primary"
-              title="已全局安装（~/.agents/skills，本机 + 全部受管容器）——头部「全局安装」统一管理"
+              title="已装 ~/.agents/skills（本机 + 全部受管容器）"
             >全局</span>
             <Badge
               v-if="!s.exists"
@@ -995,7 +997,7 @@ async function cleanMissing(r: SkillRuleResult) {
             <span
               v-if="checkRes[s.name]?.status === 'changed'"
               class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] text-amber-600 dark:text-amber-400"
-              title="来源有更新——⋯ 菜单「更新」拉取并分发（更新前会再比对，不白拉）"
+              title="来源有更新——⋯ 菜单「更新」拉取并分发"
             >有更新</span>
             <!-- 检查失败：可点开看原因（tooltip 藏着等于没有——点开 popover 显原文） -->
             <Popover v-else-if="checkRes[s.name]?.status === 'error'">
@@ -1074,13 +1076,13 @@ async function cleanMissing(r: SkillRuleResult) {
               <DropdownMenuContent side="bottom" align="end">
                 <DropdownMenuItem
                   :disabled="!!updatingSkill"
-                  :title="!s.exists ? '从来源重拉快照恢复（来源还在的话）' : '从来源重拉快照并全量分发（来源改动不自动进库——这是唯一更新通道）'"
+                  :title="!s.exists ? '从来源重拉快照恢复' : '从来源重拉快照并全量分发——唯一更新通道'"
                   @click="updateSkill(s)"
                 >
                   <RefreshCw /> {{ updatingSkill === s.name ? '更新中…' : '更新' }}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" title="移除（已安装到各处的会在下次同步时从容器清理）" @click="delReg = s">
+                <DropdownMenuItem variant="destructive" title="各处安装会在下次同步时清理" @click="delReg = s">
                   <Trash2 /> 移除
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -1120,9 +1122,12 @@ async function cleanMissing(r: SkillRuleResult) {
     <Dialog :open="!!installOpenFor" @update:open="(v: boolean) => v || (installOpenFor = null)">
       <DialogContent class="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>安装 · {{ installOpenFor }}</DialogTitle>
+          <DialogTitle class="flex items-center gap-1.5">
+            安装 · {{ installOpenFor }}
+            <InfoHint tip="日常装到项目：到文件面板进目录点 📚 就地装（人在哪装到哪）。" />
+          </DialogTitle>
           <DialogDescription>
-            日常装到项目：到文件面板进目录点 📚 就地装（人在哪装到哪）。这里是集中补装——点目录行选落点，可多选
+            集中补装——点目录行选落点，可多选
           </DialogDescription>
         </DialogHeader>
 
@@ -1273,7 +1278,7 @@ async function cleanMissing(r: SkillRuleResult) {
     <ConfirmDialog
       v-if="delReg"
       title="移除技能"
-      :description="`把「${delReg.name}」从技能库移除？安装位置里对它的引用会变成「缺失」，下次同步时从对应容器清理。`"
+      :description="`把「${delReg.name}」从技能库移除？安装位置里的引用会变「缺失」，下次同步时清理。`"
       confirm-text="移除"
       variant="destructive"
       @confirm="doDeleteReg"

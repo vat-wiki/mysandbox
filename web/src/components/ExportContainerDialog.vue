@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import InfoHint from '@/components/InfoHint.vue'
 
 const props = defineProps<{ container: ContainerView }>()
 const emit = defineEmits<{ (e: 'done'): void; (e: 'close'): void }>()
@@ -71,10 +72,13 @@ function submit() {
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
     <DialogContent class="max-w-md">
       <DialogHeader>
-        <DialogTitle>导出为包</DialogTitle>
+        <DialogTitle class="flex items-center gap-1.5">
+          导出为包
+          <InfoHint tip="包内容 = config + rootfs" />
+        </DialogTitle>
         <DialogDescription>
-          把 {{ container.displayName || container.name }} 打包成 tar.zst（config + rootfs），
-          可拷到别的机器用「从包导入」恢复。
+          把 {{ container.displayName || container.name }} 打包成 tar.zst，
+          拷到别的机器用「从包导入」恢复。
         </DialogDescription>
       </DialogHeader>
 
@@ -93,7 +97,7 @@ function submit() {
           v-if="container.state === 'running'"
           class="text-xs leading-relaxed text-amber-600 dark:text-amber-500"
         >
-          导出要求容器已停止（跑着导出的文件还在变，包内容不可信）——先停止它再导出。
+          容器须已停止——运行中导出的包内容不可信。先停止它再导出。
         </p>
 
         <div

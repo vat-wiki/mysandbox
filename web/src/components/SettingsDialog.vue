@@ -30,6 +30,7 @@ import {
   Unauthorized,
   type TestlensView,
 } from '@/lib/api'
+import InfoHint from '@/components/InfoHint.vue'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -185,11 +186,13 @@ onMounted(load)
       <!-- TestLens 详情层 -->
       <div v-else class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <section class="space-y-3">
-          <p class="text-xs leading-relaxed text-muted-foreground">
-            往所选目标的 home 写入两份配置：<code class="rounded bg-muted px-1">~/.agent-browser/config.json</code>
-            与 <code class="rounded bg-muted px-1">~/.testlens.json</code>。项目级
-            <code class="rounded bg-muted px-1">.testlens.json</code> 优先于这里的种子，不受影响。
-          </p>
+          <div class="flex items-center gap-1.5">
+            <p class="text-xs leading-relaxed text-muted-foreground">往所选目标的 home 写入 agent-browser 与 testlens 两份配置。</p>
+            <InfoHint label="写入位置说明">
+              <p>两份种子：<code class="rounded bg-muted px-1">~/.agent-browser/config.json</code> 与 <code class="rounded bg-muted px-1">~/.testlens.json</code>。</p>
+              <p>项目级 <code class="rounded bg-muted px-1">.testlens.json</code> 优先于这里的种子，不受影响。</p>
+            </InfoHint>
+          </div>
 
           <div class="space-y-1.5">
             <Label for="testlens-host" class="text-xs text-muted-foreground">服务地址</Label>

@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import InfoHint from '@/components/InfoHint.vue'
 
 defineProps<{ checking: boolean; err: string }>()
 const emit = defineEmits<{ (e: 'submit', token: string): void }>()
@@ -27,10 +28,12 @@ function submit() {
     </div>
     <Card>
       <CardHeader>
-        <CardTitle>访问令牌</CardTitle>
+        <CardTitle class="flex items-center gap-1.5">
+          访问令牌
+          <InfoHint tip="也保存在 ~/.config/mysandbox/config.yaml" />
+        </CardTitle>
         <CardDescription>
-          首次启动 <code class="rounded bg-muted px-1">mysandbox</code> 时会在终端打印 token，
-          也保存在 <code class="rounded bg-muted px-1">~/.config/mysandbox/config.yaml</code>。
+          首次启动 <code class="rounded bg-muted px-1">mysandbox</code> 时会在终端打印 token——粘贴到下面即可。
         </CardDescription>
       </CardHeader>
       <CardContent>

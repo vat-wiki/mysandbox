@@ -324,7 +324,7 @@ const bindingRef = ref<InstanceType<typeof AiBindingTab> | null>(null)
     <ConfirmDialog
       v-if="delProvider"
       title="删除模型服务"
-      :description="`删除「${delProvider.name}」？本机与全部容器里它写入的接入条目会被回收（claude 的 env 注入不在此列）。`"
+      :description="`删除「${delProvider.name}」？本机与全部容器里的接入条目一并回收（claude 的 env 注入除外）。`"
       confirm-text="删除"
       variant="destructive"
       @confirm="doRemoveProvider"

@@ -125,10 +125,10 @@ function confirmDesc(action: BaseAction): string | null {
   if (action === 'export') return null // 只写一个文件，无破坏性
   if (!status.value.exists) return null // 首次制作，没有可覆盖的东西
   if (action === 'create') {
-    return `将销毁当前${label} ${status.value.name} 并从零重建（重新下载 + 跑制作脚本）。已有容器不受影响，新建容器用新${label}。`
+    return `将销毁当前${label} ${status.value.name} 并从零重建；已有容器不受影响。`
   }
   if (action === 'clone') {
-    return `将销毁当前${label} ${status.value.name} 并用容器 ${cloneFrom.value} 重建它。已有容器不受影响，新建容器用新${label}。`
+    return `将销毁当前${label} ${status.value.name} 并用容器 ${cloneFrom.value} 重建它；已有容器不受影响。`
   }
   if (action === 'import') {
     return `将销毁当前${label} ${status.value.name} 并从包恢复。已有容器不受影响。`
@@ -200,7 +200,7 @@ function onConfirm() {
 const ACTION_CARD: Record<BaseAction, { name: string; desc: string; button: string; busy: string }> = {
   create: {
     name: '从零制作',
-    desc: '下载 ubuntu noble rootfs → 起容器 → 跑制作脚本（10–20 分钟）→ 自动停机。全新机器的起点。',
+    desc: '下载 ubuntu noble rootfs → 跑制作脚本 → 自动停机（10–20 分钟）。',
     button: '从零制作',
     busy: '制作中…',
   },
@@ -231,7 +231,7 @@ watch(
 
 const title = computed(() => `${baseLabel.value}管理`)
 const description = computed(() =>
-  '模板容器 = 新建容器的来源（克隆它）。可从零制作、从现有容器固化，或与 tar.zst 包互转。',
+  '新建容器的来源模板——可从零制作、从容器固化，或与 tar.zst 包互转。',
 )
 
 function fmtSize(bytes: number): string {

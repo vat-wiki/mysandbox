@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { containerColor } from '@/lib/utils'
+import InfoHint from '@/components/InfoHint.vue'
 
 const emit = defineEmits<{
   (e: 'changed'): void
@@ -127,10 +128,12 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
         </DialogTitle>
       </DialogHeader>
 
-      <p class="text-xs text-muted-foreground">
-        远程主机作为「终端」接入（会话在远端 tmux 上，跨重启存活）。凭据直接复用本机 ssh
-        （密钥 / agent / ~/.ssh/config 别名），这里不存密码。
-      </p>
+      <div class="flex items-start gap-1.5">
+        <p class="text-xs text-muted-foreground">
+          远程主机作为「终端」接入，会话在远端 tmux 上；凭据复用本机 ssh，这里不存密码。
+        </p>
+        <InfoHint tip="会话跨重启存活；密钥 / agent / ~/.ssh/config 别名（含跳板）直接生效。" />
+      </div>
 
       <p
         v-if="err"

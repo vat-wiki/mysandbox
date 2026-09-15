@@ -23,6 +23,7 @@ import {
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import SkillPickList from '@/components/SkillPickList.vue'
+import InfoHint from '@/components/InfoHint.vue'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -303,10 +304,16 @@ onMounted(async () => {
             </div>
           </div>
 
-          <p class="text-[11px] leading-snug text-muted-foreground/80">
-            项目级配置优先于 home 级绑定（工具自己的合并语义）；克隆到别的容器，start 时自动跟上。
-            未启用的工具不动既有规则。
-          </p>
+          <div class="flex items-start gap-1.5">
+            <p class="flex-1 text-[11px] leading-snug text-muted-foreground/80">
+              项目级配置优先于 home 级绑定。
+            </p>
+            <InfoHint label="优先级语义说明">
+              <p>优先级按工具自己的合并语义。</p>
+              <p>克隆到别的容器，start 时自动跟上。</p>
+              <p>未启用的工具不动既有规则。</p>
+            </InfoHint>
+          </div>
           <p v-if="bindErr" class="text-sm text-destructive">{{ bindErr }}</p>
 
           <div class="flex justify-end gap-2">
@@ -345,7 +352,7 @@ onMounted(async () => {
           <SkillPickList
             :skills="skills"
             :picked="picked"
-            empty-text="技能库是空的——在文件面板里看到技能目录可右键「添加为技能」就地收进库，或去「AI 工具 → 技能中心」管理。"
+            empty-text="技能库是空的——去「AI 工具 → 技能中心」添加，或在文件面板右键技能目录收进库。"
             @toggle="togglePick"
           >
             <template #error>
@@ -353,7 +360,7 @@ onMounted(async () => {
             </template>
           </SkillPickList>
           <p class="text-[11px] leading-snug text-muted-foreground/70">
-            安装 = 拷进该落点并自动登记为安装位置；此后库更新自动跟走，移除自动清理。
+            安装 = 拷进落点并登记；库更新自动跟走，移除自动清理。
           </p>
 
           <div class="flex justify-end gap-2">

@@ -45,6 +45,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ArrowLeft, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import ConfirmDialog from './ConfirmDialog.vue'
+import InfoHint from './InfoHint.vue'
 
 const props = defineProps<{
   // 传入 = 目标覆盖模式（编辑/保存对象是该目标的覆盖绑定，不是全局）。
@@ -287,7 +288,7 @@ const ruleSummary = (r: AiBinding) => {
               <template v-else>本机还没有配置——保存后成为本机的专属绑定。</template>
             </template>
             <template v-else>
-              <template v-if="overrideExists">本容器使用专属绑定，全局绑定不再应用到这台（启动追平也跳过）。</template>
+              <template v-if="overrideExists">本容器使用专属绑定，全局绑定不再应用（启动追平也跳过）。</template>
               <template v-else>当前跟随全局绑定——保存后成为本容器的专属绑定。</template>
             </template>
           </span>
@@ -304,7 +305,7 @@ const ruleSummary = (r: AiBinding) => {
         <label class="flex items-center gap-2 text-sm">
           <Checkbox :model-value="claudeOn" @update:model-value="(v) => (claudeOn = !!v)" />
           <span class="font-medium">Claude Code</span>
-          <span class="text-[11px] text-muted-foreground">单接入点（env 注入，重绑即覆盖）</span>
+          <span class="text-[11px] text-muted-foreground">单接入点（env 注入）</span>
         </label>
         <div v-if="claudeOn" class="grid gap-2 pl-6 sm:grid-cols-[1fr_auto] sm:items-center">
           <Select :model-value="claude" @update:model-value="(v) => (claude = v as string)">
@@ -322,7 +323,7 @@ const ruleSummary = (r: AiBinding) => {
         <label class="flex items-center gap-2 text-sm">
           <Checkbox :model-value="codexOn" @update:model-value="(v) => (codexOn = !!v)" />
           <span class="font-medium">Codex</span>
-          <span class="text-[11px] text-muted-foreground">单接入点（responses 协议；多服务可共存，这里选默认）</span>
+          <span class="text-[11px] text-muted-foreground">responses 协议 · 多服务选默认</span>
         </label>
         <div v-if="codexOn" class="grid gap-2 pl-6 sm:grid-cols-[1fr_auto] sm:items-center">
           <Select :model-value="codex" @update:model-value="(v) => (codex = v as string)">
@@ -346,7 +347,7 @@ const ruleSummary = (r: AiBinding) => {
             @update:model-value="(v) => (tool === 'opencode' ? (ocOn = !!v) : (piOn = !!v))"
           />
           <span class="font-medium">{{ tool === 'opencode' ? 'OpenCode' : 'Pi' }}</span>
-          <span class="text-[11px] text-muted-foreground">多服务共存（每个 × 协议一个接入点，工具内 /models 切换）</span>
+          <span class="text-[11px] text-muted-foreground">多服务共存，工具内 /models 切换</span>
         </label>
         <template v-if="tool === 'opencode' ? ocOn : piOn">
           <ToggleGroup
@@ -422,10 +423,10 @@ const ruleSummary = (r: AiBinding) => {
           </div>
           <div
             v-if="!view.projectRules.length"
-            class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground"
+            class="flex items-start gap-1.5 rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground"
           >
-            还没有项目级规则。项目级 = 写进项目目录（claude 的 .claude/settings.json / opencode 的
-            opencode.json），优先级高于 home 级绑定；克隆到别的容器会跟着走（start 时自动补齐）。
+            <p class="flex-1">还没有项目级规则——写进项目目录，优先级高于 home 级绑定，克隆到别的容器跟着走。</p>
+            <InfoHint tip="claude 写 .claude/settings.json，opencode 写 opencode.json；start 时自动补齐。" />
           </div>
           <div v-for="r in view.projectRules" :key="r.id" class="flex items-center gap-2 rounded-md border px-3 py-2">
             <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.to }}</span>
@@ -448,21 +449,18 @@ const ruleSummary = (r: AiBinding) => {
         @close="ruleDelId = null"
       />
 
-      <details v-if="!isTarget" class="group rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-        <summary class="cursor-pointer select-none list-none marker:hidden">
-          <span class="inline-flex items-center gap-1">
-            <span class="transition-transform group-open:rotate-90">▸</span>
-            说明：追平语义 · 写哪些文件 · key 明文落盘
-          </span>
-        </summary>
-        <p class="mt-2">
-          绑定保存后自动追平：启动 sweep、新建容器、容器 start 事件都会按「目标覆盖 ?? 全局绑定」写一份
-          （容器不必在运行，CLI 下次启动即生效）。claude 走 settings.json env 注入；codex 加 provider 块
-          （key 经 ~/.zshrc 环境变量，固定 responses）；opencode / pi 在配置里内联 key，按所选协议注册
-          <code>&lt;服务&gt;-chat/-responses/-anthropic</code> 接入点。已有配置只合并本方案的键；换绑 / 清空会回收旧接入点。
-        </p>
-        <p class="mt-1 text-amber-500/90">API Key 会明文落盘到各目标（sidecar 存档同面）。</p>
-      </details>
+      <!-- 追平语义：一行常驻（触发时机 + key 明文风险句），机制细节收 InfoHint -->
+      <div v-if="!isTarget" class="flex items-start gap-1.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div class="flex-1 space-y-0.5">
+          <p>绑定保存后自动追平：启动 sweep、新建容器、start 事件。</p>
+          <p class="text-amber-500/90">API Key 会明文落盘到各目标（sidecar 存档同面）。</p>
+        </div>
+        <InfoHint label="追平与落盘机制说明">
+          <p>追平按「目标覆盖 ?? 全局绑定」写一份，容器不必在运行，CLI 下次启动即生效。</p>
+          <p>各工具落盘：claude 走 settings.json env 注入；codex 加 provider 块（key 经 ~/.zshrc 环境变量，固定 responses）；opencode / pi 在配置里内联 key，按所选协议注册 <code>&lt;服务&gt;-chat/-responses/-anthropic</code> 接入点。</p>
+          <p>已有配置只合并本方案的键；换绑 / 清空会回收旧接入点。</p>
+        </InfoHint>
+      </div>
     </template>
   </div>
 </template>

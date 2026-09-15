@@ -48,6 +48,7 @@ import {
 // 全面相悖，反覆盖不如直接自绘；焦点陷阱/Esc/遮罩点击关等 a11y 行为由原语自带。
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogClose } from 'reka-ui'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import InfoHint from '@/components/InfoHint.vue'
 import { LoaderCircle, Check, X, Ban, RefreshCw, Globe, ChevronRight, Maximize2, Minimize2 } from 'lucide-vue-next'
 
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
@@ -486,10 +487,14 @@ onUnmounted(() => {
             <img src="/docker.svg" alt="" class="size-8 opacity-30" />
             <p class="text-sm text-muted-foreground">暂无应用容器</p>
             <p class="max-w-xs text-xs leading-relaxed text-muted-foreground/60">
-              服务来自两处：往 <span class="font-mono">~/.config/mysandbox/compose/&lt;名&gt;/</span> 放一份
-              compose.yaml 再 <span class="font-mono">docker compose up -d</span>（agent 干这事最顺手），
-              或经侧栏「应用容器」分区头的收编入口纳入现有容器。
+              放一份 compose.yaml 再 <span class="font-mono">docker compose up -d</span>，
+              或经侧栏收编入口纳入现有容器。
             </p>
+            <InfoHint label="服务来源说明">
+              <p>服务来自两处：</p>
+              <p>① 目录注册——往 <span class="font-mono">~/.config/mysandbox/compose/&lt;名&gt;/</span> 放一份 compose.yaml 再 <span class="font-mono">docker compose up -d</span>（agent 干这事最顺手）；</p>
+              <p>② 收编——侧栏「应用容器」分区头的 Inbox 入口纳入现有容器。</p>
+            </InfoHint>
           </div>
 
           <!-- 服务详情（分层） -->
@@ -512,7 +517,7 @@ onUnmounted(() => {
               <div class="flex flex-wrap items-center gap-1.5">
                 <!-- 未创建（目录里只有 compose.yaml 还没 up）：起停无意义，提示为主 -->
                 <span v-if="sel.state === 'absent'" class="text-xs text-muted-foreground">
-                  底账在、容器未创建——终端 <span class="font-mono">docker compose -f {{ sel.name }}/compose.yaml up -d</span> 或配置页应用一次
+                  底账在、容器未创建——配置页应用一次即可
                 </span>
                 <Button
                   v-else-if="!sel.running"
@@ -715,11 +720,15 @@ onUnmounted(() => {
 
               <!-- adopted 栈：原文件只读展示（编辑/应用归原编排方）——必须在 adopted 分支前 -->
               <div v-if="openCfg && cfg && cfg.readonly" class="space-y-2 pt-1.5">
-                <p class="text-xs text-muted-foreground">
-                  这是收编的 compose 栈——底账在原编排方：
-                  <span class="font-mono">{{ cfg.path }}</span
-                  >。要改配置请回原文件改（改完在这里重启栈即可生效），面板不做第二份可编辑副本。
-                </p>
+                <div class="flex items-start gap-1.5">
+                  <p class="flex-1 text-xs text-muted-foreground">
+                    收编的 compose 栈——配置回原文件改，改完在这里重启栈即可生效。
+                  </p>
+                  <InfoHint label="原底账路径">
+                    <p class="font-mono break-all">{{ cfg.path }}</p>
+                    <p>面板不做第二份可编辑副本。</p>
+                  </InfoHint>
+                </div>
                 <p v-if="cfgLoading" class="py-6 text-center text-xs text-muted-foreground">读取中…</p>
                 <CodeEditor
                   v-else
@@ -732,16 +741,20 @@ onUnmounted(() => {
 
               <!-- 收编容器没有底账（生命周期归它自己的编排方） -->
               <p v-else-if="openCfg && sel.adopted" class="pt-1.5 text-xs text-muted-foreground">
-                收编容器没有 compose 底账——它的配置归原来的编排方（compose 栈 / docker run）管。
+                收编容器没有 compose 底账——配置归原编排方（compose 栈 / docker run）管。
               </p>
 
               <!-- 旧版创建（无底账）：迁移入口 -->
               <div v-else-if="openCfg && cfg && cfg.yaml == null" class="space-y-2 pt-1.5">
-                <p class="text-xs text-muted-foreground">
-                  这个服务是旧版创建的，还没有 compose 底账——改配置/追新镜像都走不了「编辑 + 应用」。
-                  迁移会按当前容器形状生成 <span class="font-mono">{{ cfg.path }}</span
-                  >，然后由 compose 接管（数据卷无损，容器会重建一次）。
-                </p>
+                <div class="flex items-start gap-1.5">
+                  <p class="flex-1 text-xs text-muted-foreground">
+                    旧版创建、没有 compose 底账——迁移后才能「编辑 + 应用」。
+                  </p>
+                  <InfoHint label="迁移语义说明">
+                    <p>迁移按当前容器形状生成底账 <span class="font-mono break-all">{{ cfg.path }}</span>，然后由 compose 接管。</p>
+                    <p>数据卷无损；容器会重建一次，短暂中断。</p>
+                  </InfoHint>
+                </div>
                 <Button size="sm" :disabled="!!busyName || applying" @click="sel && requestServiceMigrate(sel)">迁移到 compose 底账</Button>
               </div>
 
@@ -853,8 +866,12 @@ onUnmounted(() => {
           </p>
           <p v-if="status?.error" class="text-destructive">{{ status.error }}</p>
           <p v-if="status?.network.detail" class="text-amber-600">{{ status.network.detail }}</p>
-          <p v-if="status?.registryMirrors?.length === 0" class="text-amber-600">
-            未配置 registry-mirrors：受限网络下 Docker Hub 直连常失败，可在 /etc/docker/daemon.json 配置后重启 docker（私有 registry 不受影响）。
+          <p v-if="status?.registryMirrors?.length === 0" class="flex items-start gap-1.5 text-amber-600">
+            <span class="flex-1">未配置 registry-mirrors——受限网络下 Docker Hub 直连常失败。</span>
+            <InfoHint label="registry-mirrors 说明">
+              <p>可在 <span class="font-mono">/etc/docker/daemon.json</span> 配置 <span class="font-mono">registry-mirrors</span> 后重启 docker。</p>
+              <p>私有 registry 不受影响。</p>
+            </InfoHint>
           </p>
         </div>
 

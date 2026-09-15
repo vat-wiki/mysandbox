@@ -35,6 +35,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import InfoHint from '@/components/InfoHint.vue'
 
 const props = defineProps<{
   // 可选容器全集（受管理/已纳入的），选择在对话框左栏完成——入口不依赖侧栏选择态。
@@ -321,7 +322,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
               v-if="stoppedSelected"
               class="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400"
             >
-              所选容器有 {{ stoppedSelected }} 个未在运行——「{{ tabLabelOf(tab) }}」需要在跑的容器里执行，这部分会失败。
+              所选有 {{ stoppedSelected }} 个容器未运行——本操作需容器在跑，这部分会失败。
             </div>
 
             <!-- exec：shell 高亮编辑（Monaco 异步加载，外层定高盒防止布局跳动） -->
@@ -366,7 +367,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                 </div>
               </div>
               <p class="text-xs text-muted-foreground">
-                对每个容器执行 git config --global user.name/email，覆盖现有配置。
+                对每个容器覆写 git 全局 user.name/email。
               </p>
             </TabsContent>
 
@@ -383,7 +384,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                 </div>
               </RadioGroup>
               <p v-if="sshMode === 'reseed'" class="text-xs text-muted-foreground">
-                清空 ~/.ssh 后从挂载的 /mnt/host/.ssh 重新拷贝（含 id_* 与 known_hosts），权限自动设为 700/600。
+                清空 ~/.ssh 并从 /mnt/host/.ssh 重新拷贝（权限 700/600）。
               </p>
               <Textarea
                 v-else
@@ -408,11 +409,13 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                 </div>
               </div>
               <div
-                class="rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
+                class="flex items-start gap-1.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
               >
-                以 root 覆写这 {{ ids.length }} 个容器的 /etc/hosts，写入即持久。mysandbox
-                只维护文件尾部的服务发现块（应用容器变化会自动重建该块），其余内容不再被动。
-                想改新容器的默认 hosts？去改模板容器。
+                <p class="flex-1">以 root 覆写这 {{ ids.length }} 个容器的 /etc/hosts，写入即持久。</p>
+                <InfoHint label="hosts 维护语义说明">
+                  <p>mysandbox 只维护文件尾部的服务发现块（应用容器变化会自动重建该块），其余内容不再被动。</p>
+                  <p>想改新容器的默认 hosts？去改模板容器。</p>
+                </InfoHint>
               </div>
             </TabsContent>
 
