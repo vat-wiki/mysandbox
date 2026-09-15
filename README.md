@@ -16,7 +16,7 @@ mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），�
 因此默认且强烈建议：
 
 - **只监听 `127.0.0.1`**（默认）。不要为了「方便」绑 `0.0.0.0` 暴露到局域网，除非你清楚后果。CLI 在监听非 localhost 时会打印警告。
-- **token 即密码**。首启随机生成、写进 `~/.config/mysandbox/config.yaml`（权限 `0600`），首次启动会打印一次。别提交、别截图外发。
+- **token 即密码**。首启随机生成、写进 `~/.mysandbox/config.yaml`（权限 `0600`），首次启动会打印一次。别提交、别截图外发。
 
 > 一句话：把它当成「能用浏览器登录的宿主用户 shell」，按这个敏感度对待。
 
@@ -24,10 +24,12 @@ mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），�
 
 ## 运行前提
 
+> 下面的前提 `install.sh` 会全部自动配好——本节供手工安装 / 逐条审计用。
+
 - `/etc/subuid` / `/etc/subgid` 有 `<user>:100000:65536`（unprivileged 容器的 uid 映射段）。
 - **mysandbox 必须以 systemd user service 形态运行**（cgroup 委派；裸 shell 里 `lxc-start` 会因 cgroup 权限失败）：
   `systemctl --user enable --now mysandbox` + `loginctl enable-linger <user>`。
-- LXC 工具链：`apt install lxc uidmap lxcfs`（本仓按 LXC 5.0.x 开发）。
+- LXC 工具链：`apt install lxc uidmap lxcfs iptables zstd`（本仓按 LXC 5.0.x 开发；zstd 是 base export 的 tar --zstd 必需）。
 - 一座宿主网桥 + 网关 IP：容器 veth 挂到 `network` 配置的桥上（自有桥 `mysandbox0`，参考
   `mysandbox-net.service`：桥 + 网关副 IP + 出网 MASQUERADE），网关 = `<ipPool 前缀>.1`。
   与 docker 服务网段互通需 `mysandbox-docker-interop.service`（DOCKER-USER 放行）+ ufw 转发 ACCEPT。
@@ -65,7 +67,7 @@ sudo ./scripts/install.sh        # --user <name> 指定属主（默认 SUDO_USER
 
 | 层 | 步骤 |
 |---|---|
-| 系统级（root） | apt 装 `lxc uidmap lxcfs iptables`；`/etc/subuid`+`/etc/subgid` 追加 `<user>:100000:65536`；`/etc/lxc/lxc-usernet` 放行 veth；落盘三个 system unit（`mysandbox-net` 建桥+网关+MASQUERADE、`mysandbox-firewall` 应用 ufw 规则、`mysandbox-docker-interop` 跨桥放行，docker 缺失时跳过）；`loginctl enable-linger` |
+| 系统级（root） | apt 装 `lxc uidmap lxcfs iptables zstd`；`/etc/subuid`+`/etc/subgid` 追加 `<user>:100000:65536`；`/etc/lxc/lxc-usernet` 放行 veth；落盘三个 system unit（`mysandbox-net` 建桥+网关+MASQUERADE、`mysandbox-firewall` 应用 ufw 规则、`mysandbox-docker-interop` 跨桥放行，docker 缺失时跳过）；网关 `IP:53` 无应答方时落 `DNSStubListenerExtra`（容器 resolved 的上游，自配 DNS 的机器自动跳过）；生成用户级 `default.conf`（idmap 按属主 uid/gid，宿主用户不必是 uid 1000）；`loginctl enable-linger` |
 | 用户级（runuser 切回） | `npm install` + `npm run build`（缺才做，`--rebuild` 强制）；写 `~/.config/systemd/user/mysandbox.service`（ExecStart 用 node 绝对路径——user manager 不继承交互 shell 的 PATH）；`systemctl --user enable --now` |
 
 > 安全模型的关键：需要特权的操作全部收敛成**独立 system unit**（由 systemd 而非 sudoers 界定边界），
@@ -79,7 +81,7 @@ sudo ./scripts/install.sh        # --user <name> 指定属主（默认 SUDO_USER
 ```
 >> mysandbox 0.1.0  lxc 5.0.3
 >> web UI:  http://127.0.0.1:7321
->> first run — config written: ~/.config/mysandbox/config.yaml
+>> first run — config written: ~/.mysandbox/config.yaml
 >> token:   <48-hex>
 ```
 
@@ -97,8 +99,9 @@ sudo -u <user> scripts/lxc-template.sh ms-template   # 10-20 分钟（apt + npm 
 不想跑脚本的话，上表的每一步都可以手工做——unit 模板在 `scripts/*.service`（占位符
 `__MSB_DIR__`/`__MSB_USER__`/`__MSB_NODE__`/`__MSB_BRIDGE__`/`__MSB_SUBNET__`/`__MSB_GW__`，
 sed 填充后放 `/etc/systemd/system/`），user unit 形状见上表/`scripts/install.sh` 第 8 步。
-核心约束只有三条：cgroup 委派（服务必须在 user manager 里）、subuid/subgid 映射段、
-桥 + 网关 IP + MASQUERADE（`mysandbox-net.service` 的职责）。
+核心约束只有四条：cgroup 委派（服务必须在 user manager 里）、subuid/subgid 映射段、
+桥 + 网关 IP + MASQUERADE（`mysandbox-net.service` 的职责）、容器上游 DNS（网关 IP:53
+要有应答方——resolved 的 `DNSStubListenerExtra` 或自配 DNS 服务）。
 
 CLI 选项：
 
@@ -137,7 +140,7 @@ mysandbox firewall print                       # 预览期望的 ufw 放行规�
 
 ## 配置
 
-用户配置：`~/.config/mysandbox/config.yaml`（首启生成，权限 `0600`）。字段见随包 `config.default.yaml`，摘录：
+用户配置：`~/.mysandbox/config.yaml`（首启生成，权限 `0600`；旧 XDG 路径首启自动迁移）。字段见随包 `config.default.yaml`，摘录：
 
 ```yaml
 listen:
@@ -160,7 +163,7 @@ ui:
 token: <auto>         # 首启随机生成，勿手改
 ```
 
-状态文件（sidecar 元数据）：`~/.local/share/mysandbox/state.json`。
+状态文件（sidecar 元数据）：`~/.mysandbox/state.json`——mysandbox 自有数据单一根都在 `~/.mysandbox/`（config、compose 底账、ai/、logs/、tls/），备份/搬机拷走整个目录即可。
 
 ---
 
@@ -211,7 +214,7 @@ LXC 容器用到的数据库/缓存等服务，由 mysandbox 在宿主 docker �
 
 mysandbox 创建容器时假设模板满足（`scripts/lxc-template.sh` 已是满足该契约的参考实现）：
 
-- uid:gid `1000:1000` 用户名 `dev`（home `/home/dev`；uid 1000 与宿主用户直通，home 宿主可直接读写）。
+- uid:gid `1000:1000` 用户名 `dev`（home `/home/dev`；经 idmap 直通宿主**属主用户**——install.sh 按属主 uid/gid 生成映射，宿主用户不必是 uid 1000，home 宿主可直接读写）。
 - `/etc/skel-home/.zshrc` 作为首启 seed 模板；seed 由引擎在建容器时执行一次（**缺失才写**，用户改过的配置不会被覆盖）。
 - 预装你需要的 CLI（claude / codex / gh …）、zsh / git / tmux / node；zsh 体验是 oh-my-zsh 基座（git 别名、history、补全、ls 颜色）+ 幽灵建议/语法高亮两个插件。
 - `/etc/systemd/resolved.conf.d/mysandbox.conf` 配上游 DNS（静态 IP 无 DHCP）。
