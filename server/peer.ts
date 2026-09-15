@@ -15,9 +15,8 @@
 //   - 独立 peerToken（config 首启生成、0600），**不是主 token**——主 token = 控制台
 //     全量 API；peer 端点只有 targets/exec 两个。诚实说：D1 uid 直通下「exec 进任一
 //     容器 ≈ leon 用户」，泄露的边际风险不大，收窄只是保持安全故事干净。
-//   - ufw INPUT 只放 LXC 网段 → 本端口（firewall.ts 按 cfg.peer 推导；config 变更后
-//     sudo systemctl restart mysandbox-firewall）。services 网段的应用容器只是被执行
-//     目标、不需要调别人，不给。
+//   - ufw：自管网段（LXC + services）全端口 blanket（firewall.ts 信任模型）覆盖本端口，
+//     services 网段的应用容器因此也能调 peer API——信任模型下与 LXC 同权。
 //   - 每次 exec 记审计日志（单 token 不区分调用方，记 target/cmd/cwd/结果）。
 //   - 宿主目标（host）= 直接 spawn 为 mysandbox 进程用户（leon）。
 //

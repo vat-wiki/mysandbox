@@ -11,12 +11,13 @@
 //   - DOCKER_HOST：engine attachArgs 每次 exec 注入（非交互命令/tmux 新起的 shell 都吃到）；
 //     scripts/zshrc 条件导出兜底（tmux server 早于功能存在时，env 传不进 server 起的 shell）。
 //   - docker CLI：模板 step docker-cli（官方静态包只取客户端二进制，不带 daemon）。
-//   - ufw：firewall.ts 推导 LXC 网段 → 2375 的 INPUT 放行（mysandbox-firewall.service 应用）。
+//   - ufw：自管网段全端口 blanket（firewall.ts 信任模型）覆盖 2375（mysandbox-firewall.service 应用）。
 //
-// 安全立场：docker API = 宿主 root（docker 可挂宿主 /）。暴露面刻意收窄——绑死网桥 IP
-// （LAN 无路由可达）+ ufw 只放 LXC 网段（services 网段的应用容器不给）+ 桥随 mysandbox
-// 进程存活（服务停即关，不留常驻暴露面）。对容器（dev uid = 宿主 leon，token = 宿主完整
-// 权限）这只是把既有信任边界再推一格，换来容器内 docker 零安装。
+// 安全立场：docker API = 宿主 root（docker 可挂宿主 /）。绑死网桥 IP（LAN 无路由可达）
+// + 桥随 mysandbox 进程存活（服务停即关，不留常驻暴露面）。自管网段全端口互信（firewall.ts
+// 的信任模型，2026-09-15 起）下 services 网段的应用容器同样摸得到 2375——这是接受的取舍。
+// 对容器（dev uid = 宿主 leon，token = 宿主完整权限）这只是把既有信任边界再推一格，
+// 换来容器内 docker 零安装。
 import { createServer, connect } from 'node:net';
 import type { Config } from './config.js';
 import { gatewayOf } from './network.js';

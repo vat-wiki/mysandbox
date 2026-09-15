@@ -124,9 +124,9 @@ export const ConfigSchema = z.object({
       quietSeconds: z.number().int().default(15),
     })
     .default({ quietSeconds: 15 }),
-  // 宿主防火墙（ufw）追加放行（环境特例：热点访问 console、宿主 clash 代理/GLM 网关等）。
-  // 核心放行（容器 DNS 53、非 localhost 监听时的 console 端口、LXC 桥 route）由
-  // firewall.ts 从 listen/ipPool/services 推导，不经这里；应用在 mysandbox-firewall.service。
+  // 宿主防火墙（ufw）追加放行（外部网段特例：热点访问 console 等；port 缺省 = 全端口）。
+  // 核心放行（自管网段全端口 blanket + LXC 桥 route）由 firewall.ts 从 ipPool/services
+  // 推导，不经这里；应用在 mysandbox-firewall.service。
   firewall: z
     .object({
       allow: z

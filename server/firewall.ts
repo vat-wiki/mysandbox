@@ -2,6 +2,16 @@
 // 其中「容器访问宿主服务」（ufw INPUT）与「LXC 桥的路由放行」没有常驻守护者——漏一条就是
 // 「容器里访问不到服务」，SYN 静默被丢，极难排查（2026-09-03 的 7321 事故）。
 //
+// 信任模型（2026-09-15 起，替代旧逐端口白名单）：**自管网段 = 完全可信的开发工作区**
+// （mysandbox 是开发机工具，不做面向部署的隔离），LXC 网段与 services 网段各推一条
+// 全端口 blanket——DNS 53、dockerApi 2375、peer 7331、console 7321、宿主其余自有监听
+// （xrdp、开发端口…）都 ride 在其上，dockerApi/peer/listen 的开关只决定有没有监听，
+// 不决定防火墙。逐端口白名单的实测教训：docker-proxy 发布的容器端口走 DNAT→FORWARD
+// 不经 INPUT，宿主自有端口才被 ufw INPUT 拦——同一容器「有的端口通有的不通」极难排查
+// （testlens：发布端口 8788 通、自有端口 3389 不通），blanket 一刀切消掉这类半通状态。
+// 需要隔离的只剩**外部网段**（热点/局域网设备），走 config.firewall.allow 逐端口放行
+// （缺 port = 全端口）。
+//
 // 职责分界：
 //   这里只「算」：纯读 config 推导期望规则，无需 root、不碰系统（`mysandbox firewall print`）。
 //   「应用」在 scripts/mysandbox-firewall.sh（root，scripts/mysandbox-firewall.service 开机跑；
@@ -13,7 +23,6 @@
 //   - LXC → docker 跨桥：mysandbox-docker-interop.service（raw 表 + DOCKER-USER，ufw 之前）。
 //   - docker 服务网段出网：docker 自己往 FORWARD 前端插的 `! -o <桥> ACCEPT`，无需重复。
 import type { Config } from './config.js';
-import { DOCKER_API_PORT } from './dockerApi.js';
 
 export interface FirewallRule {
   kind: 'input' | 'route';
@@ -34,63 +43,25 @@ export function desiredFirewallRules(config: Config): FirewallRule[] {
   const rules: FirewallRule[] = [];
   const lxcSubnet = subnetOf(config.ipPool.from);
 
-  // LXC 网段 → 宿主 53（udp/tcp）：模板 resolved.conf 的首选上游就是网关 IP（53 监听由宿主
-  // systemd-resolved 的 DNSStubListenerExtra 提供），这是容器 DNS 的根基，与监听地址无关。
+  // 自管网段 = 可信工作区：INPUT 全端口 blanket。注意 docker-proxy 发布的容器端口走
+  // DNAT→FORWARD 不经 INPUT——这条只决定「宿主自有端口」的可达性，与发布端口路径互不相干。
   if (lxcSubnet) {
-    for (const proto of ['udp', 'tcp'] as const) {
+    rules.push({
+      kind: 'input',
+      spec: 'any',
+      from: lxcSubnet,
+      comment: 'mysandbox: LXC work net fully trusted (all ports -> host)',
+    });
+  }
+  if (config.services.enabled) {
+    const svcSubnet = subnetOf(config.services.ipPool.from);
+    if (svcSubnet) {
       rules.push({
         kind: 'input',
-        spec: `53/${proto}`,
-        from: lxcSubnet,
-        comment: 'mysandbox: LXC containers -> gateway DNS',
+        spec: 'any',
+        from: svcSubnet,
+        comment: 'mysandbox: services net fully trusted (all ports -> host)',
       });
-    }
-  }
-
-  // docker API 桥（cfg.dockerApi.enabled，server/dockerApi.ts）：LXC 网段 → 宿主 2375 的
-  // 透传代理（绑网关 IP）。docker = 宿主 root 级能力，来源钉死 LXC 网段——services 网段
-  // 的应用容器用不到宿主 docker，不给。
-  if (config.dockerApi.enabled && lxcSubnet) {
-    rules.push({
-      kind: 'input',
-      spec: `${DOCKER_API_PORT}/tcp`,
-      from: lxcSubnet,
-      comment: 'mysandbox: LXC containers -> host docker API bridge',
-    });
-  }
-
-  // peer API（cfg.peer，server/peer.ts）：LXC 网段 → 网关 IP 的容器间 exec 转发枢纽。
-  // 凭据是独立 peerToken（不是控制台主 token），端点只有 targets/exec；来源钉死 LXC
-  // 网段——services 网段的应用容器只是被执行目标，不需要调别人，不给。
-  if (config.peer?.enabled && lxcSubnet) {
-    rules.push({
-      kind: 'input',
-      spec: `${config.peer.port}/tcp`,
-      from: lxcSubnet,
-      comment: 'mysandbox: LXC containers -> peer exec API',
-    });
-  }
-
-  // 非 localhost 监听时才放行容器 → console 端口：localhost（安全默认）下容器反正连不上，
-  // 规则不该存在（与 CLI 对非 localhost 监听的警告同一立场）。
-  const remote = config.listen.host !== '127.0.0.1' && config.listen.host !== 'localhost';
-  if (remote && lxcSubnet) {
-    rules.push({
-      kind: 'input',
-      spec: `${config.listen.port}/tcp`,
-      from: lxcSubnet,
-      comment: `mysandbox: LXC containers -> mysandbox ${config.listen.port}`,
-    });
-    if (config.services.enabled) {
-      const svcSubnet = subnetOf(config.services.ipPool.from);
-      if (svcSubnet) {
-        rules.push({
-          kind: 'input',
-          spec: `${config.listen.port}/tcp`,
-          from: svcSubnet,
-          comment: `mysandbox: mysandbox-lan services -> mysandbox ${config.listen.port}`,
-        });
-      }
     }
   }
 
@@ -102,7 +73,8 @@ export function desiredFirewallRules(config: Config): FirewallRule[] {
     comment: 'mysandbox: routed accept from LXC bridge',
   });
 
-  // 环境特例（config firewall.allow）：热点访问 console、宿主 clash 代理/GLM 网关等。
+  // 外部网段特例（config firewall.allow）：热点访问 console 等。自管网段不需要条目
+  // （上面 blanket 已全覆盖），这里只服务真正的外部来源；port 缺省 = 全端口。
   for (const r of config.firewall.allow) {
     const comment = r.comment || `mysandbox: allow ${r.from}${r.port ? ` -> ${r.port}` : ''}`;
     if (r.port == null) {
