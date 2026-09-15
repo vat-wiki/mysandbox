@@ -1,6 +1,7 @@
 # mysandbox
 
-本地开发容器（dev container）的网页控制台：从浏览器直接开终端、批量改 git/ssh、自由创建删除容器。
+本地开发容器（dev container）的网页控制台：浏览器里开终端 / 浏览编辑文件、批量改 git/ssh、
+自由创建删除容器，外加 docker 配套服务、AI 技能与网关配置的分发、面板外访问容器端口的 web 代理。
 后端管理 **unprivileged LXC 系统容器**（真 systemd init、固定 IP），前端 Vue 3 + shadcn 风格。
 
 > 适合「一台宿主机上长期跑一堆 AI coding 容器（claude / codex / opencode / hermes …），又懒得每次手敲 `lxc-attach`」的场景。
@@ -39,18 +40,16 @@ mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），�
 
 ## 功能
 
-- **容器列表 / 生命周期**：列出受管理容器（config 带 mysandbox 标记 或 挂在配置的网桥上），启动 / 停止 / 重启 / 重命名（须先停）/ 删除。
-- **网页终端**：浏览器里直接 `zsh`（或任意 shell）进容器，支持多标签、自适应尺寸、链接可点。
-- **批量配置**（多选容器后）：
-  - **Git 身份** —— 批量 `git config --global user.name/email`。
-  - **SSH** —— 从宿主 `~/.ssh` 重新 seed，或追加公钥到 `authorized_keys`。
-  - **Claude `-p`** —— 对每个容器非交互跑 prompt 并收敛输出（带超时）。
-  - **通用命令** —— `sh -c <任意>`，并发执行、逐容器看 stdout/stderr/exitCode。
-- **创建 / 删除**：指定名称 / IP / git 身份即可新建并启动（克隆模板，秒级）；删除连数据一起（home 在容器 rootfs 内），需输入容器名确认。
+- **容器生命周期**：列出受管理容器（config 带 mysandbox 标记 或 挂在配置的网桥上），启动 / 停止 / 重启 / 重命名（须先停）/ 删除；指定名称 / IP / git 身份即可新建（克隆模板，秒级），删除连数据一起、需输入容器名确认。
+- **网页终端**：浏览器里直接 `zsh`（或任意 shell）进容器，多标签、自适应尺寸、链接可点；会话本体在服务端 tmux 里——关浏览器、重启 mysandbox 都不丢，跨浏览器窗口可找回接入。
+- **文件面板与编辑器**：容器 / 宿主 / docker 服务 / SSH 主机四处同形态——目录树 + Monaco 编辑器（未保存提示、Ctrl+S）、上传下载、跨面板复制、git 状态/暂存/提交/撤销可视化。
+- **批量配置**（多选容器后）：git 身份、SSH 重 seed / 追加公钥、Claude `-p` 非交互 prompt、任意 `sh -c` 命令（并发执行、逐容器看结果）。
 - **纳入管理（adopt）**：把外部已有容器登记进面板（只写 sidecar 元数据，不重建、不打标记），之后即可对它做生命周期 / 终端 / 批量。
 - **IP 池**：固定 IP 分配（避免容器重建后 IP 漂移），池视图可视化已用 / 空闲 / 保留地址。
-- **docker 配套服务**：在宿主 docker 上起单容器服务（postgres/redis/mysql/自定义镜像），固定 IP 挂在与容器同座的网桥——**容器内按服务名直连**（hosts 自动注入，如 `psql -h pg`、`redis-cli -h cache`），不发布端口到宿主。管理面板：启停 / 日志 / 删除（留卷或连卷删）。
-- **容器桌面**：浏览器里直接查看/操作 LXC 容器内的 XFCE 桌面（容器内 Xvfb + x11vnc，经 mysandbox 的 WS 代理转发 RFB，前端 noVNC 渲染）。首次打开自动装桌面栈并启动，之后秒连复用；关掉窗口不杀桌面（下次打开接着用）。
+- **docker 配套服务**：compose 底账管理数据库/缓存等服务，容器内按服务名直连（详见下文）。
+- **Web 代理**：面板外经基域名访问容器/服务的 HTTP 端口（详见下文）。
+- **AI 工具**：技能中心（技能库分发到本机 + 全部容器）+ AI 网关（provider/绑定统一落盘 claude/codex/opencode/pi 配置）（详见下文）。
+- **容器桌面**：浏览器里直接查看/操作 LXC 容器内的 XFCE 桌面（容器内 Xvfb + x11vnc，经 mysandbox 的 WS 代理转发 RFB，前端 noVNC 渲染）。首次打开自动装桌面栈并启动，之后秒连复用；关窗不杀桌面（下次打开接着用）。
 
 ---
 
@@ -108,9 +107,13 @@ CLI 选项：
 ```
 mysandbox [--port 7321] [--host 127.0.0.1] [-V|--version] [-h|--help]
 mysandbox base <status|clone|export|import>    # 模板容器管理（image 是历史别名）
+mysandbox exec <目标> -- <命令>     # 容器间命令互通：host | c:<容器> | s:<服务> | 裸名（免 ssh）
+mysandbox targets                  # 列 exec 可达目标
 mysandbox open <path> [--container <name>]
-mysandbox status                               # 宿主资产总览（只读，不需要服务在跑）
-mysandbox firewall print                       # 预览期望的 ufw 放行规则（免 root）
+mysandbox skills [sync|update|ls]  # 技能分发：同步 / 从来源更新库技能 / 列表
+mysandbox status [--json]          # 宿主资产总览（只读，不需要服务在跑）
+mysandbox firewall print           # 预览期望的 ufw 放行规则（免 root）
+mysandbox logs [N] [--raw]         # 服务日志尾部（读落盘文件，不需要服务在跑）
 ```
 
 环境变量：`MYSANDBOX_LOG_LEVEL=debug|info|warn|error`（默认 `info`）。
@@ -184,13 +187,31 @@ mysandbox base status                          # 模板在不在、STOPPED 与�
 
 ## docker 配套服务
 
-LXC 容器用到的数据库/缓存等服务，由 mysandbox 在宿主 docker 上统一起与管理（header「服务」徽标进面板）：
+LXC 容器用到的数据库/缓存等服务，由 mysandbox 在宿主 docker 上统一起与管理（侧栏「应用容器」分区，与系统容器同款卡片交互；点卡片进服务终端，⋯ 开服务抽屉）：
 
-- **单容器服务**：预设 postgres / redis / mysql（表单只问密码等必填项）或任意自定义镜像 + env + 命令。
-- **固定 IP、不发布端口**：服务挂在与 LXC 互通的 docker 网络（默认 `mysandbox-lan`，桥 `br-mysandbox`），从服务池 `10.88.0.200–240` 分配静态 IP。容器内**按服务名直连**——mysandbox 把 `服务名 IP` 自动注入所有容器 hosts（服务增删/启停时自动追平，容器重启不丢）。
+- **compose 底账，文件是唯一配置真相**：一服务 = `~/.mysandbox/compose/<名>/compose.yaml`。创建/改配置/删除全以文件为准——抽屉配置页改的是它，终端手改再点「应用」等价（Monaco 编辑 + Ctrl+S，`up -d` 幂等收敛）；容器实际跑的与文件有漂移时配置页可见。
+- **目录注册表（agent 友好）**：`compose/<名>/` 目录本身就是服务清单——放一份 compose.yaml（顶层 `name:` = 目录名）+ `docker compose up -d`，面板即出现该服务；原生多服务 compose 项目整栈一张卡（锚在带发布端口的成员上，其余成员折叠管理）。
+- **收编外部容器**：侧栏 Inbox 入口。裸容器（`docker run` 起家）可「接管式收编」——按现状生成 compose 底账后重建，之后可删可改；已归其它编排管的 compose 栈可只读收编（启停走原编排方，所有权不抢）。
+- **固定 IP、不发布端口**：服务挂在与 LXC 互通的 docker 网络（默认 `mysandbox-lan`），从服务池分配静态 IP。容器内**按服务名直连**——mysandbox 把 `服务名 IP` 自动注入所有容器 hosts（服务增删/启停自动追平，容器重启不丢），如 `psql -h pg`。
+- **服务终端与文件面板**：服务容器里跑 shell（宿主 tmux 窗口承载，跨 mysandbox 重启存活），文件面板/编辑器与容器终端同形态。
 - **数据持久**：每服务一个命名卷 `mysandbox-svc-<名>`；删除默认留卷（同名重建数据还在），「连数据删」需输入服务名确认。
-- **管理边界**：mysandbox 只管理自己创建的服务（docker label 标记），宿主上其他容器（如 compose 起的）永不触碰。密码等 env 值只存本地 sidecar（`0600`），API 不回传。
-- docker 不可达时面板降级提示（容器管理不受影响），`/api/health` 的 `services.available` 反映可用性。
+- **长操作都是后台任务**：创建/应用/迁移/收编提交即返回 jobId，面板看流式日志、可取消，完成弹 toast；面板外用 `docker compose` 改动也会被事件追平。
+- **管理边界**：未收编的外部容器结构性进不了列表、操作必 404；docker 不可达时面板降级提示（容器管理不受影响）。
+
+## Web 代理
+
+容器/服务在自管私网里，外部设备只能摸到宿主——把出口收进面板（同监听端口、同一 token）：
+
+- **域名门面**：`http://<名>-<端口>.<基域名>:<port>`（cookie 会话）+ `/proxy/...` 子路径兜底。基域名 auto = 本地域 → LAN sslip → tailscale sslip 逐个探测择优、全败自动降级子路径；自有泛解析域名配 `proxy.vhost` 最稳。
+- **双口径平级**：从 `IP:7321` 打开控制台 → 端口点击直连 `IP:端口`（无 cookie 依赖）；从基域名打开 → 走代理。服务端不重定向、不强制任何一方。
+- **TLS**：`listen.tls: true` 开自签 HTTPS（本地 CA + 泛域名叶子证书，持久化在 `~/.mysandbox/tls/`）。浏览器信任一次即可：控制台 `/tls-ca.crt` 下载导入（Chromium 走 NSS 库 `~/.pki/nssdb`，导入后重启浏览器）。
+
+## AI 工具（技能中心 + AI 网关）
+
+面板「AI 工具」板块管两件事，都自动铺到本机 + 全部受管容器——宿主直写 rootfs，**容器不必在跑**，CLI 下次启动即生效：
+
+- **技能中心**：技能库是唯一真相源（`~/.mysandbox/ai/skills/`），安装规则决定哪些技能装到哪（全局 = 本机 + 全部受管容器；或指定项目目录，项目克隆到哪技能跟到哪）。服务启动 / 库变动 watch / 新建容器自动追平，也可面板「立即同步」或 `mysandbox skills sync`。库内技能是入库时刻的快照，更新 = 显式动作（面板「更新」/ `mysandbox skills update`）。
+- **AI 网关**：provider 库（N 个 OpenAI/Anthropic 兼容网关的凭据与端点）× 绑定（claude / codex / opencode / pi 各用哪些 provider）。改 key 面板重推即全局生效；落盘幂等（JSON 只深改本方案的键、TOML/zshrc 用锚点块整块替换），不碰用户其余配置。本机是真实环境，只有显式目标覆盖才写。
 
 ## 终端（本机 + SSH 主机）
 
@@ -199,7 +220,8 @@ LXC 容器用到的数据库/缓存等服务，由 mysandbox 在宿主 docker �
 断开 60s 内刷新重连恢复；点 ✕ 真杀）。
 
 - **本机**：宿主 tmux 走专用 socket `-L mysandbox-host`（不碰你自己的 tmux server），`script(1)` 提供 PTY。仅支持 Linux。
-- **SSH 主机**：会话本体在**远端** tmux 的专用 socket `-L mysandbox-ssh` 上，跨本机/远端重启存活；凭据全走本机 ssh（密钥 / agent / `~/.ssh/config` 别名含跳板机），面板只存「怎么连」不存密码。远程主机只是终端的延伸，**不是被管理对象**——没有文件面板、批量操作、hosts 注入这些容器能力。
+- **SSH 主机**：会话本体在**远端** tmux 的专用 socket `-L mysandbox-ssh` 上，跨本机/远端重启存活；凭据全走本机 ssh（密钥 / agent / `~/.ssh/config` 别名含跳板机），面板只存「怎么连」不存密码。远程主机只是终端的延伸，**不是被管理对象**——文件面板是刻意保留的唯一例外（浏览/编辑/git），没有批量操作、hosts 注入这些容器能力。
+- **会话找回**：tab 布局是各浏览器自己的 localStorage，但会话本体在服务端 tmux 活着——终端栏的归档图标可扫出全部存活会话，跨窗口/跨浏览器一键接入（现场全保留）；tab 右键「隐藏」只是收起（会话保留），点 ✕ 才是真杀。
 - ⚠️ 安全上注意：token 本就等价宿主用户（uid 1000 直通），本机与 SSH 终端都不扩大权限面（拿着 token 本就能 ssh 到任何可达主机）——不要把服务暴露到非受控网络。
 
 ## 容器桌面
@@ -252,6 +274,8 @@ server/        TypeScript 后端（fastify + lxc-* CLI）
   terminal.ts    /ws/terminal（lxc-attach PTY）
   hostTerminal.ts /ws/host-terminal（宿主 PTY）
   sshTerminal.ts /ws/ssh-terminal（SSH 主机终端，目标存 sidecar）
+  proxy.ts / tls.ts   Web 代理（vhost + 子路径门面）与自签 TLS
+  skillSync.ts / aiconfig.ts   技能分发 / AI 网关落盘（宿主直写 rootfs）
   routes.ts      REST 路由
   base.ts        /api/base*（模板操作）+ CLI base 命令
   docker.ts      docker CLI 客户端（服务层用，label 过滤）
