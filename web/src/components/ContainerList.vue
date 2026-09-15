@@ -676,7 +676,9 @@ function openAi() {
 }
 function closeAi() {
   aiOpen.value = false
-  if (mainView.value === 'ai') mainView.value = 'terminal'
+  // 主区回落：有文件 tab 回编辑器（关 AI 页不该把正开着的文件也带走进终端），
+  // 没有才回终端。
+  if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
 }
 // AI 配置覆盖弹框目标（容器名 / HOST_TARGET 本机哨兵）：容器右键「AI 配置…」与本机
 // 「为本机配置」都是临时任务——AiOverrideDialog 弹框承载，即来即走不劫持主区。
@@ -3469,9 +3471,11 @@ onUnmounted(() => {
            多 tab 收缩同终端 tab（浏览器式，桌面收缩/手机滚动）；右键菜单承载
            tab 管理（关闭系）+ 形态动作（编辑⇄预览/下载/普通打开）+ 复制路径。 -->
       <div v-if="editorTabs.length || aiOpen" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
-        <!-- AI 工具 tab（单例，恒在文件 tab 最左）：Bot 钮打开的页面在这里落位，
-             与文件 tab 平级互切；X 关闭整个 AI 工作区（覆盖模式一并清）。 -->
+        <!-- AI 工具 tab（单例，恒在文件 tab 最左，v-if=aiOpen——有文件 tab 时栏仍渲染，
+             不挂条件的话 X 关不掉它：aiOpen 已清但页签照画，用户怎么点都"关不掉"）：
+             Bot 钮打开的页面在这里落位，与文件 tab 平级互切；X 关闭整个 AI 工作区。 -->
         <div
+          v-if="aiOpen"
           class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
           :class="
             mainView === 'ai'
