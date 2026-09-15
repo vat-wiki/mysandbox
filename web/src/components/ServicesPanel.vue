@@ -741,7 +741,7 @@ onUnmounted(() => {
 
               <!-- 收编容器没有底账（生命周期归它自己的编排方） -->
               <p v-else-if="openCfg && sel.adopted" class="pt-1.5 text-xs text-muted-foreground">
-                收编容器没有 compose 底账——配置归原编排方（compose 栈 / docker run）管。
+                收编容器没有 compose 底账——配置归原编排方管。
               </p>
 
               <!-- 旧版创建（无底账）：迁移入口 -->

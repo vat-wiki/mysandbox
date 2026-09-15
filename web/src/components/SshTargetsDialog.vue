@@ -128,11 +128,11 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
         </DialogTitle>
       </DialogHeader>
 
-      <div class="flex items-start gap-1.5">
-        <p class="text-xs text-muted-foreground">
-          远程主机作为「终端」接入，会话在远端 tmux 上；凭据复用本机 ssh，这里不存密码。
-        </p>
-        <InfoHint tip="会话跨重启存活；密钥 / agent / ~/.ssh/config 别名（含跳板）直接生效。" />
+      <div class="flex justify-end">
+        <InfoHint label="接入方式说明">
+          <p>远程主机作为「终端」接入，会话在远端 tmux 上；凭据复用本机 ssh，这里不存密码。</p>
+          <p>会话跨重启存活；密钥 / agent / ~/.ssh/config 别名（含跳板）直接生效。</p>
+        </InfoHint>
       </div>
 
       <p

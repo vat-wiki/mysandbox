@@ -892,7 +892,7 @@ async function cleanMissing(r: SkillRuleResult) {
                 <Button size="sm" class="h-8 shrink-0" :disabled="impBusy || !impDir.trim()" @click="submitImportDir">添加</Button>
               </div>
               <p class="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/70">
-                拷一份快照进库，与来源解耦；要更新点卡片上的「更新」。
+                拷一份快照进库，与来源解耦。
               </p>
             </template>
             <template v-else>

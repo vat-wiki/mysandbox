@@ -198,7 +198,7 @@ onMounted(load)
             <Label for="testlens-host" class="text-xs text-muted-foreground">服务地址</Label>
             <Input id="testlens-host" v-model="host" placeholder="http://testlens:10004" class="font-mono text-xs" />
             <p v-if="view?.suggestedHost" class="text-[11px] text-muted-foreground">
-              检测到 testlens 服务，已按约定地址预填。本机会自动换算为 localhost 等价端口。
+              检测到 testlens 服务，已按约定地址预填（本机自动换算 localhost）。
             </p>
           </div>
 

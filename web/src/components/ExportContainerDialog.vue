@@ -74,12 +74,12 @@ function submit() {
       <DialogHeader>
         <DialogTitle class="flex items-center gap-1.5">
           导出为包
-          <InfoHint tip="包内容 = config + rootfs" />
+          <InfoHint label="导出说明">
+            <p>包内容 = config + rootfs。</p>
+            <p>拷到别的机器用「从包导入」恢复。</p>
+          </InfoHint>
         </DialogTitle>
-        <DialogDescription>
-          把 {{ container.displayName || container.name }} 打包成 tar.zst，
-          拷到别的机器用「从包导入」恢复。
-        </DialogDescription>
+        <DialogDescription>把 {{ container.displayName || container.name }} 打包成 tar.zst。</DialogDescription>
       </DialogHeader>
 
       <div class="space-y-3">

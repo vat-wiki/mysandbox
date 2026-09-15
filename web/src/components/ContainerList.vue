@@ -2918,7 +2918,7 @@ onUnmounted(() => {
                       v-if="s.adopted"
                       variant="outline"
                       class="shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground"
-                      title="收编的外部容器：原编排方仍管它的生命周期，这里只提供终端/文件/网络可达"
+                      title="生命周期归原编排方——这里只提供终端/文件/网络可达"
                       >收编</Badge
                     >
                   </div>

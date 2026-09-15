@@ -206,7 +206,7 @@ const ACTION_CARD: Record<BaseAction, { name: string; desc: string; button: stri
   },
   clone: {
     name: '从容器固化',
-    desc: '把一个现有容器做成新模板（会先停它，完成后不自动重启）',
+    desc: '把现有容器做成新模板（会先停它，不自动重启）',
     button: '固化为模板',
     busy: '克隆中…',
   },
@@ -230,9 +230,7 @@ watch(
 )
 
 const title = computed(() => `${baseLabel.value}管理`)
-const description = computed(() =>
-  '新建容器的来源模板——可从零制作、从容器固化，或与 tar.zst 包互转。',
-)
+const description = computed(() => '新建容器的来源模板。')
 
 function fmtSize(bytes: number): string {
   return bytes >= 1024 ** 3

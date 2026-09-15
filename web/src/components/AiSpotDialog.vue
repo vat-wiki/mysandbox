@@ -360,7 +360,7 @@ onMounted(async () => {
             </template>
           </SkillPickList>
           <p class="text-[11px] leading-snug text-muted-foreground/70">
-            安装 = 拷进落点并登记；库更新自动跟走，移除自动清理。
+            库更新自动跟走，移除自动清理。
           </p>
 
           <div class="flex justify-end gap-2">
