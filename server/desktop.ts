@@ -9,8 +9,8 @@
 //
 // 形态：容器内 Xvfb(虚拟 X) + XFCE + x11vnc(RFB 服务)，宿主 mysandbox 做代理。
 // 按需启动（照 terminal.ts 的 tmuxReady 模式）：首次连接容器里没有桌面栈 -> ensureDesktop()
-// 先装包（apt 换源 aliyun + install xvfb/x11vnc/xfce4/dbus-x11——官方源被 fake-ip DNS 污染
-// 不可用，aliyun 实测直连可达）再起服务；桌面栈已活着（Xvfb 进程在 + 5901 在听）则秒 ready。
+// 先装包（apt install xvfb/x11vnc/xfce4/dbus-x11——官方源探测不通时才换 aliyun，见
+// ensureMirror）再起服务；桌面栈已活着（Xvfb 进程在 + 5901 在听）则秒 ready。
 //
 // 生命周期：桌面进程 setsid nohup 常驻容器内（dev 用户），与浏览器、与 mysandbox 进程解耦——
 // 关 Dialog 只断代理（TCP destroy），桌面留着，重开秒连复用；容器重启后进程没了，
@@ -63,9 +63,17 @@ async function desktopAlive(cfg: Config, id: string): Promise<boolean> {
   return vncReachable(cfg, id);
 }
 
-// 幂等换源：官方源（archive/security.ubuntu.com）→ aliyun。已是 aliyun 则不动。
+// 幂等换源：先探官方源（DNS+TCP 可达即不动——海外机器没必要绕 aliyun），不通才换。
+// 换源动机是 fake-ip DNS 污染下官方域名解析到不可达地址，/dev/tcp 探测天然覆盖这一面；
+// 已是 aliyun 而官方源恢复的场景不回切（幂等 + 保守：能装包就别折腾 sources.list）。
 // sed -i 直接改 /etc/apt/sources.list；Ubuntu 24.04 模板就是单文件 sources.list（实测）。
 async function ensureMirror(cfg: Config, id: string): Promise<void> {
+  const probe = await sh(
+    cfg,
+    id,
+    'timeout 3 bash -c "exec 3<>/dev/tcp/archive.ubuntu.com/80" 2>/dev/null',
+  );
+  if (probe.exitCode === 0) return;
   await sh(
     cfg,
     id,

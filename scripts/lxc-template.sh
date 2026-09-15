@@ -79,19 +79,23 @@ esac
 EOS
 
 # ---------- dns：静态 IP 无 DHCP，resolved 没有上游 ----------
-# 网关 10.88.10.1 是宿主在网桥上的副 IP（见 docs/lxc-migration.md P8）。
+# 上游 = 宿主在网桥上的网关副 IP:53（网段无关——从容器自己的 config 解析，不写死 10.88.x）。
+# 应答方由 install.sh 的 DNSStubListenerExtra 步骤保证（自配 DNS 的机器由 mihomo/dnsmasq 等
+# 应答）。见 docs/lxc-migration.md P8。
 step dns
-attsh <<'EOS'
+GW="$(grep -E '^lxc\.net\.0\.ipv4\.gateway[[:space:]]*=' "$HOME/.local/share/lxc/$NAME/config" | head -n1 | awk '{print $3}')"
+[ -n "$GW" ] || { echo "容器 config 缺 lxc.net.0.ipv4.gateway——先在 $HOME/.local/share/lxc/$NAME/config 配好网关（前置要求，见文件头）" >&2; exit 1; }
+attsh "$GW" <<'EOS'
 mkdir -p /etc/systemd/resolved.conf.d
 cat > /etc/systemd/resolved.conf.d/mysandbox.conf <<CONF
 [Resolve]
-DNS=10.88.10.1 114.114.114.114
+DNS=$1
 CONF
 systemctl restart systemd-resolved
-getent hosts archive.ubuntu.com >/dev/null || { echo "DNS 仍不可用" >&2; exit 1; }
+getent hosts archive.ubuntu.com >/dev/null || { echo "DNS 仍不可用——确认宿主 $1:53 有应答方（install.sh 的 DNSStubListenerExtra 步骤；自配 DNS 机器确认网关监听）" >&2; exit 1; }
 EOS
 
-# ---------- dev 用户：uid 1000 必须叫 dev（与宿主 leon 对齐，见 D1）----------
+# ---------- dev 用户：uid 1000 必须叫 dev（经 idmap 直通宿主属主用户，install.sh 按 TARGET_UID 生成映射，见 D1）----------
 step user
 attsh <<'EOS'
 if id dev >/dev/null 2>&1; then

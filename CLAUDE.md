@@ -32,7 +32,7 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 
 ## 安全模型（改动前必读）
 
-**拿到 token 等于拿到宿主 leon 用户的完整权限**：LXC 容器本身是 unprivileged（容器 root → 宿主 uid 100000），拿不到宿主 root；但**容器内 uid 1000 直通宿主 `leon`**（D1），且服务能读写宿主 `~/.ssh`、跑宿主终端（`/ws/host-terminal`）。
+**拿到 token 等于拿到宿主属主用户的完整权限**：LXC 容器本身是 unprivileged（容器 root → 宿主 uid 100000），拿不到宿主 root；但**容器内 uid 1000 直通宿主属主用户**（D1——install.sh 按属主 uid/gid 生成 idmap，不要求属主 uid 是 1000），且服务能读写宿主 `~/.ssh`、跑宿主终端（`/ws/host-terminal`）。
 
 所以约束不变：
 
@@ -55,7 +55,7 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 - 创建/删除在 `lifecycle.ts`（IP 分配 + home 种子 + hosts 来源编排），建容器动作（克隆模板 + 改写 config）在 `engine/lxc.ts` 的 `create()` 里。IP 池计算在 `network.ts`——LXC 的 IP 配在容器 config 里，`assignedIps` 扫全部 config 即权威源；`gatewayOf(cfg)` 网关 = `<ipPool 前缀>.1`（宿主在桥上的副 IP）。
 - **受管理容器的判定**：在配置的网桥上，或 config 里有 mysandbox 标记（`lxc.environment = MYSANDBOX_MANAGED=true` 纯文本行，可 diff 可手改）。标记不可变，所以易变元数据（displayName、adopted、tags 等）走 **sidecar JSON**（`state.ts`，存 XDG data 目录，容器名作 key）。adopt 外部容器只写 sidecar，不动容器对象。
 - **批量操作**（git 身份 / ssh reseed / claude -p / 任意命令）在 `batch.ts`，用 p-limit 并发，底层走 engine 的 `execRun`。
-- **hosts（全局面板已删）**：模板容器的 /etc/hosts 是新容器 hosts 的**源头**——lxc-copy 克隆原样复制，想改默认就改模板（宿主 leon 写不进属主 100000 的 rootfs，要进 `lxc-usernsexec`）。新建容器可选宿主 `/etc/hosts` 作源（`CreateInput.hosts`）。mysandbox 对已落地容器只拥有**尾部服务块**：`hosts-sync.ts` 的 `applyServicesBlock` 读-改-写（直读 rootfs → `stripServicesBlock` 剥旧块 → 追新块），base 永不动；`overwriteHosts` 是显式整体覆写（批量配置 tab / 宿主源创建）。模板在两处被排除出目标（`dropTemplate` + `handleEvent` 前置）——它 running 时事件路径不得追平（旧版在这里污染过模板）。
+- **hosts（全局面板已删）**：模板容器的 /etc/hosts 是新容器 hosts 的**源头**——lxc-copy 克隆原样复制，想改默认就改模板（宿主用户写不进属主 100000 的 rootfs，要进 `lxc-usernsexec`）。新建容器可选宿主 `/etc/hosts` 作源（`CreateInput.hosts`）。mysandbox 对已落地容器只拥有**尾部服务块**：`hosts-sync.ts` 的 `applyServicesBlock` 读-改-写（直读 rootfs → `stripServicesBlock` 剥旧块 → 追新块），base 永不动；`overwriteHosts` 是显式整体覆写（批量配置 tab / 宿主源创建）。模板在两处被排除出目标（`dropTemplate` + `handleEvent` 前置）——它 running 时事件路径不得追平（旧版在这里污染过模板）。
 - **错误处理**：抛 `errors.ts` 的 `HttpError`（带 code/status），`wrapEngineError` 把 404 形状错误映射为 `not_found`。
 - **配置**：`config.ts` 从 `config.default.yaml` 读默认 + `~/.mysandbox/config.yaml` 覆盖，首启生成随机 token。全部自有数据收在单一根 `~/.mysandbox/`（config.yaml、compose 底账、state.json、ai/、logs/、tls/——备份/搬机一条命令；config.ts 模块加载时做一次性 XDG→~/.mysandbox 迁移），例外是 LXC 容器本体（liblxc 硬编码 `~/.local/share/lxc`）。
 - **容器内 mysandbox 命令**（`container-cli.ts`）：脚本由宿主种子写入 `<lxcpath>/<name>/rootfs/home/dev/.local/bin/mysandbox`（建容器时 + 启动扫描；种子语义是**内容变就覆盖**的自更新，不是缺才写——脚本升级/peer 换配置靠它刷进存量容器）。web 终端（`terminal.ts`）注入 `MYSANDBOX_WEB` 标记——exec 的 Env 到不了 tmux server 起的 shell，所以挂 tmux 全局环境（`set-environment -g`），同时开 `allow-passthrough`（否则 tmux 吞掉未知 OSC）。命令运行时探测标记，web 下打印 OSC 7677（tmux 下 DCS passthrough 包裹），`Terminal.vue` 注册 OSC handler 捕获后冒泡 `ContainerList.vue` 定位文件面板/开编辑器（与 CLI `mysandbox open` 深链共用 `locateContainerPath`）。非 web 环境只打提示。

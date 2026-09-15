@@ -69,8 +69,17 @@ id "$TARGET_USER" >/dev/null 2>&1 || die "用户 $TARGET_USER 不存在"
 command -v apt-get >/dev/null 2>&1 || die "仅支持 apt 系发行版（LXC 5.0.x 按 Ubuntu/Debian 开发）"
 
 TARGET_UID="$(id -u "$TARGET_USER")"
+TARGET_GID="$(id -g "$TARGET_USER")"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 TARGET_SHELL="$(getent passwd "$TARGET_USER" | cut -d: -f7)"
+# D1 直通（容器 dev=1000 → 宿主属主）靠 default.conf 里的单条 idmap 落在宿主真实 uid/gid 上。
+# 宿主 uid/gid 若落在 subuid 段自身（100000–165535）会与其它映射行重叠，lxc-start 直接拒绝——
+# 正常系统到不了这个区间，守卫一下防极端配置（uid_max 被调高的机器）。
+for _v in "$TARGET_UID" "$TARGET_GID"; do
+  if [ "$_v" -ge 100000 ] && [ "$_v" -le 165535 ]; then
+    die "属主 uid/gid $_v 落在 subuid 段（100000–165535）内，无法生成 idmap——请换属主用户"
+  fi
+done
 SUBNET_PREFIX="${SUBNET%.*}"
 
 # 以目标用户身份跑命令（-l 加载其 profile：fnm/nvm 的 PATH 都挂在里面）。
@@ -111,7 +120,13 @@ fi
 
 log "2/8 subuid/subgid（unprivileged 容器的 uid 映射段）"
 for f in /etc/subuid /etc/subgid; do
-  grep -q "^${TARGET_USER}:" "$f" 2>/dev/null || echo "${TARGET_USER}:100000:65536" >> "$f"
+  if grep -q "^${TARGET_USER}:" "$f" 2>/dev/null; then
+    # 已有条目的起点必须与 default.conf 的 idmap 对齐（100000）——起点错位则 lxc-start 必败。
+    _got="$(grep "^${TARGET_USER}:" "$f" | head -n1 | cut -d: -f2)"
+    [ "$_got" = "100000" ] || die "$f 里 ${TARGET_USER} 的映射段起点是 $_got（需 100000）。若曾手工配过其它起点，需按它重写 ~/.config/lxc/default.conf 的 idmap"
+  else
+    echo "${TARGET_USER}:100000:65536" >> "$f"
+  fi
 done
 
 log "3/8 lxc-usernet + 用户级 default.conf"
@@ -124,7 +139,9 @@ else
 fi
 # 用户级 default.conf：base import / 模板克隆的 idmap 源头（无它建出的容器无 uid 映射，
 # unprivileged 环境下 lxc-start 必败）。缺失才生成——已有配置尊重不动。
-# idmap 语义 = D1 契约：容器 root→100000 段、dev(1000) 直通宿主用户。
+# idmap 语义 = D1 契约：容器 root→100000 段、dev(1000) 直通宿主属主用户（TARGET_UID/GID
+# 不写死 1000——属主 uid 非 1000 的机器上，写死会让容器 home 的宿主侧属主落到别人/不存在的
+# uid，D1 直通全链路断裂。仅新生成时生效，已有 default.conf 尊重不动）。
 LXC_DEF="$TARGET_HOME/.config/lxc/default.conf"
 if [ ! -f "$LXC_DEF" ]; then
   mkdir -p "$TARGET_HOME/.config/lxc"
@@ -132,8 +149,8 @@ if [ ! -f "$LXC_DEF" ]; then
 # mysandbox unprivileged LXC 默认配置（scripts/install.sh 生成）。
 lxc.idmap = u 0 100000 1000
 lxc.idmap = g 0 100000 1000
-lxc.idmap = u 1000 1000 1
-lxc.idmap = g 1000 1000 1
+lxc.idmap = u 1000 ${TARGET_UID} 1
+lxc.idmap = g 1000 ${TARGET_GID} 1
 lxc.idmap = u 1001 101001 64535
 lxc.idmap = g 1001 101001 64535
 
@@ -249,6 +266,28 @@ if command -v docker >/dev/null 2>&1 && systemctl list-unit-files docker.service
   systemctl start mysandbox-docker-interop.service || warn "mysandbox-docker-interop 启动失败——systemctl status 排查"
 else
   warn "docker 未安装——跳过 mysandbox-docker-interop（装 docker 后重跑本脚本补上）"
+fi
+
+log "6.5/8 网关 DNS 监听（$GW:53，容器 resolved 的上游）"
+# 容器静态 IP 无 DHCP，systemd-resolved 的唯一上游 = 网关副 IP:53（lxc-template.sh 的 dns 步
+# 依赖它）。全新宿主上没人应答这个端口——由 resolved 的 DNSStubListenerExtra 补上。
+# 已有应答方则不动（mihomo/dnsmasq 等自配 DNS 的场景尊重现状）；网桥没起来（net unit 失败）
+# 时跳过——IP 不存在监听也绑不上。
+if ip -4 addr show dev "$BRIDGE" 2>/dev/null | grep -qw "$GW" \
+   && timeout 2 bash -c "exec 3<>/dev/tcp/$GW/53" 2>/dev/null; then
+  log "   已有应答方，跳过"
+elif ip -4 addr show dev "$BRIDGE" 2>/dev/null | grep -qw "$GW"; then
+  mkdir -p /etc/systemd/resolved.conf.d
+  cat > /etc/systemd/resolved.conf.d/mysandbox-dns.conf <<EOF
+# scripts/install.sh 生成：容器（静态 IP 无 DHCP）以网关 IP 作为上游 DNS。
+[Resolve]
+DNSStubListenerExtra=$GW:53
+EOF
+  systemctl restart systemd-resolved 2>/dev/null \
+    || warn "systemd-resolved 重启失败——容器 DNS 可能不可用，检查 /etc/systemd/resolved.conf.d/mysandbox-dns.conf"
+  log "   已写 DNSStubListenerExtra=$GW:53"
+else
+  warn "网桥 $BRIDGE 未就位（mysandbox-net 启动失败？）——跳过 DNS 监听配置"
 fi
 
 log "7/8 linger（用户级 systemd 常驻）"
