@@ -198,20 +198,20 @@ bin/opencode.exe --version
 rm -rf /tmp/.npm /tmp/.cache
 EOS
 
-# ---------- claude（原生安装器，装到 dev 的 home）----------
-# 刻意不走 npm 全局：npm 会装进 /usr/local（root 所有），克隆出的容器里 dev 的
-# 自动更新写不进 prefix，每次启动报 "Auto-update failed: no write permission to
-# npm prefix"。原生安装器落到 /home/dev/.local/bin，dev 自更新全程免 root。
-# HOME 指向 /home/dev 时以 root 跑，落盘文件归 root——由下面的 home-owner 步统一归还。
-# 幂等：已在位即跳过（重跑模板不追新，同 omz 冻结快照口径；要升级删掉重跑）。
+# ---------- claude（npm 全局，装进 dev 可写 prefix）----------
+# 刻意不走官方原生安装器：原生安装/自更新的清单源 downloads.claude.ai 在本部署网络
+# 区域封锁/超时（实测 2026-09），原生形态装不上、装上了也自更新不了；npm registry 可达。
+# npm 路径的自更新 = `npm install -g @anthropic-ai/claude-code@latest`，落 npm prefix——
+# 默认 /usr/local（root 所有），容器里 dev 写不进，启动报 "Auto-update failed: no write
+# permission to npm prefix"。把 dev 的 npm prefix 指到 /home/dev/.local（zshrc PATH 与
+# engine attachArgs 的 PATH 都已含它），更新落位 dev 自己的地盘、免 root。
+# 此处以 root 跑，落盘文件归 root——由下面的 home-owner 步统一归还。
 step claude
 attsh <<'EOS'
-if [ -x /home/dev/.local/bin/claude ]; then
-  echo "claude 已在位，跳过"
-else
-  export HOME=/home/dev
-  curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors https://claude.ai/install.sh | bash
-fi
+rm -f /home/dev/.local/bin/claude   # 旧版 `claude install` 可能留下的指向 /usr/local 的软链，不摘会 EEXIST 挡落位
+npm install -g --prefix /home/dev/.local @anthropic-ai/claude-code@latest
+printf 'prefix=/home/dev/.local\n' > /home/dev/.npmrc
+npm rm -g @anthropic-ai/claude-code 2>/dev/null || true   # 清旧模板遗留在 /usr/local 的副本
 /home/dev/.local/bin/claude --version
 EOS
 
