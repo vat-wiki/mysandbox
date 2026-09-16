@@ -1,9 +1,13 @@
 <script setup lang="ts">
-// Claude Code 工具自身配置（toolConfig，全局一份）：绑定之外的 CLI 特殊配置——
-// 默认模型（写入 ANTHROPIC_MODEL）+ 自定义 env 键值对。双形态一个真相：
-//   常用项表单  = 模型 Input + env 键值对行（rows 是唯一真相，行编辑直接改）
-//   Monaco 原文 = 同一份 env 对象的 JSON 原文（rows ⇄ raw 双向同步，Ctrl+S = 保存）
-// 保存走 saveAiToolConfig（PUT /api/ai/tool-config），下发结果用 AiBindingResult 展示。
+// Claude Code 工具自身配置（toolConfig，全局一份）：绑定之外的 CLI 特殊配置。
+// 常用项直接给表单字段（存储仍是同一个 env 对象，常用项只是预设键的视图）：
+//   默认模型   = ANTHROPIC_MODEL
+//   小模型等   = PRESET_INPUTS（后台小任务/输出上限/思考预算/超时/子代理模型）
+//   开关       = PRESET_TOGGLES（非必要流量/自动更新，勾选 = '1'）
+//   自定义 env = rows 键值对（只放非预设键，避免与常用项重复编辑）
+// envOut 是唯一出口（预设 + 开关 + 自定义行合成），Monaco 原文 = envOut 的 JSON：
+// 实时预览（随表单即时更新）+ 高级编辑（改对自动套用回表单，Ctrl+S = 保存）。
+// 配置持久化在服务端 ai-config.json（PUT /api/ai/tool-config，0600），下次进入回显。
 // 保留键（ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN）后端 400 拒绝——由模型服务绑定管。
 import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import { saveAiToolConfig, Unauthorized, type AiClaudeToolConfig, type BatchResult } from '@/lib/api'
@@ -11,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Plus, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import AiBindingResult from './AiBindingResult.vue'
@@ -28,12 +33,32 @@ const emit = defineEmits<{
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
 
-// —— 真相：模型 + env 行列表（{key,value}；空 key 行 = 未填，保存时过滤）——
+// —— 常用项预设键（中转/网关场景高频项；键名以当前 CLI 文档为准）——
+const PRESET_INPUTS = [
+  { key: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', label: '小模型（后台任务）', placeholder: 'claude-haiku-…（标题/摘要等小任务走便宜模型）' },
+  { key: 'CLAUDE_CODE_MAX_OUTPUT_TOKENS', label: '最大输出 tokens', placeholder: '如 32000' },
+  { key: 'MAX_THINKING_TOKENS', label: '思考预算 tokens', placeholder: '如 10240，留空 = 默认' },
+  { key: 'API_TIMEOUT_MS', label: '请求超时 ms', placeholder: '慢网关调大，如 600000' },
+  { key: 'CLAUDE_CODE_SUBAGENT_MODEL', label: '子代理模型', placeholder: 'Task 子代理用，留空 = 跟随主模型' },
+] as const
+const PRESET_TOGGLES = [
+  { key: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', label: '关闭非必要流量（遥测/错误上报/更新检查）' },
+  { key: 'DISABLE_AUTOUPDATER', label: '关闭自动更新（容器内建议关）' },
+] as const
+// ANTHROPIC_MODEL 归「默认模型」字段，同样不进自定义行
+const PRESET_KEYS = new Set<string>([
+  'ANTHROPIC_MODEL',
+  ...PRESET_INPUTS.map((p) => p.key),
+  ...PRESET_TOGGLES.map((t) => t.key),
+])
+
+// —— 真相：模型 + 常用项值 + env 行列表（{key,value}；空 key 行 = 未填，保存时过滤）——
 interface EnvRow {
   key: string
   value: string
 }
 const model = ref('')
+const presets = ref<Record<string, string>>({}) // 非空才落 env；开关用 '1'/'' 表达
 const rows = ref<EnvRow[]>([])
 const busy = ref(false)
 const err = ref('')
@@ -44,8 +69,14 @@ const dirty = ref(false)
 let initializing = false
 function initFrom(tc: AiClaudeToolConfig | undefined) {
   initializing = true
-  model.value = tc?.model ?? ''
-  rows.value = Object.entries(tc?.env ?? {}).map(([key, value]) => ({ key, value }))
+  const env = tc?.env ?? {}
+  model.value = tc?.model ?? env.ANTHROPIC_MODEL ?? ''
+  presets.value = Object.fromEntries(
+    [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, env[p.key] ?? '']),
+  )
+  rows.value = Object.entries(env)
+    .filter(([k]) => !PRESET_KEYS.has(k))
+    .map(([key, value]) => ({ key, value }))
   if (!rows.value.length) rows.value = [{ key: '', value: '' }]
   initializing = false
 }
@@ -56,7 +87,7 @@ watch(
   },
   { immediate: true },
 )
-// 行编辑（v-model 直改行对象）与模型输入 = 用户动过草稿。
+// 任何表单输入（行/模型/常用项）= 用户动过草稿。
 watch(
   rows,
   () => {
@@ -67,6 +98,13 @@ watch(
 watch(model, () => {
   if (!initializing) dirty.value = true
 })
+watch(
+  presets,
+  () => {
+    if (!initializing) dirty.value = true
+  },
+  { deep: true },
+)
 
 function addRow() {
   rows.value.push({ key: '', value: '' })
@@ -79,6 +117,11 @@ function removeRow(i: number) {
 // rows → env 对象（空 key 行过滤；同名键后者赢——与对象字面量语义一致）。
 const envOut = computed<Record<string, string>>(() => {
   const out: Record<string, string> = {}
+  if (model.value.trim()) out.ANTHROPIC_MODEL = model.value.trim()
+  for (const p of [...PRESET_INPUTS, ...PRESET_TOGGLES]) {
+    const v = (presets.value[p.key] ?? '').trim()
+    if (v) out[p.key] = v
+  }
   for (const r of rows.value) {
     const k = r.key.trim()
     if (k) out[k] = r.value
@@ -86,11 +129,11 @@ const envOut = computed<Record<string, string>>(() => {
   return out
 })
 
-// —— Monaco 原文（env 对象的 JSON；rows ⇄ raw 双向同步）——
+// —— Monaco 原文（envOut 的 JSON：实时预览 + 高级编辑；rows ⇄ raw 双向同步）——
 const raw = ref('')
 const parseErr = ref('')
 // 注意：Vue 的 watch 回调是异步冲刷的，同步旗标拦不住自己的回灌（回调跑时旗标已复位）
-// ——改用「解析结果与当前表单等价 = 只是回显」判定：回显不动 dirty、不重建行。
+// ——改用「解析结果与当前表单等价 = 只是回显」判定：回显不动 dirty、不重建表单。
 watch(
   envOut,
   (env) => {
@@ -118,9 +161,15 @@ watch(raw, (s) => {
   parseErr.value = ''
   if (JSON.stringify(v) === JSON.stringify(envOut.value)) return // 只是回显
   dirty.value = true
-  rows.value = Object.keys(v as Record<string, string>).length
-    ? Object.entries(v as Record<string, string>).map(([key, value]) => ({ key, value }))
-    : [{ key: '', value: '' }]
+  const env = v as Record<string, string>
+  model.value = env.ANTHROPIC_MODEL ?? ''
+  presets.value = Object.fromEntries(
+    [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, env[p.key] ?? '']),
+  )
+  rows.value = Object.entries(env)
+    .filter(([k]) => !PRESET_KEYS.has(k))
+    .map(([key, value]) => ({ key, value }))
+  if (!rows.value.length) rows.value = [{ key: '', value: '' }]
 })
 
 const RESERVED = 'ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN'
@@ -158,10 +207,11 @@ async function save() {
   <div class="space-y-3 border-t pt-3">
     <div class="flex items-center gap-2">
       <Badge variant="outline" class="px-1.5 text-[10px] text-muted-foreground">自身配置</Badge>
-      <span class="min-w-0 flex-1 text-[11px] text-muted-foreground">默认模型 + 自定义 env，全局一份，随 claude 绑定一起追平到各容器</span>
+      <span class="min-w-0 flex-1 text-[11px] text-muted-foreground">默认模型 + 常用项 + 自定义 env，全局一份，随 claude 绑定一起追平到各容器</span>
       <InfoHint label="自身配置说明">
-        <p>「自身配置」是 Claude Code 绑定之外的特殊配置：默认模型写入 ANTHROPIC_MODEL，自定义 env 键值对原样进 settings.json 的 env 块。</p>
+        <p>「自身配置」是 Claude Code 绑定之外的特殊配置，全部落进 settings.json 的 env 块：默认模型写入 ANTHROPIC_MODEL，常用项与自定义 env 原样写入。</p>
         <p>只保存全局一份，不进绑定四层（本机/容器覆盖/项目规则都不带它）；落点跟着 claude 绑定走——未绑 claude 的目标不写。</p>
+        <p>小模型用 ANTHROPIC_DEFAULT_HAIKU_MODEL；旧版 CLI 的变量名是 ANTHROPIC_SMALL_FAST_MODEL，可在自定义 env 补写。</p>
         <p>{{ RESERVED }} 由模型服务绑定管，这里写了会被拒。</p>
       </InfoHint>
     </div>
@@ -182,7 +232,31 @@ async function save() {
         <span class="pb-1.5 text-[11px] text-muted-foreground">写入 ANTHROPIC_MODEL（留空 = 不设）</span>
       </div>
 
-      <!-- 常用项：env 键值对行 -->
+      <!-- 常用项：预设字段（中转/网关场景高频项） -->
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div v-for="p in PRESET_INPUTS" :key="p.key" class="space-y-1.5">
+          <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
+          <Input
+            :id="`ai-claude-${p.key}`"
+            v-model="presets[p.key]"
+            :placeholder="p.placeholder"
+            class="h-8 font-mono text-xs"
+          />
+          <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-x-5 gap-y-1.5">
+        <label v-for="t in PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Checkbox
+            :model-value="presets[t.key] === '1'"
+            @update:model-value="(v) => (presets[t.key] = v ? '1' : '')"
+          />
+          {{ t.label }}
+          <span class="font-mono text-[10px] text-muted-foreground/60">{{ t.key }}</span>
+        </label>
+      </div>
+
+      <!-- 常用项之外：自定义 env 键值对行 -->
       <div class="space-y-1.5">
         <div class="flex items-center justify-between">
           <Label>自定义 env</Label>
@@ -191,7 +265,7 @@ async function save() {
         <div v-for="(r, i) in rows" :key="i" class="flex items-center gap-2">
           <Input
             v-model="r.key"
-            placeholder="键（如 CLAUDE_CODE_MAX_OUTPUT_TOKENS）"
+            placeholder="键（如 ANTHROPIC_SMALL_FAST_MODEL）"
             class="h-8 flex-1 font-mono text-xs"
           />
           <Input
@@ -214,16 +288,16 @@ async function save() {
         </p>
       </div>
 
-      <!-- Monaco 原文：同一份 env 对象的 JSON（Ctrl+S = 保存；改对自动套用回表单） -->
+      <!-- Monaco：envOut 的 JSON——实时预览（随表单即时更新）+ 高级编辑（Ctrl+S = 保存） -->
       <div class="space-y-1.5">
         <div class="flex items-center justify-between">
-          <Label>env 原文（JSON）</Label>
-          <span class="text-[10px] text-muted-foreground/70">Ctrl+S 保存 · 改对自动套用回表单</span>
+          <Label>env 预览 / 原文（JSON）</Label>
+          <span class="text-[10px] text-muted-foreground/70">随上方表单实时更新 · 可直接改（改对自动套用）· Ctrl+S 保存</span>
         </div>
         <CodeEditor
           v-model="raw"
           language="json"
-          class="h-40 overflow-hidden rounded-md border"
+          class="h-48 overflow-hidden rounded-md border"
         />
         <p v-if="parseErr" class="text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
       </div>
