@@ -76,6 +76,11 @@ function onFocus() {
   if (props.node.kind !== 'leaf') return
   ops.onPaneFocus(props.group, props.node.termId)
 }
+// 回车上抛：ContainerList 借此让文件面板即时做一次 cwd 跟随检查（cd 后不等轮询）。
+function onEnter() {
+  if (props.node.kind !== 'leaf') return
+  ops.onPaneEnter(props.group, props.node.termId)
+}
 // 分叉动作：分隔条 dragstart 换算该轴最小像素后上抛（idx = 分隔条之后的 child 序号）。
 function onDividerStart(idx: number, parentSize: number) {
   const s = split.value
@@ -197,6 +202,7 @@ if (leaf.value) {
       @link-open="onLinkOpen"
       @title="onTitle"
       @focus="onFocus"
+      @enter="onEnter"
     />
   </div>
 

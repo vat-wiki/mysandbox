@@ -529,7 +529,6 @@ function moveEntries(paths: string[], dir: string) {
   })
 }
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
 let loadSeq = 0 // 竞态防护：慢响应回来时已被新请求取代则丢弃
 // 非静默加载在途数：>0 = 转圈。静默轮询不置位也不清理（见 loadDir finally 的注释）。
 let navOps = 0
@@ -584,31 +583,45 @@ async function loadDir(p: string, opts: { silent?: boolean } = {}) {
   }
 }
 
-// 轮询（3s）两层职责：
-// 1) 跟随态查终端 cwd，变了就跳目录（loadDir 负责拉新列表）；
-// 2) 当前目录内容静默重查：容器内进程/他人新建文件不用手点刷新即出现（签名不变则零
-//    DOM 变更）。面板用 v-if 挂载，关闭即卸载、onUnmounted 清 timer，不空转。
+// 轮询两层职责：
+// 1) 跟随态查终端 cwd，变了就跳目录（loadDir 负责拉新列表）——独立 1s 轻轮询
+//    （followCheck：只读 tmux pane 当前目录，一个 exec），否则 cd 后平均要等 1.5s 才跟；
+// 2) 当前目录内容静默重查（3s）：容器内进程/他人新建文件不用手点刷新即出现（签名
+//    不变则零 DOM 变更）。面板用 v-if 挂载，关闭即卸载、onUnmounted 清 timer，不空转。
 // 右键菜单/操作弹窗开着时整体跳过：列表被换会让 ctxTarget 指向已不存在的条目对象、
 // 菜单打开瞬间列表被替换（用户正对着菜单里的「重命名」列表却变了）。
-async function tick() {
+async function followCheck() {
   if (menuOpen.value || nameDialog.value || delTarget.value) return
-  if (follow.value && props.termId && props.containerId) {
-    try {
-      const r = await getTermCwd(props.containerId, props.termId)
-      noSession.value = false
-      if (r.cwd !== path.value) {
-        void loadDir(r.cwd)
-        return // 新目录的列表由这次 loadDir 拉，不必再重查一遍
-      }
-    } catch (e) {
-      if (e instanceof Unauthorized) {
-        emit('close')
-        return
-      }
-      // 终端会话还没建好/容器重启中：温和提示，继续轮询等它回来
-      noSession.value = true
+  if (!follow.value || !props.termId || !props.containerId) return
+  try {
+    const r = await getTermCwd(props.containerId, props.termId)
+    noSession.value = false
+    if (r.cwd !== path.value) {
+      void loadDir(r.cwd)
+      return // 新目录的列表由这次 loadDir 拉，不必再重查一遍
     }
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    // 终端会话还没建好/容器重启中：温和提示，继续轮询等它回来
+    noSession.value = true
   }
+}
+// 回车驱动的即时检查（终端 onData 的 \r 上抛 → ContainerList 转发到这里）：cd 提交后
+// 壳立即改 cwd，250ms 后查一次基本必中——把「体感同步」从 1s 级压到亚秒级。长命令
+// （构建脚本里 cd）赶不上这一次，由 1s 轮询兜底。连续回车去重，只保留最后一次。
+let nudgeTimer: ReturnType<typeof setTimeout> | null = null
+function nudgeCwd() {
+  if (nudgeTimer) clearTimeout(nudgeTimer)
+  nudgeTimer = setTimeout(() => {
+    nudgeTimer = null
+    void followCheck()
+  }, 250)
+}
+async function tick() {
+  await followCheck()
   if (path.value) void loadDir(path.value, { silent: true })
   // 展开的子目录跟着静默刷新（per-dir 签名，内容没变零 DOM 变更）。
   for (const [p, st] of expanded) {
@@ -616,12 +629,17 @@ async function tick() {
   }
 }
 
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let followTimer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   tick() // 立即一次（首帧就有内容）
   pollTimer = setInterval(tick, 3000)
+  followTimer = setInterval(() => void followCheck(), 1000)
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  if (followTimer) clearInterval(followTimer)
+  if (nudgeTimer) clearTimeout(nudgeTimer)
 })
 
 // 切容器（props 变）：无论之前是否手动，都回到跟随态、由下一次轮询定位新容器 cwd。
@@ -784,7 +802,7 @@ function locate(containerId: string, p: string) {
   follow.value = containerId !== props.containerId // 同容器也暂停（用户明确要看这个目录）
   loadDir(p)
 }
-defineExpose({ locate, refresh })
+defineExpose({ locate, refresh, nudgeCwd })
 
 // git 变更区块的 ref（refresh 链透传用）
 const gitRef = ref<InstanceType<typeof FilePanelGit> | null>(null)

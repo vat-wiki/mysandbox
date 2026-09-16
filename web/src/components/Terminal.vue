@@ -47,6 +47,9 @@ const emit = defineEmits<{
   // pane 获得焦点（xterm onFocus）：ContainerList 拿去让文件面板跟随最后聚焦的 pane。
   // 程序性恢复聚焦（refit 的 term.focus()）不上抛——见下方 suppressFocusEmit。
   (e: 'focus'): void
+  // 终端输入了回车（onData 含 \r）：文件面板借此做即时的 cwd 跟随检查，消除 cd 后
+  // 等轮询的体感延迟。
+  (e: 'enter'): void
 }>()
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
@@ -736,6 +739,9 @@ onMounted(async () => {
   connectWs()
 
   term.onData((data) => {
+    // 回车即提交命令：上抛给文件面板做即时的 cwd 跟随检查（cd 提交后壳立即改目录，
+    // 250ms 后查基本必中）。粘贴多行也含 \r，多抛几次无妨（跟随端去重）。
+    if (data.includes('\r')) emit('enter')
     if (ws && ws.readyState === WebSocket.OPEN) {
       // 粘滞 Ctrl 消费：软键盘字母在此组合成控制字符（手机发 Ctrl+C 的唯一路径）。
       const combo = sendCtrlCombo(data)

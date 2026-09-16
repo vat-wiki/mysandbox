@@ -649,6 +649,7 @@ provide(TERM_OPS, {
     return termTitles.value[termId]?.text ?? ''
   },
   onPaneFocus,
+  onPaneEnter,
   onOscOpen,
   onLinkOpen,
   dividerStart,
@@ -820,6 +821,12 @@ function onPaneFocus(group: TermGroup, termId: string) {
     }, 60)
   }
   w.ids.add(termId)
+}
+// 回车 → 文件面板即时 cwd 检查：只对「active 组且正被跟随的 pane」生效——后台 pane 里
+// 跑脚本不必惊动面板（它的 1s 轮询自会跟）。跟随端 250ms debounce，连续回车只查最后。
+function onPaneEnter(group: TermGroup, termId: string) {
+  if (group.id !== activeGroup.value?.id || termId !== fileTermId.value) return
+  filePanelRef.value?.nudgeCwd()
 }
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // —— 文件面板浏览模式（下钻/展开）——
