@@ -6,7 +6,7 @@
 //   技能中心   = SkillsHubTab（技能库/扫描/安装位置）
 //   模型供应商 = AiProvidersTab（provider 库：myapikey 默认在库 + 自定义接入）
 //   Agent 工具 = AiAgentsTab（每 CLI 一卡：绑定 + 自身配置，Claude Code 优先）
-// 覆盖配置（容器/本机的临时任务）不在这里——走 AiOverrideDialog 弹框，按任务体量分层。
+// 容器覆盖配置（临时任务）不在这里——走 AiOverrideDialog 弹框，按任务体量分层。
 import { ref } from 'vue'
 import SkillsHubTab from './SkillsHubTab.vue'
 import AiProvidersTab from './AiProvidersTab.vue'
@@ -16,7 +16,6 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'unauthorized'): void
   (e: 'changed'): void // 配置保存（父级可刷新）
-  (e: 'configure-host'): void // 「为本机配置」：父级开覆盖弹框（本机是弹框任务不是页面任务）
 }>()
 
 const tab = ref<'skills' | 'providers' | 'agents'>('skills')
@@ -61,7 +60,6 @@ const tab = ref<'skills' | 'providers' | 'agents'>('skills')
           v-else
           @unauthorized="emit('unauthorized')"
           @done="emit('changed')"
-          @configure-host="emit('configure-host')"
           @switch-providers="tab = 'providers'"
         />
       </div>

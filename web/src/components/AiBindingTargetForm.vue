@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // 目标覆盖绑定表单（AI 配置覆盖弹框的表单本体）：绑定 = 工具 → 用哪些模型服务
-// （provider id 引用，不内联端点）。target 模式——props.target 传入 = 该目标（容器名
-// 或 '__host__' 本机）的专属绑定：覆盖存在即生效（全局不再应用到这台），可清除恢复
-// 跟随全局（本机清除 = 回收落盘条目）。容器卡片菜单「AI 配置…」的 pull 入口。
+// （provider id 引用，不内联端点）。target 模式——props.target 传入 = 该容器自己的
+// 专属绑定：覆盖存在即生效（全局不再应用到这台），可清除恢复跟随全局。容器卡片
+// 菜单「AI 配置…」的 pull 入口（本机跟随全局绑定，不是覆盖目标——这里只有容器）。
 // 全局模式的绑定管理（分卡 + 工具自身配置 + 项目规则）在 AiAgentsTab——本组件只服务
 // 覆盖弹框这个临时小任务。四工具字段组与全局页共用（AiField* 组件单源）。
 // claude/codex 单槽（env 只有一份）；opencode/pi 多 provider 变体并存，工具内 /models 切。
@@ -12,7 +12,6 @@ import {
   getAiView,
   saveAiTargetOverride,
   clearAiTargetOverride,
-  HOST_TARGET,
   Unauthorized,
   type AiView,
   type AiBinding,
@@ -86,7 +85,7 @@ async function loadView(fill: boolean) {
 
 defineExpose({ reload: () => loadView(false) })
 
-// 清除覆盖（恢复跟随全局 / 本机回收条目）
+// 清除覆盖（恢复跟随全局）
 async function clearOverride() {
   busy.value = true
   err.value = ''
@@ -94,10 +93,10 @@ async function clearOverride() {
     await clearAiTargetOverride(props.target)
     overrideExists.value = false
     result.value = null
-    toast(props.target === HOST_TARGET ? '已清除本机配置并回收接入条目' : '已清除覆盖，恢复跟随全局')
+    toast('已清除覆盖，恢复跟随全局')
     const v = await getAiView()
     view.value = v
-    fillFrom(props.target === HOST_TARGET ? null : (v.binding ?? null))
+    fillFrom(v.binding ?? null)
     emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -167,15 +166,9 @@ async function submit() {
         "
       >
         <span>
-          <b class="font-medium">{{ props.target === HOST_TARGET ? '本机' : props.target }}</b> ·
-          <template v-if="props.target === HOST_TARGET">
-            <template v-if="overrideExists">本机使用专属绑定配置（本机从不跟随全局）。</template>
-            <template v-else>本机还没有配置——保存后成为本机的专属绑定。</template>
-          </template>
-          <template v-else>
-            <template v-if="overrideExists">本容器使用专属绑定，全局绑定不再应用（启动追平也跳过）。</template>
-            <template v-else>当前跟随全局绑定——保存后成为本容器的专属绑定。</template>
-          </template>
+          <b class="font-medium">{{ props.target }}</b> ·
+          <template v-if="overrideExists">本容器使用专属绑定，全局绑定不再应用（启动追平也跳过）。</template>
+          <template v-else>当前跟随全局绑定——保存后成为本容器的专属绑定。</template>
         </span>
       </div>
 
@@ -230,9 +223,9 @@ async function submit() {
           v-if="overrideExists"
           variant="outline"
           :disabled="busy"
-          :title="props.target === HOST_TARGET ? '删除本机配置并回收接入条目' : '删除本目标的覆盖配置，恢复跟随全局'"
+          title="删除本目标的覆盖配置，恢复跟随全局"
           @click="clearOverride"
-        >{{ props.target === HOST_TARGET ? '清除本机配置' : '清除覆盖（跟随全局）' }}</Button>
+        >清除覆盖（跟随全局）</Button>
         <Button :disabled="busy" @click="submit">{{
           busy ? '应用中…' : '保存并应用到本目标'
         }}</Button>

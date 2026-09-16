@@ -23,7 +23,6 @@ import {
   listTermActivity,
   termSessionKey,
   HOST_ID,
-  HOST_TARGET,
   serviceFileId,
   sshGroupId,
   sshTargetName,
@@ -680,8 +679,8 @@ function closeAi() {
   // 没有才回终端。
   if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
 }
-// AI 配置覆盖弹框目标（容器名 / HOST_TARGET 本机哨兵）：容器右键「AI 配置…」与本机
-// 「为本机配置」都是临时任务——AiOverrideDialog 弹框承载，即来即走不劫持主区。
+// AI 配置覆盖弹框目标（容器名）：容器右键「AI 配置…」的临时任务——AiOverrideDialog
+// 弹框承载，即来即走不劫持主区。本机跟随全局绑定（Agent 工具页保存即追平宿主）。
 const aiOverrideFor = ref<string | null>(null)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
@@ -3408,7 +3407,6 @@ onUnmounted(() => {
             <AiWorkspace
               @close="closeAi()"
               @changed="refresh()"
-              @configure-host="aiOverrideFor = HOST_TARGET"
               @unauthorized="emit('unauthorized')"
             />
           </div>
@@ -3715,7 +3713,7 @@ onUnmounted(() => {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- AI 配置覆盖弹框：容器右键「AI 配置…」/ 本机「为本机配置」——临时任务走弹框，即来即走 -->
+  <!-- AI 配置覆盖弹框：容器右键「AI 配置…」——临时任务走弹框，即来即走 -->
   <AiOverrideDialog
     v-if="aiOverrideFor"
     :target="aiOverrideFor"

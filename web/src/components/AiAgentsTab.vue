@@ -1,18 +1,17 @@
 <script setup lang="ts">
 // Agent 工具页签（AI 工作区三板块之三）：每个 agent CLI 一个页签（单个单个配置 +
 // 单独保存）——绑定（用哪些模型服务）+ 各自的特殊配置（本期 Claude Code 页内挂
-// AiClaudeToolConfig 自身配置）。每个页签有自己的「保存并应用到全部容器」：只提交
+// AiClaudeToolConfig 自身配置）。每个页签有自己的「保存并应用到全部目标」：只提交
 // 该工具的绑定，与已存绑定合并后整体提交（后端 AiBinding 整体替换语义 + 四层追平
-// 链路不动，其余工具原样带上 = 落盘配置不碰）。覆盖/本机的临时任务走 AiOverrideDialog
-//（AiBindingTargetForm）；项目规则列表与本机入口是全局形态专属，收在本页尾部。
-// 工具自身配置（toolConfig）是全局一份，不进绑定四层。
+// 链路不动，其余工具原样带上 = 落盘配置不碰）；应用目标 = 本机 + 受管容器（同权）。
+// 容器的临时任务走 AiOverrideDialog（AiBindingTargetForm）；项目规则列表是全局形态
+// 专属，收在本页尾部。工具自身配置（toolConfig）是全局一份，不进绑定四层。
 import { ref, computed, onMounted } from 'vue'
 import {
   getAiView,
   saveAiBinding,
   saveAiClaudePage,
   deleteAiProjectRule,
-  HOST_TARGET,
   Unauthorized,
   type AiView,
   type AiBinding,
@@ -34,7 +33,6 @@ import InfoHint from './InfoHint.vue'
 const emit = defineEmits<{
   (e: 'done'): void
   (e: 'unauthorized'): void
-  (e: 'configure-host'): void // 本机入口行 → 父级开覆盖弹框（本机是弹框任务不是页面任务）
   (e: 'switch-providers'): void // provider 空态 → 切「模型供应商」页签
 }>()
 
@@ -265,7 +263,7 @@ async function doRemoveRule(id: string) {
         <div class="flex items-center justify-end gap-3 border-t pt-3">
           <span class="mr-auto text-[11px] text-muted-foreground/70">保存 = 自身配置 + Claude Code 绑定一起应用（其余工具不动）</span>
           <Button :disabled="busy" @click="submitTool('claude')">{{
-            busy ? '应用中…' : '保存并应用到全部容器'
+            busy ? '应用中…' : '保存并应用到全部目标'
           }}</Button>
         </div>
       </div>
@@ -283,7 +281,7 @@ async function doRemoveRule(id: string) {
         <div class="flex items-center justify-end gap-3 border-t pt-3">
           <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Codex 的绑定（其余工具不动）</span>
           <Button :disabled="busy" @click="submitTool('codex')">{{
-            busy ? '应用中…' : '保存并应用到全部容器'
+            busy ? '应用中…' : '保存并应用到全部目标'
           }}</Button>
         </div>
       </div>
@@ -303,7 +301,7 @@ async function doRemoveRule(id: string) {
         <div class="flex items-center justify-end gap-3 border-t pt-3">
           <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 OpenCode 的绑定（其余工具不动）</span>
           <Button :disabled="busy" @click="submitTool('opencode')">{{
-            busy ? '应用中…' : '保存并应用到全部容器'
+            busy ? '应用中…' : '保存并应用到全部目标'
           }}</Button>
         </div>
       </div>
@@ -319,26 +317,15 @@ async function doRemoveRule(id: string) {
         <div class="flex items-center justify-end gap-3 border-t pt-3">
           <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Pi 的绑定（其余工具不动）</span>
           <Button :disabled="busy" @click="submitTool('pi')">{{
-            busy ? '应用中…' : '保存并应用到全部容器'
+            busy ? '应用中…' : '保存并应用到全部目标'
           }}</Button>
         </div>
       </div>
 
       <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
 
-      <!-- 全局形态专属段：本机入口 + 项目级规则 + 追平语义（从旧 AiBindingTab 迁入） -->
+      <!-- 全局形态专属段：项目级规则 + 追平语义（从旧 AiBindingTab 迁入） -->
       <template v-if="view">
-        <div class="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2">
-          <div class="text-xs text-muted-foreground">
-            <b class="font-medium text-foreground">本机</b> ·
-            <template v-if="view.overrides[HOST_TARGET]">已有专属绑定（本机从不跟随全局）。</template>
-            <template v-else>未配置——本机不随全局应用，避免改 key 连带刷掉宿主环境。</template>
-          </div>
-          <Button size="xs" variant="outline" @click="emit('configure-host')">
-            {{ view.overrides[HOST_TARGET] ? '编辑本机绑定' : '为本机配置' }}
-          </Button>
-        </div>
-
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-medium">项目级配置</h3>
@@ -364,11 +351,11 @@ async function doRemoveRule(id: string) {
         <!-- 追平语义：一行常驻（触发时机 + key 明文风险句），机制细节收 InfoHint -->
         <div class="flex items-start gap-1.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
           <div class="flex-1 space-y-0.5">
-            <p>绑定保存后自动追平：启动 sweep、新建容器、start 事件。</p>
-            <p class="text-amber-500/90">API Key 会明文落盘到各目标（sidecar 存档同面）。</p>
+            <p>绑定保存后自动追平（目标 = 本机 + 受管容器）：启动 sweep、新建容器、start 事件。</p>
+            <p class="text-amber-500/90">API Key 会明文落盘到各目标（sidecar 存档同面；本机 = 宿主 home 的真实文件）。</p>
           </div>
           <InfoHint label="追平与落盘机制说明">
-            <p>追平按「目标覆盖 ?? 全局绑定」写一份，容器不必在运行，CLI 下次启动即生效。</p>
+            <p>追平按「目标覆盖 ?? 全局绑定」写一份，容器不必在运行，CLI 下次启动即生效；本机跟随全局绑定（没有专属覆盖）。</p>
             <p>各工具落盘：claude 走 settings.json env 注入（含自身配置的模型/env）；codex 加 provider 块（key 经 ~/.zshrc 环境变量，固定 responses）；opencode / pi 在配置里内联 key，按所选协议注册 <code>&lt;服务&gt;-chat/-responses/-anthropic</code> 接入点。</p>
             <p>已有配置只合并本方案的键；换绑 / 清空会回收旧接入点。</p>
           </InfoHint>

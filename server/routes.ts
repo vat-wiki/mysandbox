@@ -633,8 +633,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return fetchProviderModels(endpoints, apiKey);
   });
 
-  // 保存全局绑定 + 立即应用。ids 缺省 = 全部受管容器（本机不进缺省——宿主是真实
-  // 环境，只有显式覆盖才写）；ids 显式给 = 只应用这些（仍保存为全局绑定）。
+  // 保存全局绑定 + 立即应用。ids 缺省 = 本机 + 全部受管容器（本机与容器同权，
+  // 全局绑定同样追平宿主）；ids 显式给 = 只应用这些（仍保存为全局绑定）。
   app.post('/api/ai/binding', async (req): Promise<BatchResult> => {
     await ensureAiMigrated();
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -643,10 +643,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     if (invalid) throw badRequest(invalid);
     const binding = body.binding as AiBinding;
     await setAiBinding(binding);
-    const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : (await listManaged(cfg)).map((v) => v.id);
-    if (ids.includes(HOST_TARGET)) {
-      throw badRequest(`本机不进全局应用的缺省/批量目标——为本机配置走 /api/ai/targets/${HOST_TARGET}`);
-    }
+    const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
     return applyAiBindingToTargets(cfg, ids, binding);
   });
 
@@ -679,17 +676,17 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     if (invalid) throw badRequest(invalid);
     const tc = (body.toolConfig ?? {}) as AiClaudeToolConfig;
     const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : undefined;
-    if (ids?.includes(HOST_TARGET)) {
-      throw badRequest(`本机不进全局应用的缺省/批量目标——为本机配置走 /api/ai/targets/${HOST_TARGET}`);
-    }
     return setClaudePageConfig(cfg, binding, tc, ids);
   });
 
-  // 目标覆盖（key = 容器名或 __host__）：保存 + 立即应用到这台。存在即生效
-  // （sweep / 建容器补发用它替代全局绑定）。
+  // 目标覆盖（key = 容器名）：保存 + 立即应用到这台。存在即生效
+  // （sweep / 建容器补发用它替代全局绑定）。本机跟随全局，不是覆盖目标。
   app.post('/api/ai/targets/:target', async (req): Promise<BatchResult> => {
     await ensureAiMigrated();
     const target = (req.params as { target: string }).target;
+    if (target === HOST_TARGET) {
+      throw badRequest('本机跟随全局绑定（全局应用目标含本机），没有专属覆盖——直接保存全局绑定即可');
+    }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const lib = await getAiProviders();
     const invalid = validateBinding(body.binding, lib);
@@ -697,12 +694,15 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return setTargetOverride(cfg, target, body.binding as AiBinding);
   });
 
-  // 清除目标覆盖：容器 = 恢复跟随全局（立即应用全局绑定）；本机 = 回收本机受管条目。
+  // 清除目标覆盖 = 恢复跟随全局（立即应用全局绑定）。本机不是覆盖目标。
   app.delete('/api/ai/targets/:target', async (req) => {
     const target = (req.params as { target: string }).target;
+    if (target === HOST_TARGET) {
+      throw badRequest('本机跟随全局绑定（全局应用目标含本机），没有专属覆盖');
+    }
     const overrides = await getAiTargetOverrides();
     if (!overrides[target]) {
-      throw new HttpError(404, target === HOST_TARGET ? '本机没有配置覆盖' : '该目标没有覆盖配置', 'not_found');
+      throw new HttpError(404, '该目标没有覆盖配置', 'not_found');
     }
     await clearTargetOverride(cfg, target);
     return { overrides: await getAiTargetOverrides() };

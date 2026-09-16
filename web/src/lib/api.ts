@@ -339,10 +339,12 @@ export const batchExec = (ids: string[], command: string, timeoutMs?: number) =>
   postJson('/api/batch/exec', { ids, command, timeoutMs }) as Promise<BatchResult>
 
 // —— AI 配置（provider 库 × 智能体绑定 × 项目级规则；rootfs 直写，容器无需在跑）——
-// provider 库存凭据与端点（N 个）；绑定只引用 provider id：全局一份 + 目标覆盖
-// （key = 容器名或 '__host__'，本机只有显式覆盖才写）。claude/codex 单槽绑一个；
+// provider 库存凭据与端点（N 个）；绑定只引用 provider id：全局一份 + 容器目标覆盖
+// （key = 容器名；本机跟随全局绑定，不是覆盖目标）。claude/codex 单槽绑一个；
 // opencode/pi 多 provider 变体并存（<pid>-chat/-responses/-anthropic），工具内 /models 切。
 export type GatewayWire = 'openai-chat' | 'openai-responses' | 'anthropic-messages'
+// 本机哨兵：skills hub / 宿主文件面板等宿主侧目标的统一 id（AI 绑定不再用它——
+// 本机与容器同权 ride 全局绑定）。
 export const HOST_TARGET = '__host__'
 export interface AiProvider {
   id: string
@@ -392,17 +394,16 @@ export const probeAiProvider = (endpoints: AiProvider['endpoints']) =>
   postJson('/api/ai/providers/probe', { endpoints }, 30_000) as Promise<{ openai?: string; anthropic?: string }>
 export const fetchAiModels = (endpoints: AiProvider['endpoints'], apiKey: string) =>
   postJson('/api/ai/providers/models', { endpoints, apiKey }, 60_000) as Promise<{ models: string[]; errors: string[] }>
-// 保存全局绑定并应用（ids 缺省 = 全部受管容器；本机走 targets 专属覆盖）。
+// 保存全局绑定并应用（ids 缺省 = 本机 + 全部受管容器，本机与容器同权）。
 export const saveAiBinding = (binding: AiBinding, ids?: string[]) =>
   postJson('/api/ai/binding', ids ? { binding, ids } : { binding }, 120_000) as Promise<BatchResult>
-// 保存工具自身配置（全局一份）并下发（落点跟着 claude 绑定走；ids 显式给 = 只写这些，
-// 可含 '__host__' 本机）。
+// 保存工具自身配置（全局一份）并下发（落点跟着 claude 绑定走；ids 显式给 = 只写这些）。
 export const saveAiToolConfig = (tc: { claude?: AiClaudeToolConfig }, ids?: string[]) =>
   putJson('/api/ai/tool-config', ids?.length ? { ...tc, ids } : tc, 120_000) as Promise<BatchResult>
 // Claude 页签合并保存：绑定（claude 槽）+ 自身配置一次提交一遍下发（页签一个保存按钮）。
 export const saveAiClaudePage = (provider: string, tc: AiClaudeToolConfig, ids?: string[]) =>
   postJson('/api/ai/claude-config', ids?.length ? { provider, toolConfig: tc, ids } : { provider, toolConfig: tc }, 120_000) as Promise<BatchResult>
-// 目标覆盖（容器 or 本机）：保存 + 立即应用到这台 / 清除（容器恢复跟随全局；本机回收条目）。
+// 目标覆盖（容器）：保存 + 立即应用到这台 / 清除（恢复跟随全局）。本机不是覆盖目标。
 export const saveAiTargetOverride = (target: string, binding: AiBinding) =>
   postJson(`/api/ai/targets/${encodeURIComponent(target)}`, { binding }, 120_000) as Promise<BatchResult>
 export const clearAiTargetOverride = (target: string) =>

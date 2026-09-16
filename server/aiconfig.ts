@@ -1,7 +1,8 @@
 // AI 配置体系：模型服务提供商库 × 智能体绑定 × 落盘写入器。与 batch.ts 的 exec
 // 路线不同——这里走 **宿主直写 rootfs**（D1 uid 直通：容器内 dev(1000) = 宿主 leon，
 // 直写的文件属主天然正确），所以容器不必在跑，CLI 下次启动即生效。本机（宿主
-// leon 的 home）是同一套 writer 的另一个 base——写宿主文件连 rootfs 路径都不用绕。
+// leon 的 home）是同一套 writer 的另一个 base——与容器同权：全局绑定/自身配置的
+// 应用目标含本机，写宿主文件连 rootfs 路径都不用绕。
 //
 // 三层模型：
 //   provider 库（state.aiProviders）——N 个 OpenAI/Anthropic 兼容网关的凭据与端点，
@@ -10,8 +11,8 @@
 //   绑定（state.aiBinding 全局一份 + state.aiTargetOverrides 目标覆盖）——工具 →
 //     用哪些 provider（引用 id 不内联端点）。单槽工具（claude 的 env 只有一份、codex
 //     的 model_provider 指一个）绑一个；多槽工具（opencode/pi 的 provider 表）绑 N
-//     个共存，工具内 /models 切。目标覆盖 key = 容器名或 '__host__'（本机）；本机
-//     不进 sweep——宿主是真实环境，只有显式覆盖才写，全局改 key 不连带刷掉宿主。
+//     个共存，工具内 /models 切。目标覆盖 key = 容器名（容器专属绑定）；本机跟随
+//     全局绑定（2026-09-16 起与容器同权，旧 '__host__' 覆盖已退役自愈清除）。
 //   写入器（本文件）——绑定 + provider 库在入口解析成 AiApplyPlan，逐 base 落盘。
 //   工具自身配置（toolConfig，全局一份）——绑定之外的各工具特殊配置（本期 claude：
 //   默认模型 + 自定义 env），随 claude 写入器合并进 settings.json env（受管绑定键恒
@@ -856,10 +857,10 @@ export async function applyAiBindingToTargets(
 
 // 保存 claude 自身配置并下发。刻意不走 applyOneTarget（那边 plan 为空会早退「无可
 // 应用配置」）——toolConfig 与绑定解耦、单独落盘；但**落点跟着 claude 绑定走**：
-// 缺省目标 = 生效绑定（覆盖 ?? 全局）含 claude 的受管容器——sweep 链路里只有
-// plan.claude 存在 configClaude 才会跑，两条链路口径一致，不给未绑 claude 的容器
-// 写孤零零的 model env。ids 显式传入（可含 HOST_TARGET 本机——toolConfig 不写凭据，
-// 风险面与全局绑定禁本机的理由不同）时按显式集合写，目标没绑 claude 则该项 fail。
+// 缺省目标 = 生效绑定（覆盖 ?? 全局）含 claude 的目标（本机 + 受管容器）——sweep
+// 链路里只有 plan.claude 存在 configClaude 才会跑，两条链路口径一致，不给未绑
+// claude 的目标写孤零零的 model env。ids 显式传入时按显式集合写，目标没绑 claude
+// 则该项 fail。
 export async function setClaudeToolConfig(
   cfg: Config,
   tc: AiClaudeToolConfig,
@@ -883,7 +884,9 @@ export async function setClaudeToolConfig(
   } else {
     const overrides = await getAiTargetOverrides();
     const global = await getAiBinding();
-    targets = (await listManaged(cfg)).map((v) => v.id).filter((n) => (overrides[n] ?? global)?.claude);
+    targets = [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)].filter(
+      (n) => (overrides[n] ?? global)?.claude,
+    );
   }
 
   log.info({ op: 'ai-tool-config', count: targets.length, keys: Object.keys(extraEnv).length }, 'ai-tool-config start');
@@ -956,7 +959,7 @@ export async function setClaudePageConfig(
   await setAiToolConfig({ claude: tc });
   await setAiBinding(binding);
 
-  const targets = ids?.length ? ids : (await listManaged(cfg)).map((v) => v.id);
+  const targets = ids?.length ? ids : [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
 
   // removedKeys 回收：逐目标剥掉上一版自身配置写进 settings.json 的已移除键。
   // 尽力而为——失败不挡应用段（configClaude 的整体合并会把期望值重新写对，只是旧键残留）。
@@ -1093,23 +1096,23 @@ export async function applyAiToContainer(cfg: Config, name: string): Promise<voi
   }
 }
 
-// 启动 sweep（cli.ts 装配）：逐受管容器按「覆盖 ?? 全局」应用（宿主直写 rootfs，容器
-// 不必在跑）。本机不在 sweep——宿主 leon 是真实环境，只有显式覆盖才写，全局改 key
-// 不连带刷掉宿主。都没有 = 无事发生；尽力而为不抛。
+// 启动 sweep（cli.ts 装配）：逐目标（本机 + 受管容器）按「覆盖 ?? 全局」应用（宿主
+// 直写 rootfs，容器不必在跑；本机与容器同权——2026-09-16 起全局绑定同样追平本机）。
+// 都没有 = 无事发生；尽力而为不抛。
 export async function applyAiAll(cfg: Config): Promise<void> {
   try {
     await ensureAiMigrated();
     const global = await getAiBinding();
     const overrides = await getAiTargetOverrides();
     if (global || Object.keys(overrides).length) {
-      const views = await listManaged(cfg);
+      const targets = [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
       const limit = pLimit(CONCURRENCY);
       const items = await Promise.all(
-        views.map((v) =>
+        targets.map((t) =>
           limit(async () => {
-            const binding = overrides[v.id] ?? global;
+            const binding = overrides[t] ?? global;
             if (!binding) return null;
-            return applyOneTarget(cfg, v.id, binding);
+            return applyOneTarget(cfg, t, binding);
           }),
         ),
       );
@@ -1141,23 +1144,13 @@ export async function setTargetOverride(
   return applyAiBindingToTargets(cfg, [target], binding);
 }
 
-// 清除目标覆盖：
-//   容器 = 恢复跟随全局——删覆盖 + 立即把全局绑定应用到这台（下次 sweep 兜底）。
-//   本机 = 没有全局语义可回——删覆盖 + 回收本机 home 里全部受管条目。
+// 清除目标覆盖 = 恢复跟随全局：删覆盖 + 立即把全局绑定应用到这台（下次 sweep 兜底）。
+// 本机不是覆盖目标（跟随全局），路由层拒 '__host__'。
 export async function clearTargetOverride(cfg: Config, target: string): Promise<BatchResult | void> {
   await deleteAiTargetOverride(target);
-  if (target !== HOST_TARGET) {
-    const global = await getAiBinding();
-    if (global) return applyAiBindingToTargets(cfg, [target], global);
-    return;
-  }
-  const notes: string[] = [];
-  try {
-    await pruneHomeManaged(homedir(), Object.keys(await getAiProviders()), notes);
-  } catch (e) {
-    log.warn({ err: String(e) }, 'ai-config host prune failed');
-  }
-  log.info({ target, notes }, 'ai-config host override cleared');
+  const global = await getAiBinding();
+  if (global) return applyAiBindingToTargets(cfg, [target], global);
+  return;
 }
 
 // —— provider 库操作（routes 调用）——

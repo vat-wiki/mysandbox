@@ -22,6 +22,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { STATE_DIR, STATE_FILE } from './config.js';
 import { log } from './logger.js';
+import { HOST_TARGET } from './state.js';
 
 export const AI_DIR = join(STATE_DIR, 'ai');
 const SKILLS_STATE_FILE = join(AI_DIR, 'skills.json');
@@ -325,6 +326,14 @@ async function loadAiConfigState(): Promise<AiConfigStateFile> {
       await persistAiConfigState(file);
     }
   }
+  // 存量自愈：__host__ 覆盖已随「本机跟随全局绑定」退役（2026-09-16）——清理存档里
+  // 的旧键（一次性，删了才持久化），本机从此回落跟随全局绑定。
+  if (file.targetOverrides && HOST_TARGET in file.targetOverrides) {
+    delete file.targetOverrides[HOST_TARGET];
+    if (!Object.keys(file.targetOverrides).length) delete file.targetOverrides;
+    await persistAiConfigState(file);
+    log.info('ai state: __host__ override pruned (host now follows global binding)');
+  }
   return file;
 }
 
@@ -374,9 +383,9 @@ export async function setAiToolConfig(tc: AiToolConfigState): Promise<void> {
   await persistAiConfigState(s);
 }
 
-// 目标级覆盖（绑定层的 pull 语义）：key = 容器名或 '__host__'（本机）。存在即生效
-// （sweep / 建容器补发用它替代全局绑定，全局不再应用到这台）。本机不在 sweep 范围，
-// 只有显式覆盖才写——宿主 leon 的真实环境不被全局改 key 连带刷掉。
+// 目标级覆盖（绑定层的 pull 语义）：key = 容器名。存在即生效
+// （sweep / 建容器补发用它替代全局绑定，全局不再应用到这台）。本机跟随全局绑定、
+// 不是覆盖目标（旧 '__host__' 覆盖在 loadAiConfigState 里自愈清除）。
 export async function getAiTargetOverrides(): Promise<Record<string, AiBinding>> {
   return (await loadAiConfigState()).targetOverrides ?? {};
 }
