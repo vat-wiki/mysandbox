@@ -3,8 +3,9 @@
 //  · 模型绑定：provider 绑定写进当前目录（claude 的 .claude/settings.json + opencode 的
 //    opencode.json）并落/并入项目规则（跟项目走，start 事件补发）。
 //  · 技能：库技能装进当前目录下的 .claude/skills 或 .agents/skills——落点子目录显式可选
-//    （此前硬编码 .claude/skills）；home 根下 .claude/skills 是 ~/.agents/skills 的软链，
-//    不给选择、直接落真身（与后端 installSkillsToSpot 的归一一致）。
+//    （此前硬编码 .claude/skills）；home 根不给选、直接落 canonical——两处全局副本
+//    （~/.agents/skills 与 ~/.claude/skills）由同步系统各铺一份，装哪边都一样
+//    （与后端 installSkillsToSpot 的归一一致）。
 // 两块落点都是当前目录（pull 语义：人到哪配到哪），合一个入口心智统一。用居中弹窗而非
 // 文件面板内嵌条——表单在窄面板条里展不开（实测挤成一团）。未启用的工具不动既有规则；
 // v-if 挂载天然重置状态。
@@ -140,7 +141,7 @@ async function saveBinding() {
 
 // —— 技能 ——
 // 落点：已在 skills 目录内 = 就地；否则 当前目录 + 子目录（.claude / .agents，显式可选）。
-// home 根（容器）不给选——.claude/skills 是 ~/.agents/skills 的软链，直接落真身。
+// home 根（容器）不给选——两处全局副本内容一致，直接落 canonical（~/.agents/skills）。
 const homeRoot = computed(() => !isHost.value && props.spot === '/home/dev')
 const inSkillsDir = computed(() => /\/(\.claude|\.agents)\/skills$/.test(props.spot))
 const pickedSubdir = ref<'claude' | 'agents'>('claude')
@@ -326,7 +327,7 @@ onMounted(async () => {
 
         <!-- 技能：库技能装进当前目录下的 .claude/skills 或 .agents/skills -->
         <TabsContent value="skills" class="space-y-2">
-          <!-- 落点子目录：已在 skills 目录内 = 就地；home 根 = 软链真身不给选 -->
+          <!-- 落点子目录：已在 skills 目录内 = 就地；home 根 = 直接落 canonical 不给选 -->
           <div v-if="!inSkillsDir && !homeRoot" class="flex items-center gap-2">
             <span class="shrink-0 text-xs text-muted-foreground">装到</span>
             <ToggleGroup
@@ -345,7 +346,7 @@ onMounted(async () => {
           <p v-else class="text-[11px] text-muted-foreground">
             落点 <span class="font-mono">{{ skillsSpot }}</span>
             <span class="ml-1 text-[10px] text-amber-500/90">{{ scopeText }}</span>
-            <span v-if="homeRoot" class="block text-muted-foreground/70">home 根下 .claude/skills 是 ~/.agents/skills 的软链，直接落真身</span>
+            <span v-if="homeRoot" class="block text-muted-foreground/70">全局安装：~/.agents/skills 与 ~/.claude/skills 两处各铺一份</span>
           </p>
 
           <!-- 库技能多选列表：行形状/过滤/加载空态收在共享组件（与技能中心全局安装弹框同款） -->

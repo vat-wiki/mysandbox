@@ -255,18 +255,14 @@ mkdir -p /etc/skel-home
 EOS
 fi
 
-# ---------- 全局技能目录：~/.agents/skills 真身 + ~/.claude/skills 兼容软链 ----------
-# ~/.agents/skills 是全局技能唯一真身（跨工具标准，mysandbox 同步/盘点只认它）；
-# ~/.claude/skills 是指向它的相对软链（claude 等工具读软链；相对路径宿主侧直写
-# rootfs 也能解析）。存量非软链目录先并入。
+# ---------- 全局技能目录：~/.agents/skills 与 ~/.claude/skills 两处实体副本 ----------
+# 无软链：两处都是独立目录（跨工具标准 + claude 等工具的落点），内容由宿主
+# skills 同步各铺一份。旧软链 shim 一并摘除（rm 对软链只摘链）。
 step global-skills
 attsh <<'EOS'
 mkdir -p /home/dev/.agents/skills
-if [ -d /home/dev/.claude/skills ] && [ ! -L /home/dev/.claude/skills ]; then
-  cp -a /home/dev/.claude/skills/. /home/dev/.agents/skills/
-  rm -rf /home/dev/.claude/skills
-fi
-[ -L /home/dev/.claude/skills ] || ln -s ../.agents/skills /home/dev/.claude/skills
+if [ -L /home/dev/.claude/skills ]; then rm -f /home/dev/.claude/skills; fi
+mkdir -p /home/dev/.claude/skills
 EOS
 
 # ---------- home 归属：/home/dev 全量归还 dev ----------

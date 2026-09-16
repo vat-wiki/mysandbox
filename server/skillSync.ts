@@ -48,10 +48,15 @@ import { AI_DIR, getSkillHub, setSkillHub, getSkillRegistry, setSkillRegistry, t
 import { log } from './logger.js';
 
 const SKILLS_DIR = join(AI_DIR, 'skills');
-// 全局落点的唯一真身：~/.agents/skills（跨工具标准）。~/.claude/skills 是指向它的
-// 相对软链（compat shim，claude 等工具读软链）——规则/盘点/范围判定都只认真身，
-// 避免同目录双份记账。软链由 seedHome（新容器）与一次性迁移（存量环境）落地。
-const GLOBAL_RELS = ['.agents/skills'];
+// 全局落点 = 两处独立实体副本（无软链）：~/.agents/skills（跨工具标准，canonical，
+// 规则锚它）+ ~/.claude/skills（claude 等工具读的孪生）。规则只锚 canonical 一条，
+// 分发时两处各铺一份、各记一份清单（孪生清单 <id>.twin——规则删除时随孤儿清理一并
+// 收回），内容由系统保持一致，用户不需要记两份的关系。旧软链 shim 由 dropGlobalShims
+// 摘除（同步时幂等跑）。
+const CANONICAL_GLOBAL_REL = '.agents/skills';
+const GLOBAL_RELS = [CANONICAL_GLOBAL_REL, '.claude/skills'];
+// canonical 全局规则的孪生去向（rel 级）。
+const TWIN_REL: Record<string, string> = { [CANONICAL_GLOBAL_REL]: '.claude/skills' };
 export interface SkillSyncContainerResult {
   name: string;
   ok: boolean;
@@ -286,6 +291,37 @@ async function distributeDir(
   return results;
 }
 
+// 一条规则的完整分发：canonical 去向 + 全局孪生（若有），容器结果按名合并——
+// changed/removed 相加，任一处失败 = 该容器失败（错误串拼接）。两处各记一份清单
+// （孪生清单 <manifestId>.twin），规则删除时各自随孤儿清理收回。
+async function distributeRule(
+  cfg: Config,
+  dir: string,
+  to: string,
+  manifestId: string,
+  opts: DistributeOpts = {},
+): Promise<SkillSyncContainerResult[]> {
+  const main = await distributeDir(cfg, dir, to, manifestId, opts);
+  const twRel = TWIN_REL[containerRel(to)];
+  if (!twRel) return main;
+  const twin = await distributeDir(cfg, dir, `~/${twRel}`, `${manifestId}.twin`, opts);
+  const merged = new Map(main.map((r) => [r.name, { ...r }]));
+  for (const r of twin) {
+    const m = merged.get(r.name);
+    if (!m) {
+      merged.set(r.name, r);
+      continue;
+    }
+    m.changed += r.changed;
+    m.removed += r.removed;
+    if (!r.ok) {
+      m.ok = false;
+      m.error = m.error ? `${m.error}；${r.error}` : r.error;
+    }
+  }
+  return [...merged.values()];
+}
+
 // 分发目标：本机（宿主 leon 的 home——与容器契约 home 同形，D1 直通）+ 容器内绝对
 // 宿主路径（sidecar 已知、home 可见的容器 = 与 sweepContainerCli 同口径）。宿主排最前。
 async function distributeTargets(cfg: Config): Promise<{ name: string; home: string }[]> {
@@ -428,6 +464,47 @@ async function ensureLegacyMigrated(cfg: Config): Promise<void> {
   if (dirty) await setSkillHub(hub);
 }
 
+// 存量软链 shim 摘除（幂等无记账）：~/.claude/skills 若还是旧兼容软链 → 只摘链换
+// 实体目录（rm 对软链只摘链不动真身），内容由孪生分发在同一次同步里补齐。
+async function dropGlobalShim(home: string): Promise<void> {
+  const p = join(home, '.claude', 'skills');
+  let st: Stats | undefined;
+  try {
+    st = lstatSync(p);
+  } catch {
+    return;
+  }
+  if (!st.isSymbolicLink()) return;
+  await rm(p, { force: true });
+  await mkdir(p, { recursive: true });
+  log.info({ path: p }, 'skills: shim symlink replaced with real dir');
+}
+
+// 全局规则统一锚 canonical（~/.agents/skills）：两份副本模型之前建的 ~/.claude/skills
+// 规则并进来（技能集 + 清单里分发过的条目都并入，已铺内容保持受管），落点改由
+// canonical 规则的孪生分发接管。幂等。
+async function canonicalizeGlobalRules(): Promise<void> {
+  const hub = await getSkillHub();
+  const canonTo = `~/${CANONICAL_GLOBAL_REL}`;
+  const twinTo = `~/${TWIN_REL[CANONICAL_GLOBAL_REL]}`;
+  const strays = hub.rules.filter((r) => r.to === twinTo);
+  if (!strays.length) return;
+  let canon = hub.rules.find((r) => r.to === canonTo);
+  if (!canon) {
+    canon = strays[0];
+    canon.to = canonTo;
+    strays.shift();
+  }
+  for (const s of strays) {
+    for (const n of [...s.skills, ...((await readManifest(hubDirId(s.to)))?.distributed ?? [])]) {
+      if (!canon.skills.includes(n)) canon.skills.push(n);
+    }
+  }
+  hub.rules = hub.rules.filter((r) => !strays.includes(r));
+  await setSkillHub(hub);
+  log.info({ merged: strays.length }, 'skills: twin-to rules merged into canonical global rule');
+}
+
 // —— 安装规则通路 ——
 
 // 目标的聚合副本目录/清单锚点：sha1(to) 前 8 位。锚在 to 而非 target id——目标删
@@ -471,7 +548,7 @@ async function syncRule(cfg: Config, rule: SkillRule): Promise<SkillRuleResult> 
     out.missing = out.skills.filter((s) => !s.ok).map((s) => s.name);
     out.changed = agg.changed;
     out.removed = agg.removed;
-    out.containers = await distributeDir(cfg, agg.dir, rule.to, hubDirId(rule.to), {
+    out.containers = await distributeRule(cfg, agg.dir, rule.to, hubDirId(rule.to), {
       onlyIfParentExists: !rule.all,
     });
     log.info(
@@ -511,13 +588,41 @@ async function syncRules(cfg: Config): Promise<{ ok: boolean; rules: SkillRuleRe
     /* 无目录 = 无孤儿 */
   }
   const aliveIds = new Set(hub.rules.map((r) => hubDirId(r.to)));
+  for (const r of hub.rules) {
+    if (TWIN_REL[containerRel(r.to)]) aliveIds.add(`${hubDirId(r.to)}.twin`); // 孪生清单同样是存活清单
+  }
   const aliveAll = new Set(hub.rules.filter((r) => r.all).map((r) => r.to));
+  // 落点已被存活规则接管（canonical 本尊或其孪生）的旧清单（如并入 canonical 的
+  // ~/.claude/skills 规则）：不再按它回收——按它回收会把孪生分发刚铺好的内容删掉；
+  // 直接弃目录与清单，内容归存活规则管。存活规则的孪生清单（<id>.twin）平时也靠
+  // 这条守卫不被误当孤儿，规则删除后 aliveRels 失去该落点 → 照常按清单收回。
+  const aliveRels = new Set<string>();
+  for (const r of hub.rules) {
+    try {
+      aliveRels.add(containerRel(r.to));
+      const tw = TWIN_REL[containerRel(r.to)];
+      if (tw) aliveRels.add(tw);
+    } catch {
+      /* to 形态不合法的规则：孤儿清理按原样走 */
+    }
+  }
   for (const e of entries) {
     if (!e.startsWith('hub-') || !e.endsWith('.json')) continue;
     const id = e.slice(0, -'.json'.length);
     if (aliveIds.has(id)) continue;
     const manifest = await readManifest(id);
     if (manifest) {
+      let rel = '';
+      try {
+        rel = containerRel(manifest.to);
+      } catch {
+        /* to 形态不合法的旧清单：照常按清单回收 */
+      }
+      if (rel && aliveRels.has(rel)) {
+        await rm(join(SKILLS_DIR, id), { recursive: true, force: true });
+        await rm(join(SKILLS_DIR, `${id}.json`), { force: true });
+        continue;
+      }
       try {
         await distributeDir(cfg, join(SKILLS_DIR, id, '__gone__'), manifest.to, id, {
           onlyIfParentExists: !aliveAll.has(manifest.to),
@@ -546,7 +651,9 @@ async function syncRules(cfg: Config): Promise<{ ok: boolean; rules: SkillRuleRe
 // 命名空间副本清理。
 async function runSync(cfg: Config): Promise<SkillSyncResult> {
   const started = Date.now();
+  for (const { home } of await distributeTargets(cfg)) await dropGlobalShim(home);
   await ensureLegacyMigrated(cfg);
+  await canonicalizeGlobalRules();
   const { rules, ok } = await syncRules(cfg);
   await pruneStale();
   return { ok, rules, durationMs: Date.now() - started };
@@ -566,11 +673,12 @@ export async function syncContainerSkills(cfg: Config, name: string): Promise<vo
       await ensureLegacyMigrated(cfg);
       const home = name === HOST_TARGET ? homedir() : getEngine(cfg).hostHomePath(cfg, name);
       if (!home || !existsSync(home)) return;
+      await dropGlobalShim(home); // 克隆自旧模板的 home 可能还带软链 shim——补发前先摘
       const hub = await getSkillHub();
       if (!hub.rules.some((r) => r.skills.length) && !existsSync(SKILLS_DIR)) return;
       for (const rule of hub.rules) {
         const agg = await aggregateRule(rule);
-        await distributeDir(cfg, agg.dir, rule.to, hubDirId(rule.to), {
+        await distributeRule(cfg, agg.dir, rule.to, hubDirId(rule.to), {
           only: [{ name, home }],
           onlyIfParentExists: !rule.all,
         });
@@ -603,16 +711,15 @@ export async function installSkillsToSpot(
   // rel：宿主 spot 是真实宿主路径（相对 $HOME）；容器 spot 走契约前缀（/home/dev）。
   let rel = isHost ? hostHomeRel(spot) : containerRel(spot);
   if (!rel) throw new Error('安装位置不能是 home 根');
-  // 归一到全局真身：home 直下的 ~/.claude/skills 是 ~/.agents/skills 的软链，
-  // 规则统一落真身路径，防止同目录两条规则互相打架。
-  if (rel === '.claude/skills') rel = '.agents/skills';
+  // 范围：全局落点（两处实体副本任一——内容由系统保持一致，装哪边都等于装全局）
+  // 铺全部容器；其余落点一律项目范围。全局统一锚 canonical 规则（孪生落点由分发层
+  // 跟铺），同一落点两种写法必须是同一条规则。
+  const all = GLOBAL_RELS.includes(rel);
+  if (all) rel = CANONICAL_GLOBAL_REL;
   const to = `~/${rel}`;
   const reg = await getSkillRegistry();
   const missing = skills.filter((n) => !reg.skills[n] || !existsSync(join(REGISTRY_DIR, n)));
   if (missing.length) throw new Error(`库中没有这些技能：${missing.join('、')}`);
-  // 范围：规范的全局落点（~/.claude/skills、~/.agents/skills）铺全部容器；其余落点
-  // 一律项目范围。
-  const all = GLOBAL_RELS.includes(rel);
   const hub = await getSkillHub();
   let rule = hub.rules.find((r) => r.to === to);
   let created = false;
@@ -624,7 +731,7 @@ export async function installSkillsToSpot(
   for (const n of skills) if (!rule.skills.includes(n)) rule.skills.push(n);
   await setSkillHub(hub);
   await syncContainerSkills(cfg, container);
-  log.info({ container, to, skills, created }, 'skills installed at spot');
+  log.info({ container, to, all, skills, created }, 'skills installed at spot');
   return { to, all, created, ruleId: rule.id };
 }
 
@@ -1117,8 +1224,9 @@ export async function registryImportGit(
 // —— 已安装清单（inventory）：宿主 + 受管容器的标准 skills 落点只读扫描 ——
 
 // 落点（相对 home）。加新工具支持 = 加一行；不存在/不可读的落点静默跳过。
-// 宿主与容器同一份清单（契约 home=/home/dev，宿主 $HOME 同形）。
-const INVENTORY_SPOTS = ['.agents/skills'];
+// 宿主与容器同一份清单（契约 home=/home/dev，宿主 $HOME 同形）。两处全局实体
+// 副本都扫（内容一致，spot 字段区分）。
+const INVENTORY_SPOTS = ['.agents/skills', '.claude/skills'];
 
 // 项目级落点动态发现：home 顶层非隐藏目录下的 .claude/skills（存在才列）。
 // 项目的 skills 也是「能用的 skills」（agent 在项目内加载），不扫就答不全；

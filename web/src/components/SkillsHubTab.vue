@@ -84,8 +84,8 @@ const emit = defineEmits<{
   (e: 'unauthorized'): void
 }>()
 
-// 全局位置（铺本机 + 全部受管容器）的唯一真身——~/.claude/skills 是指向它的软链
-// （seedHome/模板落地），规则只认真身。
+// 全局位置（铺本机 + 全部受管容器）的 canonical 落点——~/.claude/skills 孪生跟铺
+// （两处独立实体副本，无软链），规则只锚它。
 const GLOBAL_TO = '~/.agents/skills'
 
 const hub = ref<SkillHubView | null>(null)
@@ -253,8 +253,8 @@ async function doInstall(name: string) {
 // 卡头「N 处」计数弹出的位置 Popover（key = 技能名，同时只开一个）。
 const spotsFor = ref<string | null>(null)
 
-// 全局安装 = 库技能铺到 ~/.agents/skills（~/.claude/skills 软链到它）——本机 +
-// 全部受管容器。入口收在头部「全局安装」按钮：弹框里库技能多选、双向同步——勾上 =
+// 全局安装 = 库技能铺到 ~/.agents/skills（~/.claude/skills 孪生跟铺，两处独立
+// 实体副本无软链）——本机 + 全部受管容器。入口收在头部「全局安装」按钮：弹框里库技能多选、双向同步——勾上 =
 // 装，取消勾选 = 从全局摘掉（规则/位置保留，下次同步从各处清理）。保存是一次规则
 // 技能集替换（PATCH skills），范围顺手拉回 all=true（规则可能被范围切换动过）；
 // 库里已缺失的残留不在列表里、保持原样（清理走卡头「N 处」popover 的「清缺失」）。
@@ -790,7 +790,7 @@ async function cleanMissing(r: SkillRuleResult) {
           variant="ghost"
           size="xs"
           class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
-          title="勾选 = 装到 ~/.agents/skills（本机 + 全部受管容器）"
+          title="勾选 = 装到全局（~/.agents/skills 与 ~/.claude/skills 两处，本机 + 全部受管容器）"
           @click="openGlobal"
         >
           <Globe class="size-3.5" /> 全局安装<span v-if="globalCount" class="text-[10px] text-muted-foreground">·{{ globalCount }}</span>
@@ -872,7 +872,7 @@ async function cleanMissing(r: SkillRuleResult) {
                       variant="ghost"
                       size="icon-xs"
                       class="shrink-0 text-muted-foreground hover:text-foreground"
-                      title="收进库并装到本机 + 全部容器（~/.agents/skills）"
+                      title="收进库并装到全局（两处 skills 目录，本机 + 全部容器）"
                       @click="addToRegistry(loc, s.dir, row.spot, true)"
                     >
                       <CornerDownRight class="size-3" />
@@ -986,7 +986,7 @@ async function cleanMissing(r: SkillRuleResult) {
             <span
               v-if="s.exists && installedAt(s.name, GLOBAL_TO)"
               class="shrink-0 cursor-help rounded border border-primary/40 bg-primary/10 px-1 text-[10px] text-primary"
-              title="已装 ~/.agents/skills（本机 + 全部受管容器）"
+              title="已装全局（~/.agents/skills 与 ~/.claude/skills，本机 + 全部受管容器）"
             >全局</span>
             <Badge
               v-if="!s.exists"
@@ -1236,7 +1236,7 @@ async function cleanMissing(r: SkillRuleResult) {
         <DialogHeader>
           <DialogTitle>全局安装</DialogTitle>
           <DialogDescription class="font-mono">
-            {{ GLOBAL_TO }}（~/.claude/skills 软链到它）· 本机 + 全部受管容器
+            {{ GLOBAL_TO }} + ~/.claude/skills（两处实体副本）· 本机 + 全部受管容器
           </DialogDescription>
         </DialogHeader>
 

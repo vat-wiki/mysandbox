@@ -86,8 +86,8 @@ export interface AiProjectRule {
 }
 
 // 技能分发规则（server/skillSync.ts）：以「库」为唯一技能真相源的安装规则——
-// 规则 = 库里勾选的一组技能 + 去向位置（全局 ~/.agents/skills 真身或某项目的
-// .claude/skills）+ 范围。true = 本机 + 全部受管容器；false = 仅已有该项目的目标
+// 规则 = 库里勾选的一组技能 + 去向位置（全局 ~/.agents/skills——~/.claude/skills
+// 孪生跟铺，两处独立实体副本无软链——或某项目的 .claude/skills）+ 范围。true = 本机 + 全部受管容器；false = 仅已有该项目的目标
 // （落点逐级向上探测，项目克隆到哪 skill 跟到哪）。
 export interface SkillRule {
   id: string; // 随机短 id（操作锚点）
@@ -409,8 +409,8 @@ export async function clearLegacyAiGateway(): Promise<void> {
 
 // —— 技能分发规则（库为真相源；server/skillSync.ts）——
 
-// 全局规则（铺本机 + 全部受管容器）的缺省去向——唯一真身（~/.claude/skills 是指向
-// 它的软链，规则只认真身；与前端 GLOBAL_TO / installSkillsToSpot 的归一一致）。
+// 全局规则（铺本机 + 全部受管容器）的缺省去向——canonical 全局落点（~/.claude/skills
+// 孪生跟铺；与前端 GLOBAL_TO / installSkillsToSpot 的归一一致）。
 export const SKILL_HUB_DEFAULT_TO = '~/.agents/skills';
 
 export async function getSkillHub(): Promise<SkillHubState> {

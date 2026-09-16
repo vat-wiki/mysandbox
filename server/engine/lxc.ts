@@ -518,14 +518,12 @@ cd /home/dev || exit 0
 mkdir -p "$HOME/.local/bin" "$HOME/.claude"
 [ -e "$HOME/.local/bin/claude" ] || ln -s /usr/local/bin/claude "$HOME/.local/bin/claude" 2>/dev/null
 [ -e "$HOME/.claude.json" ] || printf '%s' '{}' > "$HOME/.claude.json"
-# 全局技能目录：~/.agents/skills 是唯一真身，~/.claude/skills 是指向它的相对软链
-# （claude 等工具读软链；相对路径宿主侧直写 rootfs 也能解析）。存量非软链目录先并入。
+# 全局技能目录：~/.agents/skills 与 ~/.claude/skills 是两处独立实体副本（无软链；
+# 跨工具标准 + claude 等工具的落点），内容都由宿主 skills 同步各铺一份。旧软链
+# shim 摘除（rm 对软链只摘链，实体目录原样保留）。
 mkdir -p "$HOME/.agents/skills"
-if [ -d "$HOME/.claude/skills" ] && [ ! -L "$HOME/.claude/skills" ]; then
-  cp -a "$HOME/.claude/skills/." "$HOME/.agents/skills/"
-  rm -rf "$HOME/.claude/skills"
-fi
-[ -L "$HOME/.claude/skills" ] || ln -s ../.agents/skills "$HOME/.claude/skills"
+if [ -L "$HOME/.claude/skills" ]; then rm -f "$HOME/.claude/skills"; fi
+mkdir -p "$HOME/.claude/skills"
 if [ ! -f "$HOME/.claude/settings.json" ] && [ -f /mnt/claude-settings.template ]; then
   cp /mnt/claude-settings.template "$HOME/.claude/settings.json"
 fi
