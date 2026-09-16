@@ -181,8 +181,8 @@ fi
 node -v && npm -v
 EOS
 
-# ---------- AI CLI（npm 全局，对齐 Dockerfile）----------
-# --ignore-scripts 的理由同 Dockerfile：pi 的 postinstall 在非交互下等 stdin 会挂住。
+# ---------- AI CLI（npm 全局）----------
+# --ignore-scripts 的理由：pi 的 postinstall 在非交互下等 stdin 会挂住。
 step ai-cli
 attsh <<'EOS'
 export HOME=/tmp
@@ -191,12 +191,28 @@ npm install -g --ignore-scripts \
   opencode-ai@latest \
   openclaw@latest \
   @earendil-works/pi-coding-agent@latest
-npm install -g @anthropic-ai/claude-code@latest
 # opencode 的 postinstall 手动补跑（--ignore-scripts 把它也跳了，留下 placeholder 报错脚本）
 cd /usr/local/lib/node_modules/opencode-ai && node postinstall.mjs
 ! grep -qa "postinstall script was not run" bin/opencode.exe
 bin/opencode.exe --version
 rm -rf /tmp/.npm /tmp/.cache
+EOS
+
+# ---------- claude（原生安装器，装到 dev 的 home）----------
+# 刻意不走 npm 全局：npm 会装进 /usr/local（root 所有），克隆出的容器里 dev 的
+# 自动更新写不进 prefix，每次启动报 "Auto-update failed: no write permission to
+# npm prefix"。原生安装器落到 /home/dev/.local/bin，dev 自更新全程免 root。
+# HOME 指向 /home/dev 时以 root 跑，落盘文件归 root——由下面的 home-owner 步统一归还。
+# 幂等：已在位即跳过（重跑模板不追新，同 omz 冻结快照口径；要升级删掉重跑）。
+step claude
+attsh <<'EOS'
+if [ -x /home/dev/.local/bin/claude ]; then
+  echo "claude 已在位，跳过"
+else
+  export HOME=/home/dev
+  curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors https://claude.ai/install.sh | bash
+fi
+/home/dev/.local/bin/claude --version
 EOS
 
 # ---------- gh ----------
@@ -287,7 +303,7 @@ chk "tmux"                'command -v tmux'
 chk "git"                 'command -v git'
 chk "script(1)"           'command -v script'
 chk "node"                'command -v node'
-chk "claude"              'command -v claude'
+chk "claude"              '[ -x /home/dev/.local/bin/claude ]'
 chk "gh"                  'command -v gh'
 chk "docker cli"          'command -v docker'
 chk "sudo 免密"           '[ -f /etc/sudoers.d/dev ]'
