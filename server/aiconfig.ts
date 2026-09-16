@@ -413,6 +413,16 @@ function wireLabel(wire: GatewayWire): string {
       : 'OpenAI chat 协议';
 }
 
+// opencode 的 anthropic-messages 变体走 @ai-sdk/anthropic：其 baseURL 约定**含 /v1**
+// （默认 https://api.anthropic.com/v1，SDK 只拼 /messages），与 Claude Code / pi 的
+// ANTHROPIC_BASE_URL 约定（不含 /v1，客户端自己拼 /v1/messages）差一级。漏补的话请求
+// 打到 <base>/messages，网关 404 "no such endpoint: POST /anthropic/messages"。
+// 已带 /v1 结尾的配置不动（防双重拼接）。
+function anthropicV1Url(url: string): string {
+  const stripped = url.replace(/\/+$/, '');
+  return /\/v1$/.test(stripped) ? stripped : `${stripped}/v1`;
+}
+
 // 指定 wire 取对应侧端点（anthropic-messages 走 anthropic 侧，其余走 openai 侧）。
 function baseUrlFor(p: ResolvedProvider, wire: GatewayWire): string {
   const side = wire === 'anthropic-messages' ? p.endpoints.anthropic : p.endpoints.openai;
@@ -511,7 +521,11 @@ async function configOpencode(
               ? '@ai-sdk/openai'
               : '@ai-sdk/openai-compatible',
         name: `${p.id} ${wireLabel(wire)}`,
-        options: { baseURL: baseUrlFor(p, wire), apiKey: p.apiKey },
+        options: {
+          baseURL:
+            wire === 'anthropic-messages' ? anthropicV1Url(baseUrlFor(p, wire)) : baseUrlFor(p, wire),
+          apiKey: p.apiKey,
+        },
         ...(p.models.length ? { models: Object.fromEntries(p.models.map((m) => [m, { name: m }])) } : {}),
       };
       obj.provider = { ...((obj.provider as object) ?? {}), [key]: entry };
