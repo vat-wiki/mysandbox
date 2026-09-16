@@ -72,6 +72,14 @@ const piWires = ref<GatewayWire[]>(['openai-chat'])
 const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
 
+// 当前选中的 claude provider 将注入的受管键（与 configClaude 的落盘值一致：baseUrl
+// 原样不含 /v1 + apiKey）——自身配置的 env 预览要展示落盘全貌就得带上。
+const claudeBindingEnv = computed<Record<string, string> | null>(() => {
+  const p = providers.value.find((x) => x.id === claude.value)
+  if (!p?.endpoints.anthropic) return null
+  return { ANTHROPIC_BASE_URL: p.endpoints.anthropic.baseUrl, ANTHROPIC_AUTH_TOKEN: p.apiKey }
+})
+
 function fillFrom(b: AiBinding | null | undefined) {
   claude.value = b?.claude?.provider ?? ''
   codex.value = b?.codex?.provider ?? ''
@@ -211,6 +219,7 @@ async function doRemoveRule(id: string) {
         </div>
         <AiClaudeToolConfig
           :tc="view?.toolConfig.claude"
+          :binding-env="claudeBindingEnv"
           @saved="loadView"
           @unauthorized="emit('unauthorized')"
         />

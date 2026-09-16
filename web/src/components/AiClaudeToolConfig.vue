@@ -24,6 +24,9 @@ import InfoHint from './InfoHint.vue'
 const props = defineProps<{
   // 父级传入的当前配置（view.toolConfig.claude，可能是异步到达的初值）。
   tc?: AiClaudeToolConfig
+  // 绑定注入的受管键（ANTHROPIC_BASE_URL/AUTH_TOKEN，来自当前选中的 provider）——
+  // 预览要展示落盘全貌就得带上；Monaco 里改它们恒被绑定覆盖，不进表单。
+  bindingEnv?: Record<string, string> | null
 }>()
 const emit = defineEmits<{
   (e: 'saved'): void
@@ -131,13 +134,18 @@ const envOut = computed<Record<string, string>>(() => {
   return out
 })
 
-// —— Monaco 原文（envOut 的 JSON：实时预览 + 高级编辑；rows ⇄ raw 双向同步）——
+// —— Monaco 原文（previewEnv 的 JSON：实时预览 + 高级编辑；rows ⇄ raw 双向同步）——
+// 预览 = 自身配置 env + 绑定受管键（落盘全貌）；受管键只展示不可改（改了被覆盖）。
 const raw = ref('')
 const parseErr = ref('')
+const previewEnv = computed<Record<string, string>>(() => ({
+  ...envOut.value,
+  ...(props.bindingEnv ?? {}),
+}))
 // 注意：Vue 的 watch 回调是异步冲刷的，同步旗标拦不住自己的回灌（回调跑时旗标已复位）
-// ——改用「解析结果与当前表单等价 = 只是回显」判定：回显不动 dirty、不重建表单。
+// ——改用「解析结果与当前预览等价 = 只是回显」判定：回显不动 dirty、不重建表单。
 watch(
-  envOut,
+  previewEnv,
   (env) => {
     const s = JSON.stringify(env, null, 2)
     if (s !== raw.value) raw.value = s
@@ -161,9 +169,11 @@ watch(raw, (s) => {
     return
   }
   parseErr.value = ''
-  if (JSON.stringify(v) === JSON.stringify(envOut.value)) return // 只是回显
+  if (JSON.stringify(v) === JSON.stringify(previewEnv.value)) return // 只是回显
   dirty.value = true
-  const env = v as Record<string, string>
+  const env = { ...(v as Record<string, string>) }
+  // 受管键以绑定为准：Monaco 里的增删改不落表单（下一次回显由绑定补回）
+  for (const k of Object.keys(props.bindingEnv ?? {})) delete env[k]
   model.value = env.ANTHROPIC_MODEL ?? ''
   presets.value = Object.fromEntries(
     [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, env[p.key] ?? '']),
@@ -216,6 +226,7 @@ async function save() {
         <p>小模型用 ANTHROPIC_DEFAULT_HAIKU_MODEL；旧版 CLI 的变量名是 ANTHROPIC_SMALL_FAST_MODEL，可在自定义 env 补写。</p>
         <p>压缩窗口（CLAUDE_CODE_AUTO_COMPACT_WINDOW）是 token 数——剩余上下文不足该值即触发 auto-compact，不是百分比。</p>
         <p>{{ RESERVED }} 由模型服务绑定管，这里写了会被拒。</p>
+        <p>预览里出现的 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 来自上面选中的模型服务（落盘全貌），在原文里改它们会被绑定覆盖。</p>
       </InfoHint>
     </div>
 
@@ -295,7 +306,7 @@ async function save() {
       <div class="space-y-1.5">
         <div class="flex items-center justify-between">
           <Label>env 预览 / 原文（JSON）</Label>
-          <span class="text-[10px] text-muted-foreground/70">随上方表单实时更新 · 可直接改（改对自动套用）· Ctrl+S 保存</span>
+          <span class="text-[10px] text-muted-foreground/70">随表单与所选模型服务实时更新 · 可直接改（改对自动套用）· Ctrl+S 保存</span>
         </div>
         <CodeEditor
           v-model="raw"
