@@ -1,16 +1,21 @@
 <script setup lang="ts">
 // Claude Code 工具自身配置表单（toolConfig，全局一份）：绑定之外的 CLI 特殊配置。
-// 常用项直接给表单字段（存储仍是同一个 env 对象，常用项只是预设键的视图）：
-//   默认模型   = ANTHROPIC_MODEL
-//   小模型等   = PRESET_INPUTS（后台小任务/输出上限/思考预算/超时/子代理/压缩窗口）
-//   开关       = PRESET_TOGGLES（非必要流量/自动更新/自动压缩，勾选 = '1'）
-//   自定义 env = rows 键值对（只放非预设键，避免与常用项重复编辑）
-// envOut 是唯一出口，Monaco 原文 = previewEnv 的 JSON：实时预览（随表单与所选模型服务
-// 即时更新）+ 高级编辑（改对自动套用回表单）。
+// 常用项直接给表单字段（存储仍是同一个 toolConfig 对象，常用项只是预设键的视图）：
+//   默认模型   = env.ANTHROPIC_MODEL
+//   小模型等   = env.PRESET_INPUTS（后台小任务/输出上限/思考预算/超时/子代理/压缩窗口）
+//   开关       = env.PRESET_TOGGLES（非必要流量/自动更新/自动压缩，勾选 = '1'）
+//   自定义 env = env.rows 键值对（只放非预设键，避免与常用项重复编辑）
+//   顶级设置   = settings（settings.json 顶级键——effortLevel 等非 env 配置）：
+//     思考力度   = effortLevel（low/medium/high）
+//     开关       = SET_PRESET_TOGGLES（布尔：跳过危险模式确认/自动记忆）
+//     自定义键   = setRows 键值对（值按 JSON 解析：true/false/数字/引号字符串）
+// envOut + settingsOut 是唯一出口；Monaco 原文 = 整份 settings.json 形状
+//（{…顶级键, env: {…}}）：实时预览（随表单与所选模型服务即时更新）+ 高级编辑
+//（改对自动套用回表单，env 块与非 env 顶级键各回各的表单区）。
 // 本组件是纯表单：不持有保存按钮——保存由页签统一走 POST /api/ai/claude-config
 // （绑定 + 自身配置一次提交），父级经 defineExpose 拿校验状态与 toolConfig 输出。
 // 配置持久化在服务端 ai-config.json（0600），下次进入回显。
-// 保留键（ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN）后端 400 拒绝——由模型服务绑定管。
+// 保留键（ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN；settings 里的 env）后端 400 拒绝。
 import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import type { AiClaudeToolConfig } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -32,7 +37,7 @@ const props = defineProps<{
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
 
-// —— 常用项预设键（中转/网关场景高频项；键名以当前 CLI 文档为准）——
+// —— env 常用项预设键（中转/网关场景高频项；键名以当前 CLI 文档为准）——
 const PRESET_INPUTS = [
   { key: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', label: '小模型（后台任务）', placeholder: 'claude-haiku-…（标题/摘要等小任务走便宜模型）' },
   { key: 'CLAUDE_CODE_MAX_OUTPUT_TOKENS', label: '最大输出 tokens', placeholder: '如 32000' },
@@ -53,7 +58,21 @@ const PRESET_KEYS = new Set<string>([
   ...PRESET_TOGGLES.map((t) => t.key),
 ])
 
-// —— 真相：模型 + 常用项值 + env 行列表（{key,value}；空 key 行 = 未填，保存时过滤）——
+// —— settings 顶级键常用项（settings.json 顶级键 = CLI 原生配置，非 env）——
+const SET_PRESET_INPUTS = [
+  { key: 'effortLevel', label: '思考力度 effortLevel', placeholder: 'low / medium / high' },
+] as const
+const SET_PRESET_TOGGLES = [
+  { key: 'skipDangerousModePermissionPrompt', label: '跳过危险模式权限确认（不再逐条问）' },
+  { key: 'autoMemoryEnabled', label: '启用自动记忆（AUTO MEMORY）' },
+] as const
+const SET_PRESET_KEYS = new Set<string>([
+  'env', // env 块另有归属（绑定 + 自定义 env），settings 里禁写
+  ...SET_PRESET_INPUTS.map((p) => p.key),
+  ...SET_PRESET_TOGGLES.map((t) => t.key),
+])
+
+// —— 真相：模型 + 常用项值 + env 行列表 + 顶级设置（{key,value}；空 key 行 = 未填，保存时过滤）——
 interface EnvRow {
   key: string
   value: string
@@ -61,13 +80,31 @@ interface EnvRow {
 const model = ref('')
 const presets = ref<Record<string, string>>({}) // 非空才落 env；开关用 '1'/'' 表达
 const rows = ref<EnvRow[]>([])
+const effortLevel = ref('') // settings.effortLevel（low/medium/high）
+const setPresets = ref<Record<string, boolean>>({}) // 布尔开关 true/''
+const setRows = ref<EnvRow[]>([])
 // 用户动过表单后不再用 prop 初值回灌（父级 view 刷新不冲掉编辑中的草稿）。
 const dirty = ref(false)
+
+// 行值 ⇄ JSON 标量：true/false/数字按 JSON 解析，其余原样当字符串（要字面量 "true" 就带引号写）。
+function parseScalar(s: string): unknown {
+  const t = s.trim()
+  if (!t) return ''
+  try {
+    return JSON.parse(t)
+  } catch {
+    return s
+  }
+}
+function displayValue(v: unknown): string {
+  return typeof v === 'string' ? v : JSON.stringify(v)
+}
 
 let initializing = false
 function initFrom(tc: AiClaudeToolConfig | undefined) {
   initializing = true
   const env = tc?.env ?? {}
+  const st = tc?.settings ?? {}
   model.value = tc?.model ?? env.ANTHROPIC_MODEL ?? ''
   presets.value = Object.fromEntries(
     [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, env[p.key] ?? '']),
@@ -75,7 +112,15 @@ function initFrom(tc: AiClaudeToolConfig | undefined) {
   rows.value = Object.entries(env)
     .filter(([k]) => !PRESET_KEYS.has(k))
     .map(([key, value]) => ({ key, value }))
+  effortLevel.value = typeof st.effortLevel === 'string' ? st.effortLevel : ''
+  setPresets.value = Object.fromEntries(
+    SET_PRESET_TOGGLES.map((t) => [t.key, st[t.key] === true]),
+  )
+  setRows.value = Object.entries(st)
+    .filter(([k]) => !SET_PRESET_KEYS.has(k))
+    .map(([key, value]) => ({ key, value: displayValue(value) }))
   if (!rows.value.length) rows.value = [{ key: '', value: '' }]
+  if (!setRows.value.length) setRows.value = [{ key: '', value: '' }]
   initializing = false
 }
 watch(
@@ -85,19 +130,16 @@ watch(
   },
   { immediate: true },
 )
-// 任何表单输入（行/模型/常用项）= 用户动过草稿。
+// 任何表单输入（行/模型/常用项/顶级设置）= 用户动过草稿。
 watch(
-  rows,
+  [rows, setRows],
   () => {
     if (!initializing) dirty.value = true
   },
   { deep: true },
 )
-watch(model, () => {
-  if (!initializing) dirty.value = true
-})
 watch(
-  presets,
+  [model, presets, effortLevel, setPresets],
   () => {
     if (!initializing) dirty.value = true
   },
@@ -110,6 +152,13 @@ function addRow() {
 function removeRow(i: number) {
   rows.value.splice(i, 1)
   if (!rows.value.length) rows.value = [{ key: '', value: '' }]
+}
+function addSetRow() {
+  setRows.value.push({ key: '', value: '' })
+}
+function removeSetRow(i: number) {
+  setRows.value.splice(i, 1)
+  if (!setRows.value.length) setRows.value = [{ key: '', value: '' }]
 }
 
 // rows → env 对象（空 key 行过滤；同名键后者赢——与对象字面量语义一致）。
@@ -127,20 +176,34 @@ const envOut = computed<Record<string, string>>(() => {
   return out
 })
 
-// —— Monaco 原文（previewEnv 的 JSON：实时预览 + 高级编辑；rows ⇄ raw 双向同步）——
-// 预览 = 自身配置 env + 绑定受管键（落盘全貌）；受管键只展示不可改（改了被覆盖）。
+// setRows → settings 对象（预设项 + 通用行；值按 JSON 解析成标量）。
+const settingsOut = computed<Record<string, unknown>>(() => {
+  const out: Record<string, unknown> = {}
+  if (effortLevel.value.trim()) out.effortLevel = effortLevel.value.trim()
+  for (const t of SET_PRESET_TOGGLES) {
+    if (setPresets.value[t.key] === true) out[t.key] = true
+  }
+  for (const r of setRows.value) {
+    const k = r.key.trim()
+    if (k) out[k] = parseScalar(r.value)
+  }
+  return out
+})
+
+// —— Monaco 原文（整份 settings.json 形状：实时预览 + 高级编辑；raw ⇄ 表单双向同步）——
+// 预览 = 自身配置顶级键 + 自身配置 env + 绑定受管键（落盘全貌）；受管键只展示不可改。
 const raw = ref('')
 const parseErr = ref('')
-const previewEnv = computed<Record<string, string>>(() => ({
-  ...envOut.value,
-  ...(props.bindingEnv ?? {}),
+const previewObj = computed<Record<string, unknown>>(() => ({
+  ...settingsOut.value,
+  env: { ...envOut.value, ...(props.bindingEnv ?? {}) },
 }))
 // 注意：Vue 的 watch 回调是异步冲刷的，同步旗标拦不住自己的回灌（回调跑时旗标已复位）
 // ——改用「解析结果与当前预览等价 = 只是回显」判定：回显不动 dirty、不重建表单。
 watch(
-  previewEnv,
-  (env) => {
-    const s = JSON.stringify(env, null, 2)
+  previewObj,
+  (obj) => {
+    const s = JSON.stringify(obj, null, 2)
     if (s !== raw.value) raw.value = s
   },
   { immediate: true },
@@ -157,24 +220,42 @@ watch(raw, (s) => {
     parseErr.value = '顶层必须是 JSON 对象，暂不套用'
     return
   }
-  if (Object.values(v as Record<string, unknown>).some((x) => typeof x !== 'string')) {
-    parseErr.value = '所有值必须是字符串，暂不套用'
+  const obj = { ...(v as Record<string, unknown>) }
+  const env = obj.env
+  if (env !== undefined && (typeof env !== 'object' || env === null || Array.isArray(env))) {
+    parseErr.value = 'env 必须是对象，暂不套用'
+    return
+  }
+  const envObj = (env as Record<string, unknown> | undefined) ?? {}
+  if (Object.values(envObj).some((x) => typeof x !== 'string')) {
+    parseErr.value = 'env 的所有值必须是字符串，暂不套用'
     return
   }
   parseErr.value = ''
-  if (JSON.stringify(v) === JSON.stringify(previewEnv.value)) return // 只是回显
+  if (JSON.stringify(obj) === JSON.stringify(previewObj.value)) return // 只是回显
   dirty.value = true
-  const env = { ...(v as Record<string, string>) }
-  // 受管键以绑定为准：Monaco 里的增删改不落表单（下一次回显由绑定补回）
-  for (const k of Object.keys(props.bindingEnv ?? {})) delete env[k]
-  model.value = env.ANTHROPIC_MODEL ?? ''
+  // env 块 → env 表单区（受管键以绑定为准：Monaco 里的增删改不落表单，下次回显由绑定补回）
+  const e = { ...(envObj as Record<string, string>) }
+  for (const k of Object.keys(props.bindingEnv ?? {})) delete e[k]
+  model.value = e.ANTHROPIC_MODEL ?? ''
   presets.value = Object.fromEntries(
-    [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, env[p.key] ?? '']),
+    [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, e[p.key] ?? '']),
   )
-  rows.value = Object.entries(env)
+  rows.value = Object.entries(e)
     .filter(([k]) => !PRESET_KEYS.has(k))
     .map(([key, value]) => ({ key, value }))
   if (!rows.value.length) rows.value = [{ key: '', value: '' }]
+  // 其余顶级键 → 顶级设置表单区（预设键认领，其余进通用行；值按 JSON 还原显示）
+  delete obj.env
+  const st = obj as Record<string, unknown>
+  effortLevel.value = typeof st.effortLevel === 'string' ? (st.effortLevel as string) : ''
+  setPresets.value = Object.fromEntries(
+    SET_PRESET_TOGGLES.map((t) => [t.key, st[t.key] === true]),
+  )
+  setRows.value = Object.entries(st)
+    .filter(([k]) => !SET_PRESET_KEYS.has(k) && st[k] !== undefined)
+    .map(([key, value]) => ({ key, value: displayValue(value) }))
+  if (!setRows.value.length) setRows.value = [{ key: '', value: '' }]
 })
 
 const RESERVED = 'ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN'
@@ -189,6 +270,7 @@ defineExpose({
   toolConfigOut: (): AiClaudeToolConfig => ({
     ...(model.value.trim() ? { model: model.value.trim() } : {}),
     ...(Object.keys(envOut.value).length ? { env: envOut.value } : {}),
+    ...(Object.keys(settingsOut.value).length ? { settings: settingsOut.value } : {}),
   }),
 })
 </script>
@@ -197,13 +279,14 @@ defineExpose({
   <div class="space-y-3 border-t pt-3">
     <div class="flex items-center gap-2">
       <Badge variant="outline" class="px-1.5 text-[10px] text-muted-foreground">自身配置</Badge>
-      <span class="min-w-0 flex-1 text-[11px] text-muted-foreground">默认模型 + 常用项 + 自定义 env，全局一份，随下方保存一起追平到各容器</span>
+      <span class="min-w-0 flex-1 text-[11px] text-muted-foreground">默认模型 + 常用项 + 自定义 env + 顶级设置，全局一份，随下方保存一起追平到各容器</span>
       <InfoHint label="自身配置说明">
-        <p>「自身配置」是 Claude Code 绑定之外的特殊配置，全部落进 settings.json 的 env 块：默认模型写入 ANTHROPIC_MODEL，常用项与自定义 env 原样写入。</p>
+        <p>「自身配置」是 Claude Code 绑定之外的特殊配置，落进 settings.json 两处：env 块（默认模型写入 ANTHROPIC_MODEL，常用项与自定义 env 原样写入）与顶级键（effortLevel、skipDangerousModePermissionPrompt 等 CLI 原生配置）。</p>
         <p>只保存全局一份，不进绑定四层（本机/容器覆盖/项目规则都不带它）；落点跟着 claude 绑定走——未绑 claude 的目标不写。</p>
         <p>小模型用 ANTHROPIC_DEFAULT_HAIKU_MODEL；旧版 CLI 的变量名是 ANTHROPIC_SMALL_FAST_MODEL，可在自定义 env 补写。</p>
         <p>压缩窗口（CLAUDE_CODE_AUTO_COMPACT_WINDOW）是 token 数——剩余上下文不足该值即触发 auto-compact，不是百分比。</p>
-        <p>{{ RESERVED }} 由模型服务绑定管，这里写了会被拒。</p>
+        <p>顶级设置的值按 JSON 解析：true / false / 数字直接写，字面量字符串 "true" 要带引号；嵌套结构（permissions 等）在下方原文里编辑。注意环境变量优先级高于同名顶级配置（如 ANTHROPIC_MODEL 盖过顶级 model）——「默认模型」字段留空后顶级 model 才生效。</p>
+        <p>{{ RESERVED }} 由模型服务绑定管，这里写了会被拒；settings 里不能写 env（env 块另有归属）。</p>
         <p>预览里出现的 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 来自上面选中的模型服务（落盘全貌），在原文里改它们会被绑定覆盖。</p>
       </InfoHint>
     </div>
@@ -277,16 +360,66 @@ defineExpose({
       </p>
     </div>
 
-    <!-- Monaco：previewEnv 的 JSON——实时预览（随表单与所选模型服务即时更新）+ 高级编辑 -->
+    <!-- 顶级设置：settings.json 顶级键（非 env 的 CLI 原生配置） -->
     <div class="space-y-1.5">
       <div class="flex items-center justify-between">
-        <Label>env 预览 / 原文（JSON）</Label>
+        <Label>顶级设置</Label>
+        <Button variant="outline" size="xs" @click="addSetRow"><Plus class="size-3.5" /> 添加键值对</Button>
+      </div>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div v-for="p in SET_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
+          <Input
+            :id="`ai-claude-set-${p.key}`"
+            v-model="effortLevel"
+            :placeholder="p.placeholder"
+            class="h-8 font-mono text-xs"
+          />
+          <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-x-5 gap-y-1.5">
+        <label v-for="t in SET_PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Checkbox
+            :model-value="setPresets[t.key] === true"
+            @update:model-value="(v) => (setPresets[t.key] = v === true)"
+          />
+          {{ t.label }}
+          <span class="font-mono text-[10px] text-muted-foreground/60">{{ t.key }}</span>
+        </label>
+      </div>
+      <div v-for="(r, i) in setRows" :key="i" class="flex items-center gap-2">
+        <Input
+          v-model="r.key"
+          placeholder="键（如 model）"
+          class="h-8 flex-1 font-mono text-xs"
+        />
+        <Input
+          v-model="r.value"
+          placeholder="值（true / 42 / &quot;文本&quot;，按 JSON 解析）"
+          class="h-8 flex-[2] font-mono text-xs"
+        />
+        <button
+          type="button"
+          class="shrink-0 text-muted-foreground/60 hover:text-destructive"
+          title="删除该键值对"
+          @click="removeSetRow(i)"
+        >
+          <Trash2 class="size-3.5" />
+        </button>
+      </div>
+      <p class="text-[10px] text-muted-foreground/60">settings.json 顶级键原样合并写入（整键覆盖）；嵌套结构（permissions、hooks 等）在下方原文里编辑。env 不能写在这里。</p>
+    </div>
+
+    <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型服务即时更新）+ 高级编辑 -->
+    <div class="space-y-1.5">
+      <div class="flex items-center justify-between">
+        <Label>settings.json 预览 / 原文（JSON）</Label>
         <span class="text-[10px] text-muted-foreground/70">随表单与所选模型服务实时更新 · 可直接改（改对自动套用）</span>
       </div>
       <CodeEditor
         v-model="raw"
         language="json"
-        class="h-48 overflow-hidden rounded-md border"
+        class="h-56 overflow-hidden rounded-md border"
       />
       <p v-if="parseErr" class="text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
     </div>

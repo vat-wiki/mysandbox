@@ -341,6 +341,26 @@ export function buildClaudeExtraEnv(tc: AiClaudeToolConfig | undefined): Record<
   };
 }
 
+// claude 自身配置 → settings.json 顶级键（effortLevel 等非 env 配置）。键级 owned：
+// 整键覆盖；保存路径对旧期望做差集回收已移除键（sweep 只合并不删）。
+export function buildClaudeSettings(tc: AiClaudeToolConfig | undefined): Record<string, unknown> {
+  return tc?.settings ?? {};
+}
+
+// 旧 → 新自身配置里被移除的键（保存路径专属语义——期望里删了就回收，env 键与
+// settings 顶级键各自一套；无法与用户同名键区分，与 codex 锚点块回收同口径）。
+function removedClaudeKeys(
+  oldTc: AiClaudeToolConfig | undefined,
+  newTc: AiClaudeToolConfig,
+): { env: string[]; settings: string[] } {
+  const newEnv = new Set(Object.keys(buildClaudeExtraEnv(newTc)));
+  const newSettings = new Set(Object.keys(buildClaudeSettings(newTc)));
+  return {
+    env: Object.keys(buildClaudeExtraEnv(oldTc)).filter((k) => !newEnv.has(k)),
+    settings: Object.keys(buildClaudeSettings(oldTc)).filter((k) => !newSettings.has(k)),
+  };
+}
+
 // toolConfig 校验（routes 转 400）：对象形状 + env 键名/值类型 + 保留键拒绝。
 // BASE_URL/AUTH_TOKEN 由模型服务绑定管，这里写了会与绑定打架——路由层点名拒绝。
 export function validateToolConfig(tool: 'claude', tc: unknown): string | null {
@@ -358,6 +378,15 @@ export function validateToolConfig(tool: 'claude', tc: unknown): string | null {
       }
     }
   }
+  if (c.settings !== undefined) {
+    if (typeof c.settings !== 'object' || c.settings === null || Array.isArray(c.settings)) {
+      return `${tool}.settings 必须是对象`;
+    }
+    for (const [k, v] of Object.entries(c.settings)) {
+      if (v === undefined) return `${tool}.settings[${k}] 的值不能是 undefined`;
+      if (k === 'env') return `${tool}.settings 不能含 env——env 块由模型服务绑定与自定义 env 管`;
+    }
+  }
   return null;
 }
 
@@ -366,11 +395,13 @@ export function validateToolConfig(tool: 'claude', tc: unknown): string | null {
 // claude：.claude/settings.json env 块注入（单槽——重绑即覆盖）。base = 用户 home
 // 或项目根（项目级 = <dir>/.claude/settings.json，项目设置覆盖全局是工具自己的合并
 // 语义，我们不发明别的）。extraEnv = 工具自身配置（toolConfig）的合并键——受管绑定
-// 两键最后写（恒赢，兜底历史脏数据/非法请求穿过来）。
+// 两键最后写（恒赢，兜底历史脏数据/非法请求穿过来）；settings = toolConfig 的顶级键
+//（键级 owned 整键覆盖，先于 env 合并——env 块归属独立，校验层禁 settings.env）。
 async function configClaude(
   base: string,
   p: ResolvedProvider,
   extraEnv: Record<string, string>,
+  settings: Record<string, unknown>,
   notes: string[],
 ): Promise<void> {
   if (!p.endpoints.anthropic?.baseUrl) {
@@ -378,6 +409,7 @@ async function configClaude(
   }
   const path = join(base, '.claude', 'settings.json');
   const obj = await readJsonObject(path);
+  Object.assign(obj, settings);
   obj.env = {
     ...((obj.env as Record<string, unknown> | undefined) ?? {}),
     ...extraEnv,
@@ -385,8 +417,9 @@ async function configClaude(
     ANTHROPIC_AUTH_TOKEN: p.apiKey,
   };
   await writeJsonObject(path, obj);
-  const extra = Object.keys(extraEnv).length ? ` + 自身配置 ${Object.keys(extraEnv).length} 键` : '';
-  notes.push(`claude: 写 ${relTo(base, path)}（${p.id} env 注入${extra}，CLI 启动即生效）`);
+  const extra = Object.keys(extraEnv).length ? ` + 自身配置 env ${Object.keys(extraEnv).length} 键` : '';
+  const set = Object.keys(settings).length ? ` + 顶级设置 ${Object.keys(settings).length} 键` : '';
+  notes.push(`claude: 写 ${relTo(base, path)}（${p.id} env 注入${extra}${set}，CLI 启动即生效）`);
 }
 
 // codex：config.toml 每 provider 一个锚点块 + .zshrc 各自的 env export 块。回收 =
@@ -664,12 +697,14 @@ async function applyPlanToHome(
   scope: 'user' | 'project' = 'user',
 ): Promise<string[]> {
   const failed: string[] = [];
-  // 自身配置 env（toolConfig 全局一份）只在 user scope 注入——项目级 settings.json
-  // 不吃全局 env（否则全局自定义 env 会被抹到每个项目）。
-  const claudeExtra = scope === 'user' ? buildClaudeExtraEnv((await getAiToolConfig()).claude) : {};
+  // 自身配置（env + 顶级键）只在 user scope 注入——项目级 settings.json 不吃全局
+  // 自身配置（否则全局自定义 env/顶级键会被抹到每个项目）。
+  const tc = (await getAiToolConfig()).claude;
+  const claudeExtra = scope === 'user' ? buildClaudeExtraEnv(tc) : {};
+  const claudeSettings = scope === 'user' ? buildClaudeSettings(tc) : {};
   if (plan.claude) {
     try {
-      await configClaude(base, plan.claude, claudeExtra, notes);
+      await configClaude(base, plan.claude, claudeExtra, claudeSettings, notes);
     } catch (e) {
       failed.push('claude');
       notes.push(`claude: 失败 — ${errMsg(e)}`);
@@ -884,14 +919,12 @@ export async function setClaudeToolConfig(
 ): Promise<BatchResult> {
   const limit = pLimit(CONCURRENCY);
   const extraEnv = buildClaudeExtraEnv(tc);
-  const newKeys = new Set(Object.keys(extraEnv));
-  // 回收只在保存路径做：removedKeys = 旧期望 − 新期望（此刻还知道旧值；保存后的
+  const extraSettings = buildClaudeSettings(tc);
+  // 回收只在保存路径做：removed* = 旧期望 − 新期望（此刻还知道旧值；保存后的
   // sweep 只做合并不做删除，无从得知哪些键被移除）。这些键是上一版自己写进
   // settings.json 的，回收语义与 codex 锚点块一致（无法与用户同名键区分——期望里
   // 删了就回收）。
-  const removedKeys = Object.keys(buildClaudeExtraEnv((await getAiToolConfig()).claude)).filter(
-    (k) => !newKeys.has(k),
-  );
+  const removed = removedClaudeKeys((await getAiToolConfig()).claude, tc);
   await setAiToolConfig({ claude: tc });
 
   let targets: string[];
@@ -925,20 +958,29 @@ export async function setClaudeToolConfig(
           const path = join(home, '.claude', 'settings.json');
           const obj = await readJsonObject(path);
           const env = { ...((obj.env as Record<string, unknown> | undefined) ?? {}) };
-          let removed = 0;
-          for (const k of removedKeys) {
+          let recycled = 0;
+          for (const k of removed.env) {
             if (k in env) {
               delete env[k];
-              removed++;
+              recycled++;
+            }
+          }
+          for (const k of removed.settings) {
+            if (k in obj) {
+              delete obj[k];
+              recycled++;
             }
           }
           Object.assign(env, extraEnv);
           obj.env = env;
+          Object.assign(obj, extraSettings);
           await writeJsonObject(path, obj);
+          const nEnv = Object.keys(extraEnv).length;
+          const nSet = Object.keys(extraSettings).length;
           const notes = [
-            `claude toolConfig: 写 ${relTo(home, path)}（${Object.keys(extraEnv).length} 个 env 键${tc.model ? `，默认模型 ${tc.model}` : ''}）`,
+            `claude toolConfig: 写 ${relTo(home, path)}（${nEnv} 个 env 键${nSet ? ` + ${nSet} 个顶级设置键` : ''}${tc.model ? `，默认模型 ${tc.model}` : ''}）`,
           ];
-          if (removed) notes.push(`回收 ${removed} 个已移除键`);
+          if (recycled) notes.push(`回收 ${recycled} 个已移除键`);
           return finish(true, { stdout: notes.join('\n') });
         } catch (e) {
           return finish(false, { error: errMsg(e) });
@@ -967,20 +1009,17 @@ export async function setClaudePageConfig(
   tc: AiClaudeToolConfig,
   ids?: string[],
 ): Promise<BatchResult> {
-  const extraEnv = buildClaudeExtraEnv(tc);
-  const newKeys = new Set(Object.keys(extraEnv));
-  const removedKeys = Object.keys(buildClaudeExtraEnv((await getAiToolConfig()).claude)).filter(
-    (k) => !newKeys.has(k),
-  );
+  const removed = removedClaudeKeys((await getAiToolConfig()).claude, tc);
   await setAiToolConfig({ claude: tc });
   await setAiBinding(binding);
 
   const targets = ids?.length ? ids : [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
 
-  // removedKeys 回收：逐目标剥掉上一版自身配置写进 settings.json 的已移除键。
-  // 尽力而为——失败不挡应用段（configClaude 的整体合并会把期望值重新写对，只是旧键残留）。
+  // removedKeys 回收：逐目标剥掉上一版自身配置写进 settings.json 的已移除键（env 键
+  // 与顶级键各自一套）。尽力而为——失败不挡应用段（configClaude 的整体合并会把期望值
+  // 重新写对，只是旧键残留）。
   const recycled = new Map<string, number>();
-  if (removedKeys.length) {
+  if (removed.env.length || removed.settings.length) {
     const limit = pLimit(CONCURRENCY);
     await Promise.all(
       targets.map((t) =>
@@ -992,17 +1031,23 @@ export async function setClaudePageConfig(
             if (!existsSync(path)) return;
             const obj = await readJsonObject(path);
             const env = { ...((obj.env as Record<string, unknown> | undefined) ?? {}) };
-            let removed = 0;
-            for (const k of removedKeys) {
+            let n = 0;
+            for (const k of removed.env) {
               if (k in env) {
                 delete env[k];
-                removed++;
+                n++;
               }
             }
-            if (removed) {
+            for (const k of removed.settings) {
+              if (k in obj) {
+                delete obj[k];
+                n++;
+              }
+            }
+            if (n) {
               obj.env = env;
               await writeJsonObject(path, obj);
-              recycled.set(t, removed);
+              recycled.set(t, n);
             }
           } catch {
             /* 回收尽力而为 */

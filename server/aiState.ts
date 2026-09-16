@@ -81,12 +81,15 @@ export const AI_TOOL_KEYS: AiToolKey[] = ['claude', 'codex', 'opencode', 'pi'];
 
 // 工具自身配置（只此全局一份，不进绑定的四层模型）：各 agent CLI 除了「用哪些
 // 模型服务」之外自己的特殊配置。本期只做 claude——model → env.ANTHROPIC_MODEL，
-// env 是自定义 env 键值对，由 aiconfig 的 configClaude 在写 settings.json 时合并
-// （受管绑定键 BASE_URL/AUTH_TOKEN 恒赢）。落点跟着 claude 绑定走：未绑 claude 的
-// 目标不写（aiconfig.setClaudeToolConfig 注释有详版）。
+// env 是自定义 env 键值对，settings 是 settings.json 顶级键（effortLevel /
+// skipDangerousModePermissionPrompt / autoMemoryEnabled / permissions…，键级 owned：
+// 整键覆盖，保存路径回收已移除键），由 aiconfig 的 configClaude 在写 settings.json 时
+// 合并（env 块内受管绑定键 BASE_URL/AUTH_TOKEN 恒赢）。落点跟着 claude 绑定走：
+// 未绑 claude 的目标不写（aiconfig.setClaudeToolConfig 注释有详版）。
 export interface AiClaudeToolConfig {
   model?: string; // 默认模型 → env.ANTHROPIC_MODEL
   env?: Record<string, string>; // 自定义 env 键值对（禁 BASE_URL/AUTH_TOKEN，路由层校验）
+  settings?: Record<string, unknown>; // settings.json 顶级键（禁 env——env 块另有归属，路由层校验）
 }
 
 export interface AiToolConfigState {

@@ -367,6 +367,7 @@ export interface AiBinding {
 export interface AiClaudeToolConfig {
   model?: string
   env?: Record<string, string>
+  settings?: Record<string, unknown>
 }
 export interface AiProjectRule {
   id: string
