@@ -40,6 +40,7 @@ import {
   validateBinding,
   validateToolConfig,
   setClaudeToolConfig,
+  setClaudePageConfig,
   validateProjectSelection,
   PROVIDER_ID_RE,
   HOST_TARGET,
@@ -660,6 +661,28 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const tc = (body.claude ?? {}) as AiClaudeToolConfig;
     const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : undefined;
     return setClaudeToolConfig(cfg, tc, ids);
+  });
+
+  // Claude 页签合并保存：绑定（claude 槽）+ 自身配置一次提交——页签一个保存按钮，
+  // 不打两个接口。claude 槽替换进已存全局绑定（其余工具原样），两份校验都过才动存储；
+  // 下发一遍完成（见 aiconfig.setClaudePageConfig）。
+  app.post('/api/ai/claude-config', async (req): Promise<BatchResult> => {
+    await ensureAiMigrated();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const invalidTc = validateToolConfig('claude', body.toolConfig);
+    if (invalidTc) throw badRequest(invalidTc);
+    const provider = String(body.provider ?? '').trim();
+    if (!provider) throw badRequest('provider 必填（Claude Code 绑定的模型服务）');
+    const binding = { ...(await getAiBinding()), claude: { provider } } as AiBinding;
+    const lib = await getAiProviders();
+    const invalid = validateBinding(binding, lib);
+    if (invalid) throw badRequest(invalid);
+    const tc = (body.toolConfig ?? {}) as AiClaudeToolConfig;
+    const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : undefined;
+    if (ids?.includes(HOST_TARGET)) {
+      throw badRequest(`本机不进全局应用的缺省/批量目标——为本机配置走 /api/ai/targets/${HOST_TARGET}`);
+    }
+    return setClaudePageConfig(cfg, binding, tc, ids);
   });
 
   // 目标覆盖（key = 容器名或 __host__）：保存 + 立即应用到这台。存在即生效

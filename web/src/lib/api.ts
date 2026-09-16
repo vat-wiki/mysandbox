@@ -399,6 +399,9 @@ export const saveAiBinding = (binding: AiBinding, ids?: string[]) =>
 // 可含 '__host__' 本机）。
 export const saveAiToolConfig = (tc: { claude?: AiClaudeToolConfig }, ids?: string[]) =>
   putJson('/api/ai/tool-config', ids?.length ? { ...tc, ids } : tc, 120_000) as Promise<BatchResult>
+// Claude 页签合并保存：绑定（claude 槽）+ 自身配置一次提交一遍下发（页签一个保存按钮）。
+export const saveAiClaudePage = (provider: string, tc: AiClaudeToolConfig, ids?: string[]) =>
+  postJson('/api/ai/claude-config', ids?.length ? { provider, toolConfig: tc, ids } : { provider, toolConfig: tc }, 120_000) as Promise<BatchResult>
 // 目标覆盖（容器 or 本机）：保存 + 立即应用到这台 / 清除（容器恢复跟随全局；本机回收条目）。
 export const saveAiTargetOverride = (target: string, binding: AiBinding) =>
   postJson(`/api/ai/targets/${encodeURIComponent(target)}`, { binding }, 120_000) as Promise<BatchResult>

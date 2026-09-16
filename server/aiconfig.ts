@@ -937,6 +937,70 @@ export async function setClaudeToolConfig(
   return result;
 }
 
+// Claude 页签合并保存：绑定（claude 槽）+ 自身配置（toolConfig）一次调用落两份存储、
+// 一遍下发——页签只有一个保存按钮，不该打两个接口。binding 由路由层合并好 claude 槽
+// 并校验后传入。下发走 applyAiBindingToTargets 单遍（configClaude 的 extraEnv 取的就是
+// 刚存的新 toolConfig）；removedKeys 回收（保存路径专属语义，sweep 不删）在本函数前置
+// 一遍，条数并进对应目标的 stdout。
+export async function setClaudePageConfig(
+  cfg: Config,
+  binding: AiBinding,
+  tc: AiClaudeToolConfig,
+  ids?: string[],
+): Promise<BatchResult> {
+  const extraEnv = buildClaudeExtraEnv(tc);
+  const newKeys = new Set(Object.keys(extraEnv));
+  const removedKeys = Object.keys(buildClaudeExtraEnv((await getAiToolConfig()).claude)).filter(
+    (k) => !newKeys.has(k),
+  );
+  await setAiToolConfig({ claude: tc });
+  await setAiBinding(binding);
+
+  const targets = ids?.length ? ids : (await listManaged(cfg)).map((v) => v.id);
+
+  // removedKeys 回收：逐目标剥掉上一版自身配置写进 settings.json 的已移除键。
+  // 尽力而为——失败不挡应用段（configClaude 的整体合并会把期望值重新写对，只是旧键残留）。
+  const recycled = new Map<string, number>();
+  if (removedKeys.length) {
+    const limit = pLimit(CONCURRENCY);
+    await Promise.all(
+      targets.map((t) =>
+        limit(async () => {
+          try {
+            const home = homeOf(cfg, t);
+            if (!home) return;
+            const path = join(home, '.claude', 'settings.json');
+            if (!existsSync(path)) return;
+            const obj = await readJsonObject(path);
+            const env = { ...((obj.env as Record<string, unknown> | undefined) ?? {}) };
+            let removed = 0;
+            for (const k of removedKeys) {
+              if (k in env) {
+                delete env[k];
+                removed++;
+              }
+            }
+            if (removed) {
+              obj.env = env;
+              await writeJsonObject(path, obj);
+              recycled.set(t, removed);
+            }
+          } catch {
+            /* 回收尽力而为 */
+          }
+        }),
+      ),
+    );
+  }
+
+  const result = await applyAiBindingToTargets(cfg, targets, binding);
+  for (const it of result.items) {
+    const n = recycled.get(it.id);
+    if (n) it.stdout = `回收 ${n} 个已移除键\n${it.stdout}`;
+  }
+  return result;
+}
+
 // —— prune-only 回收（清本机覆盖 / 删 provider）——
 
 // 把 base 里全部受管 provider 条目回收。claude 的 env 不动——单槽且可能混有用户

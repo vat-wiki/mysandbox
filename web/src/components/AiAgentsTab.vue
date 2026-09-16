@@ -10,6 +10,7 @@ import { ref, computed, onMounted } from 'vue'
 import {
   getAiView,
   saveAiBinding,
+  saveAiClaudePage,
   deleteAiProjectRule,
   HOST_TARGET,
   Unauthorized,
@@ -112,21 +113,27 @@ async function loadView(fill: boolean) {
 // 后端 AiBinding 是整体替换语义，这里与已存绑定合并（其余工具原样带上）再提交：
 // 其余工具在 plan 里照旧存在 → 落盘配置保持追平不碰，「不选 = 不碰」的口径不变。
 // （解绑某工具走删 provider——全量回收其落盘条目。）
+// Claude 页签例外：一个按钮同时保存绑定 + 自身配置（toolConfig）——走合并接口
+// POST /api/ai/claude-config（后端一次落两份存储、一遍下发），不打两个接口。
+const claudeToolRef = ref<InstanceType<typeof AiClaudeToolConfig> | null>(null)
+
 async function submitTool(tool: ToolTab) {
-  const stored = view.value?.binding ?? {}
-  let b: AiBinding
+  err.value = ''
   if (tool === 'claude') {
+    const verr = claudeToolRef.value?.validationError() ?? null
+    if (verr) {
+      err.value = `自身配置没通过校验：${verr}`
+      return
+    }
     if (!claude.value) {
       err.value = 'Claude Code：先选一个模型服务（不选 = 不碰该工具的落盘配置）'
       return
     }
-    b = { ...stored, claude: { provider: claude.value } }
   } else if (tool === 'codex') {
     if (!codex.value) {
       err.value = 'Codex：先选一个模型服务（不选 = 不碰该工具的落盘配置）'
       return
     }
-    b = { ...stored, codex: { provider: codex.value, setDefault: codexDefault.value } }
   } else if (tool === 'opencode') {
     if (!oc.value.length) {
       err.value = 'OpenCode：先选至少一个模型服务（不选 = 不碰该工具的落盘配置）'
@@ -136,7 +143,6 @@ async function submitTool(tool: ToolTab) {
       err.value = 'OpenCode 选了模型服务但协议为空'
       return
     }
-    b = { ...stored, opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } }
   } else {
     if (!pi.value.length) {
       err.value = 'Pi：先选至少一个模型服务（不选 = 不碰该工具的落盘配置）'
@@ -146,14 +152,23 @@ async function submitTool(tool: ToolTab) {
       err.value = 'Pi 选了模型服务但协议为空'
       return
     }
-    b = { ...stored, pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } }
   }
   busy.value = true
   result.value = null
-  err.value = ''
   try {
-    result.value = await saveAiBinding(b)
-    if (view.value) view.value = { ...view.value, binding: b } // 本地并账，不重填表单（保住其他页签草稿）
+    if (tool === 'claude') {
+      result.value = await saveAiClaudePage(claude.value, claudeToolRef.value!.toolConfigOut())
+    } else {
+      const stored = view.value?.binding ?? {}
+      const b: AiBinding =
+        tool === 'codex'
+          ? { ...stored, codex: { provider: codex.value, setDefault: codexDefault.value } }
+          : tool === 'opencode'
+            ? { ...stored, opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } }
+            : { ...stored, pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } }
+      result.value = await saveAiBinding(b)
+      if (view.value) view.value = { ...view.value, binding: b }
+    }
     emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -242,14 +257,13 @@ async function doRemoveRule(id: string) {
           />
         </div>
         <AiClaudeToolConfig
+          ref="claudeToolRef"
           :tc="view?.toolConfig.claude"
           :binding-env="claudeBindingEnv"
-          @saved="loadView(false)"
-          @unauthorized="emit('unauthorized')"
         />
-        <!-- 本工具的保存按钮：只提交该工具的绑定（其余工具与已存绑定合并原样带上） -->
+        <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
         <div class="flex items-center justify-end gap-3 border-t pt-3">
-          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Claude Code 的绑定（其余工具不动）</span>
+          <span class="mr-auto text-[11px] text-muted-foreground/70">保存 = 自身配置 + Claude Code 绑定一起应用（其余工具不动）</span>
           <Button :disabled="busy" @click="submitTool('claude')">{{
             busy ? '应用中…' : '保存并应用到全部容器'
           }}</Button>
