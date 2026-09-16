@@ -50,6 +50,9 @@ const emit = defineEmits<{
   // 终端输入了回车（onData 含 \r）：文件面板借此做即时的 cwd 跟随检查，消除 cd 后
   // 等轮询的体感延迟。
   (e: 'enter'): void
+  // shell 集成上报 cwd（OSC 7，zsh precmd 发射）：cd 生效即到达，零轮询零请求的
+  // 事件流。老容器/SSH/宿主无种子不上报，由 FilePanel 的 1s 轮询兜底。
+  (e: 'cwd', path: string): void
 }>()
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
@@ -559,7 +562,23 @@ onMounted(async () => {
     }
     return true
   })
-  // OSC 52（剪贴板操作）：TUI 应用（opencode/claude code 等）在容器内没有 X/Wayland
+  // OSC 7（shell cwd 上报）：zsh precmd 钩子（scripts/zshrc）每次出提示符时发
+  // `file://<路径>`（tmux 下 DCS passthrough 包裹，到这里已还原为裸 OSC）。业界标准
+  // 的 shell 集成序列（iTerm2/VS Code/WezTerm 同款），cd 生效即上报——文件面板跟随
+  // 的事件源，取代轮询。兼容他方 shell 集成（VS Code 端等）发的不带/带 host 的
+  // file:// URI，且可能做了 percent 编码（我们 zshrc 发原样路径，解码失败就原样用）。
+  term.parser.registerOscHandler(7, (data) => {
+    const rest = data.startsWith('file://') ? data.slice(7) : data
+    let p = rest.startsWith('/') ? rest : rest.slice(Math.max(rest.indexOf('/'), 0))
+    if (!p.startsWith('/')) return true
+    try {
+      p = decodeURIComponent(p)
+    } catch {
+      /* 原样路径里本就有 %（未编码形态）：解码失败按原文用 */
+    }
+    emit('cwd', p)
+    return true
+  })
   // 环境，xclip/wl-copy 全失败，唯一的复制通道就是「请终端代写剪贴板」的 OSC 52。
   // xterm.js 核心不实现它——不接的话应用提示「已复制」但剪贴板纹丝不动（VSCode 终端
   // 实现了 OSC 52，所以同样的 opencode 在 VSCode 里能复制）。

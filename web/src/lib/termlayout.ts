@@ -180,6 +180,9 @@ export interface TermPaneOps {
   // pane 输入了回车（终端 onData 含 \r）：文件面板借此即时做一次 cwd 跟随检查
   // （cd 提交后壳立即改目录，不等 1s 轮询）。
   onPaneEnter(group: TermGroup, termId: string): void
+  // pane 上报了 cwd（OSC 7，zsh precmd 发射）：shell 集成的事件流，cd 生效即到达。
+  // 实现侧仅在被跟随 pane 上报时转发给文件面板 acceptCwd（免 getTermCwd 一次 exec）。
+  onPaneCwd(group: TermGroup, termId: string, path: string): void
   // idx = 分隔条之后的 child 序号（调 children[idx-1] 与 [idx]）；minPx 为该轴最小像素。
   dividerStart(node: SplitNode, idx: number, parentSize: number, minPx: number): void
   dividerDrag(delta: number): void

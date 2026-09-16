@@ -53,6 +53,20 @@ _msb_title() {
 }
 _msb_preexec() { _msb_title "$1" }                       # $1 = 完整命令行
 _msb_precmd() { _msb_title "${(%):-%n@%m:%~}" }          # ${(%)...}：零 fork 的 prompt 展开
+# OSC 7（shell cwd 上报，iTerm2/VS Code/WezTerm 同款标准序列）：出提示符即上报当前
+# 目录，web 终端借它做文件面板的零轮询跟随。payload 用 file:// + 空 host 形态
+# （file:///tmp），路径原样不转义（收发两端都归我们管）。tmux 内必须 DCS passthrough
+# 包裹（terminal.ts attach 时 set allow-passthrough on 放行），内层 OSC 终结符用 BEL
+# ——payload 零 ESC 就无需逐个双写。普通终端收到 OSC 7 是标准行为（好终端拿它当
+# cwd 用），无副作用。
+_msb_cwd() {
+  if [[ -n $TMUX ]]; then
+    printf '\033Ptmux;\033\033]7;file://%s\007\033\\' "$PWD"
+  else
+    printf '\033]7;file://%s\007' "$PWD"
+  fi
+}
+_msb_precmd() { _msb_title "${(%):-%n@%m:%~}"; _msb_cwd }
 add-zsh-hook preexec _msb_preexec
 add-zsh-hook precmd _msb_precmd
 

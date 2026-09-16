@@ -583,13 +583,19 @@ async function loadDir(p: string, opts: { silent?: boolean } = {}) {
   }
 }
 
-// 轮询两层职责：
-// 1) 跟随态查终端 cwd，变了就跳目录（loadDir 负责拉新列表）——独立 1s 轻轮询
-//    （followCheck：只读 tmux pane 当前目录，一个 exec），否则 cd 后平均要等 1.5s 才跟；
-// 2) 当前目录内容静默重查（3s）：容器内进程/他人新建文件不用手点刷新即出现（签名
-//    不变则零 DOM 变更）。面板用 v-if 挂载，关闭即卸载、onUnmounted 清 timer，不空转。
+// 跟随的三层来源（快→慢）：
+// 1) OSC 7（acceptCwd）：shell 集成事件流（zsh precmd 出提示符即上报），cd 生效即达，
+//    免查——路径由事件自带，只 loadDir 一次；
+// 2) 回车 nudge（nudgeCwd）：onData 的 \r 上抛，250ms 后查一次（老容器/SSH/宿主等
+//    无 OSC 7 的会话把体感压到亚秒级）；
+// 3) 1s 轻轮询（followCheck）：兜底长命令（脚本里 cd 赶不上回车那拍）与无钩子环境。
 // 右键菜单/操作弹窗开着时整体跳过：列表被换会让 ctxTarget 指向已不存在的条目对象、
 // 菜单打开瞬间列表被替换（用户正对着菜单里的「重命名」列表却变了）。
+function followGuard(): string | null {
+  if (menuOpen.value || nameDialog.value || delTarget.value) return null
+  if (!follow.value || !props.termId) return null
+  return props.containerId
+}
 async function followCheck() {
   if (menuOpen.value || nameDialog.value || delTarget.value) return
   if (!follow.value || !props.termId || !props.containerId) return
@@ -619,6 +625,16 @@ function nudgeCwd() {
     nudgeTimer = null
     void followCheck()
   }, 250)
+}
+// OSC 7 直达（终端 parser 捕获 → ContainerList 只在被跟随 pane 上报时转发到这里）：
+// shell 出提示符即上报 cwd，cd 生效即到达——路径随事件自带，免 getTermCwd 那次 exec，
+// 纯事件驱动。zshrc 发的是原样路径，理论上他方 shell 集成可能给 percent 编码形态
+// （已在 Terminal.vue 侧解码）。
+function acceptCwd(p: string) {
+  if (!followGuard()) return
+  if (p === path.value) return
+  noSession.value = false
+  void loadDir(p)
 }
 async function tick() {
   await followCheck()
@@ -802,7 +818,7 @@ function locate(containerId: string, p: string) {
   follow.value = containerId !== props.containerId // 同容器也暂停（用户明确要看这个目录）
   loadDir(p)
 }
-defineExpose({ locate, refresh, nudgeCwd })
+defineExpose({ locate, refresh, nudgeCwd, acceptCwd })
 
 // git 变更区块的 ref（refresh 链透传用）
 const gitRef = ref<InstanceType<typeof FilePanelGit> | null>(null)

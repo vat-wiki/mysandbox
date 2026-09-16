@@ -650,6 +650,7 @@ provide(TERM_OPS, {
   },
   onPaneFocus,
   onPaneEnter,
+  onPaneCwd,
   onOscOpen,
   onLinkOpen,
   dividerStart,
@@ -827,6 +828,13 @@ function onPaneFocus(group: TermGroup, termId: string) {
 function onPaneEnter(group: TermGroup, termId: string) {
   if (group.id !== activeGroup.value?.id || termId !== fileTermId.value) return
   filePanelRef.value?.nudgeCwd()
+}
+// OSC 7（shell cwd 上报）→ 文件面板直达：zsh precmd 在出提示符时上报 cwd，cd 生效即
+// 到达——免 getTermCwd 一次 exec，事件驱动零轮询。同样只认「active 组且正被跟随的
+// pane」；老容器/SSH/宿主没这路事件，由 nudge/轮询兜底。
+function onPaneCwd(group: TermGroup, termId: string, path: string) {
+  if (group.id !== activeGroup.value?.id || termId !== fileTermId.value) return
+  filePanelRef.value?.acceptCwd(path)
 }
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // —— 文件面板浏览模式（下钻/展开）——

@@ -81,6 +81,11 @@ function onEnter() {
   if (props.node.kind !== 'leaf') return
   ops.onPaneEnter(props.group, props.node.termId)
 }
+// OSC 7 cwd 上抛：ContainerList 只在被跟随 pane 上报时转发给文件面板（cd 生效即达）。
+function onCwd(path: string) {
+  if (props.node.kind !== 'leaf') return
+  ops.onPaneCwd(props.group, props.node.termId, path)
+}
 // 分叉动作：分隔条 dragstart 换算该轴最小像素后上抛（idx = 分隔条之后的 child 序号）。
 function onDividerStart(idx: number, parentSize: number) {
   const s = split.value
@@ -203,6 +208,7 @@ if (leaf.value) {
       @title="onTitle"
       @focus="onFocus"
       @enter="onEnter"
+      @cwd="onCwd"
     />
   </div>
 
