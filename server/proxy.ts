@@ -174,18 +174,18 @@ function inCgnat(ip: string): boolean {
   return a === 100 && b >= 64 && b <= 127;
 }
 
-// vhost 域名候选：固定本地域 > LAN sslip > tailscale sslip。前端拿 bases 逐个探测
+// vhost 域名候选：LAN sslip > tailscale sslip > 固定本地域。前端拿 bases 逐个探测
 // （DNS 可解析 + 控制台端口可达）择优，全败降级子路径门面——见 web/src/lib/proxy.ts。
 export async function proxyBases(cfg: Config): Promise<ProxyBase[]> {
   const v = cfg.proxy.vhost;
   if (v === 'off') return [];
   if (v !== 'auto') return [{ base: v.replace(/^\*\./, ''), kind: 'custom' }];
-  const bases: ProxyBase[] = [
-    // 固定好记的本地域：URL 不随 IP 漂。⚠️ .local 无公共 DNS，需要宿主侧有应答
-    // （mihomo hosts / dnsmasq / 路由器）；没人应答时前端探测自动跳过它。
-    { base: LOCAL_BASE, kind: 'local' },
-  ];
+  const bases: ProxyBase[] = [];
   const ip = cfg.proxy.ip !== 'auto' ? cfg.proxy.ip : await defaultRouteIp();
+  // sslip 打头（2026-09-16 起默认口径）：零配置零申请，任何设备任何网络可用——URL 烙着
+  // IP 是它的特性也是代价（IP 变则旧链接作废）。固定本地域降级为兜底：IP 漂移免疫、
+  // 离线可用（宿主 mysandbox-dns 自持应答 *.mysandbox.test → 127.0.0.1），但解析前提在
+  // 宿主侧，远程设备探测不通会自然跳过它。
   if (ip) bases.push({ base: ipToSslip(ip), kind: 'lan' });
   for (const list of Object.values(networkInterfaces())) {
     for (const a of list ?? []) {
@@ -194,6 +194,7 @@ export async function proxyBases(cfg: Config): Promise<ProxyBase[]> {
       }
     }
   }
+  bases.push({ base: LOCAL_BASE, kind: 'local' });
   return bases;
 }
 

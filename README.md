@@ -202,7 +202,7 @@ LXC 容器用到的数据库/缓存等服务，由 mysandbox 在宿主 docker �
 
 容器/服务在自管私网里，外部设备只能摸到宿主——把出口收进面板（同监听端口、同一 token）：
 
-- **域名门面**：`http://<名>-<端口>.<基域名>:<port>`（cookie 会话）+ `/proxy/...` 子路径兜底。基域名 auto = 本地域 → LAN sslip → tailscale sslip 逐个探测择优、全败自动降级子路径；自有泛解析域名配 `proxy.vhost` 最稳。
+- **域名门面**：`http://<名>-<端口>.<基域名>:<port>`（cookie 会话）+ `/proxy/...` 子路径兜底。基域名 auto = LAN sslip → tailscale sslip → 本地域 `mysandbox.test`（sslip 打头：零配置零申请、任何设备可用；`.test` 兜底，IP 漂移免疫但解析前提在宿主侧）逐个探测择优、全败自动降级子路径；自有泛解析域名配 `proxy.vhost` 最稳。
 - **双口径平级**：从 `IP:7321` 打开控制台 → 端口点击直连 `IP:端口`（无 cookie 依赖）；从基域名打开 → 走代理。服务端不重定向、不强制任何一方。
 - **TLS**：`listen.tls: true` 开自签 HTTPS（本地 CA + 泛域名叶子证书，持久化在 `~/.mysandbox/tls/`）。浏览器信任一次即可：控制台 `/tls-ca.crt` 下载导入（Chromium 走 NSS 库 `~/.pki/nssdb`，导入后重启浏览器）。
 - **端口免带门面（可选）**：`https://mysandbox.test/`（443 是 https 默认口，不带 `:7321`）。443 是特权端口而 mysandbox 是无特权 user service（user unit 拿不到 `CAP_NET_BIND_SERVICE`），所以走 systemd socket 激活：root 的 systemd 持被动监听 fd（空闲零进程），连接进来拉起 `systemd-socket-proxyd` 字节级透传到 mysandbox 的 listen 端口——TLS/WS/cookie 全原样，mysandbox 本体零改动零提权。双 unit 模板在 `scripts/mysandbox-console.{socket,service}`（install.sh 按 config listen 落盘启用；不要了 `sudo systemctl disable --now mysandbox-console.socket` 即退回带端口口径）。
