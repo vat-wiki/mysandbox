@@ -93,10 +93,12 @@ UNIT_DIR=/etc/systemd/system
 if [ "$UNINSTALL" = 1 ]; then
   log "卸载 mysandbox 系统组件（容器/config/模板数据保留）"
   as_user systemctl --user disable --now mysandbox.service 2>/dev/null || true
-  for u in mysandbox-net mysandbox-docker-interop mysandbox-firewall mysandbox-console; do
+  for u in mysandbox-net mysandbox-docker-interop mysandbox-firewall mysandbox-console mysandbox-dns; do
     systemctl disable --now "$u.service" "$u.socket" 2>/dev/null || true
     rm -f "$UNIT_DIR/$u.service" "$UNIT_DIR/$u.socket"
   done
+  rm -f /etc/systemd/resolved.conf.d/mysandbox-console-dns.conf
+  systemctl restart systemd-resolved 2>/dev/null || true
   rm -f "$TARGET_HOME/.config/systemd/user/mysandbox.service"
   systemctl daemon-reload
   as_user systemctl --user daemon-reload 2>/dev/null || true
@@ -391,7 +393,43 @@ if [ -f "$SELF_DIR/mysandbox-console.socket" ]; then
   systemctl daemon-reload
   systemctl enable mysandbox-console.socket >/dev/null
   systemctl start mysandbox-console.socket || warn "mysandbox-console.socket 启动失败（443 被占？）——systemctl status mysandbox-console.socket 排查"
-  log "   免端口访问: https://mysandbox.test/（需基域名 DNS 应答，本机 mihomo hosts / 外部各自配）"
+  log "   免端口访问: https://mysandbox.test/"
+
+  # —— 本机泛解析自持（mysandbox-dns）——
+  # .test 不可注册、hosts 做不了泛解析——端口免带门面的域名门面（<名>-<端口>.基域名）
+  # 依赖泛域名应答。dnsmasq 应答 *.mysandbox.test → 127.0.0.1（443 socket 监听 0.0.0.0，
+  # 环回天然覆盖、DHCP 换 IP 不过期），上游从 resolved uplink 实时读。
+  # 127.0.0.1:53 已有应答方则整段跳过（尊重 mihomo/dnsmasq 等自配 DNS 的环境）。
+  # 判定用 ss 看监听（UDP 无连接，/dev/udp 探测恒成功不可用；不查应答内容——
+  # 对随机域回 NXDOMAIN 的 DNS 也算应答方）。
+  if ss -uln | grep -q '127\.0\.0\.1:53 '; then
+    log "   127.0.0.1:53 已有 DNS 应答方——跳过 mysandbox-dns（泛解析由它负责）"
+  elif [ -f "$SELF_DIR/mysandbox-dns.service" ] && command -v dnsmasq >/dev/null 2>&1; then
+    fill_unit "$SELF_DIR/mysandbox-dns.service" "$UNIT_DIR/mysandbox-dns.service"
+    systemctl daemon-reload
+    systemctl enable --now mysandbox-dns.service >/dev/null 2>&1 \
+      || warn "mysandbox-dns 启动失败——systemctl status mysandbox-dns 排查"
+    # 系统解析接过来：resolved 全局 DNS=127.0.0.1 进 uplink resolv.conf（dnsmasq 的上游
+    # 同样从这份文件读，127.0.0.1 之外的名字服务器不受影响，不会成环）。已有
+    # mysandbox-console-dns.conf 则幂等；上游探测可答才写（无网环境装完首启再跑一次即可）。
+    if [ ! -f /etc/systemd/resolved.conf.d/mysandbox-console-dns.conf ]; then
+      mkdir -p /etc/systemd/resolved.conf.d
+      cat > /etc/systemd/resolved.conf.d/mysandbox-console-dns.conf <<'EOF'
+# scripts/install.sh 生成：本机解析接 mysandbox-dns（127.0.0.1:53 上的 dnsmasq，
+# 泛解析 *.mysandbox.test -> 127.0.0.1，端口免带门面的域名门面依赖）。
+# 全局 DNS= 项会进 uplink resolv.conf；dnsmasq 自己的上游也从这份文件实时读
+# （除 127.0.0.1 外的项），不会成环。
+[Resolve]
+DNS=127.0.0.1
+Domains=~mysandbox.test
+EOF
+      systemctl restart systemd-resolved 2>/dev/null \
+        || warn "systemd-resolved 重启失败——本机泛解析不生效，手工检查 resolved.conf.d/"
+    fi
+    log "   本机泛解析: mysandbox-dns（dnsmasq 127.0.0.1:53，*.mysandbox.test → 127.0.0.1）"
+  else
+    warn "缺 dnsmasq 或模板缺失——跳过 mysandbox-dns（泛解析需自行配置，如 mihomo hosts）"
+  fi
 fi
 
 # config 已存在且 ipPool 前缀与 unit 网段不一致时提醒（unit 网关是容器网段的 .1）。
