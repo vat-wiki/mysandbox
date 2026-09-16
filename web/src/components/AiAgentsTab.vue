@@ -108,11 +108,12 @@ async function loadView(fill: boolean) {
 }
 
 // —— 按工具保存：每个页签一个「保存并应用」，只提交该工具的绑定 ——
-// 后端 AiBinding 是整体替换语义，这里与已存绑定合并（其余工具原样带上）再提交：
-// 其余工具在 plan 里照旧存在 → 落盘配置保持追平不碰，「不选 = 不碰」的口径不变。
+// 后端 AiBinding 是整体替换语义，这里与已存绑定合并（其余工具原样带上）再提交；
+// apply=[tool] 让后端只下发本工具的落盘配置——工具间互相独立，页签保存不连带
+// 重写其他工具的配置文件/探测它们的网关（存储里其余工具的槽原样保留）。
 // （解绑某工具走删 provider——全量回收其落盘条目。）
 // Claude 页签例外：一个按钮同时保存绑定 + 自身配置（toolConfig）——走合并接口
-// POST /api/ai/claude-config（后端一次落两份存储、一遍下发），不打两个接口。
+// POST /api/ai/claude-config（后端一次落两份存储、只下发 claude），不打两个接口。
 const claudeToolRef = ref<InstanceType<typeof AiClaudeToolConfig> | null>(null)
 
 async function submitTool(tool: ToolTab) {
@@ -164,7 +165,7 @@ async function submitTool(tool: ToolTab) {
           : tool === 'opencode'
             ? { ...stored, opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } }
             : { ...stored, pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } }
-      result.value = await saveAiBinding(b)
+      result.value = await saveAiBinding(b, undefined, [tool])
       if (view.value) view.value = { ...view.value, binding: b }
     }
     emit('done')

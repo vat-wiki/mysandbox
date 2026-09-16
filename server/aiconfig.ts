@@ -58,6 +58,7 @@ import {
   clearLegacyAiGateway,
   type AiProvider,
   type AiBinding,
+  type AiToolKey,
   type AiProjectRule,
   type AiGatewayState,
   type AiClaudeToolConfig,
@@ -88,6 +89,18 @@ export function wiresOfBinding(b: AiBinding, tool: 'opencode' | 'pi'): GatewayWi
   const list = b[tool]?.wires;
   if (!list) return ['openai-chat'];
   return [...new Set(list)];
+}
+
+// 按工具键裁出绑定切片：存储保持整份，落盘只带提交的工具——工具间互相独立，
+// 页签保存不连带重写其他工具的配置文件/探测它们的网关（AiBinding 声明语义
+// 「缺某工具键 = 不碰该工具的落盘配置」在下发层的落点）。
+export function sliceBinding(b: AiBinding, apply: AiToolKey[]): AiBinding {
+  const out: AiBinding = {};
+  if (apply.includes('claude')) out.claude = b.claude;
+  if (apply.includes('codex')) out.codex = b.codex;
+  if (apply.includes('opencode')) out.opencode = b.opencode;
+  if (apply.includes('pi')) out.pi = b.pi;
+  return out;
 }
 
 // —— 解析层：绑定 + provider 库 → 应用计划 ——
@@ -834,15 +847,18 @@ async function applyOneTarget(
   }
 }
 
-// 批量扇出：targets = 容器名 | HOST_TARGET。同一绑定逐目标解析应用。
+// 批量扇出：targets = 容器名 | HOST_TARGET。同一绑定逐目标解析应用；apply 缺省 =
+// 全部工具槽，显式给出 = 只下发这些工具（页签保存的「只写本工具」语义，见 sliceBinding）。
 export async function applyAiBindingToTargets(
   cfg: Config,
   targets: string[],
   binding: AiBinding,
+  apply?: AiToolKey[],
 ): Promise<BatchResult> {
+  const effective = apply?.length ? sliceBinding(binding, apply) : binding;
   const limit = pLimit(CONCURRENCY);
   log.info({ op: 'ai-config', count: targets.length }, 'ai-config start');
-  const items = await Promise.all(targets.map((t) => limit(() => applyOneTarget(cfg, t, binding))));
+  const items = await Promise.all(targets.map((t) => limit(() => applyOneTarget(cfg, t, effective))));
   const result: BatchResult = {
     total: items.length,
     ok: items.filter((i) => i.ok).length,
@@ -942,9 +958,9 @@ export async function setClaudeToolConfig(
 
 // Claude 页签合并保存：绑定（claude 槽）+ 自身配置（toolConfig）一次调用落两份存储、
 // 一遍下发——页签只有一个保存按钮，不该打两个接口。binding 由路由层合并好 claude 槽
-// 并校验后传入。下发走 applyAiBindingToTargets 单遍（configClaude 的 extraEnv 取的就是
-// 刚存的新 toolConfig）；removedKeys 回收（保存路径专属语义，sweep 不删）在本函数前置
-// 一遍，条数并进对应目标的 stdout。
+// 并校验后传入。下发只带 claude 槽（apply 过滤，工具间互相独立：路由合并进全局绑定
+// 是为了存储完整，其他工具的落盘动作归各自页签的保存入口）。removedKeys 回收（保存
+// 路径专属语义，sweep 不删）在本函数前置一遍，条数并进对应目标的 stdout。
 export async function setClaudePageConfig(
   cfg: Config,
   binding: AiBinding,
@@ -996,7 +1012,7 @@ export async function setClaudePageConfig(
     );
   }
 
-  const result = await applyAiBindingToTargets(cfg, targets, binding);
+  const result = await applyAiBindingToTargets(cfg, targets, binding, ['claude']);
   for (const it of result.items) {
     const n = recycled.get(it.id);
     if (n) it.stdout = `回收 ${n} 个已移除键\n${it.stdout}`;

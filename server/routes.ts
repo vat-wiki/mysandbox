@@ -15,7 +15,7 @@ import {
   getEngine,
 } from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
-import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiToolConfig, getAiProjectRules, setAiProvider, setAiBinding, type AiProvider, type AiBinding, type AiClaudeToolConfig } from './aiState.js';
+import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiToolConfig, getAiProjectRules, setAiProvider, setAiBinding, AI_TOOL_KEYS, type AiProvider, type AiBinding, type AiToolKey, type AiClaudeToolConfig } from './aiState.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { log } from './logger.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
@@ -635,6 +635,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
 
   // 保存全局绑定 + 立即应用。ids 缺省 = 本机 + 全部受管容器（本机与容器同权，
   // 全局绑定同样追平宿主）；ids 显式给 = 只应用这些（仍保存为全局绑定）。
+  // apply 缺省 = 全部工具槽；显式给出 = 存储整份保存、下发只带这些工具
+  // （页签按工具保存的「只写本工具落盘配置」语义，见 aiconfig.sliceBinding）。
   app.post('/api/ai/binding', async (req): Promise<BatchResult> => {
     await ensureAiMigrated();
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -642,9 +644,17 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const invalid = validateBinding(body.binding, lib);
     if (invalid) throw badRequest(invalid);
     const binding = body.binding as AiBinding;
+    let apply: AiToolKey[] | undefined;
+    if (body.apply !== undefined) {
+      if (!Array.isArray(body.apply)) throw badRequest('apply 必须是工具键数组');
+      apply = (body.apply as unknown[]).map(String) as AiToolKey[];
+      const bad = apply.filter((k) => !AI_TOOL_KEYS.includes(k));
+      if (bad.length) throw badRequest(`apply 含非法工具键：${bad.join('、')}（合法值 ${AI_TOOL_KEYS.join('/')}）`);
+      if (!apply.length) throw badRequest('apply 不能为空数组');
+    }
     await setAiBinding(binding);
     const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
-    return applyAiBindingToTargets(cfg, ids, binding);
+    return applyAiBindingToTargets(cfg, ids, binding, apply);
   });
 
   // 工具自身配置（toolConfig，全局一份；claude：默认模型 + 自定义 env）。PUT = 整份
@@ -662,7 +672,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
 
   // Claude 页签合并保存：绑定（claude 槽）+ 自身配置一次提交——页签一个保存按钮，
   // 不打两个接口。claude 槽替换进已存全局绑定（其余工具原样），两份校验都过才动存储；
-  // 下发一遍完成（见 aiconfig.setClaudePageConfig）。
+  // 下发只写 claude（工具间互相独立——其余工具的落盘动作归各自页签，见 aiconfig.setClaudePageConfig）。
   app.post('/api/ai/claude-config', async (req): Promise<BatchResult> => {
     await ensureAiMigrated();
     const body = (req.body ?? {}) as Record<string, unknown>;

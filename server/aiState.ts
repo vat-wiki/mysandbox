@@ -75,6 +75,10 @@ export interface AiBinding {
   pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
 }
 
+// 绑定里的工具键（下发的 apply 过滤、绑定校验共用）。
+export type AiToolKey = 'claude' | 'codex' | 'opencode' | 'pi';
+export const AI_TOOL_KEYS: AiToolKey[] = ['claude', 'codex', 'opencode', 'pi'];
+
 // 工具自身配置（只此全局一份，不进绑定的四层模型）：各 agent CLI 除了「用哪些
 // 模型服务」之外自己的特殊配置。本期只做 claude——model → env.ANTHROPIC_MODEL，
 // env 是自定义 env 键值对，由 aiconfig 的 configClaude 在写 settings.json 时合并
