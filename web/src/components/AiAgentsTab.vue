@@ -48,10 +48,10 @@ const toolTabs: { key: ToolTab; label: string }[] = [
   { key: 'pi', label: 'Pi' },
 ]
 const toolOn = computed<Record<ToolTab, boolean>>(() => ({
-  claude: claudeOn.value,
-  codex: codexOn.value,
-  opencode: ocOn.value,
-  pi: piOn.value,
+  claude: !!claude.value,
+  codex: !!codex.value,
+  opencode: oc.value.length > 0,
+  pi: pi.value.length > 0,
 }))
 
 const view = ref<AiView | null>(null)
@@ -59,17 +59,13 @@ const busy = ref(false)
 const err = ref('')
 const result = ref<BatchResult | null>(null)
 
-// —— 绑定表单：每工具一段；enabled=false = 不碰该工具的落盘配置 ——
-const claudeOn = ref(false)
+// —— 绑定表单：每工具一段；没选模型服务 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
-const codexOn = ref(false)
 const codex = ref('')
 const codexDefault = ref(false)
-const ocOn = ref(false)
 const oc = ref<string[]>([])
 const ocWires = ref<GatewayWire[]>(['openai-chat'])
 const ocDefault = ref(false)
-const piOn = ref(false)
 const pi = ref<string[]>([])
 const piWires = ref<GatewayWire[]>(['openai-chat'])
 
@@ -77,16 +73,12 @@ const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
 
 function fillFrom(b: AiBinding | null | undefined) {
-  claudeOn.value = !!b?.claude
   claude.value = b?.claude?.provider ?? ''
-  codexOn.value = !!b?.codex
   codex.value = b?.codex?.provider ?? ''
   codexDefault.value = !!b?.codex?.setDefault
-  ocOn.value = !!b?.opencode
   oc.value = b?.opencode?.providers ? [...b.opencode.providers] : []
   ocWires.value = b?.opencode?.wires?.length ? [...b.opencode.wires] : ['openai-chat']
   ocDefault.value = !!b?.opencode?.setDefault
-  piOn.value = !!b?.pi
   pi.value = b?.pi?.providers ? [...b.pi.providers] : []
   piWires.value = b?.pi?.wires?.length ? [...b.pi.wires] : ['openai-chat']
 }
@@ -107,24 +99,16 @@ async function loadView() {
 }
 
 const bindingOut = computed<AiBinding>(() => ({
-  ...(claudeOn.value ? { claude: { provider: claude.value } } : {}),
-  ...(codexOn.value ? { codex: { provider: codex.value, setDefault: codexDefault.value } } : {}),
-  ...(ocOn.value ? { opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } } : {}),
-  ...(piOn.value ? { pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } } : {}),
+  ...(claude.value ? { claude: { provider: claude.value } } : {}),
+  ...(codex.value ? { codex: { provider: codex.value, setDefault: codexDefault.value } } : {}),
+  ...(oc.value.length ? { opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } } : {}),
+  ...(pi.value.length ? { pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } } : {}),
 }))
 
 async function submit() {
   const b = bindingOut.value
   if (!b.claude && !b.codex && !b.opencode && !b.pi) {
-    err.value = '至少启用并配置一个工具（全部关掉 = 不碰任何落盘配置，保存无意义）'
-    return
-  }
-  if (b.claude && !b.claude.provider) {
-    err.value = 'Claude Code 已启用：选一个模型服务'
-    return
-  }
-  if (b.codex && !b.codex.provider) {
-    err.value = 'Codex 已启用：选一个模型服务'
+    err.value = '没有选择任何模型服务——不选 = 不碰该工具的落盘配置，保存无意义'
     return
   }
   for (const [name, t] of [['OpenCode', b.opencode], ['Pi', b.pi]] as const) {
@@ -221,9 +205,7 @@ async function doRemoveRule(id: string) {
         <div class="space-y-1.5">
           <AiFieldClaude
             :providers="providers"
-            :enabled="claudeOn"
             :provider-id="claude"
-            @update:enabled="(v) => (claudeOn = v)"
             @update:provider-id="(v) => (claude = v)"
           />
         </div>
@@ -238,10 +220,8 @@ async function doRemoveRule(id: string) {
       <div v-show="toolTab === 'codex'" class="space-y-1.5 pt-4">
         <AiFieldCodex
           :providers="providers"
-          :enabled="codexOn"
           :provider-id="codex"
           :set-default="codexDefault"
-          @update:enabled="(v) => (codexOn = v)"
           @update:provider-id="(v) => (codex = v)"
           @update:set-default="(v) => (codexDefault = v)"
         />
@@ -253,11 +233,9 @@ async function doRemoveRule(id: string) {
         <AiFieldMulti
           tool="opencode"
           :providers="providers"
-          :enabled="ocOn"
           :provider-ids="oc"
           :wires="ocWires"
           :set-default="ocDefault"
-          @update:enabled="(v) => (ocOn = v)"
           @update:provider-ids="(v) => (oc = v)"
           @update:wires="(v) => (ocWires = v)"
           @update:set-default="(v) => (ocDefault = v)"
@@ -267,10 +245,8 @@ async function doRemoveRule(id: string) {
         <AiFieldMulti
           tool="pi"
           :providers="providers"
-          :enabled="piOn"
           :provider-ids="pi"
           :wires="piWires"
-          @update:enabled="(v) => (piOn = v)"
           @update:provider-ids="(v) => (pi = v)"
           @update:wires="(v) => (piWires = v)"
         />
