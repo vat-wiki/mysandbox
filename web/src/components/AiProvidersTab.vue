@@ -1,10 +1,8 @@
 <script setup lang="ts">
-// 模型接入页签（AI 工具）：一条流水线——上半「模型服务」库（provider 薄行常驻，
-// 添加/编辑表单内联展开），下半「工具分配」（AiBindingTab：工具 → provider，
-// 全局/本机/容器覆盖三形态）。旧设计把两者拆成平级页签靠文字互相指路（「先去
-// 模型服务添加」），现合一个页签消掉导航负担：没有 provider 时分配段自然空态，
-// 添加完分配段的选项即时可用（provider 变更 → AiBindingTab.reload()，只刷数据
-// 不重填表单，编辑中的绑定草稿保住）。
+// 模型供应商页签（AI 工作区三板块之二）：接入凭据与端点的库——薄行常驻，
+// 添加/编辑表单内联展开。从这里拆出（原「模型接入」页签的上半段）：provider 库
+// 独立成板块，工具绑定挪去「Agent 工具」页签。myapikey 是旧版单网关档的一次性
+// 迁移产物（LEGACY_PROVIDER_ID，id 落各工具配置当 provider 名），空态点名。
 import { ref, computed, onMounted } from 'vue'
 import {
   getAiView,
@@ -21,21 +19,12 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { ChevronDown, CloudDownload, Pencil, Plus, Radar, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
-import AiBindingTab from './AiBindingTab.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 
-const props = defineProps<{
-  target?: string
-  allowBack?: boolean
-}>()
 const emit = defineEmits<{
   (e: 'done'): void
   (e: 'unauthorized'): void
-  (e: 'configure-host'): void
-  (e: 'back'): void
 }>()
-
-// —— 模型服务（provider 库）段 ——
 
 const providers = ref<AiProvider[]>([])
 const busy = ref(false)
@@ -164,7 +153,6 @@ async function save() {
     toast(`已保存模型服务：${provider.name}（${provider.id}）`)
     draft.value = null
     await load()
-    bindingRef.value?.reload()
     emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -188,7 +176,6 @@ async function doRemoveProvider() {
     await deleteAiProvider(p.id)
     toast(`已删除：${p.id}`)
     await load()
-    bindingRef.value?.reload()
     emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -200,22 +187,18 @@ async function doRemoveProvider() {
     busy.value = false
   }
 }
-
-// —— 工具分配段（AiBindingTab 承载）——
-
-const bindingRef = ref<InstanceType<typeof AiBindingTab> | null>(null)
 </script>
 
 <template>
   <div class="space-y-5">
-    <!-- ① 模型服务（provider 库）：薄行常驻，表单内联展开 -->
+    <!-- 模型服务（provider 库）：薄行常驻，表单内联展开 -->
     <section class="space-y-2">
       <div class="flex items-center gap-2">
         <h3 class="text-xs font-semibold">模型服务</h3>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ providers.length }}
         </Badge>
-        <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">接入凭据与端点的库，分配给下面的工具</span>
+        <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">接入凭据与端点的库，分配给「Agent 工具」里的各 CLI</span>
         <Button v-if="!draft" size="xs" variant="outline" :disabled="busy" @click="startAdd">
           <Plus class="size-3.5" /> 添加
         </Button>
@@ -274,8 +257,9 @@ const bindingRef = ref<InstanceType<typeof AiBindingTab> | null>(null)
       </div>
 
       <!-- 库列表（常驻） -->
-      <p v-if="!providers.length && !draft" class="rounded-md border border-dashed px-3 py-3 text-xs text-muted-foreground">
+      <p v-if="!providers.length && !draft" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
         还没有模型服务——点「添加」把网关的端点与 key 存进来。
+        <template v-if="!draft">旧版单网关档已自动迁移为 <code class="font-mono">myapikey</code> 条目（重启过服务即有），直接编辑改 key。</template>
       </p>
       <div v-else class="space-y-1.5">
         <div v-for="p in providers" :key="p.id" class="rounded-md border px-3 py-2">
@@ -305,20 +289,6 @@ const bindingRef = ref<InstanceType<typeof AiBindingTab> | null>(null)
           </details>
         </div>
       </div>
-    </section>
-
-    <!-- ② 工具分配：全局 / 本机 / 容器覆盖（AiBindingTab 承载全部形态） -->
-    <section class="space-y-2">
-      <h3 class="text-xs font-semibold">工具分配</h3>
-      <AiBindingTab
-        ref="bindingRef"
-        :target="props.target"
-        :allow-back="props.allowBack"
-        @done="emit('done')"
-        @unauthorized="emit('unauthorized')"
-        @configure-host="emit('configure-host')"
-        @back="emit('back')"
-      />
     </section>
 
     <ConfirmDialog

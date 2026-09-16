@@ -74,6 +74,20 @@ export interface AiBinding {
   pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
 }
 
+// 工具自身配置（只此全局一份，不进绑定的四层模型）：各 agent CLI 除了「用哪些
+// 模型服务」之外自己的特殊配置。本期只做 claude——model → env.ANTHROPIC_MODEL，
+// env 是自定义 env 键值对，由 aiconfig 的 configClaude 在写 settings.json 时合并
+// （受管绑定键 BASE_URL/AUTH_TOKEN 恒赢）。落点跟着 claude 绑定走：未绑 claude 的
+// 目标不写（aiconfig.setClaudeToolConfig 注释有详版）。
+export interface AiClaudeToolConfig {
+  model?: string; // 默认模型 → env.ANTHROPIC_MODEL
+  env?: Record<string, string>; // 自定义 env 键值对（禁 BASE_URL/AUTH_TOKEN，路由层校验）
+}
+
+export interface AiToolConfigState {
+  claude?: AiClaudeToolConfig;
+}
+
 // 项目级 AI 配置规则（像技能规则）：去向 = 项目目录（容器内 ~/rel，唯一），写入
 // 项目级配置文件。范围语义同技能的项目规则：只写「已有该项目」的目标，容器 start
 // 事件补发。codex/pi 无项目级配置形状，不进表。
@@ -132,6 +146,7 @@ interface AiConfigStateFile {
   providers?: Record<string, AiProvider>;
   binding?: AiBinding;
   targetOverrides?: Record<string, AiBinding>;
+  toolConfig?: AiToolConfigState;
   projectRules?: AiProjectRule[];
   migratedAt?: string;
   // 旧 aiGateway 单网关档（ensureAiMigrated 迁移后删除）。
@@ -287,8 +302,8 @@ async function loadSkillsState(): Promise<SkillsStateFile> {
 async function loadAiConfigState(): Promise<AiConfigStateFile> {
   if (aiConfigCache) return aiConfigCache;
   const file = await readAiConfigFile();
-  const empty = !file.providers && !file.binding && !file.targetOverrides && !file.projectRules
-    && !file.migratedAt && !file.gateway && !file.gatewayOverrides;
+  const empty = !file.providers && !file.binding && !file.targetOverrides && !file.toolConfig
+    && !file.projectRules && !file.migratedAt && !file.gateway && !file.gatewayOverrides;
   aiConfigCache = file;
   // 同 loadSkillsState：文件为空才走 state.json 裸读迁移（有货说明迁移早已完成，
   // 空库是合法状态也不能每轮回读——用「键全空」判别首启）。
@@ -345,6 +360,17 @@ export async function getAiBinding(): Promise<AiBinding | undefined> {
 export async function setAiBinding(b: AiBinding): Promise<void> {
   const s = await loadAiConfigState();
   s.binding = b;
+  await persistAiConfigState(s);
+}
+
+// 工具自身配置（全局一份；见 AiClaudeToolConfig 注释）。
+export async function getAiToolConfig(): Promise<AiToolConfigState> {
+  return (await loadAiConfigState()).toolConfig ?? {};
+}
+
+export async function setAiToolConfig(tc: AiToolConfigState): Promise<void> {
+  const s = await loadAiConfigState();
+  s.toolConfig = tc;
   await persistAiConfigState(s);
 }
 

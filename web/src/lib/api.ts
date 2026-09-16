@@ -157,6 +157,13 @@ async function postJson(path: string, body?: unknown, timeoutMs?: number): Promi
 async function patchJson(path: string, body: unknown): Promise<any> {
   return api(path, { method: 'PATCH', body: JSON.stringify(body) })
 }
+async function putJson(path: string, body: unknown, timeoutMs?: number): Promise<any> {
+  return api(path, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+  })
+}
 
 export const startContainer = (id: string) => postJson(`/api/containers/${id}/start`)
 export const stopContainer = (id: string, t = 5) => postJson(`/api/containers/${id}/stop`, { t })
@@ -352,6 +359,13 @@ export interface AiBinding {
   opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
   pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
 }
+// 工具自身配置（全局一份，不进绑定四层）：agent CLI 绑定之外的特殊配置。本期只做
+// claude——model → env.ANTHROPIC_MODEL；env 禁含 BASE_URL/AUTH_TOKEN（绑定管，后端 400）。
+// 落点跟着 claude 绑定走：未绑 claude 的目标不写。
+export interface AiClaudeToolConfig {
+  model?: string
+  env?: Record<string, string>
+}
 export interface AiProjectRule {
   id: string
   to: string
@@ -364,6 +378,7 @@ export interface AiView {
   providers: AiProvider[]
   binding: AiBinding | null
   overrides: Record<string, AiBinding>
+  toolConfig: { claude?: AiClaudeToolConfig }
   projectRules: AiProjectRule[]
 }
 export const getAiView = () => api('/api/ai/view') as Promise<AiView>
@@ -380,6 +395,10 @@ export const fetchAiModels = (endpoints: AiProvider['endpoints'], apiKey: string
 // 保存全局绑定并应用（ids 缺省 = 全部受管容器；本机走 targets 专属覆盖）。
 export const saveAiBinding = (binding: AiBinding, ids?: string[]) =>
   postJson('/api/ai/binding', ids ? { binding, ids } : { binding }, 120_000) as Promise<BatchResult>
+// 保存工具自身配置（全局一份）并下发（落点跟着 claude 绑定走；ids 显式给 = 只写这些，
+// 可含 '__host__' 本机）。
+export const saveAiToolConfig = (tc: { claude?: AiClaudeToolConfig }, ids?: string[]) =>
+  putJson('/api/ai/tool-config', ids?.length ? { ...tc, ids } : tc, 120_000) as Promise<BatchResult>
 // 目标覆盖（容器 or 本机）：保存 + 立即应用到这台 / 清除（容器恢复跟随全局；本机回收条目）。
 export const saveAiTargetOverride = (target: string, binding: AiBinding) =>
   postJson(`/api/ai/targets/${encodeURIComponent(target)}`, { binding }, 120_000) as Promise<BatchResult>

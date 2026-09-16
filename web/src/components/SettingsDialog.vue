@@ -161,7 +161,7 @@ onMounted(load)
           <span class="min-w-0 flex-1">
             <span class="block text-sm font-medium">AI 配置</span>
             <span class="block truncate text-xs text-muted-foreground">
-              模型接入 · 技能库 · 智能体——在主区「AI 工具」页签管理
+              技能中心 · 模型供应商 · Agent 工具——在主区「AI 工具」页签管理
             </span>
           </span>
           <ChevronRight class="size-4 shrink-0 text-muted-foreground" />

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 // AI 工具工作区：主区级页面（文件 tab 栏的单例 tab，VSCode 设置页模式）——管理面板
-// 的体量（技能库/扫描/provider/工具分配/下发结果）早已超出对话框，直接占主区：
+// 的体量（技能库/provider/工具分配/自身配置/下发结果）早已超出对话框，直接占主区：
 // 全尺寸、不遮挡侧栏、与文件 tab 同一套切换心智。头部只有页签行——页的身份由底部
-// tab 栏的「AI 工具」页签表达，工作区内不再重复一行标题。两个页签：
-//   技能     = SkillsHubTab（技能库/扫描/安装位置）
-//   模型接入 = AiAccessTab（provider 库 + 工具分配一条流水线）
+// tab 栏的「AI 工具」页签表达，工作区内不再重复一行标题。三个板块：
+//   技能中心   = SkillsHubTab（技能库/扫描/安装位置）
+//   模型供应商 = AiProvidersTab（provider 库：myapikey 默认在库 + 自定义接入）
+//   Agent 工具 = AiAgentsTab（每 CLI 一卡：绑定 + 自身配置，Claude Code 优先）
 // 覆盖配置（容器/本机的临时任务）不在这里——走 AiOverrideDialog 弹框，按任务体量分层。
 import { ref } from 'vue'
 import SkillsHubTab from './SkillsHubTab.vue'
-import AiAccessTab from './AiAccessTab.vue'
+import AiProvidersTab from './AiProvidersTab.vue'
+import AiAgentsTab from './AiAgentsTab.vue'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -17,7 +19,7 @@ const emit = defineEmits<{
   (e: 'configure-host'): void // 「为本机配置」：父级开覆盖弹框（本机是弹框任务不是页面任务）
 }>()
 
-const tab = ref<'skills' | 'access'>('skills')
+const tab = ref<'skills' | 'providers' | 'agents'>('skills')
 </script>
 
 <template>
@@ -30,13 +32,19 @@ const tab = ref<'skills' | 'access'>('skills')
           class="border-b-2 px-3 pb-2 text-xs transition-colors"
           :class="tab === 'skills' ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
           @click="tab = 'skills'"
-        >技能</button>
+        >技能中心</button>
         <button
           type="button"
           class="border-b-2 px-3 pb-2 text-xs transition-colors"
-          :class="tab === 'access' ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
-          @click="tab = 'access'"
-        >模型接入</button>
+          :class="tab === 'providers' ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
+          @click="tab = 'providers'"
+        >模型供应商</button>
+        <button
+          type="button"
+          class="border-b-2 px-3 pb-2 text-xs transition-colors"
+          :class="tab === 'agents' ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
+          @click="tab = 'agents'"
+        >Agent 工具</button>
       </div>
     </div>
 
@@ -44,11 +52,17 @@ const tab = ref<'skills' | 'access'>('skills')
     <div class="scroll-thin min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto w-full max-w-4xl px-6 py-5">
         <SkillsHubTab v-if="tab === 'skills'" @unauthorized="emit('unauthorized')" />
-        <AiAccessTab
+        <AiProvidersTab
+          v-else-if="tab === 'providers'"
+          @unauthorized="emit('unauthorized')"
+          @done="emit('changed')"
+        />
+        <AiAgentsTab
           v-else
           @unauthorized="emit('unauthorized')"
           @done="emit('changed')"
           @configure-host="emit('configure-host')"
+          @switch-providers="tab = 'providers'"
         />
       </div>
     </div>

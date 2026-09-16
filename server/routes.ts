@@ -15,7 +15,7 @@ import {
   getEngine,
 } from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
-import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiProjectRules, setAiProvider, setAiBinding, type AiProvider, type AiBinding } from './aiState.js';
+import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiToolConfig, getAiProjectRules, setAiProvider, setAiBinding, type AiProvider, type AiBinding, type AiClaudeToolConfig } from './aiState.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { log } from './logger.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
@@ -38,6 +38,8 @@ import {
   installAiProjectRule,
   deleteAiProjectRuleById,
   validateBinding,
+  validateToolConfig,
+  setClaudeToolConfig,
   validateProjectSelection,
   PROVIDER_ID_RE,
   HOST_TARGET,
@@ -531,6 +533,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       providers: Object.values(await getAiProviders()),
       binding: (await getAiBinding()) ?? null,
       overrides: await getAiTargetOverrides(),
+      toolConfig: await getAiToolConfig(),
       projectRules: await getAiProjectRules(),
     };
   });
@@ -644,6 +647,19 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       throw badRequest(`本机不进全局应用的缺省/批量目标——为本机配置走 /api/ai/targets/${HOST_TARGET}`);
     }
     return applyAiBindingToTargets(cfg, ids, binding);
+  });
+
+  // 工具自身配置（toolConfig，全局一份；claude：默认模型 + 自定义 env）。PUT = 整份
+  // 替换 + 立即下发（落点跟着 claude 绑定走，见 aiconfig.setClaudeToolConfig）。
+  // env 保留键（BASE_URL/AUTH_TOKEN）路由层点名拒绝——由模型服务绑定管。
+  app.put('/api/ai/tool-config', async (req): Promise<BatchResult> => {
+    await ensureAiMigrated();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const invalid = validateToolConfig('claude', body.claude);
+    if (invalid) throw badRequest(invalid);
+    const tc = (body.claude ?? {}) as AiClaudeToolConfig;
+    const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : undefined;
+    return setClaudeToolConfig(cfg, tc, ids);
   });
 
   // 目标覆盖（key = 容器名或 __host__）：保存 + 立即应用到这台。存在即生效

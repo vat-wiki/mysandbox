@@ -1,0 +1,70 @@
+<script setup lang="ts">
+// OpenCode / Pi 绑定字段组（受控展示）：多 provider ToggleGroup 共存 + 接入点协议
+// ToggleGroup（<服务>-chat / -responses / -anthropic）+ opencode 的设默认。
+// 与 AiFieldClaude 同一套抽取逻辑（见其注释）。
+import { Checkbox } from '@/components/ui/checkbox'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import type { AiProvider, GatewayWire } from '@/lib/api'
+
+defineProps<{
+  tool: 'opencode' | 'pi'
+  providers: AiProvider[]
+  enabled: boolean
+  providerIds: string[]
+  wires: GatewayWire[]
+  setDefault?: boolean
+}>()
+const emit = defineEmits<{
+  (e: 'update:enabled', v: boolean): void
+  (e: 'update:providerIds', v: string[]): void
+  (e: 'update:wires', v: GatewayWire[]): void
+  (e: 'update:setDefault', v: boolean): void
+}>()
+</script>
+
+<template>
+  <div class="space-y-2">
+    <label class="flex items-center gap-2 text-sm">
+      <Checkbox :model-value="enabled" @update:model-value="(v) => emit('update:enabled', !!v)" />
+      <span class="font-medium">{{ tool === 'opencode' ? 'OpenCode' : 'Pi' }}</span>
+      <span class="text-[11px] text-muted-foreground">多服务共存，工具内 /models 切换</span>
+    </label>
+    <template v-if="enabled">
+      <ToggleGroup
+        type="multiple"
+        size="sm"
+        variant="outline"
+        class="flex-wrap text-xs"
+        :model-value="providerIds"
+        @update:model-value="(v) => emit('update:providerIds', v as string[])"
+      >
+        <ToggleGroupItem v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</ToggleGroupItem>
+      </ToggleGroup>
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <ToggleGroup
+          type="multiple"
+          size="sm"
+          variant="outline"
+          class="text-xs"
+          :model-value="wires"
+          @update:model-value="(v) => emit('update:wires', v as GatewayWire[])"
+        >
+          <ToggleGroupItem value="openai-chat">chat</ToggleGroupItem>
+          <ToggleGroupItem value="openai-responses">responses</ToggleGroupItem>
+          <ToggleGroupItem value="anthropic-messages">anthropic</ToggleGroupItem>
+        </ToggleGroup>
+        <span class="text-[11px] text-muted-foreground">接入点协议（&lt;服务&gt;-chat / -responses / -anthropic）</span>
+      </div>
+      <label
+        v-if="tool === 'opencode'"
+        class="flex items-center gap-1.5 pl-1 text-xs text-muted-foreground"
+      >
+        <Checkbox :model-value="setDefault" @update:model-value="(v) => emit('update:setDefault', !!v)" />
+        设为默认（首个服务的首个协议 + 首个模型）
+      </label>
+      <p class="text-[11px] leading-snug text-muted-foreground/80">
+        不选模型服务 = 清空{{ tool === 'opencode' ? ' OpenCode' : ' Pi' }}的全部接入点（回收旧条目）。
+      </p>
+    </template>
+  </div>
+</template>

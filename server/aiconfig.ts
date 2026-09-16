@@ -13,6 +13,9 @@
 //     个共存，工具内 /models 切。目标覆盖 key = 容器名或 '__host__'（本机）；本机
 //     不进 sweep——宿主是真实环境，只有显式覆盖才写，全局改 key 不连带刷掉宿主。
 //   写入器（本文件）——绑定 + provider 库在入口解析成 AiApplyPlan，逐 base 落盘。
+//   工具自身配置（toolConfig，全局一份）——绑定之外的各工具特殊配置（本期 claude：
+//   默认模型 + 自定义 env），随 claude 写入器合并进 settings.json env（受管绑定键恒
+//   赢）；落点跟着 claude 绑定走（setClaudeToolConfig 注释有详版）。
 //
 // 各工具落点（base = 用户 home 或项目根）：
 // - claude   .claude/settings.json          env 块注入 BASE_URL/AUTH_TOKEN（单槽，重绑即覆盖）
@@ -49,11 +52,14 @@ import {
   setAiProjectRules,
   getAiMigratedAt,
   setAiMigratedAt,
+  getAiToolConfig,
+  setAiToolConfig,
   clearLegacyAiGateway,
   type AiProvider,
   type AiBinding,
   type AiProjectRule,
   type AiGatewayState,
+  type AiClaudeToolConfig,
   type GatewayWire,
 } from './aiState.js';
 import type { BatchItemResult, BatchResult } from './batch.js';
@@ -309,12 +315,50 @@ export function envKeyFor(pid: string): string {
   return pid.toUpperCase().replace(/-/g, '_') + '_API_KEY';
 }
 
+// —— 工具自身配置（toolConfig，全局一份）——
+
+// claude 自身配置 → 注入 settings.json env 的额外键值。model 归一成 ANTHROPIC_MODEL；
+// 显式 env 同名键优先于 model 字段（用户明确写了就以 env 为准）。纯函数导出供冒烟复用。
+export function buildClaudeExtraEnv(tc: AiClaudeToolConfig | undefined): Record<string, string> {
+  if (!tc) return {};
+  return {
+    ...(tc.model ? { ANTHROPIC_MODEL: tc.model } : {}),
+    ...tc.env,
+  };
+}
+
+// toolConfig 校验（routes 转 400）：对象形状 + env 键名/值类型 + 保留键拒绝。
+// BASE_URL/AUTH_TOKEN 由模型服务绑定管，这里写了会与绑定打架——路由层点名拒绝。
+export function validateToolConfig(tool: 'claude', tc: unknown): string | null {
+  if (tc === undefined || tc === null) return null;
+  if (typeof tc !== 'object' || Array.isArray(tc)) return `${tool} 配置必须是对象`;
+  const c = tc as AiClaudeToolConfig;
+  if (c.model !== undefined && typeof c.model !== 'string') return `${tool}.model 必须是字符串`;
+  if (c.env !== undefined) {
+    if (typeof c.env !== 'object' || c.env === null || Array.isArray(c.env)) return `${tool}.env 必须是对象`;
+    for (const [k, v] of Object.entries(c.env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) return `${tool}.env 键名非法：${k}（环境变量名格式）`;
+      if (typeof v !== 'string') return `${tool}.env[${k}] 的值必须是字符串`;
+      if (k === 'ANTHROPIC_BASE_URL' || k === 'ANTHROPIC_AUTH_TOKEN') {
+        return `${tool}.env 不能含 ${k}——这两个键由模型服务绑定管，写了会打架`;
+      }
+    }
+  }
+  return null;
+}
+
 // —— 各工具写入器。全部幂等，成功后往 notes 推一行人话摘要。——
 
 // claude：.claude/settings.json env 块注入（单槽——重绑即覆盖）。base = 用户 home
 // 或项目根（项目级 = <dir>/.claude/settings.json，项目设置覆盖全局是工具自己的合并
-// 语义，我们不发明别的）。
-async function configClaude(base: string, p: ResolvedProvider, notes: string[]): Promise<void> {
+// 语义，我们不发明别的）。extraEnv = 工具自身配置（toolConfig）的合并键——受管绑定
+// 两键最后写（恒赢，兜底历史脏数据/非法请求穿过来）。
+async function configClaude(
+  base: string,
+  p: ResolvedProvider,
+  extraEnv: Record<string, string>,
+  notes: string[],
+): Promise<void> {
   if (!p.endpoints.anthropic?.baseUrl) {
     throw new Error(`provider ${p.id} 没有配置 Anthropic 兼容端点`);
   }
@@ -322,11 +366,13 @@ async function configClaude(base: string, p: ResolvedProvider, notes: string[]):
   const obj = await readJsonObject(path);
   obj.env = {
     ...((obj.env as Record<string, unknown> | undefined) ?? {}),
+    ...extraEnv,
     ANTHROPIC_BASE_URL: p.endpoints.anthropic.baseUrl,
     ANTHROPIC_AUTH_TOKEN: p.apiKey,
   };
   await writeJsonObject(path, obj);
-  notes.push(`claude: 写 ${relTo(base, path)}（${p.id} env 注入，CLI 启动即生效）`);
+  const extra = Object.keys(extraEnv).length ? ` + 自身配置 ${Object.keys(extraEnv).length} 键` : '';
+  notes.push(`claude: 写 ${relTo(base, path)}（${p.id} env 注入${extra}，CLI 启动即生效）`);
 }
 
 // codex：config.toml 每 provider 一个锚点块 + .zshrc 各自的 env export 块。回收 =
@@ -604,9 +650,12 @@ async function applyPlanToHome(
   scope: 'user' | 'project' = 'user',
 ): Promise<string[]> {
   const failed: string[] = [];
+  // 自身配置 env（toolConfig 全局一份）只在 user scope 注入——项目级 settings.json
+  // 不吃全局 env（否则全局自定义 env 会被抹到每个项目）。
+  const claudeExtra = scope === 'user' ? buildClaudeExtraEnv((await getAiToolConfig()).claude) : {};
   if (plan.claude) {
     try {
-      await configClaude(base, plan.claude, notes);
+      await configClaude(base, plan.claude, claudeExtra, notes);
     } catch (e) {
       failed.push('claude');
       notes.push(`claude: 失败 — ${errMsg(e)}`);
@@ -800,6 +849,91 @@ export async function applyAiBindingToTargets(
     items,
   };
   log.info({ op: 'ai-config', ok: result.ok, failed: result.failed }, 'ai-config done');
+  return result;
+}
+
+// —— 工具自身配置：保存 + 下发（claude，全局一份）——
+
+// 保存 claude 自身配置并下发。刻意不走 applyOneTarget（那边 plan 为空会早退「无可
+// 应用配置」）——toolConfig 与绑定解耦、单独落盘；但**落点跟着 claude 绑定走**：
+// 缺省目标 = 生效绑定（覆盖 ?? 全局）含 claude 的受管容器——sweep 链路里只有
+// plan.claude 存在 configClaude 才会跑，两条链路口径一致，不给未绑 claude 的容器
+// 写孤零零的 model env。ids 显式传入（可含 HOST_TARGET 本机——toolConfig 不写凭据，
+// 风险面与全局绑定禁本机的理由不同）时按显式集合写，目标没绑 claude 则该项 fail。
+export async function setClaudeToolConfig(
+  cfg: Config,
+  tc: AiClaudeToolConfig,
+  ids?: string[],
+): Promise<BatchResult> {
+  const limit = pLimit(CONCURRENCY);
+  const extraEnv = buildClaudeExtraEnv(tc);
+  const newKeys = new Set(Object.keys(extraEnv));
+  // 回收只在保存路径做：removedKeys = 旧期望 − 新期望（此刻还知道旧值；保存后的
+  // sweep 只做合并不做删除，无从得知哪些键被移除）。这些键是上一版自己写进
+  // settings.json 的，回收语义与 codex 锚点块一致（无法与用户同名键区分——期望里
+  // 删了就回收）。
+  const removedKeys = Object.keys(buildClaudeExtraEnv((await getAiToolConfig()).claude)).filter(
+    (k) => !newKeys.has(k),
+  );
+  await setAiToolConfig({ claude: tc });
+
+  let targets: string[];
+  if (ids?.length) {
+    targets = ids;
+  } else {
+    const overrides = await getAiTargetOverrides();
+    const global = await getAiBinding();
+    targets = (await listManaged(cfg)).map((v) => v.id).filter((n) => (overrides[n] ?? global)?.claude);
+  }
+
+  log.info({ op: 'ai-tool-config', count: targets.length, keys: Object.keys(extraEnv).length }, 'ai-tool-config start');
+  const items = await Promise.all(
+    targets.map((t) =>
+      limit(async (): Promise<BatchItemResult> => {
+        const name = targetName(t);
+        const finish = (ok: boolean, patch: Partial<BatchItemResult>): BatchItemResult => ({
+          id: t, name, ok, exitCode: ok ? 0 : 1, stdout: '', stderr: '', ...patch,
+        });
+        try {
+          if (ids?.length) {
+            const b = await bindingFor(t);
+            if (!b?.claude) return finish(false, { error: '该目标未绑定 claude（自身配置的落点跟着 claude 绑定走）' });
+          }
+          const home = homeOf(cfg, t);
+          if (!home || !existsSync(home)) {
+            return finish(false, { error: 'home not found（rootfs 未就绪或非标准布局）' });
+          }
+          const path = join(home, '.claude', 'settings.json');
+          const obj = await readJsonObject(path);
+          const env = { ...((obj.env as Record<string, unknown> | undefined) ?? {}) };
+          let removed = 0;
+          for (const k of removedKeys) {
+            if (k in env) {
+              delete env[k];
+              removed++;
+            }
+          }
+          Object.assign(env, extraEnv);
+          obj.env = env;
+          await writeJsonObject(path, obj);
+          const notes = [
+            `claude toolConfig: 写 ${relTo(home, path)}（${Object.keys(extraEnv).length} 个 env 键${tc.model ? `，默认模型 ${tc.model}` : ''}）`,
+          ];
+          if (removed) notes.push(`回收 ${removed} 个已移除键`);
+          return finish(true, { stdout: notes.join('\n') });
+        } catch (e) {
+          return finish(false, { error: errMsg(e) });
+        }
+      }),
+    ),
+  );
+  const result: BatchResult = {
+    total: items.length,
+    ok: items.filter((i) => i.ok).length,
+    failed: items.filter((i) => !i.ok).length,
+    items,
+  };
+  log.info({ op: 'ai-tool-config', ok: result.ok, failed: result.failed }, 'ai-tool-config done');
   return result;
 }
 
