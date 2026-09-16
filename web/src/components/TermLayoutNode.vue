@@ -71,6 +71,11 @@ function onTitle(title: string) {
   if (props.node.kind !== 'leaf') return
   ops.onTitle(props.group, props.node.termId, title)
 }
+// pane 落焦上抛：ContainerList 让文件面板跟随最后聚焦的 pane（按组记忆，切 tab 恢复）。
+function onFocus() {
+  if (props.node.kind !== 'leaf') return
+  ops.onPaneFocus(props.group, props.node.termId)
+}
 // 分叉动作：分隔条 dragstart 换算该轴最小像素后上抛（idx = 分隔条之后的 child 序号）。
 function onDividerStart(idx: number, parentSize: number) {
   const s = split.value
@@ -191,6 +196,7 @@ if (leaf.value) {
       @osc-open="onOsc"
       @link-open="onLinkOpen"
       @title="onTitle"
+      @focus="onFocus"
     />
   </div>
 

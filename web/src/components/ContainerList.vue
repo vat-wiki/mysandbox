@@ -628,6 +628,7 @@ provide(TERM_OPS, {
   close(group, termId) {
     termRefs.get(termId)?.kill()
     delete termTitles.value[termId]
+    splitCwdFrom.delete(termId) // 陈旧项会干扰 onPaneFocus 去重的新 pane 识别，随 pane 生命周期清掉
     const root = removeLeaf(group.root, termId)
     if (root) group.root = root
     else closeGroupById(group.id)
@@ -647,6 +648,7 @@ provide(TERM_OPS, {
   titleOf(termId) {
     return termTitles.value[termId]?.text ?? ''
   },
+  onPaneFocus,
   onOscOpen,
   onLinkOpen,
   dividerStart,
@@ -760,7 +762,7 @@ function onFilesDrag(dx: number) {
   const w = filesDragStartW - dx
   filesW.value = Math.min(Math.max(w, 220), Math.max(220, filesDragAvailW - FILES_SIDEBAR_W.value - 380))
 }
-// 文件面板跟随哪个 pane（active group 内的序号；group 切换/结构变化时归零）。
+// 文件面板跟随哪个 pane（active group 内的序号；切组时恢复到该组最近聚焦的 pane）。
 const filePaneIdx = ref(0)
 const activeGroup = computed(() => groups.value[activeIdx.value])
 // 文件面板/编辑器/复制粘贴的目标 id：服务组加 's:' 前缀（api.ts filesBase 切
@@ -775,12 +777,50 @@ const filePanes = computed(() => {
   return leafIds(g.root).map((termId, i) => ({ termId, label: `${groupLabel(g)} #${i + 1}` }))
 })
 const fileTermId = computed(() => filePanes.value[filePaneIdx.value]?.termId ?? null)
+// 每组最近聚焦的 pane（内存态）：文件面板跟随「最后落焦的命令行」的跨组记忆——
+// 切回某 tab 时跟随恢复到该组最后用的 pane，而不是固定回落首 pane。
+const paneFocusMemo = new Map<string, string>()
 watch(
   () => activeGroup.value?.id,
   () => {
-    filePaneIdx.value = 0
+    const g = activeGroup.value
+    // 记忆的 pane 可能已被关闭：ordinalOf 对不存在的 termId 自然回落 0。
+    filePaneIdx.value = g ? ordinalOf(g.root, paneFocusMemo.get(g.id) ?? '') : 0
   },
 )
+// pane 落焦 → 跟随。60ms 突发去重：刷新恢复多 tab 时 active 组的各 pane 会在 onMounted
+// 里挨个 term.focus()（连发），那不是「用户落焦」，跟随目标不动（保持首 pane）；点 pane /
+// 分屏新 pane 拿焦点是单发，照常跟随。refit 的恢复性聚焦已在 Terminal 内部抑制不上抛。
+let focusWin: { groupId: string; ids: Set<string> } | null = null
+let focusWinTimer: ReturnType<typeof setTimeout> | null = null
+function onPaneFocus(group: TermGroup, termId: string) {
+  paneFocusMemo.set(group.id, termId)
+  if (group.id !== activeGroup.value?.id) return
+  const w = focusWin?.groupId === group.id ? focusWin : { groupId: group.id, ids: new Set<string>() }
+  if (focusWin !== w) {
+    focusWin = w
+    if (focusWinTimer) clearTimeout(focusWinTimer)
+    focusWinTimer = setTimeout(() => {
+      if (focusWin === w) focusWin = null
+      // 窗口期内用户可能已切走：跟随目标只对仍停留的组生效
+      if (activeGroup.value?.id !== w.groupId) return
+      const g = groups.value.find((x) => x.id === w.groupId)
+      if (!g) return
+      // 窗口内多个 pane 落焦的消解：分屏新 pane（cwdSourceOf 命中）优先——首次分屏会把
+      // 源 pane 的 Terminal 一并重建（根叶子升级/换向包裹），重建实例的 mount focus 与
+      // 新 pane 的 mount focus 挤在同一窗口，此时真正代表「用户意图」的是新 pane；
+      // 刷新恢复多 pane 的连发没有任何 cwdSourceOf 命中，整体视为程序性、跟随不动。
+      let ids = [...w.ids]
+      if (ids.length > 1) {
+        const fresh = ids.filter((id) => splitCwdFrom.has(id))
+        if (fresh.length !== 1) return
+        ids = fresh
+      }
+      filePaneIdx.value = ordinalOf(g.root, ids[0])
+    }, 60)
+  }
+  w.ids.add(termId)
+}
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // —— 文件面板浏览模式（下钻/展开）——
 // FilePanel 是单实例跟随 activeGroup，但模式是「每个终端组自己的」而非全局：切 tab 随组

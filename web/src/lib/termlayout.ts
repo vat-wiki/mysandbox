@@ -173,6 +173,10 @@ export interface TermPaneOps {
   // pane 当前动态标题（无 → ''）：pane 头部各自显示（tab 用「最近更新」聚合，多 pane
   // 时头部才是逐 pane 可见的完整视图）。
   titleOf(termId: string): string
+  // pane 获得焦点（Terminal 的 xterm onFocus，refit 恢复性聚焦不上抛）：实现侧记忆
+  // 该组最近聚焦的 pane，文件面板跟随「最后落焦的命令行」——分屏新 pane 拿焦点即跟随，
+  // 点回旧 pane 也跟随；切回 tab 时按组记忆恢复跟随目标。
+  onPaneFocus(group: TermGroup, termId: string): void
   // idx = 分隔条之后的 child 序号（调 children[idx-1] 与 [idx]）；minPx 为该轴最小像素。
   dividerStart(node: SplitNode, idx: number, parentSize: number, minPx: number): void
   dividerDrag(delta: number): void

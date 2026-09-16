@@ -44,6 +44,9 @@ const emit = defineEmits<{
   (e: 'osc-open', path: string): void
   (e: 'link-open', path: string, line?: number, col?: number): void
   (e: 'title', title: string): void
+  // pane 获得焦点（xterm onFocus）：ContainerList 拿去让文件面板跟随最后聚焦的 pane。
+  // 程序性恢复聚焦（refit 的 term.focus()）不上抛——见下方 suppressFocusEmit。
+  (e: 'focus'): void
 }>()
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
@@ -188,6 +191,13 @@ defineExpose({ kill, reconnect, screenHash })
 
 const el = ref<HTMLDivElement | null>(null)
 let term: XTerm | null = null
+// 程序性聚焦抑制标志：refit 的 term.focus() 是「切 tab 恢复/窗口 resize」的附带动作，
+// 不代表用户把焦点落在哪个 pane——DOM focus 事件在 focus() 调用内同步派发，同步开关
+// 即可拦住。分屏新 pane / 点击 pane / 重连按钮的聚焦是真实落焦，照常上抛。
+let suppressFocusEmit = false
+const onFocusIn = () => {
+  if (!suppressFocusEmit) emit('focus')
+}
 let fit: FitAddon | null = null
 let ws: WebSocket | null = null
 let resizeObs: ResizeObserver | null = null
@@ -256,7 +266,14 @@ function refit() {
       vp?.syncScrollArea?.(true)
       // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
       // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
-      if (!pasteFallback.value) term?.focus()
+      if (!pasteFallback.value) {
+        suppressFocusEmit = true
+        try {
+          term?.focus()
+        } finally {
+          suppressFocusEmit = false
+        }
+      }
     } catch {
       /* noop */
     }
@@ -734,6 +751,14 @@ onMounted(async () => {
   resizeObs.observe(el.value)
   // 选区同步：工具条「复制」按钮的禁用态跟随选区（仅手机工具条用，桌面无成本——一行回调）。
   term.onSelectionChange(syncSel)
+  // 焦点落位上抛（文件面板跟随最后聚焦的 pane）。xterm 5 公开 API 无 onFocus 事件，
+  // 借容器上的 focusin（xterm 隐藏 textarea 的 focus 冒泡上来，DOM focusin 在
+  // focus() 调用内同步派发——suppressFocusEmit 开关拦得住）。此处的 mount focus 是
+  // 「分屏新 pane / 新组首 pane 拿焦点」——真实落焦，不抑制；refit 的恢复性聚焦已抑制。
+  // ⚠️ 首次分屏会把源 pane 的 Terminal 一并重建（根叶子升级 / 换向包裹，模板分支切换），
+  // 重建实例的 mount focus 会多出一次老 pane 落焦上抛——ContainerList 的去重窗口按
+  // 「分屏新 pane（cwdSourceOf 命中）优先」消解，见 onPaneFocus。
+  el.value.addEventListener('focusin', onFocusIn)
   if (props.active) term.focus()
 
   // 软键盘自适应仅手机启用（桌面 visualViewport 变化无意义，少挂监听）。
@@ -769,6 +794,7 @@ onBeforeUnmount(() => {
   if (hbTimer) clearInterval(hbTimer)
   vvCleanup?.()
   resizeObs?.disconnect()
+  el.value?.removeEventListener('focusin', onFocusIn)
   try {
     ws?.close()
   } catch {
