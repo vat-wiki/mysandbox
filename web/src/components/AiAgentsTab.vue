@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// Agent 工具页签（AI 工作区三板块之三）：每个 agent CLI 一个页签（单个单个配置）——
-// 绑定（用哪些模型服务）+ 各自的特殊配置（本期 Claude Code 页内挂 AiClaudeToolConfig
-// 自身配置）。页签只是视觉分组：保存仍是**一次提交一份完整 AiBinding**（后端整体替换
-// 语义 + 四层追平链路不动），底部共享一个「保存并应用到全部容器」。覆盖/本机的临时
-// 任务走 AiOverrideDialog（AiBindingTargetForm）；项目规则列表与本机入口是全局形态
-// 专属，收在本页尾部。工具自身配置（toolConfig）是全局一份，不进绑定四层。
+// Agent 工具页签（AI 工作区三板块之三）：每个 agent CLI 一个页签（单个单个配置 +
+// 单独保存）——绑定（用哪些模型服务）+ 各自的特殊配置（本期 Claude Code 页内挂
+// AiClaudeToolConfig 自身配置）。每个页签有自己的「保存并应用到全部容器」：只提交
+// 该工具的绑定，与已存绑定合并后整体提交（后端 AiBinding 整体替换语义 + 四层追平
+// 链路不动，其余工具原样带上 = 落盘配置不碰）。覆盖/本机的临时任务走 AiOverrideDialog
+//（AiBindingTargetForm）；项目规则列表与本机入口是全局形态专属，收在本页尾部。
+// 工具自身配置（toolConfig）是全局一份，不进绑定四层。
 import { ref, computed, onMounted } from 'vue'
 import {
   getAiView,
@@ -36,9 +37,8 @@ const emit = defineEmits<{
   (e: 'switch-providers'): void // provider 空态 → 切「模型供应商」页签
 }>()
 
-// —— 工具页签：单个单个配置（一页一个工具的表单）——
-// 表单状态全部在本组件 ref 里，页签切换不丢草稿；绑定保存仍是完整 AiBinding
-// 整体替换，所以底部保存按钮跨页签共享（一个按钮应用四个页签的配置）。
+// —— 工具页签：单个单个配置（一页一个工具的表单 + 一个保存按钮）——
+// 表单状态全部在本组件 ref 里，页签切换不丢草稿；保存按页签各自提交（见 submitTool）。
 type ToolTab = 'claude' | 'codex' | 'opencode' | 'pi'
 const toolTab = ref<ToolTab>('claude')
 const toolTabs: { key: ToolTab; label: string }[] = [
@@ -91,12 +91,14 @@ function fillFrom(b: AiBinding | null | undefined) {
   piWires.value = b?.pi?.wires?.length ? [...b.pi.wires] : ['openai-chat']
 }
 
-onMounted(() => loadView())
+onMounted(() => loadView(true))
 
-async function loadView() {
+// 数据加载。fill=true 重填表单（首挂载）；toolConfig 保存后的刷新不重填——各页签的
+// 绑定草稿是独立编辑现场，不能被无差别回灌冲掉。
+async function loadView(fill: boolean) {
   try {
     view.value = await getAiView()
-    fillFrom(view.value.binding)
+    if (fill) fillFrom(view.value.binding)
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -106,30 +108,52 @@ async function loadView() {
   }
 }
 
-const bindingOut = computed<AiBinding>(() => ({
-  ...(claude.value ? { claude: { provider: claude.value } } : {}),
-  ...(codex.value ? { codex: { provider: codex.value, setDefault: codexDefault.value } } : {}),
-  ...(oc.value.length ? { opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } } : {}),
-  ...(pi.value.length ? { pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } } : {}),
-}))
-
-async function submit() {
-  const b = bindingOut.value
-  if (!b.claude && !b.codex && !b.opencode && !b.pi) {
-    err.value = '没有选择任何模型服务——不选 = 不碰该工具的落盘配置，保存无意义'
-    return
-  }
-  for (const [name, t] of [['OpenCode', b.opencode], ['Pi', b.pi]] as const) {
-    if (t && t.providers.length && !t.wires?.length) {
-      err.value = `${name} 选了模型服务但协议为空（不写接入点请清空模型服务选择）`
+// —— 按工具保存：每个页签一个「保存并应用」，只提交该工具的绑定 ——
+// 后端 AiBinding 是整体替换语义，这里与已存绑定合并（其余工具原样带上）再提交：
+// 其余工具在 plan 里照旧存在 → 落盘配置保持追平不碰，「不选 = 不碰」的口径不变。
+// （解绑某工具走删 provider——全量回收其落盘条目。）
+async function submitTool(tool: ToolTab) {
+  const stored = view.value?.binding ?? {}
+  let b: AiBinding
+  if (tool === 'claude') {
+    if (!claude.value) {
+      err.value = 'Claude Code：先选一个模型服务（不选 = 不碰该工具的落盘配置）'
       return
     }
+    b = { ...stored, claude: { provider: claude.value } }
+  } else if (tool === 'codex') {
+    if (!codex.value) {
+      err.value = 'Codex：先选一个模型服务（不选 = 不碰该工具的落盘配置）'
+      return
+    }
+    b = { ...stored, codex: { provider: codex.value, setDefault: codexDefault.value } }
+  } else if (tool === 'opencode') {
+    if (!oc.value.length) {
+      err.value = 'OpenCode：先选至少一个模型服务（不选 = 不碰该工具的落盘配置）'
+      return
+    }
+    if (!ocWires.value.length) {
+      err.value = 'OpenCode 选了模型服务但协议为空'
+      return
+    }
+    b = { ...stored, opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } }
+  } else {
+    if (!pi.value.length) {
+      err.value = 'Pi：先选至少一个模型服务（不选 = 不碰该工具的落盘配置）'
+      return
+    }
+    if (!piWires.value.length) {
+      err.value = 'Pi 选了模型服务但协议为空'
+      return
+    }
+    b = { ...stored, pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } }
   }
   busy.value = true
   result.value = null
   err.value = ''
   try {
     result.value = await saveAiBinding(b)
+    if (view.value) view.value = { ...view.value, binding: b } // 本地并账，不重填表单（保住其他页签草稿）
     emit('done')
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -196,7 +220,7 @@ async function doRemoveRule(id: string) {
                 ? 'border-primary font-medium text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             "
-            @click="toolTab = t.key"
+            @click="toolTab = t.key; err = ''"
           >
             <span
               class="size-1.5 rounded-full"
@@ -220,9 +244,16 @@ async function doRemoveRule(id: string) {
         <AiClaudeToolConfig
           :tc="view?.toolConfig.claude"
           :binding-env="claudeBindingEnv"
-          @saved="loadView"
+          @saved="loadView(false)"
           @unauthorized="emit('unauthorized')"
         />
+        <!-- 本工具的保存按钮：只提交该工具的绑定（其余工具与已存绑定合并原样带上） -->
+        <div class="flex items-center justify-end gap-3 border-t pt-3">
+          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Claude Code 的绑定（其余工具不动）</span>
+          <Button :disabled="busy" @click="submitTool('claude')">{{
+            busy ? '应用中…' : '保存并应用到全部容器'
+          }}</Button>
+        </div>
       </div>
 
       <!-- ② Codex -->
@@ -235,10 +266,16 @@ async function doRemoveRule(id: string) {
           @update:set-default="(v) => (codexDefault = v)"
         />
         <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
+        <div class="flex items-center justify-end gap-3 border-t pt-3">
+          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Codex 的绑定（其余工具不动）</span>
+          <Button :disabled="busy" @click="submitTool('codex')">{{
+            busy ? '应用中…' : '保存并应用到全部容器'
+          }}</Button>
+        </div>
       </div>
 
       <!-- ③ OpenCode / ④ Pi：多 provider × wire 变体 -->
-      <div v-show="toolTab === 'opencode'" class="pt-4">
+      <div v-show="toolTab === 'opencode'" class="space-y-3 pt-4">
         <AiFieldMulti
           tool="opencode"
           :providers="providers"
@@ -249,8 +286,14 @@ async function doRemoveRule(id: string) {
           @update:wires="(v) => (ocWires = v)"
           @update:set-default="(v) => (ocDefault = v)"
         />
+        <div class="flex items-center justify-end gap-3 border-t pt-3">
+          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 OpenCode 的绑定（其余工具不动）</span>
+          <Button :disabled="busy" @click="submitTool('opencode')">{{
+            busy ? '应用中…' : '保存并应用到全部容器'
+          }}</Button>
+        </div>
       </div>
-      <div v-show="toolTab === 'pi'" class="pt-4">
+      <div v-show="toolTab === 'pi'" class="space-y-3 pt-4">
         <AiFieldMulti
           tool="pi"
           :providers="providers"
@@ -259,17 +302,15 @@ async function doRemoveRule(id: string) {
           @update:provider-ids="(v) => (pi = v)"
           @update:wires="(v) => (piWires = v)"
         />
+        <div class="flex items-center justify-end gap-3 border-t pt-3">
+          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Pi 的绑定（其余工具不动）</span>
+          <Button :disabled="busy" @click="submitTool('pi')">{{
+            busy ? '应用中…' : '保存并应用到全部容器'
+          }}</Button>
+        </div>
       </div>
 
       <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
-
-      <!-- 四页签共享一次提交：完整 AiBinding 整体替换 + 应用（下发结果切走表单区） -->
-      <div class="flex items-center justify-end gap-3">
-        <span class="text-[11px] text-muted-foreground/70">保存 = 四个工具的绑定整体应用（含未展开的页签）</span>
-        <Button :disabled="busy || noProviders" @click="submit">{{
-          busy ? '应用中…' : '保存并应用到全部容器'
-        }}</Button>
-      </div>
 
       <!-- 全局形态专属段：本机入口 + 项目级规则 + 追平语义（从旧 AiBindingTab 迁入） -->
       <template v-if="view">
