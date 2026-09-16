@@ -140,8 +140,21 @@ async function sameFile(a: string, b: string): Promise<boolean> {
 }
 
 // 让 dst 与 src 完全一致。符号链接跳过（skills 目录里罕见，跟随复制有循环风险）。
-// 返回 [写入, 删除] 文件计数。
+// 返回 [写入, 删除] 文件计数。dst 本体是符号链接 → 整棵子树跳过（不写不删，防穿透）：
+// 容器内用户会把全局落点条目软链到项目内技能（~/.agents/skills/x → 项目/.claude/skills/x
+// 的容器内绝对路径），宿主视角 stat 悬空，mkdir recursive 直接 ENOENT；不悬空时写
+// 透软链会污染项目真身目录。
 async function syncTree(src: string, dst: string): Promise<[number, number]> {
+  let dstSt: Stats | undefined;
+  try {
+    dstSt = lstatSync(dst);
+  } catch {
+    /* 不存在 = 正常路径 */
+  }
+  if (dstSt?.isSymbolicLink()) {
+    log.warn({ dst }, 'skills sync: destination is symlink, subtree skipped');
+    return [0, 0];
+  }
   let written = 0;
   let removed = 0;
   const entries = await readdir(src, { withFileTypes: true });
@@ -174,6 +187,7 @@ async function syncTree(src: string, dst: string): Promise<[number, number]> {
   }
   for (const e of await readdir(dst, { withFileTypes: true })) {
     if (!seen.has(e.name)) {
+      if (e.isSymbolicLink()) continue; // 用户自放的软链不动（rm 只会摘链，但一律不碰）
       await rm(join(dst, e.name), { recursive: true, force: true });
       removed++;
     }
@@ -251,6 +265,13 @@ async function distributeDir(
       }
       for (const n of prev?.distributed ?? []) {
         if (names.includes(n)) continue;
+        let sl: Stats | undefined;
+        try {
+          sl = lstatSync(join(target, n));
+        } catch {
+          /* 不存在 = rm force 兜底 */
+        }
+        if (sl?.isSymbolicLink()) continue; // 用户把分发过的条目换成了自放软链 → 不动不记账
         await rm(join(target, n), { recursive: true, force: true });
         c.removed++;
       }
@@ -506,6 +527,7 @@ async function syncRules(cfg: Config): Promise<{ ok: boolean; rules: SkillRuleRe
       }
     }
     await rm(join(SKILLS_DIR, id), { recursive: true, force: true });
+    await rm(join(SKILLS_DIR, `${id}.json`), { force: true }); // 清单本体一并删——漏了它孤儿每次同步都复活（distributeDir 还会把清单重写回去）
   }
 
   if (out.length) {
