@@ -131,7 +131,7 @@ docker 引擎移除后 docker 的新角色：**配套服务层**（界面名词�
 
 ### Web 代理——「面板外访问容器/服务的端口」
 
-`server/proxy.ts`：容器/服务在自管私网里，外部设备只能摸到宿主——把出口收进面板（同一监听端口、同一 token）。**两条门面一套核心**：vhost 门面（`Host: <name>-<port>.<基域名>`，由 fastify `rewriteUrl` 改写成规范子路径）+ 子路径门面（`/proxy/<c|s>/<name>/<port>/…` 兜底）。详版设计/实测记录在 `docs/web-proxy.md`——碰代理先读它。要点：
+`server/proxy.ts`：容器/服务在自管私网里，外部设备只能摸到宿主——把出口收进面板（同一监听端口、同一 token）。**两条门面一套核心**：vhost 门面（`Host: <name>-<port>.<基域名>`，由 fastify `rewriteUrl` 改写成规范子路径）+ 子路径门面（`/proxy/<c|s>/<name>/<port>/…` 兜底）。详版设计/实测记录在 `docs/web-proxy.md`——碰代理先读它。**端口免带门面**（`https://mysandbox.test/`，不带 `:7321`）= systemd socket 激活透传：`mysandbox-console.socket`（root systemd 持 443 被动 fd，空闲零进程）+ `mysandbox-console.service`（`systemd-socket-proxyd` 字节透传到 config listen；TLS 由 mysandbox 自己终结——user unit 拿不到 `CAP_NET_BIND_SERVICE` 实测 exit 218，这是唯一不给 mysandbox 特权的路），模板在 `scripts/mysandbox-console.*`、install.sh 8.5 段按 config listen 落盘。要点：
 
 - **rewriteUrl 同时覆盖 HTTP 与 WS upgrade**：@fastify/websocket 的 upgrade 经 `fastify.routing` 分发，而 `fastify.routing` 就是包了 rewriteUrl 的 handler（fastify.js `wrapRouting`）——不要自己挂 upgrade 监听。白名单未命中原样放行（基域名裸访问 = 控制台，靠这点天然兜住）。
 - **白名单是精确集合不放网段**（受管容器 IP ∪ 服务 IP；网段含 `.1` 宿主副 IP，放网段=SSRF 跳板指回宿主）。缓存 TTL 3s，rewriteUrl 同步只读、过期后台刷（去重于 inflight），启动预热。

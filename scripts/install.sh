@@ -93,9 +93,9 @@ UNIT_DIR=/etc/systemd/system
 if [ "$UNINSTALL" = 1 ]; then
   log "卸载 mysandbox 系统组件（容器/config/模板数据保留）"
   as_user systemctl --user disable --now mysandbox.service 2>/dev/null || true
-  for u in mysandbox-net mysandbox-docker-interop mysandbox-firewall; do
-    systemctl disable --now "$u.service" 2>/dev/null || true
-    rm -f "$UNIT_DIR/$u.service"
+  for u in mysandbox-net mysandbox-docker-interop mysandbox-firewall mysandbox-console; do
+    systemctl disable --now "$u.service" "$u.socket" 2>/dev/null || true
+    rm -f "$UNIT_DIR/$u.service" "$UNIT_DIR/$u.socket"
   done
   rm -f "$TARGET_HOME/.config/systemd/user/mysandbox.service"
   systemctl daemon-reload
@@ -252,7 +252,7 @@ fill_unit() { # $1=仓库 unit  $2=落盘路径
       -e "s|__MSB_GW__|$GW|g" "$1" > "$2"
 }
 
-log "6/8 system unit（net / firewall / docker-interop）"
+log "6/8 system unit（net / firewall / docker-interop / console）"
 fill_unit "$SELF_DIR/mysandbox-net.service" "$UNIT_DIR/mysandbox-net.service"
 fill_unit "$SELF_DIR/mysandbox-firewall.service" "$UNIT_DIR/mysandbox-firewall.service"
 systemctl daemon-reload
@@ -370,6 +370,29 @@ for _t in "$LISTEN_HOST" 127.0.0.1; do
   done
 done
 [ -n "$HEALTH" ] && log "   ok: $HEALTH" || warn "服务未在 10s 内应答——journalctl --user -u mysandbox 看日志"
+
+# ---------- 端口免带门面（443 socket 激活）----------
+# 443 是特权端口而 mysandbox 是无特权 user service（user unit 拿不到 CAP_NET_BIND_SERVICE，
+# 实测 exit 218）。socket unit 由 root systemd 持被动监听 fd（空闲零进程），
+# systemd-socket-proxyd 字节级透传到 mysandbox listen（TLS 由 mysandbox 终结，本体零改动）。
+# 透传目标复用上面的 LISTEN_HOST/LISTEN_PORT（host auto 已按 _auto_host 解析）。
+# 外部网段访问 443 走 config firewall.allow（自管网段 blanket 天然覆盖）。
+if [ -f "$SELF_DIR/mysandbox-console.socket" ]; then
+  log "8.5/8 端口免带门面（443 → $LISTEN_HOST:$LISTEN_PORT）"
+  fill_unit "$SELF_DIR/mysandbox-console.socket" "$UNIT_DIR/mysandbox-console.socket"
+  sed -e "s|__MSB_DIR__|$MS_DIR|g" \
+      -e "s|__MSB_USER__|$TARGET_USER|g" \
+      -e "s|__MSB_NODE__|$NODE|g" \
+      -e "s|__MSB_BRIDGE__|$BRIDGE|g" \
+      -e "s|__MSB_SUBNET__|$SUBNET|g" \
+      -e "s|__MSB_GW__|$GW|g" \
+      -e "s|__MSB_CONSOLE_TARGET__|${LISTEN_HOST}:${LISTEN_PORT}|g" \
+      "$SELF_DIR/mysandbox-console.service" > "$UNIT_DIR/mysandbox-console.service"
+  systemctl daemon-reload
+  systemctl enable mysandbox-console.socket >/dev/null
+  systemctl start mysandbox-console.socket || warn "mysandbox-console.socket 启动失败（443 被占？）——systemctl status mysandbox-console.socket 排查"
+  log "   免端口访问: https://mysandbox.test/（需基域名 DNS 应答，本机 mihomo hosts / 外部各自配）"
+fi
 
 # config 已存在且 ipPool 前缀与 unit 网段不一致时提醒（unit 网关是容器网段的 .1）。
 if [ -f "$CFG" ] && ! grep -qE "from: ${SUBNET_PREFIX}\." "$CFG"; then

@@ -1,0 +1,14 @@
+# /etc/systemd/system/mysandbox-console.service（由 scripts/install.sh 以占位符填充落盘；
+# __MSB_CONSOLE_TARGET__ = config listen 的 host:auto 解析 IP:port，改 listen 后重跑 install.sh 同步）
+[Unit]
+# socket 激活透传器：443 上的连接字节级转发到 mysandbox 监听端口（TLS 由 mysandbox 终结）。
+# 刻意不设 --exit-idle-time：默认 infinity + 只数「零连接」时段，终端 WS 长连接不受影响；
+# 常驻进程仅数 MB。mysandbox 重启期间 proxyd 存活，上游恢复即自动续上。
+Description=mysandbox console portless forwarder (443 -> __MSB_CONSOLE_TARGET__)
+Requires=mysandbox-console.socket
+After=mysandbox-console.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd __MSB_CONSOLE_TARGET__
+Restart=on-failure
+RestartSec=2

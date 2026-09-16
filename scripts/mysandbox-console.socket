@@ -1,0 +1,16 @@
+# /etc/systemd/system/mysandbox-console.socket（由 scripts/install.sh 落盘同步）
+[Unit]
+# 端口免带门面：https://mysandbox.test/（443 是 https 默认口，浏览器替用户连）。
+# mysandbox 本体保持无特权：user unit 拿不到 CAP_NET_BIND_SERVICE（实测 exit 218），
+# 所以 443 由 root systemd 持被动监听 fd（与 sshd 占 22 同性质），空闲时零进程。
+# TLS 不在这里终结——字节级透传给 mysandbox 的 listen 端口，证书/WS/cookie 全原样。
+Description=mysandbox console portless facade (443 -> listen port)
+
+[Socket]
+# 0.0.0.0 而非具体 IP：DHCP 换 IP / 开机时序都不会绑失败；外部暴露由 ufw 信任模型管
+# （自管网段 blanket 已覆盖，外部网段按 config firewall.allow 逐端口放行——热点等
+# 需要在 config 的 firewall.allow 加 443 条目）。
+ListenStream=0.0.0.0:443
+
+[Install]
+WantedBy=sockets.target
