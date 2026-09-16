@@ -40,10 +40,12 @@ const PRESET_INPUTS = [
   { key: 'MAX_THINKING_TOKENS', label: '思考预算 tokens', placeholder: '如 10240，留空 = 默认' },
   { key: 'API_TIMEOUT_MS', label: '请求超时 ms', placeholder: '慢网关调大，如 600000' },
   { key: 'CLAUDE_CODE_SUBAGENT_MODEL', label: '子代理模型', placeholder: 'Task 子代理用，留空 = 跟随主模型' },
+  { key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', label: '上下文压缩窗口 tokens', placeholder: '如 20000：剩余不足即压缩；留空 = auto' },
 ] as const
 const PRESET_TOGGLES = [
   { key: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', label: '关闭非必要流量（遥测/错误上报/更新检查）' },
   { key: 'DISABLE_AUTOUPDATER', label: '关闭自动更新（容器内建议关）' },
+  { key: 'DISABLE_AUTO_COMPACT', label: '关闭自动压缩（改用手动 /compact）' },
 ] as const
 // ANTHROPIC_MODEL 归「默认模型」字段，同样不进自定义行
 const PRESET_KEYS = new Set<string>([
@@ -212,6 +214,7 @@ async function save() {
         <p>「自身配置」是 Claude Code 绑定之外的特殊配置，全部落进 settings.json 的 env 块：默认模型写入 ANTHROPIC_MODEL，常用项与自定义 env 原样写入。</p>
         <p>只保存全局一份，不进绑定四层（本机/容器覆盖/项目规则都不带它）；落点跟着 claude 绑定走——未绑 claude 的目标不写。</p>
         <p>小模型用 ANTHROPIC_DEFAULT_HAIKU_MODEL；旧版 CLI 的变量名是 ANTHROPIC_SMALL_FAST_MODEL，可在自定义 env 补写。</p>
+        <p>压缩窗口（CLAUDE_CODE_AUTO_COMPACT_WINDOW）是 token 数——剩余上下文不足该值即触发 auto-compact，不是百分比。</p>
         <p>{{ RESERVED }} 由模型服务绑定管，这里写了会被拒。</p>
       </InfoHint>
     </div>
