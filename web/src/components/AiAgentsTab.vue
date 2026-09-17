@@ -249,27 +249,17 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             </template>
           </AiClaudeToolConfig>
           <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动。
-               应用范围说明（原 InfoHint 悬浮）挪到按钮旁常显——目标集合后端 allTargets：
-               本机+受管容器+模板；写入策略在按钮下拉里选（同 ServicesPanel 删除菜单范式） -->
+               应用范围说明挪到按钮旁常显（短句）；写入策略在按钮下拉里选（同 ServicesPanel
+               删除菜单范式） -->
           <div class="flex items-center justify-end gap-2 border-t pt-3">
-            <span class="text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器 + 模板容器（均含停机的；停机的写文件，下次启动即生效）</span>
+            <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
             <DropdownMenu>
               <DropdownMenuTrigger as-child>
                 <Button :disabled="busy">{{ busy ? '应用中…' : '保存并应用' }}</Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem @click="submitTool('claude', 'merge')">
-                  <div class="space-y-0.5">
-                    <p>合并写入</p>
-                    <p class="text-[11px] text-muted-foreground">保留文件里其它键，只覆盖受管键（默认）</p>
-                  </div>
-                </DropdownMenuItem>
-                <DropdownMenuItem @click="submitTool('claude', 'replace')">
-                  <div class="space-y-0.5">
-                    <p>替换整个文件</p>
-                    <p class="text-[11px] text-muted-foreground">settings.json 只含本次管理内容，其它键清掉（清残留用）</p>
-                  </div>
-                </DropdownMenuItem>
+                <DropdownMenuItem @click="submitTool('claude', 'merge')">合并写入（默认）</DropdownMenuItem>
+                <DropdownMenuItem @click="submitTool('claude', 'replace')">替换整个文件</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -286,7 +276,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             />
             <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
             <div class="flex items-center justify-end gap-2 border-t pt-3">
-              <span class="text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器 + 模板容器（均含停机的；停机的写文件，下次启动即生效）</span>
+              <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
               <Button :disabled="busy" @click="submitTool('codex')">{{
                 busy ? '应用中…' : '保存并应用'
               }}</Button>
@@ -306,7 +296,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:set-default="(v) => (ocDefault = v)"
             />
             <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
+              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）</p>
               <Button :disabled="busy" @click="submitTool('opencode')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
@@ -322,7 +312,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:wires="(v) => (piWires = v)"
             />
             <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
+              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）</p>
               <Button :disabled="busy" @click="submitTool('pi')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
