@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { ChevronDown, CloudDownload, Pencil, Plus, Radar, Trash2 } from 'lucide-vue-next'
+import { ChevronDown, CloudDownload, KeyRound, Pencil, Plus, Radar, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import ConfirmDialog from './ConfirmDialog.vue'
 
@@ -190,24 +190,27 @@ async function doRemoveProvider() {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <!-- 模型服务（provider 库）：薄行常驻，表单内联展开 -->
-    <section class="space-y-2">
-      <div class="flex items-center gap-2">
-        <h3 class="text-xs font-semibold">模型服务</h3>
+  <div class="flex flex-col gap-3">
+    <!-- 模型服务（provider 库）：薄行常驻，表单内联展开。板块外框与技能中心/
+         Agent 工具同款（rounded-md border + muted 头部条）——三页签统一板块语言 -->
+    <section class="rounded-md border">
+      <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+        <KeyRound class="size-3.5 shrink-0 text-muted-foreground" />
+        <span class="text-xs font-semibold">模型服务</span>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ providers.length }}
         </Badge>
         <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">接入凭据与端点的库，分配给「Agent 工具」里的各 CLI</span>
-        <Button v-if="!draft" size="xs" variant="outline" :disabled="busy" @click="startAdd">
+        <Button v-if="!draft" variant="ghost" size="xs" class="h-6 shrink-0 gap-1 px-1.5 text-[11px]" :disabled="busy" @click="startAdd">
           <Plus class="size-3.5" /> 添加
         </Button>
       </div>
 
-      <p v-if="err" class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{{ err }}</p>
+      <div class="space-y-2 p-3">
+        <p v-if="err" class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{{ err }}</p>
 
-      <!-- 编辑/新建表单（内联展开） -->
-      <div v-if="draft" class="space-y-3 rounded-md border p-3">
+        <!-- 编辑/新建表单（内联展开） -->
+        <div v-if="draft" class="space-y-3 rounded-md border p-3">
         <div class="grid gap-3 sm:grid-cols-2">
           <div v-if="!draft.id" class="space-y-1.5">
             <Label for="ai-p-id">ID（配置里的 provider 名）</Label>
@@ -246,7 +249,6 @@ async function doRemoveProvider() {
           <p v-if="probeRes.anthropic">{{ probeRes.anthropic }}</p>
           <p v-if="probeRes.openai">{{ probeRes.openai }}</p>
         </div>
-        <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
         <div class="flex items-center justify-between">
           <Button variant="outline" size="xs" :disabled="busy" @click="doProbe"><Radar class="size-3.5" /> 探测连通</Button>
           <div class="flex gap-2">
@@ -256,37 +258,38 @@ async function doRemoveProvider() {
         </div>
       </div>
 
-      <!-- 库列表（常驻） -->
-      <p v-if="!providers.length && !draft" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-        还没有模型服务——点「添加」把网关的端点与 key 存进来。
-        <template v-if="!draft">旧版单网关档已自动迁移为 <code class="font-mono">myapikey</code> 条目（重启过服务即有），直接编辑改 key。</template>
-      </p>
-      <div v-else class="space-y-1.5">
-        <div v-for="p in providers" :key="p.id" class="rounded-md border px-3 py-2">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="text-sm font-medium">{{ p.name }}</span>
-            <Badge variant="outline" class="px-1.5 font-mono text-[10px] text-muted-foreground">{{ p.id }}</Badge>
-            <Badge v-if="p.endpoints.anthropic" variant="outline" class="px-1.5 text-[10px]">anthropic</Badge>
-            <Badge v-if="p.endpoints.openai" variant="outline" class="px-1.5 text-[10px]">openai</Badge>
-            <Badge v-if="p.models?.length" variant="outline" class="px-1.5 text-[10px] text-muted-foreground">{{ p.models.length }} 模型</Badge>
-            <div class="ml-auto flex gap-1">
-              <Button variant="ghost" size="icon-xs" title="编辑" @click="startEdit(p)"><Pencil class="size-3.5" /></Button>
-              <Button variant="ghost" size="icon-xs" class="text-destructive" title="删除（回收全部落盘条目）" @click="delProvider = p">
-                <Trash2 class="size-3.5" />
-              </Button>
+        <!-- 库列表（常驻） -->
+        <p v-if="!providers.length && !draft" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
+          还没有模型服务——点「添加」把网关的端点与 key 存进来。
+          <template v-if="!draft">旧版单网关档已自动迁移为 <code class="font-mono">myapikey</code> 条目（重启过服务即有），直接编辑改 key。</template>
+        </p>
+        <div v-else class="space-y-1.5">
+          <div v-for="p in providers" :key="p.id" class="rounded-md border px-3 py-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-sm font-medium">{{ p.name }}</span>
+              <Badge variant="outline" class="px-1.5 font-mono text-[10px] text-muted-foreground">{{ p.id }}</Badge>
+              <Badge v-if="p.endpoints.anthropic" variant="outline" class="px-1.5 text-[10px]">anthropic</Badge>
+              <Badge v-if="p.endpoints.openai" variant="outline" class="px-1.5 text-[10px]">openai</Badge>
+              <Badge v-if="p.models?.length" variant="outline" class="px-1.5 text-[10px] text-muted-foreground">{{ p.models.length }} 模型</Badge>
+              <div class="ml-auto flex gap-1">
+                <Button variant="ghost" size="icon-xs" title="编辑" @click="startEdit(p)"><Pencil class="size-3.5" /></Button>
+                <Button variant="ghost" size="icon-xs" class="text-destructive" title="删除（回收全部落盘条目）" @click="delProvider = p">
+                  <Trash2 class="size-3.5" />
+                </Button>
+              </div>
             </div>
+            <details class="group mt-1">
+              <summary class="flex cursor-pointer select-none list-none items-center gap-1 text-[11px] text-muted-foreground marker:hidden">
+                <ChevronDown class="size-3 transition-transform group-open:rotate-180" />
+                端点与凭据
+              </summary>
+              <div class="mt-1 space-y-0.5 pl-4 font-mono text-[11px] text-muted-foreground">
+                <p v-if="p.endpoints.anthropic">anthropic: {{ p.endpoints.anthropic.baseUrl }}</p>
+                <p v-if="p.endpoints.openai">openai:&nbsp;&nbsp;&nbsp;{{ p.endpoints.openai.baseUrl }}</p>
+                <p>key: {{ p.apiKey.slice(0, 6) }}…{{ p.apiKey.slice(-4) }}<span v-if="p.models?.length"> · 模型: {{ p.models.join(', ') }}</span></p>
+              </div>
+            </details>
           </div>
-          <details class="group mt-1">
-            <summary class="flex cursor-pointer select-none list-none items-center gap-1 text-[11px] text-muted-foreground marker:hidden">
-              <ChevronDown class="size-3 transition-transform group-open:rotate-180" />
-              端点与凭据
-            </summary>
-            <div class="mt-1 space-y-0.5 pl-4 font-mono text-[11px] text-muted-foreground">
-              <p v-if="p.endpoints.anthropic">anthropic: {{ p.endpoints.anthropic.baseUrl }}</p>
-              <p v-if="p.endpoints.openai">openai:&nbsp;&nbsp;&nbsp;{{ p.endpoints.openai.baseUrl }}</p>
-              <p>key: {{ p.apiKey.slice(0, 6) }}…{{ p.apiKey.slice(-4) }}<span v-if="p.models?.length"> · 模型: {{ p.models.join(', ') }}</span></p>
-            </div>
-          </details>
         </div>
       </div>
     </section>

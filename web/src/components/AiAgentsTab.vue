@@ -20,7 +20,7 @@ import {
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Trash2 } from 'lucide-vue-next'
+import { Bot, ScrollText, Trash2 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
@@ -207,7 +207,8 @@ async function doRemoveRule(id: string) {
 </script>
 
 <template>
-  <div class="space-y-5">
+  <!-- 板块外框与技能中心/模型供应商同款（rounded-md border + muted 头部条）——三页签统一板块语言 -->
+  <div class="flex flex-col gap-3">
     <!-- 结果态：表单区整体切走（返回编辑保留表单内容，重推是常态） -->
     <template v-if="result">
       <AiBindingResult :result="result" @back="result = null" />
@@ -215,123 +216,154 @@ async function doRemoveRule(id: string) {
 
     <!-- 编辑态 -->
     <template v-else>
-      <p v-if="noProviders" class="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-        模型服务库还是空的——
-        <button type="button" class="font-medium text-primary underline-offset-2 hover:underline" @click="emit('switch-providers')">先到「模型供应商」添加</button>
-        （端点 + key），再回来绑定工具。
-      </p>
-
-      <!-- 工具页签行：一页一个工具（圆点 = 该工具绑定已启用）；样式与工作区页签同款 -->
-      <div class="border-b">
-        <div class="flex gap-1">
-          <button
-            v-for="t in toolTabs"
-            :key="t.key"
-            type="button"
-            class="flex items-center gap-1.5 border-b-2 px-3 pb-2 text-xs transition-colors"
-            :class="
-              toolTab === t.key
-                ? 'border-primary font-medium text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            "
-            @click="toolTab = t.key; err = ''"
-          >
-            <span
-              class="size-1.5 rounded-full"
-              :class="toolOn[t.key] ? 'bg-emerald-500' : 'bg-muted-foreground/30'"
-              :title="toolOn[t.key] ? '绑定已启用' : '未启用'"
-            />
-            {{ t.label }}
-          </button>
+      <!-- ① 工具绑定面板 -->
+      <section class="rounded-md border">
+        <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+          <Bot class="size-3.5 shrink-0 text-muted-foreground" />
+          <span class="text-xs font-semibold">工具绑定</span>
+          <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">每个 CLI 一页：选模型服务（+ 自身配置），单独保存并应用</span>
         </div>
-      </div>
 
-      <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份） -->
-      <div v-show="toolTab === 'claude'" class="space-y-3 pt-4">
-        <div class="space-y-1.5">
-          <AiFieldClaude
-            :providers="providers"
-            :provider-id="claude"
-            @update:provider-id="(v) => (claude = v)"
-          />
-        </div>
-        <AiClaudeToolConfig
-          ref="claudeToolRef"
-          :tc="view?.toolConfig.claude"
-          :binding-env="claudeBindingEnv"
-        />
-        <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
-        <div class="flex items-center justify-end gap-3 border-t pt-3">
-          <span class="mr-auto text-[11px] text-muted-foreground/70">保存 = 自身配置 + Claude Code 绑定一起应用（其余工具不动）</span>
-          <Button :disabled="busy" @click="submitTool('claude')">{{
-            busy ? '应用中…' : '保存并应用到全部目标'
-          }}</Button>
-        </div>
-      </div>
+        <div class="p-3">
+          <p v-if="noProviders" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
+            模型服务库还是空的——
+            <button type="button" class="font-medium text-primary underline-offset-2 hover:underline" @click="emit('switch-providers')">先到「模型供应商」添加</button>
+            （端点 + key），再回来绑定工具。
+          </p>
 
-      <!-- ② Codex -->
-      <div v-show="toolTab === 'codex'" class="space-y-1.5 pt-4">
-        <AiFieldCodex
-          :providers="providers"
-          :provider-id="codex"
-          :set-default="codexDefault"
-          @update:provider-id="(v) => (codex = v)"
-          @update:set-default="(v) => (codexDefault = v)"
-        />
-        <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
-        <div class="flex items-center justify-end gap-3 border-t pt-3">
-          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Codex 的绑定（其余工具不动）</span>
-          <Button :disabled="busy" @click="submitTool('codex')">{{
-            busy ? '应用中…' : '保存并应用到全部目标'
-          }}</Button>
-        </div>
-      </div>
-
-      <!-- ③ OpenCode / ④ Pi：多 provider × wire 变体 -->
-      <div v-show="toolTab === 'opencode'" class="space-y-3 pt-4">
-        <AiFieldMulti
-          tool="opencode"
-          :providers="providers"
-          :provider-ids="oc"
-          :wires="ocWires"
-          :set-default="ocDefault"
-          @update:provider-ids="(v) => (oc = v)"
-          @update:wires="(v) => (ocWires = v)"
-          @update:set-default="(v) => (ocDefault = v)"
-        />
-        <div class="flex items-center justify-end gap-3 border-t pt-3">
-          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 OpenCode 的绑定（其余工具不动）</span>
-          <Button :disabled="busy" @click="submitTool('opencode')">{{
-            busy ? '应用中…' : '保存并应用到全部目标'
-          }}</Button>
-        </div>
-      </div>
-      <div v-show="toolTab === 'pi'" class="space-y-3 pt-4">
-        <AiFieldMulti
-          tool="pi"
-          :providers="providers"
-          :provider-ids="pi"
-          :wires="piWires"
-          @update:provider-ids="(v) => (pi = v)"
-          @update:wires="(v) => (piWires = v)"
-        />
-        <div class="flex items-center justify-end gap-3 border-t pt-3">
-          <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Pi 的绑定（其余工具不动）</span>
-          <Button :disabled="busy" @click="submitTool('pi')">{{
-            busy ? '应用中…' : '保存并应用到全部目标'
-          }}</Button>
-        </div>
-      </div>
-
-      <p v-if="err" class="text-sm text-destructive">{{ err }}</p>
-
-      <!-- 全局形态专属段：项目级规则 + 追平语义（从旧 AiBindingTab 迁入） -->
-      <template v-if="view">
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-medium">项目级配置</h3>
-            <span class="text-[11px] text-muted-foreground">文件面板进到项目目录点「AI 配置」就地落</span>
+          <!-- 工具页签行：一页一个工具（圆点 = 该工具绑定已启用）；样式与工作区页签同款。
+               负 margin 让下划线通到面板两缘 -->
+          <div class="-mx-3 border-b px-3">
+            <div class="flex gap-1">
+              <button
+                v-for="t in toolTabs"
+                :key="t.key"
+                type="button"
+                class="flex items-center gap-1.5 border-b-2 px-3 pb-2 text-xs transition-colors"
+                :class="
+                  toolTab === t.key
+                    ? 'border-primary font-medium text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                "
+                @click="toolTab = t.key; err = ''"
+              >
+                <span
+                  class="size-1.5 rounded-full"
+                  :class="toolOn[t.key] ? 'bg-emerald-500' : 'bg-muted-foreground/30'"
+                  :title="toolOn[t.key] ? '绑定已启用' : '未启用'"
+                />
+                {{ t.label }}
+              </button>
+            </div>
           </div>
+
+          <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份） -->
+          <div v-show="toolTab === 'claude'" class="space-y-3 pt-3">
+          <div class="space-y-1.5">
+            <AiFieldClaude
+              :providers="providers"
+              :provider-id="claude"
+              @update:provider-id="(v) => (claude = v)"
+            />
+          </div>
+          <AiClaudeToolConfig
+            ref="claudeToolRef"
+            :tc="view?.toolConfig.claude"
+            :binding-env="claudeBindingEnv"
+          />
+          <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
+          <div class="flex items-center justify-end gap-3 border-t pt-3">
+            <span class="mr-auto text-[11px] text-muted-foreground/70">保存 = 自身配置 + Claude Code 绑定一起应用（其余工具不动）</span>
+            <Button :disabled="busy" @click="submitTool('claude')">{{
+              busy ? '应用中…' : '保存并应用到全部目标'
+            }}</Button>
+          </div>
+          </div>
+
+          <!-- ② Codex -->
+          <div v-show="toolTab === 'codex'" class="space-y-1.5 pt-3">
+            <AiFieldCodex
+              :providers="providers"
+              :provider-id="codex"
+              :set-default="codexDefault"
+              @update:provider-id="(v) => (codex = v)"
+              @update:set-default="(v) => (codexDefault = v)"
+            />
+            <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
+            <div class="flex items-center justify-end gap-3 border-t pt-3">
+              <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Codex 的绑定（其余工具不动）</span>
+              <Button :disabled="busy" @click="submitTool('codex')">{{
+                busy ? '应用中…' : '保存并应用到全部目标'
+              }}</Button>
+            </div>
+          </div>
+
+          <!-- ③ OpenCode / ④ Pi：多 provider × wire 变体 -->
+          <div v-show="toolTab === 'opencode'" class="space-y-3 pt-3">
+            <AiFieldMulti
+              tool="opencode"
+              :providers="providers"
+              :provider-ids="oc"
+              :wires="ocWires"
+              :set-default="ocDefault"
+              @update:provider-ids="(v) => (oc = v)"
+              @update:wires="(v) => (ocWires = v)"
+              @update:set-default="(v) => (ocDefault = v)"
+            />
+            <div class="flex items-center justify-end gap-3 border-t pt-3">
+              <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 OpenCode 的绑定（其余工具不动）</span>
+              <Button :disabled="busy" @click="submitTool('opencode')">{{
+                busy ? '应用中…' : '保存并应用到全部目标'
+              }}</Button>
+            </div>
+          </div>
+          <div v-show="toolTab === 'pi'" class="space-y-3 pt-3">
+            <AiFieldMulti
+              tool="pi"
+              :providers="providers"
+              :provider-ids="pi"
+              :wires="piWires"
+              @update:provider-ids="(v) => (pi = v)"
+              @update:wires="(v) => (piWires = v)"
+            />
+            <div class="flex items-center justify-end gap-3 border-t pt-3">
+              <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Pi 的绑定（其余工具不动）</span>
+              <Button :disabled="busy" @click="submitTool('pi')">{{
+                busy ? '应用中…' : '保存并应用到全部目标'
+              }}</Button>
+            </div>
+          </div>
+
+          <p v-if="err" class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{{ err }}</p>
+
+          <!-- 追平语义：一行常驻（触发时机 + key 明文风险句），机制细节收 InfoHint——
+               讲的是绑定保存的后果，收在绑定面板尾 -->
+          <div
+            v-if="view"
+            class="flex items-start gap-1.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
+          >
+            <div class="flex-1 space-y-0.5">
+              <p>绑定保存后自动追平（目标 = 本机 + 受管容器）：启动 sweep、新建容器、start 事件。</p>
+              <p class="text-amber-500/90">API Key 会明文落盘到各目标（sidecar 存档同面；本机 = 宿主 home 的真实文件）。</p>
+            </div>
+            <InfoHint label="追平与落盘机制说明">
+              <p>追平按「目标覆盖 ?? 全局绑定」写一份，容器不必在运行，CLI 下次启动即生效；本机跟随全局绑定（没有专属覆盖）。</p>
+              <p>各工具落盘：claude 走 settings.json env 注入（含自身配置的模型/env）；codex 加 provider 块（key 经 ~/.zshrc 环境变量，固定 responses）；opencode / pi 在配置里内联 key，按所选协议注册 <code>&lt;服务&gt;-chat/-responses/-anthropic</code> 接入点。</p>
+              <p>已有配置只合并本方案的键；换绑 / 清空会回收旧接入点。</p>
+            </InfoHint>
+          </div>
+        </div>
+      </section>
+
+      <!-- ② 项目级配置面板：全局形态专属段（从旧 AiBindingTab 迁入） -->
+      <section v-if="view" class="rounded-md border">
+        <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+          <ScrollText class="size-3.5 shrink-0 text-muted-foreground" />
+          <span class="text-xs font-semibold">项目级配置</span>
+          <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">文件面板进到项目目录点「AI 配置」就地落</span>
+        </div>
+
+        <div class="space-y-2 p-3">
           <div
             v-if="!view.projectRules.length"
             class="flex items-start gap-1.5 rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground"
@@ -348,20 +380,7 @@ async function doRemoveRule(id: string) {
             </Button>
           </div>
         </div>
-
-        <!-- 追平语义：一行常驻（触发时机 + key 明文风险句），机制细节收 InfoHint -->
-        <div class="flex items-start gap-1.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-          <div class="flex-1 space-y-0.5">
-            <p>绑定保存后自动追平（目标 = 本机 + 受管容器）：启动 sweep、新建容器、start 事件。</p>
-            <p class="text-amber-500/90">API Key 会明文落盘到各目标（sidecar 存档同面；本机 = 宿主 home 的真实文件）。</p>
-          </div>
-          <InfoHint label="追平与落盘机制说明">
-            <p>追平按「目标覆盖 ?? 全局绑定」写一份，容器不必在运行，CLI 下次启动即生效；本机跟随全局绑定（没有专属覆盖）。</p>
-            <p>各工具落盘：claude 走 settings.json env 注入（含自身配置的模型/env）；codex 加 provider 块（key 经 ~/.zshrc 环境变量，固定 responses）；opencode / pi 在配置里内联 key，按所选协议注册 <code>&lt;服务&gt;-chat/-responses/-anthropic</code> 接入点。</p>
-            <p>已有配置只合并本方案的键；换绑 / 清空会回收旧接入点。</p>
-          </InfoHint>
-        </div>
-      </template>
+      </section>
 
       <ConfirmDialog
         v-if="ruleDelId"

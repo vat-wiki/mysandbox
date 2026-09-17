@@ -961,7 +961,7 @@ async function cleanMissing(r: SkillRuleResult) {
 
       <!-- 空库 / 报错 -->
       <div v-if="regErr" class="px-3 py-4 text-center text-[11px] text-destructive">{{ regErr }}</div>
-      <div v-else-if="!reg?.length" class="px-3 py-4 text-center text-[11px] text-muted-foreground/70">
+      <div v-else-if="!reg?.length" class="m-3 rounded-md border border-dashed px-3 py-3 text-center text-[11px] leading-relaxed text-muted-foreground/70">
         还没有添加任何技能——点「添加」从扫描/本地目录/git 仓库收进库。
       </div>
 
