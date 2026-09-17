@@ -418,7 +418,8 @@ export const clearAiTargetOverride = (target: string) =>
     overrides: Record<string, AiBinding>
   }>
 // 项目级规则：就地安装（文件面板「AI 配置」，写 <项目>/.claude/settings.json 与
-// <项目>/opencode.json 并落规则）/ 删除（孤儿条目自动回收）。
+// <项目>/opencode.json 并落规则）。删除走 DELETE /api/ai/projects/:id（无 UI 入口，
+// agent/脚本可调，孤儿条目自动回收）。
 export const installAiProject = (
   container: string,
   spot: string,
@@ -428,10 +429,6 @@ export const installAiProject = (
     to: string
     created: boolean
     ruleId: string
-  }>
-export const deleteAiProjectRule = (id: string) =>
-  api(`/api/ai/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<{
-    projectRules: AiProjectRule[]
   }>
 // skills 就地安装（文件面板「安装技能」）：库技能装进某容器 spot 目录，自动落规则。
 export const installSkills = (container: string, spot: string, skills: string[]) =>

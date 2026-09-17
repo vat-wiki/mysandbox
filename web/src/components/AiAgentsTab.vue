@@ -4,14 +4,14 @@
 // AiClaudeToolConfig 自身配置）。每个页签有自己的「保存并应用到全部目标」：只提交
 // 该工具的绑定，与已存绑定合并后整体提交（后端 AiBinding 整体替换语义 + 四层追平
 // 链路不动，其余工具原样带上 = 落盘配置不碰）；应用目标 = 本机 + 受管容器（同权）。
-// 容器的临时任务走 AiOverrideDialog（AiBindingTargetForm）；项目规则列表是全局形态
-// 专属，收在本页尾部。工具自身配置（toolConfig）是全局一份，不进绑定四层。
+// 容器的临时任务走 AiOverrideDialog（AiBindingTargetForm）。本页 = 全局配置——项目级
+// 规则不在这里展示/管理，落点与增删都在文件面板「AI 配置」就地完成（AiSpotDialog）。
+// 工具自身配置（toolConfig）是全局一份，不进绑定四层。
 import { ref, computed, onMounted } from 'vue'
 import {
   getAiView,
   saveAiBinding,
   saveAiClaudePage,
-  deleteAiProjectRule,
   Unauthorized,
   type AiView,
   type AiBinding,
@@ -19,15 +19,12 @@ import {
   type GatewayWire,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Bot, ScrollText, Trash2 } from 'lucide-vue-next'
-import { toast } from 'vue-sonner'
+import { Bot } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
 import InfoHint from './InfoHint.vue'
 
 const emit = defineEmits<{
@@ -177,31 +174,6 @@ async function submitTool(tool: ToolTab) {
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
-  }
-}
-
-// —— 项目级配置规则（全局形态专属段）——
-
-const ruleSummary = (r: AiBinding) => {
-  const parts: string[] = []
-  if (r.claude) parts.push(`claude → ${r.claude.provider}`)
-  if (r.opencode?.providers.length) parts.push(`opencode → ${r.opencode.providers.join('、')}`)
-  return parts.join(' · ') || '（空）'
-}
-
-const ruleDelId = ref<string | null>(null)
-async function doRemoveRule(id: string) {
-  try {
-    const r = await deleteAiProjectRule(id)
-    if (view.value) view.value = { ...view.value, projectRules: r.projectRules }
-    toast('已删除项目规则并回收条目')
-    emit('done')
-  } catch (e) {
-    if (e instanceof Unauthorized) {
-      emit('unauthorized')
-      return
-    }
-    err.value = e instanceof Error ? e.message : String(e)
   }
 }
 </script>
@@ -354,43 +326,6 @@ async function doRemoveRule(id: string) {
           </div>
         </div>
       </section>
-
-      <!-- ② 项目级配置面板：全局形态专属段（从旧 AiBindingTab 迁入） -->
-      <section v-if="view" class="rounded-md border">
-        <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
-          <ScrollText class="size-3.5 shrink-0 text-muted-foreground" />
-          <span class="text-xs font-semibold">项目级配置</span>
-          <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">文件面板进到项目目录点「AI 配置」就地落</span>
-        </div>
-
-        <div class="space-y-2 p-3">
-          <div
-            v-if="!view.projectRules.length"
-            class="flex items-start gap-1.5 rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground"
-          >
-            <p class="flex-1">还没有项目级规则——进项目目录保存即写入，优先级高于 home 级。</p>
-            <InfoHint tip="claude 写 .claude/settings.json，opencode 写 opencode.json；start 时自动补齐。" />
-          </div>
-          <div v-for="r in view.projectRules" :key="r.id" class="flex items-center gap-2 rounded-md border px-3 py-2">
-            <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.to }}</span>
-            <span class="min-w-0 truncate text-[11px] text-muted-foreground">{{ ruleSummary(r) }}</span>
-            <Badge variant="outline" class="shrink-0 px-1.5 text-[10px] text-muted-foreground">项目</Badge>
-            <Button variant="ghost" size="icon-xs" class="shrink-0 text-destructive" title="删除规则并回收条目" @click="ruleDelId = r.id">
-              <Trash2 class="size-3.5" />
-            </Button>
-          </div>
-        </div>
-      </section>
-
-      <ConfirmDialog
-        v-if="ruleDelId"
-        title="删除项目级配置规则"
-        description="已写入项目的接入条目会被回收。"
-        confirm-text="删除"
-        variant="destructive"
-        @confirm="doRemoveRule(ruleDelId); ruleDelId = null"
-        @close="ruleDelId = null"
-      />
     </template>
   </div>
 </template>
