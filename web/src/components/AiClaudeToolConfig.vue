@@ -368,6 +368,8 @@ defineExpose({
     <!-- 常驻高频项：全部同一格式（Label 上 / h-8 mono 输入 / 键名注下）——
          默认模型、小模型 / 压缩窗口 / 自动压缩触发 %（env 预设）、思考力度（settings 顶级键）、默认模式（permissions 嵌套键） -->
     <div class="grid gap-3 sm:grid-cols-2">
+      <!-- 父级可把绑定选择器（模型供应商）塞进本网格首格，省掉一整行 -->
+      <slot name="prepend-grid" />
       <div class="space-y-1.5">
         <Label for="ai-claude-model">默认模型</Label>
         <AiModelCombo

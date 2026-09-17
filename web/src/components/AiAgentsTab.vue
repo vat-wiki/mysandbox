@@ -225,22 +225,24 @@ async function submitTool(tool: ToolTab) {
             （端点 + key），再回来绑定工具。
           </p>
 
-          <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份） -->
+          <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份）——绑定选择器
+               经 prepend-grid 槽并进常驻网格首格，不占独立一行 -->
           <div v-show="toolTab === 'claude'" class="space-y-3 pt-3">
-          <div class="space-y-1.5">
-            <AiFieldClaude
-              :providers="providers"
-              :provider-id="claude"
-              :show-header="false"
-              @update:provider-id="(v) => (claude = v)"
-            />
-          </div>
           <AiClaudeToolConfig
             ref="claudeToolRef"
             :tc="view?.toolConfig.claude"
             :binding-env="claudeBindingEnv"
             :provider="claudeProvider"
-          />
+          >
+            <template #prepend-grid>
+              <AiFieldClaude
+                :providers="providers"
+                :provider-id="claude"
+                :show-header="false"
+                @update:provider-id="(v) => (claude = v)"
+              />
+            </template>
+          </AiClaudeToolConfig>
           <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
           <div class="flex items-center justify-end border-t pt-3">
             <Button :disabled="busy" @click="submitTool('claude')">{{
