@@ -244,7 +244,8 @@ async function submitTool(tool: ToolTab) {
             </template>
           </AiClaudeToolConfig>
           <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
-          <div class="flex items-center justify-end border-t pt-3">
+          <div class="flex items-center justify-end gap-3 border-t pt-3">
+            <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
             <Button :disabled="busy" @click="submitTool('claude')">{{
               busy ? '应用中…' : '保存并应用到全部目标'
             }}</Button>
@@ -261,7 +262,8 @@ async function submitTool(tool: ToolTab) {
               @update:set-default="(v) => (codexDefault = v)"
             />
             <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
-            <div class="flex items-center justify-end border-t pt-3">
+            <div class="flex items-center justify-end gap-3 border-t pt-3">
+              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
               <Button :disabled="busy" @click="submitTool('codex')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
@@ -280,7 +282,8 @@ async function submitTool(tool: ToolTab) {
               @update:wires="(v) => (ocWires = v)"
               @update:set-default="(v) => (ocDefault = v)"
             />
-            <div class="flex items-center justify-end border-t pt-3">
+            <div class="flex items-center justify-end gap-3 border-t pt-3">
+              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
               <Button :disabled="busy" @click="submitTool('opencode')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
@@ -295,7 +298,8 @@ async function submitTool(tool: ToolTab) {
               @update:provider-ids="(v) => (pi = v)"
               @update:wires="(v) => (piWires = v)"
             />
-            <div class="flex items-center justify-end border-t pt-3">
+            <div class="flex items-center justify-end gap-3 border-t pt-3">
+              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
               <Button :disabled="busy" @click="submitTool('pi')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
