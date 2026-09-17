@@ -196,7 +196,6 @@ async function doRemoveProvider() {
     <section class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <KeyRound class="size-3.5 shrink-0 text-muted-foreground" />
-        <span class="text-xs font-semibold">模型服务</span>
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ providers.length }}
         </Badge>

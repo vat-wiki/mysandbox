@@ -778,7 +778,6 @@ async function cleanMissing(r: SkillRuleResult) {
     <div class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <Library class="size-3.5 shrink-0 text-muted-foreground" />
-        <span class="text-xs font-semibold">技能库</span>
         <InfoHint label="技能库说明">
           <p>个人技能池——每张卡一件技能。</p>
           <p>日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）。</p>

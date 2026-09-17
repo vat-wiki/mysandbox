@@ -6,6 +6,8 @@
 //   技能中心   = SkillsHubTab（技能库/扫描/安装位置）
 //   模型供应商 = AiProvidersTab（provider 库：myapikey 默认在库 + 自定义接入）
 //   Agent 工具 = AiAgentsTab（每 CLI 一卡：绑定 + 自身配置，Claude Code 优先）
+// 板块头标题只在「区分多区块」时出现（Agent 工具的工具绑定/项目级配置）；单面板页
+// 头部条 = 图标 + 描述 + 动作，不带标题——页身份由页签表达，面板标题重复页签是噪声。
 // 容器覆盖配置（临时任务）不在这里——走 AiOverrideDialog 弹框，按任务体量分层。
 import { ref } from 'vue'
 import SkillsHubTab from './SkillsHubTab.vue'
