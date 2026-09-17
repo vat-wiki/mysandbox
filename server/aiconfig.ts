@@ -858,20 +858,27 @@ async function applyPlanToHome(
 
 // —— 探测 ——
 
-// 本机探测：进程内 fetch，6s 超时。HTTP 码本身不代表鉴权通过——连通性目的即达成。
+// 本机探测：进程内 fetch，6s 超时。带上 provider 的 apiKey——401/403 才有真实含义
+//（key 被拒），否则要求鉴权的网关一律 401，坏 key 被连通性假象盖住。
 // 两侧 baseUrl 约定不同：anthropic 侧按 Claude Code 的 ANTHROPIC_BASE_URL 约定不含
 // /v1（客户端自己拼 /v1/messages），列表在 <base>/v1/models；openai 侧 baseUrl 含
 // /v1，直接拼 /models。
-async function probeHttp(kind: 'OpenAI 兼容' | 'Anthropic 兼容', baseUrl: string): Promise<string> {
+async function probeHttp(kind: 'OpenAI 兼容' | 'Anthropic 兼容', baseUrl: string, apiKey?: string): Promise<string> {
   const probePath = kind === 'Anthropic 兼容' ? '/v1/models' : '/models';
   const url = baseUrl.replace(/\/$/, '') + probePath;
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(6_000) });
+    const r = await fetch(url, {
+      signal: AbortSignal.timeout(6_000),
+      ...(apiKey ? { headers: { authorization: `Bearer ${apiKey}` } } : {}),
+    });
     const code = String(r.status);
     // 404/405 = 网络与 HTTP 服务都通，只是网关没开模型列表这条路由（有的中转只实现
     // 调用端点）——不算故障，单独说明免得被误读成出错
     if (code === '404' || code === '405') {
       return `探测: ${kind}网关可达 (HTTP ${code}，${probePath} 探测路径未开放，不影响实际调用)`;
+    }
+    if (code === '401' || code === '403') {
+      return `探测: ${kind}网关可达，但 key 被拒 (HTTP ${code}，检查 apiKey)`;
     }
     return `探测: ${kind}网关可达 (HTTP ${code})`;
   } catch {
@@ -879,17 +886,20 @@ async function probeHttp(kind: 'OpenAI 兼容' | 'Anthropic 兼容', baseUrl: st
   }
 }
 
-// 容器探测：execRun curl 打模型列表端点，只看连通（仅 running 容器做，失败不影响配置写入）。
+// 容器探测：execRun curl 打模型列表端点（带 provider 的 apiKey，语义同 probeHttp）。
+// 仅 running 容器做，失败不影响配置写入。
 async function probeContainer(
   cfg: Config,
   id: string,
   kind: 'OpenAI 兼容' | 'Anthropic 兼容',
   baseUrl: string,
+  apiKey?: string,
 ): Promise<string> {
   const probePath = kind === 'Anthropic 兼容' ? '/v1/models' : '/models';
+  const auth = apiKey ? ` -H ${shq(`Authorization: Bearer ${apiKey}`)}` : '';
   try {
     const r = await execRun(cfg, id, {
-      Cmd: ['sh', '-c', `curl -m 5 -s -o /dev/null -w '%{http_code}' ${shq(baseUrl.replace(/\/$/, '') + probePath)}`],
+      Cmd: ['sh', '-c', `curl -m 5 -s -o /dev/null -w '%{http_code}'${auth} ${shq(baseUrl.replace(/\/$/, '') + probePath)}`],
       Tty: false,
       timeoutMs: 8_000,
     });
@@ -898,42 +908,46 @@ async function probeContainer(
     if (code === '404' || code === '405') {
       return `探测: ${kind}网关可达 (HTTP ${code}，${probePath} 探测路径未开放，不影响实际调用)`;
     }
+    if (code === '401' || code === '403') {
+      return `探测: ${kind}网关可达，但 key 被拒 (HTTP ${code}，检查 apiKey)`;
+    }
     return `探测: ${kind}网关可达 (HTTP ${code})`;
   } catch {
     return `探测: ${kind}失败（curl 缺失或超时），不影响配置`;
   }
 }
 
-// 计划里实际用到的协议端点（按 provider×wire 聚合去重）——只探本目标用到的。
+// 计划里实际用到的协议端点（按 url×apiKey 聚合去重——同 URL 不同 key 的探测结果
+// 不同，不能并）——只探本目标用到的。
 async function probePlan(
   cfg: Config,
   target: string,
   plan: AiApplyPlan,
 ): Promise<string[]> {
-  const checks = new Map<string, { kind: 'OpenAI 兼容' | 'Anthropic 兼容'; url: string }>();
-  const add = (kind: 'OpenAI 兼容' | 'Anthropic 兼容', url?: string) => {
-    if (url) checks.set(url, { kind, url });
+  const checks = new Map<string, { kind: 'OpenAI 兼容' | 'Anthropic 兼容'; url: string; apiKey?: string }>();
+  const add = (kind: 'OpenAI 兼容' | 'Anthropic 兼容', url: string | undefined, apiKey?: string) => {
+    if (url) checks.set(`${url}|${apiKey ?? ''}`, { kind, url, apiKey });
   };
-  if (plan.claude) add('Anthropic 兼容', plan.claude.endpoints.anthropic?.baseUrl);
-  if (plan.codex) add('OpenAI 兼容', plan.codex.provider.endpoints.openai?.baseUrl);
+  if (plan.claude) add('Anthropic 兼容', plan.claude.endpoints.anthropic?.baseUrl, plan.claude.apiKey);
+  if (plan.codex) add('OpenAI 兼容', plan.codex.provider.endpoints.openai?.baseUrl, plan.codex.provider.apiKey);
   if (plan.opencode) {
     for (const v of plan.opencode.variants) {
-      if (v.wire === 'anthropic-messages') add('Anthropic 兼容', v.provider.endpoints.anthropic?.baseUrl);
-      else add('OpenAI 兼容', v.provider.endpoints.openai?.baseUrl);
+      if (v.wire === 'anthropic-messages') add('Anthropic 兼容', v.provider.endpoints.anthropic?.baseUrl, v.provider.apiKey);
+      else add('OpenAI 兼容', v.provider.endpoints.openai?.baseUrl, v.provider.apiKey);
     }
   }
   if (plan.pi) {
     for (const p of plan.pi.providers) {
       for (const wire of plan.pi.wires) {
-        if (wire === 'anthropic-messages') add('Anthropic 兼容', p.endpoints.anthropic?.baseUrl);
-        else add('OpenAI 兼容', p.endpoints.openai?.baseUrl);
+        if (wire === 'anthropic-messages') add('Anthropic 兼容', p.endpoints.anthropic?.baseUrl, p.apiKey);
+        else add('OpenAI 兼容', p.endpoints.openai?.baseUrl, p.apiKey);
       }
     }
   }
   if (!checks.size) return [];
   if (target === HOST_TARGET) {
     const out: string[] = [];
-    for (const c of checks.values()) out.push(await probeHttp(c.kind, c.url));
+    for (const c of checks.values()) out.push(await probeHttp(c.kind, c.url, c.apiKey));
     return out;
   }
   let running = false;
@@ -944,7 +958,7 @@ async function probePlan(
   }
   if (!running) return [];
   const out: string[] = [];
-  for (const c of checks.values()) out.push(await probeContainer(cfg, target, c.kind, c.url));
+  for (const c of checks.values()) out.push(await probeContainer(cfg, target, c.kind, c.url, c.apiKey));
   return out;
 }
 
