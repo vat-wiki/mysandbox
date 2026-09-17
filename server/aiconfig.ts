@@ -392,34 +392,47 @@ export function validateToolConfig(tool: 'claude', tc: unknown): string | null {
 
 // —— 各工具写入器。全部幂等，成功后往 notes 推一行人话摘要。——
 
+// Claude 页签保存的写入策略：merge = 合并（默认，读旧文件只覆盖受管键，用户其它键保留）；
+// replace = 整文件替换（settings.json 只含本次管理内容——toolConfig 顶级键 + env 块），
+// 用户手工加的其它键一并清掉——清历史残留的显式手段，UI 上要主动选，sweep 恒为 merge。
+export type ClaudeSaveMode = 'merge' | 'replace';
+
 // claude：.claude/settings.json env 块注入（单槽——重绑即覆盖）。base = 用户 home
 // 或项目根（项目级 = <dir>/.claude/settings.json，项目设置覆盖全局是工具自己的合并
 // 语义，我们不发明别的）。extraEnv = 工具自身配置（toolConfig）的合并键——受管绑定
 // 两键最后写（恒赢，兜底历史脏数据/非法请求穿过来）；settings = toolConfig 的顶级键
 //（键级 owned 整键覆盖，先于 env 合并——env 块归属独立，校验层禁 settings.env）。
+// mode = 写入策略（见 ClaudeSaveMode；replace 不读旧文件，其它键清零）。
 async function configClaude(
   base: string,
   p: ResolvedProvider,
   extraEnv: Record<string, string>,
   settings: Record<string, unknown>,
   notes: string[],
+  mode: ClaudeSaveMode = 'merge',
 ): Promise<void> {
   if (!p.endpoints.anthropic?.baseUrl) {
     throw new Error(`provider ${p.id} 没有配置 Anthropic 兼容端点`);
   }
   const path = join(base, '.claude', 'settings.json');
-  const obj = await readJsonObject(path);
-  Object.assign(obj, settings);
-  obj.env = {
-    ...((obj.env as Record<string, unknown> | undefined) ?? {}),
+  const env = {
     ...extraEnv,
     ANTHROPIC_BASE_URL: p.endpoints.anthropic.baseUrl,
     ANTHROPIC_AUTH_TOKEN: p.apiKey,
   };
+  let obj: Record<string, unknown>;
+  if (mode === 'replace') {
+    obj = { ...settings, env };
+  } else {
+    obj = await readJsonObject(path);
+    Object.assign(obj, settings);
+    obj.env = { ...((obj.env as Record<string, unknown> | undefined) ?? {}), ...env };
+  }
   await writeJsonObject(path, obj);
+  const how = mode === 'replace' ? '整文件替换' : '合并写入';
   const extra = Object.keys(extraEnv).length ? ` + 自身配置 env ${Object.keys(extraEnv).length} 键` : '';
   const set = Object.keys(settings).length ? ` + 顶级设置 ${Object.keys(settings).length} 键` : '';
-  notes.push(`claude: 写 ${relTo(base, path)}（${p.id} env 注入${extra}${set}，CLI 启动即生效）`);
+  notes.push(`claude: ${how} ${relTo(base, path)}（${p.id} env 注入${extra}${set}，CLI 启动即生效）`);
 }
 
 // codex：config.toml 每 provider 一个锚点块 + .zshrc 各自的 env export 块。回收 =
@@ -695,6 +708,7 @@ async function applyPlanToHome(
   managedIds: string[],
   notes: string[],
   scope: 'user' | 'project' = 'user',
+  claudeMode: ClaudeSaveMode = 'merge',
 ): Promise<string[]> {
   const failed: string[] = [];
   // 自身配置（env + 顶级键）只在 user scope 注入——项目级 settings.json 不吃全局
@@ -704,7 +718,7 @@ async function applyPlanToHome(
   const claudeSettings = scope === 'user' ? buildClaudeSettings(tc) : {};
   if (plan.claude) {
     try {
-      await configClaude(base, plan.claude, claudeExtra, claudeSettings, notes);
+      await configClaude(base, plan.claude, claudeExtra, claudeSettings, notes, claudeMode);
     } catch (e) {
       failed.push('claude');
       notes.push(`claude: 失败 — ${errMsg(e)}`);
@@ -848,6 +862,7 @@ async function applyOneTarget(
   cfg: Config,
   target: string,
   binding: AiBinding | undefined | null,
+  opts?: { claudeMode?: ClaudeSaveMode },
 ): Promise<BatchItemResult> {
   const id = target;
   const name = targetName(target);
@@ -870,7 +885,7 @@ async function applyOneTarget(
     }
     const notes: string[] = [];
     for (const pid of missing) notes.push(`${pid}: provider 不在库中，跳过（「模型服务」补建或改绑定）`);
-    const failed = await applyPlanToHome(home, plan, Object.keys(lib), notes);
+    const failed = await applyPlanToHome(home, plan, Object.keys(lib), notes, 'user', opts?.claudeMode);
     notes.push(...(await probePlan(cfg, target, plan)));
     const ok = failed.length === 0 && missing.length === 0;
     return finish(ok, {
@@ -889,11 +904,12 @@ export async function applyAiBindingToTargets(
   targets: string[],
   binding: AiBinding,
   apply?: AiToolKey[],
+  opts?: { claudeMode?: ClaudeSaveMode },
 ): Promise<BatchResult> {
   const effective = apply?.length ? sliceBinding(binding, apply) : binding;
   const limit = pLimit(CONCURRENCY);
   log.info({ op: 'ai-config', count: targets.length }, 'ai-config start');
-  const items = await Promise.all(targets.map((t) => limit(() => applyOneTarget(cfg, t, effective))));
+  const items = await Promise.all(targets.map((t) => limit(() => applyOneTarget(cfg, t, effective, opts))));
   const result: BatchResult = {
     total: items.length,
     ok: items.filter((i) => i.ok).length,
@@ -1006,8 +1022,9 @@ export async function setClaudePageConfig(
   binding: AiBinding,
   tc: AiClaudeToolConfig,
   ids?: string[],
+  mode: ClaudeSaveMode = 'merge',
 ): Promise<BatchResult> {
-  const removed = removedClaudeKeys((await getAiToolConfig()).claude, tc);
+  const removed = mode === 'merge' ? removedClaudeKeys((await getAiToolConfig()).claude, tc) : { env: [], settings: [] };
   await setAiToolConfig({ claude: tc });
   await setAiBinding(binding);
 
@@ -1055,7 +1072,7 @@ export async function setClaudePageConfig(
     );
   }
 
-  const result = await applyAiBindingToTargets(cfg, targets, binding, ['claude']);
+  const result = await applyAiBindingToTargets(cfg, targets, binding, ['claude'], { claudeMode: mode });
   for (const it of result.items) {
     const n = recycled.get(it.id);
     if (n) it.stdout = `回收 ${n} 个已移除键\n${it.stdout}`;

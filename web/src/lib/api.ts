@@ -408,8 +408,13 @@ export const saveAiBinding = (binding: AiBinding, ids?: string[], apply?: string
 export const saveAiToolConfig = (tc: { claude?: AiClaudeToolConfig }, ids?: string[]) =>
   putJson('/api/ai/tool-config', ids?.length ? { ...tc, ids } : tc, 120_000) as Promise<BatchResult>
 // Claude 页签合并保存：绑定（claude 槽）+ 自身配置一次提交一遍下发（页签一个保存按钮）。
-export const saveAiClaudePage = (provider: string, tc: AiClaudeToolConfig, ids?: string[]) =>
-  postJson('/api/ai/claude-config', ids?.length ? { provider, toolConfig: tc, ids } : { provider, toolConfig: tc }, 120_000) as Promise<BatchResult>
+// mode = 写入策略（merge 合并默认 / replace 整文件替换，清历史残留用）。
+export const saveAiClaudePage = (provider: string, tc: AiClaudeToolConfig, ids?: string[], mode?: 'merge' | 'replace') =>
+  postJson(
+    '/api/ai/claude-config',
+    { provider, toolConfig: tc, ...(ids?.length ? { ids } : {}), ...(mode && mode !== 'merge' ? { mode } : {}) },
+    120_000,
+  ) as Promise<BatchResult>
 // 目标覆盖（容器）：保存 + 立即应用到这台 / 清除（恢复跟随全局）。本机不是覆盖目标。
 export const saveAiTargetOverride = (target: string, binding: AiBinding) =>
   postJson(`/api/ai/targets/${encodeURIComponent(target)}`, { binding }, 120_000) as Promise<BatchResult>

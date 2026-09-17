@@ -19,13 +19,13 @@ import {
   type GatewayWire,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Bot } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
-import InfoHint from './InfoHint.vue'
 
 const emit = defineEmits<{
   (e: 'done'): void
@@ -115,6 +115,11 @@ async function loadView(fill: boolean) {
 // POST /api/ai/claude-config（后端一次落两份存储、只下发 claude），不打两个接口。
 const claudeToolRef = ref<InstanceType<typeof AiClaudeToolConfig> | null>(null)
 
+// Claude 页签写入策略：merge = 合并写入（默认，文件里其它键保留）；replace = 整文件
+// 替换（settings.json 只含本次管理内容，用户手工加的其它键清掉——清历史残留用）。
+// 不持久化——replace 是破坏性动作，每次保存都显式选。
+const claudeMode = ref<'merge' | 'replace'>('merge')
+
 async function submitTool(tool: ToolTab) {
   err.value = ''
   if (tool === 'claude') {
@@ -155,7 +160,7 @@ async function submitTool(tool: ToolTab) {
   result.value = null
   try {
     if (tool === 'claude') {
-      result.value = await saveAiClaudePage(claude.value, claudeToolRef.value!.toolConfigOut())
+      result.value = await saveAiClaudePage(claude.value, claudeToolRef.value!.toolConfigOut(), undefined, claudeMode.value)
     } else {
       const stored = view.value?.binding ?? {}
       const b: AiBinding =
@@ -245,9 +250,20 @@ async function submitTool(tool: ToolTab) {
             </template>
           </AiClaudeToolConfig>
           <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动。
-               应用范围说明挂 ? （InfoHint）——目标集合后端 allTargets：本机+受管容器+模板 -->
+               应用范围说明（原 InfoHint 悬浮）挪到按钮旁常显——目标集合后端 allTargets：
+               本机+受管容器+模板；写入策略 Select：合并（默认）/ 整文件替换 -->
           <div class="flex items-center justify-end gap-2 border-t pt-3">
-            <span class="mr-auto"><InfoHint tip="应用目标 = 本机 + 全部受管系统容器 + 模板容器（均含停机的）。停机的直接写文件系统，下次启动即生效；新容器克隆模板即自带配置。" /></span>
+            <span class="text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器 + 模板容器（均含停机的；停机的写文件，下次启动即生效）</span>
+            <Select
+              :model-value="claudeMode"
+              @update:model-value="(v) => (claudeMode = v as 'merge' | 'replace')"
+            >
+              <SelectTrigger size="sm" class="w-[150px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="merge">合并写入（默认）</SelectItem>
+                <SelectItem value="replace">替换整个文件</SelectItem>
+              </SelectContent>
+            </Select>
             <Button :disabled="busy" @click="submitTool('claude')">{{
               busy ? '应用中…' : '保存并应用'
             }}</Button>
@@ -265,7 +281,7 @@ async function submitTool(tool: ToolTab) {
             />
             <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
             <div class="flex items-center justify-end gap-2 border-t pt-3">
-              <span class="mr-auto"><InfoHint tip="应用目标 = 本机 + 全部受管系统容器 + 模板容器（均含停机的）。停机的直接写文件系统，下次启动即生效。" /></span>
+              <span class="text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器 + 模板容器（均含停机的；停机的写文件，下次启动即生效）</span>
               <Button :disabled="busy" @click="submitTool('codex')">{{
                 busy ? '应用中…' : '保存并应用'
               }}</Button>

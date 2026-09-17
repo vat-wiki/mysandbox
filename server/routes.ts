@@ -686,7 +686,12 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     if (invalid) throw badRequest(invalid);
     const tc = (body.toolConfig ?? {}) as AiClaudeToolConfig;
     const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : undefined;
-    return setClaudePageConfig(cfg, binding, tc, ids);
+    // 写入策略：缺省 merge（合并，其它键保留）；replace = 整文件替换（清历史残留的显式手段）。
+    const mode = body.mode ?? 'merge';
+    if (mode !== 'merge' && mode !== 'replace') {
+      throw badRequest("mode 只认 'merge'（合并写入）或 'replace'（替换整个文件）");
+    }
+    return setClaudePageConfig(cfg, binding, tc, ids, mode);
   });
 
   // 目标覆盖（key = 容器名）：保存 + 立即应用到这台。存在即生效
