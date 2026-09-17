@@ -117,28 +117,58 @@ async function doProbe() {
   }
 }
 
-async function doFetchModels() {
+// 按协议行拉取（每行一个小拉取按钮，从该行端点拉 /models 预填该行清单——覆盖
+// 式，但作用域只有这一行，可预期）。responses 行未单独配端点时按钮禁用（同址
+// 回落 openai，拉了也是 chat 那份，没有区分意义）。
+const MODEL_ROWS = [
+  {
+    side: 'anthropic',
+    label: 'anthropic',
+    title: 'anthropic',
+    urlKey: 'anthropicUrl',
+    modelKey: 'anthropicModels',
+    urlPh: 'http://…/anthropic（claude 用，不含 /v1）',
+    modelsPh: '模型清单，如 claude-sonnet-4-5',
+    fetchTitle: '从该端点拉取模型清单（覆盖式预填本行）',
+  },
+  {
+    side: 'openai',
+    label: 'chat',
+    title: 'openai · chat',
+    urlKey: 'openaiUrl',
+    modelKey: 'chatModels',
+    urlPh: 'http://…/openai/v1（opencode/pi 的 chat 变体用）',
+    modelsPh: '模型清单，如 gpt-5, deepseek-chat',
+    fetchTitle: '从该端点拉取模型清单（覆盖式预填本行）',
+  },
+  {
+    side: 'responses',
+    label: 'responses',
+    title: 'openai · responses',
+    urlKey: 'responsesUrl',
+    modelKey: 'responsesModels',
+    urlPh: '缺省 = chat 同址；两协议不同址才单独填（codex 也走它）',
+    modelsPh: '模型清单（部分模型不支持 responses，按实际支持填）',
+    fetchTitle: '从 responses 端点拉取；未单独配端点时不可用（同址回落 chat，拉了没有区分意义）',
+  },
+] as const
+type ModelRow = (typeof MODEL_ROWS)[number]
+
+async function fetchRow(row: ModelRow) {
   if (!draft.value) return
+  const url = draft.value[row.urlKey].trim()
+  if (!url) return
   busy.value = true
   fetchNote.value = ''
   try {
-    const r = await fetchAiModels(draftEndpoints.value, draft.value.apiKey.trim())
-    // openai 侧结果只预填 chat；responses 端点单独配了才拉它的 /models 预填
-    // responses（同址回落 openai 时拉了也是同一份，不预填、手填）；anthropic 侧
-    // 结果预填 anthropic。
-    if (r.openai?.length) draft.value.chatModels = r.openai.join(', ')
-    if (r.responses?.length) draft.value.responsesModels = r.responses.join(', ')
-    if (r.anthropic?.length) draft.value.anthropicModels = r.anthropic.join(', ')
-    fetchNote.value = [
-      r.openai?.length ? `chat 预填 ${r.openai.length} 个` : 'openai 侧没返回模型',
-      ...(draft.value.responsesUrl.trim()
-        ? [r.responses?.length ? `responses 预填 ${r.responses.length} 个` : 'responses 侧没返回模型']
-        : draft.value.openaiUrl.trim()
-          ? ['responses 不预填（未单独配端点，同址 /models 区分不了，按实际支持手填）']
-          : []),
-      r.anthropic?.length ? `anthropic 预填 ${r.anthropic.length} 个` : '',
-      ...r.errors,
-    ].filter(Boolean).join('；')
+    const r = await fetchAiModels({ [row.side]: { baseUrl: url } } as AiProvider['endpoints'], draft.value.apiKey.trim())
+    const list = row.side === 'anthropic' ? r.anthropic : row.side === 'openai' ? r.openai : r.responses
+    if (list?.length) {
+      draft.value[row.modelKey] = list.join(', ')
+      fetchNote.value = `${row.label} 预填 ${list.length} 个（覆盖原输入）`
+    } else {
+      fetchNote.value = `${row.label}：网关没返回模型${r.errors.length ? `；${r.errors.join('；')}` : ''}`
+    }
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -247,63 +277,46 @@ async function doRemoveProvider() {
       <div class="space-y-2 p-3">
         <p v-if="err" class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{{ err }}</p>
 
-        <!-- 编辑/新建表单（内联展开） -->
+        <!-- 编辑/新建表单（内联展开）：基础信息（显示名/ID/Key）+ 协议接入分区
+             （每协议一行 = 端点 URL + 模型清单 + 行内拉取，三协议同构） -->
         <div v-if="draft" class="space-y-3 rounded-md border p-3">
         <div class="grid gap-3 sm:grid-cols-2">
           <div v-if="!draft.id" class="space-y-1.5">
             <Label for="ai-p-id">ID（配置里的 provider 名）</Label>
             <Input id="ai-p-id" v-model="draft.wantId" placeholder="myapikey" class="font-mono" />
           </div>
-          <div class="space-y-1.5">
+          <div class="space-y-1.5" :class="draft.id ? 'sm:col-span-2' : ''">
             <Label for="ai-p-name">显示名</Label>
             <Input id="ai-p-name" v-model="draft.name" placeholder="myapikey 中转" />
           </div>
-        </div>
-        <div class="grid gap-3 sm:grid-cols-2">
-          <div class="space-y-1.5">
-            <Label for="ai-p-anthropic">Anthropic 兼容 Base URL</Label>
-            <Input id="ai-p-anthropic" v-model="draft.anthropicUrl" placeholder="http://…/anthropic（claude 用，不含 /v1）" />
-          </div>
-          <div class="space-y-1.5">
-            <Label for="ai-p-openai">OpenAI 兼容 Base URL</Label>
-            <Input id="ai-p-openai" v-model="draft.openaiUrl" placeholder="http://…/openai/v1（opencode/pi 的 chat 变体用）" />
-          </div>
           <div class="space-y-1.5 sm:col-span-2">
-            <Label for="ai-p-responses">
-              OpenAI responses 兼容 Base URL
-              <span class="text-[11px] font-normal text-muted-foreground">（缺省 = 上面的 OpenAI 端点同址；两协议不同址才单独填，codex 也走它）</span>
-            </Label>
-            <Input id="ai-p-responses" v-model="draft.responsesUrl" placeholder="http://…/openai/v1" />
+            <Label for="ai-p-key">API Key</Label>
+            <Input id="ai-p-key" v-model="draft.apiKey" type="password" placeholder="sk-…" />
           </div>
         </div>
-        <div class="space-y-1.5">
-          <Label for="ai-p-key">API Key</Label>
-          <Input id="ai-p-key" v-model="draft.apiKey" type="password" placeholder="sk-…" />
-        </div>
-        <div class="space-y-1.5">
-          <div class="flex items-center justify-between">
-            <Label>模型清单（按协议各一份，逗号分隔；opencode/pi 的对应变体下挂）</Label>
-            <Button variant="outline" size="xs" :disabled="busy" @click="doFetchModels">
-              <CloudDownload class="size-3.5" /> 从网关拉取
-            </Button>
+        <div class="space-y-2.5 rounded-md border bg-muted/20 p-2.5">
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="text-[11px] font-medium text-muted-foreground">协议接入</span>
+            <span class="text-[10px] text-muted-foreground/70">URL 留空 = 不启用该协议；模型清单逗号分隔</span>
           </div>
-          <div v-if="draft.openaiUrl.trim() || draft.responsesUrl.trim()" class="grid gap-3 sm:grid-cols-2">
-            <div v-if="draft.openaiUrl.trim()" class="space-y-1">
-              <Label for="ai-p-models-chat" class="text-[11px] text-muted-foreground">chat 协议</Label>
-              <Input id="ai-p-models-chat" v-model="draft.chatModels" placeholder="gpt-5, deepseek-chat" />
+          <div v-for="row in MODEL_ROWS" :key="row.side" class="space-y-1">
+            <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr_auto]">
+              <Label :for="`ai-p-${row.side}`" class="text-[11px] text-muted-foreground">{{ row.title }}</Label>
+              <Input :id="`ai-p-${row.side}`" v-model="draft[row.urlKey]" :placeholder="row.urlPh" class="text-xs" />
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                :title="row.fetchTitle"
+                :disabled="busy || !draft[row.urlKey].trim()"
+                @click="fetchRow(row)"
+              ><CloudDownload class="size-3.5" /></Button>
             </div>
-            <div v-if="draft.openaiUrl.trim() || draft.responsesUrl.trim()" class="space-y-1">
-              <Label for="ai-p-models-responses" class="text-[11px] text-muted-foreground">
-                responses 协议{{ draft.responsesUrl.trim() ? '' : '（端点同址区分不了，按实际支持手填）' }}
-              </Label>
-              <Input id="ai-p-models-responses" v-model="draft.responsesModels" placeholder="gpt-5, …" />
+            <div class="grid gap-2 sm:grid-cols-[8rem_1fr]">
+              <span />
+              <Input v-model="draft[row.modelKey]" :placeholder="row.modelsPh" class="text-xs" />
             </div>
           </div>
-          <div v-if="draft.anthropicUrl.trim()" class="space-y-1">
-            <Label for="ai-p-models-anthropic" class="text-[11px] text-muted-foreground">anthropic 协议</Label>
-            <Input id="ai-p-models-anthropic" v-model="draft.anthropicModels" placeholder="claude-sonnet-4-5" />
-          </div>
-          <p v-if="fetchNote" class="text-[11px] text-muted-foreground">{{ fetchNote }}</p>
+          <p v-if="fetchNote" class="text-[10px] text-muted-foreground">{{ fetchNote }}</p>
         </div>
         <div v-if="probeRes" class="space-y-0.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed">
           <p v-if="probeRes.anthropic">{{ probeRes.anthropic }}</p>
