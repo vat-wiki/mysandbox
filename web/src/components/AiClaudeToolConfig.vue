@@ -6,6 +6,7 @@
 //   小模型/压缩窗口 = env.RESIDENT_PRESET_INPUTS（高频预设，常驻）
 //   思考力度   = effortLevel（low/medium/high，常驻）
 //   默认模式   = permissions.defaultMode（常驻 Select，落顶级 permissions 块）
+//   开关       = SET_PRESET_TOGGLES（跳过危险模式确认/自动记忆，常驻，与 env 开关同排）
 //   输出上限等 = env.PRESET_INPUTS（最大输出/思考预算/超时/子代理，进折叠区）
 //   自定义 env = env.rows 键值对（只放非预设键，避免与常用项重复编辑）
 //   顶级设置   = settings（settings.json 顶级键——effortLevel 等非 env 配置）：
@@ -316,7 +317,6 @@ const advancedFilled = computed(() => {
   let n = 0
   for (const p of PRESET_INPUTS) if ((presets.value[p.key] ?? '').trim()) n++
   n += rows.value.filter((r) => r.key.trim()).length
-  for (const t of SET_PRESET_TOGGLES) if (setPresets.value[t.key] === true) n++
   n += setRows.value.filter((r) => r.key.trim()).length
   return n
 })
@@ -406,12 +406,19 @@ defineExpose({
       </div>
     </div>
 
-    <!-- 常用开关：一行，勾选即写入（值非空即落 env，与展开区同一存储） -->
+    <!-- 常用开关：一行（env 三开关 + settings 顶级两开关），勾选即写入 -->
     <div class="flex flex-wrap gap-x-5 gap-y-1.5">
       <label v-for="t in PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Checkbox
           :model-value="presets[t.key] === '1'"
           @update:model-value="(v) => (presets[t.key] = v ? '1' : '')"
+        />
+        {{ t.label }}
+      </label>
+      <label v-for="t in SET_PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Checkbox
+          :model-value="setPresets[t.key] === true"
+          @update:model-value="(v) => (setPresets[t.key] = v === true)"
         />
         {{ t.label }}
       </label>
@@ -482,16 +489,6 @@ defineExpose({
         <div class="flex items-center justify-between">
           <Label>顶级设置</Label>
           <Button variant="outline" size="xs" @click="addSetRow"><Plus class="size-3.5" /> 添加键值对</Button>
-        </div>
-        <div class="flex flex-wrap gap-x-5 gap-y-1.5">
-          <label v-for="t in SET_PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Checkbox
-              :model-value="setPresets[t.key] === true"
-              @update:model-value="(v) => (setPresets[t.key] = v === true)"
-            />
-            {{ t.label }}
-            <span class="font-mono text-[10px] text-muted-foreground/60">{{ t.key }}</span>
-          </label>
         </div>
         <div v-for="(r, i) in setRows" :key="i" class="flex items-center gap-2">
           <Input
