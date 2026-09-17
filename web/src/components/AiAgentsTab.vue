@@ -188,12 +188,33 @@ async function submitTool(tool: ToolTab) {
 
     <!-- 编辑态 -->
     <template v-else>
-      <!-- ① 工具绑定面板 -->
+      <!-- 单面板页：头顶栏 = 图标 + 工具分段切换（不放与页签重复的标题） -->
       <section class="rounded-md border">
         <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
           <Bot class="size-3.5 shrink-0 text-muted-foreground" />
-          <span class="text-xs font-semibold">工具绑定</span>
-          <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">每个 CLI 一页：选模型服务（+ 自身配置），单独保存并应用</span>
+          <!-- 工具切换：分段控件（选中底色明显，点开即该 CLI 的输入表单）；
+               圆点 = 该工具绑定已启用 -->
+          <div class="flex gap-0.5 rounded-md border bg-background/40 p-0.5">
+            <button
+              v-for="t in toolTabs"
+              :key="t.key"
+              type="button"
+              class="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors"
+              :class="
+                toolTab === t.key
+                  ? 'bg-background font-medium text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              "
+              @click="toolTab = t.key; err = ''"
+            >
+              <span
+                class="size-1.5 rounded-full"
+                :class="toolOn[t.key] ? 'bg-emerald-500' : 'bg-muted-foreground/30'"
+                :title="toolOn[t.key] ? '绑定已启用' : '未启用'"
+              />
+              {{ t.label }}
+            </button>
+          </div>
         </div>
 
         <div class="p-3">
@@ -202,32 +223,6 @@ async function submitTool(tool: ToolTab) {
             <button type="button" class="font-medium text-primary underline-offset-2 hover:underline" @click="emit('switch-providers')">先到「模型供应商」添加</button>
             （端点 + key），再回来绑定工具。
           </p>
-
-          <!-- 工具页签行：一页一个工具（圆点 = 该工具绑定已启用）；样式与工作区页签同款。
-               负 margin 让下划线通到面板两缘 -->
-          <div class="-mx-3 border-b px-3">
-            <div class="flex gap-1">
-              <button
-                v-for="t in toolTabs"
-                :key="t.key"
-                type="button"
-                class="flex items-center gap-1.5 border-b-2 px-3 pb-2 text-xs transition-colors"
-                :class="
-                  toolTab === t.key
-                    ? 'border-primary font-medium text-foreground'
-                    : 'border-transparent text-muted-foreground hover:text-foreground'
-                "
-                @click="toolTab = t.key; err = ''"
-              >
-                <span
-                  class="size-1.5 rounded-full"
-                  :class="toolOn[t.key] ? 'bg-emerald-500' : 'bg-muted-foreground/30'"
-                  :title="toolOn[t.key] ? '绑定已启用' : '未启用'"
-                />
-                {{ t.label }}
-              </button>
-            </div>
-          </div>
 
           <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份） -->
           <div v-show="toolTab === 'claude'" class="space-y-3 pt-3">
@@ -244,8 +239,7 @@ async function submitTool(tool: ToolTab) {
             :binding-env="claudeBindingEnv"
           />
           <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
-          <div class="flex items-center justify-end gap-3 border-t pt-3">
-            <span class="mr-auto text-[11px] text-muted-foreground/70">保存 = 自身配置 + Claude Code 绑定一起应用（其余工具不动）</span>
+          <div class="flex items-center justify-end border-t pt-3">
             <Button :disabled="busy" @click="submitTool('claude')">{{
               busy ? '应用中…' : '保存并应用到全部目标'
             }}</Button>
@@ -262,8 +256,7 @@ async function submitTool(tool: ToolTab) {
               @update:set-default="(v) => (codexDefault = v)"
             />
             <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
-            <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Codex 的绑定（其余工具不动）</span>
+            <div class="flex items-center justify-end border-t pt-3">
               <Button :disabled="busy" @click="submitTool('codex')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
@@ -282,8 +275,7 @@ async function submitTool(tool: ToolTab) {
               @update:wires="(v) => (ocWires = v)"
               @update:set-default="(v) => (ocDefault = v)"
             />
-            <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 OpenCode 的绑定（其余工具不动）</span>
+            <div class="flex items-center justify-end border-t pt-3">
               <Button :disabled="busy" @click="submitTool('opencode')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
@@ -298,8 +290,7 @@ async function submitTool(tool: ToolTab) {
               @update:provider-ids="(v) => (pi = v)"
               @update:wires="(v) => (piWires = v)"
             />
-            <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <span class="mr-auto text-[11px] text-muted-foreground/70">只应用 Pi 的绑定（其余工具不动）</span>
+            <div class="flex items-center justify-end border-t pt-3">
               <Button :disabled="busy" @click="submitTool('pi')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
