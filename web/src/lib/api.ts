@@ -355,10 +355,39 @@ export interface AiProvider {
   createdAt?: string
   updatedAt?: string
 }
+// opencode 绑定：provider 多选，每个 provider 独立配协议，每个协议独立配模型——
+// wires[].models 缺省 = 该 provider 全部模型；defaultModel = "<变体>/<模型>" 显式默认。
+export interface AiOpenCodeWireBinding {
+  wire: GatewayWire
+  models?: string[]
+}
+export interface AiOpenCodeEntry {
+  provider: string
+  wires: AiOpenCodeWireBinding[]
+}
+export interface AiOpenCodeBinding {
+  entries: AiOpenCodeEntry[]
+  setDefault?: boolean
+  defaultModel?: string
+}
+// 存量旧形状（{providers, wires?, setDefault?}）懒归一成 entries——与后端 normalizeOpenCodeSlot 同构。
+export const normalizeOpenCodeBinding = (t: unknown): AiOpenCodeBinding | undefined => {
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return undefined
+  const o = t as Partial<AiOpenCodeBinding> & { providers?: string[]; wires?: GatewayWire[] }
+  if (Array.isArray(o.entries)) return { entries: o.entries, setDefault: o.setDefault, defaultModel: o.defaultModel }
+  if (Array.isArray(o.providers)) {
+    const wires: GatewayWire[] = o.wires?.length ? [...new Set(o.wires)] : ['openai-chat']
+    return {
+      entries: o.providers.map((pid) => ({ provider: pid, wires: wires.map((wire) => ({ wire })) })),
+      setDefault: o.setDefault,
+    }
+  }
+  return undefined
+}
 export interface AiBinding {
   claude?: { provider: string }
   codex?: { provider: string; setDefault?: boolean }
-  opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
+  opencode?: AiOpenCodeBinding
   pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
 }
 // 工具自身配置（全局一份，不进绑定四层）：agent CLI 绑定之外的特殊配置。本期只做
@@ -434,7 +463,8 @@ export const clearAiTargetOverride = (target: string) =>
 export const installAiProject = (
   container: string,
   spot: string,
-  selection: { claude?: { provider: string }; opencode?: AiBinding['opencode'] },
+  // 项目规则里的 opencode 是旧形状（providers/wires，无逐协议模型）——后端 buildPlan 归一兼容。
+  selection: { claude?: { provider: string }; opencode?: { providers: string[]; wires?: GatewayWire[] } },
 ) =>
   postJson('/api/ai/projects/install', { container, spot, selection }, 60_000) as Promise<{
     to: string

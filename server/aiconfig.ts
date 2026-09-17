@@ -63,6 +63,7 @@ import {
   type AiGatewayState,
   type AiClaudeToolConfig,
   type AiOpenCodeToolConfig,
+  type AiOpenCodeBinding,
   type GatewayWire,
 } from './aiState.js';
 import type { BatchItemResult, BatchResult } from './batch.js';
@@ -85,11 +86,30 @@ const WIRE_SUFFIX: Record<GatewayWire, string> = {
   'anthropic-messages': 'anthropic',
 };
 
-// 多槽工具的有效 wire 列表（模块级统一缺省，别处不要再 ?? 散落）。
+// 多槽工具的有效 wire 列表（模块级统一缺省，别处不要再 ?? 散落）。仅 pi 形状——
+// opencode 绑定是 entries 新形状（buildPlan 里单独走 normalizeOpenCodeSlot）。
 export function wiresOfBinding(b: AiBinding, tool: 'opencode' | 'pi'): GatewayWire[] {
-  const list = b[tool]?.wires;
+  const list = (b[tool] as { wires?: GatewayWire[] } | undefined)?.wires;
   if (!list) return ['openai-chat'];
   return [...new Set(list)];
+}
+
+// opencode 绑定懒归一：旧形状 {providers, wires?, setDefault?}（每 provider 全部 wire ×
+// 全部模型）→ entries 新形状。存量绑定不用迁移，读到什么形状都能走新链路。
+export function normalizeOpenCodeSlot(t: unknown): AiOpenCodeBinding | undefined {
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return undefined;
+  const o = t as Partial<AiOpenCodeBinding> & { providers?: string[]; wires?: GatewayWire[] };
+  if (Array.isArray(o.entries)) {
+    return { entries: o.entries, setDefault: o.setDefault, defaultModel: o.defaultModel };
+  }
+  if (Array.isArray(o.providers)) {
+    const wires: GatewayWire[] = o.wires?.length ? [...new Set(o.wires)] : ['openai-chat'];
+    return {
+      entries: o.providers.map((pid) => ({ provider: pid, wires: wires.map((w) => ({ wire: w })) })),
+      setDefault: o.setDefault,
+    };
+  }
+  return undefined;
 }
 
 // 按工具键裁出绑定切片：存储保持整份，落盘只带提交的工具——工具间互相独立，
@@ -115,10 +135,15 @@ export interface ResolvedProvider {
 }
 
 // 解析后的应用计划：每个工具一组已解析 provider。单槽工具一个；多槽工具数组。
+// opencode 是 provider × wire 变体列表（models 缺省 = 该 provider 全部模型）。
 export interface AiApplyPlan {
   claude?: ResolvedProvider;
   codex?: { provider: ResolvedProvider; setDefault?: boolean };
-  opencode?: { providers: ResolvedProvider[]; wires: GatewayWire[]; setDefault?: boolean };
+  opencode?: {
+    variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[] }[];
+    setDefault?: boolean;
+    defaultModel?: string;
+  };
   pi?: { providers: ResolvedProvider[]; wires: GatewayWire[]; setDefault?: boolean };
 }
 
@@ -149,8 +174,20 @@ export function buildPlan(
   for (const tool of ['opencode', 'pi'] as const) {
     const t = binding[tool];
     if (!t) continue;
-    const providers = t.providers.map(resolve).filter((p): p is ResolvedProvider => !!p);
-    plan[tool] = { providers, wires: wiresOfBinding(binding, tool), setDefault: t.setDefault };
+    if (tool === 'opencode') {
+      const slot = normalizeOpenCodeSlot(t);
+      if (!slot) continue;
+      const variants = slot.entries.flatMap((e) => {
+        const p = resolve(e.provider);
+        if (!p) return [];
+        return e.wires.map((w) => ({ provider: p, wire: w.wire, models: w.models }));
+      });
+      plan.opencode = { variants, setDefault: slot.setDefault, defaultModel: slot.defaultModel };
+    } else {
+      const tp = t as AiBinding['pi'];
+      const providers = tp!.providers.map(resolve).filter((p): p is ResolvedProvider => !!p);
+      plan.pi = { providers, wires: wiresOfBinding(binding, 'pi'), setDefault: tp!.setDefault };
+    }
   }
   const any = plan.claude || plan.codex || plan.opencode || plan.pi;
   return { plan: any ? plan : null, missing };
@@ -176,18 +213,57 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
   for (const tool of ['opencode', 'pi'] as const) {
     const t = b[tool];
     if (!t) continue;
-    if (!Array.isArray(t.providers)) return `${tool}.providers 必须是数组`;
-    for (const pid of t.providers) {
+    if (tool === 'opencode') {
+      // opencode：新旧两形状都收（normalizeOpenCodeSlot 懒归一），按 entries 逐层校验。
+      const slot = normalizeOpenCodeSlot(t);
+      if (!slot) return 'opencode 绑定形状非法（entries 或 providers）';
+      if (!slot.entries.length) return 'opencode.entries 不能为空（清空请整体去掉 opencode 键）';
+      for (const e of slot.entries) {
+        const p = lib[e.provider];
+        if (!p) return `opencode 引用的 provider 不存在：${e.provider}`;
+        if (!Array.isArray(e.wires) || !e.wires.length) return `opencode provider ${e.provider} 的协议为空`;
+        for (const w of e.wires) {
+          if (!(WIRES as string[]).includes(w.wire as string)) {
+            return `opencode 协议非法：${String(w?.wire)}（合法值 ${WIRES.join('/')}）`;
+          }
+          if (w.models !== undefined) {
+            if (!Array.isArray(w.models)) return `opencode 协议 ${w.wire} 的 models 必须是数组`;
+            for (const m of w.models) {
+              if (!p.models?.includes(m)) return `opencode provider ${e.provider} 协议 ${w.wire} 引用了库里没有的模型：${m}`;
+            }
+          }
+        }
+      }
+      if (slot.defaultModel !== undefined && typeof slot.defaultModel !== 'string') return 'opencode.defaultModel 必须是字符串';
+      if (slot.setDefault !== undefined && typeof slot.setDefault !== 'boolean') return 'opencode.setDefault 必须是布尔';
+      if (slot.defaultModel) {
+        const slash = slot.defaultModel.indexOf('/');
+        const variant = slash > 0 ? slot.defaultModel.slice(0, slash) : '';
+        const model = slash > 0 ? slot.defaultModel.slice(slash + 1) : '';
+        const ok = slot.entries.some((e) =>
+          e.wires.some((w) => {
+            if (variant !== `${e.provider}-${WIRE_SUFFIX[w.wire]}`) return false;
+            const models = w.models?.length ? w.models : (lib[e.provider].models ?? []);
+            return models.includes(model);
+          }),
+        );
+        if (!ok) return `opencode.defaultModel 不是已配置的 变体/模型 组合：${slot.defaultModel}`;
+      }
+      continue;
+    }
+    const tp = t as AiBinding['pi'];
+    if (!Array.isArray(tp!.providers)) return `${tool}.providers 必须是数组`;
+    for (const pid of tp!.providers) {
       if (!lib[pid]) return `${tool} 引用的 provider 不存在：${pid}`;
     }
-    if (t.wires !== undefined) {
-      if (!Array.isArray(t.wires)) return `${tool}.wires 必须是数组`;
-      for (const w of t.wires) {
+    if (tp!.wires !== undefined) {
+      if (!Array.isArray(tp!.wires)) return `${tool}.wires 必须是数组`;
+      for (const w of tp!.wires) {
         if (!(WIRES as string[]).includes(w as string)) {
           return `${tool}.wires 非法：${String(w)}（合法值 ${WIRES.join('/')}）`;
         }
       }
-      if (t.providers.length && t.wires.length === 0) {
+      if (tp!.providers.length && tp!.wires.length === 0) {
         return `${tool} 选了 provider 但协议为空（清空请传 providers: []）`;
       }
     }
@@ -611,50 +687,52 @@ async function readOpencodeConfig(
 
 // opencode：provider 变体 = <pid>-<suffix>（user scope: ~/.config/opencode/；project
 // scope: <dir>/opencode.json）。每 provider × wire 一个独立变体（同 key 不同协议语义），
-// 工具内 /models 按 <变体>/<模型> 切。
+// 工具内 /models 按 <变体>/<模型> 切；变体下挂的模型 = 绑定里该协议选的 models
+//（缺省 = provider 全部）。defaultModel 显式默认优先，否则 setDefault 自动取第一个组合。
 async function configOpencode(
   base: string,
   scope: 'user' | 'project',
-  providers: ResolvedProvider[],
-  wires: GatewayWire[],
+  variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[] }[],
   setDefault: boolean | undefined,
+  defaultModel: string | undefined,
   managedIds: string[],
   tc: AiOpenCodeToolConfig | undefined,
   notes: string[],
 ): Promise<void> {
-  // 先全量校验端点侧，再动文件——单个 provider 缺侧不落半个写。
-  for (const p of providers) {
-    for (const wire of wires) baseUrlFor(p, wire);
-  }
+  // 先全量校验端点侧，再动文件——单个变体缺侧不落半个写。
+  for (const v of variants) baseUrlFor(v.provider, v.wire);
   const dir = scope === 'user' ? join(base, '.config', 'opencode') : base;
   const { path, obj, hadComments } = await readOpencodeConfig(dir);
   const keep = new Set<string>();
-  for (const p of providers) {
-    for (const wire of wires) {
-      const key = `${p.id}-${WIRE_SUFFIX[wire]}`;
-      keep.add(key);
-      const entry = {
-        npm:
-          wire === 'anthropic-messages'
-            ? '@ai-sdk/anthropic'
-            : wire === 'openai-responses'
-              ? '@ai-sdk/openai'
-              : '@ai-sdk/openai-compatible',
-        name: `${p.id} ${wireLabel(wire)}`,
-        options: {
-          baseURL:
-            wire === 'anthropic-messages' ? anthropicV1Url(baseUrlFor(p, wire)) : baseUrlFor(p, wire),
-          apiKey: p.apiKey,
-        },
-        ...(p.models.length ? { models: Object.fromEntries(p.models.map((m) => [m, { name: m }])) } : {}),
-      };
-      obj.provider = { ...((obj.provider as object) ?? {}), [key]: entry };
-      obj.providers = { ...((obj.providers as object) ?? {}), [key]: entry };
-    }
+  for (const v of variants) {
+    const key = `${v.provider.id}-${WIRE_SUFFIX[v.wire]}`;
+    keep.add(key);
+    const models = v.models?.length ? v.models : v.provider.models;
+    const entry = {
+      npm:
+        v.wire === 'anthropic-messages'
+          ? '@ai-sdk/anthropic'
+          : v.wire === 'openai-responses'
+            ? '@ai-sdk/openai'
+            : '@ai-sdk/openai-compatible',
+      name: `${v.provider.id} ${wireLabel(v.wire)}`,
+      options: {
+        baseURL:
+          v.wire === 'anthropic-messages' ? anthropicV1Url(baseUrlFor(v.provider, v.wire)) : baseUrlFor(v.provider, v.wire),
+        apiKey: v.provider.apiKey,
+      },
+      ...(models.length ? { models: Object.fromEntries(models.map((m) => [m, { name: m }])) } : {}),
+    };
+    obj.provider = { ...((obj.provider as object) ?? {}), [key]: entry };
+    obj.providers = { ...((obj.providers as object) ?? {}), [key]: entry };
   }
   pruneVariantsIn(obj, managedVariantKeys(managedIds), keep);
-  if (setDefault && providers.length && wires.length && providers[0].models.length) {
-    obj.model = `${providers[0].id}-${WIRE_SUFFIX[wires[0]]}/${providers[0].models[0]}`;
+  if (defaultModel) {
+    obj.model = defaultModel;
+  } else if (setDefault && variants.length) {
+    const v0 = variants[0];
+    const models = v0.models?.length ? v0.models : v0.provider.models;
+    if (models.length) obj.model = `${v0.provider.id}-${WIRE_SUFFIX[v0.wire]}/${models[0]}`;
   }
   // opencode 配置（config 面板项，仅 user scope——项目级文件常进仓库，权限放宽不带进去）：
   // 权限 auto 缺省开 → permission='allow'（等价 CLI --auto；显式关 = 不碰权限键，回收不猜）；
@@ -669,12 +747,10 @@ async function configOpencode(
   ].filter(Boolean);
   await writeJsonObject(path, obj);
   notes.push(
-    `opencode: 写 ${relTo(base, path)}（${providers.map((p) => p.id).join('、') || '无'} × ${
-      wires.map(wireLabel).join('、') || '无变体'
+    `opencode: 写 ${relTo(base, path)}（${
+      variants.map((v) => `${v.provider.id}:${wireLabel(v.wire)}×${(v.models?.length ? v.models : v.provider.models).length}模型`).join('、') || '无变体'
     }）${hadComments ? '（原文件含注释，已按 JSON 重写）' : ''}${
-      setDefault && providers.length && wires.length && providers[0].models.length && !tc?.model
-        ? `（默认 ${String(obj.model)}）`
-        : ''
+      !tc?.model && typeof obj.model === 'string' && (defaultModel || (setDefault && variants.length)) ? `（默认 ${obj.model}）` : ''
     }${tcBits.length ? `（${tcBits.join('，')}）` : ''}`,
   );
 }
@@ -761,7 +837,7 @@ async function applyPlanToHome(
   }
   if (plan.opencode) {
     try {
-      await configOpencode(base, scope, plan.opencode.providers, plan.opencode.wires, plan.opencode.setDefault, managedIds, scope === 'user' ? toolCfg.opencode : undefined, notes);
+      await configOpencode(base, scope, plan.opencode.variants, plan.opencode.setDefault, plan.opencode.defaultModel, managedIds, scope === 'user' ? toolCfg.opencode : undefined, notes);
     } catch (e) {
       failed.push('opencode');
       notes.push(`opencode: 失败 — ${errMsg(e)}`);
@@ -840,11 +916,15 @@ async function probePlan(
   };
   if (plan.claude) add('Anthropic 兼容', plan.claude.endpoints.anthropic?.baseUrl);
   if (plan.codex) add('OpenAI 兼容', plan.codex.provider.endpoints.openai?.baseUrl);
-  for (const tool of ['opencode', 'pi'] as const) {
-    const t = plan[tool];
-    if (!t) continue;
-    for (const p of t.providers) {
-      for (const wire of t.wires) {
+  if (plan.opencode) {
+    for (const v of plan.opencode.variants) {
+      if (v.wire === 'anthropic-messages') add('Anthropic 兼容', v.provider.endpoints.anthropic?.baseUrl);
+      else add('OpenAI 兼容', v.provider.endpoints.openai?.baseUrl);
+    }
+  }
+  if (plan.pi) {
+    for (const p of plan.pi.providers) {
+      for (const wire of plan.pi.wires) {
         if (wire === 'anthropic-messages') add('Anthropic 兼容', p.endpoints.anthropic?.baseUrl);
         else add('OpenAI 兼容', p.endpoints.openai?.baseUrl);
       }
@@ -1405,7 +1485,8 @@ async function applyProjectRuleToTarget(cfg: Config, rule: AiProjectRule, target
     const rel = containerRel(rule.to);
     if (!landingExists(home, rel)) return;
     const lib = await getAiProviders();
-    const { plan, missing } = buildPlan({ claude: rule.claude, opencode: rule.opencode }, lib);
+    // rule.opencode 是项目规则的旧形状（providers/wires）——buildPlan 内部 normalizeOpenCodeSlot 兼容。
+    const { plan, missing } = buildPlan({ claude: rule.claude, opencode: rule.opencode as unknown as AiBinding['opencode'] }, lib);
     if (!plan) {
       if (missing.length) log.warn({ rule: rule.id, missing }, 'ai project rule: providers missing');
       return;
@@ -1466,7 +1547,7 @@ export async function installAiProjectRule(
     created = true;
   }
   if ('claude' in sel) rule.claude = sel.claude;
-  if ('opencode' in sel) rule.opencode = sel.opencode;
+  if ('opencode' in sel) rule.opencode = sel.opencode as unknown as AiProjectRule['opencode'];
   await setAiProjectRules(rules);
   await applyProjectRuleToTarget(cfg, rule, container);
   log.info({ container, to, created }, 'ai project rule installed at spot');
@@ -1587,7 +1668,14 @@ export async function ensureAiMigrated(): Promise<void> {
         ...(g.tools.claude ? { claude: { provider: LEGACY_PROVIDER_ID } } : {}),
         ...(g.tools.codex ? { codex: { provider: LEGACY_PROVIDER_ID, setDefault: g.setDefault } } : {}),
         ...(g.tools.opencode
-          ? { opencode: { providers: [LEGACY_PROVIDER_ID], wires: g.wire?.opencode ?? ['openai-chat'], setDefault: g.setDefault } }
+          ? {
+              opencode: {
+                entries: [
+                  { provider: LEGACY_PROVIDER_ID, wires: (g.wire?.opencode ?? ['openai-chat']).map((wire) => ({ wire })) },
+                ],
+                setDefault: g.setDefault,
+              },
+            }
           : {}),
         ...(g.tools.pi ? { pi: { providers: [LEGACY_PROVIDER_ID], wires: g.wire?.pi ?? ['openai-chat'] } } : {}),
       });

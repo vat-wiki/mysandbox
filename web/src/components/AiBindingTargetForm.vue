@@ -12,9 +12,11 @@ import {
   getAiView,
   saveAiTargetOverride,
   clearAiTargetOverride,
+  normalizeOpenCodeBinding,
   Unauthorized,
   type AiView,
   type AiBinding,
+  type AiOpenCodeEntry,
   type BatchResult,
   type GatewayWire,
 } from '@/lib/api'
@@ -22,6 +24,7 @@ import { Button } from '@/components/ui/button'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
+import AiOpenCodeField from './AiOpenCodeField.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import { toast } from 'vue-sonner'
 
@@ -44,9 +47,8 @@ const overrideExists = ref(false)
 const claude = ref('')
 const codex = ref('')
 const codexDefault = ref(false)
-const oc = ref<string[]>([])
-const ocWires = ref<GatewayWire[]>(['openai-chat'])
-const ocDefault = ref(false)
+const ocEntries = ref<AiOpenCodeEntry[]>([])
+const ocDefaultModel = ref('')
 const pi = ref<string[]>([])
 const piWires = ref<GatewayWire[]>(['openai-chat'])
 
@@ -57,9 +59,9 @@ function fillFrom(b: AiBinding | null | undefined) {
   claude.value = b?.claude?.provider ?? ''
   codex.value = b?.codex?.provider ?? ''
   codexDefault.value = !!b?.codex?.setDefault
-  oc.value = b?.opencode?.providers ? [...b.opencode.providers] : []
-  ocWires.value = b?.opencode?.wires?.length ? [...b.opencode.wires] : ['openai-chat']
-  ocDefault.value = !!b?.opencode?.setDefault
+  const ocSlot = normalizeOpenCodeBinding(b?.opencode)
+  ocEntries.value = ocSlot?.entries ?? []
+  ocDefaultModel.value = ocSlot?.defaultModel ?? ''
   pi.value = b?.pi?.providers ? [...b.pi.providers] : []
   piWires.value = b?.pi?.wires?.length ? [...b.pi.wires] : ['openai-chat']
 }
@@ -112,7 +114,18 @@ async function clearOverride() {
 const bindingOut = computed<AiBinding>(() => ({
   ...(claude.value ? { claude: { provider: claude.value } } : {}),
   ...(codex.value ? { codex: { provider: codex.value, setDefault: codexDefault.value } } : {}),
-  ...(oc.value.length ? { opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } } : {}),
+  ...(ocEntries.value.length
+    ? {
+        opencode: {
+          entries: ocEntries.value.map((e) => ({
+            provider: e.provider,
+            wires: e.wires.map((w) => ({ wire: w.wire, ...(w.models?.length ? { models: [...w.models] } : {}) })),
+          })),
+          setDefault: true,
+          ...(ocDefaultModel.value ? { defaultModel: ocDefaultModel.value } : {}),
+        },
+      }
+    : {}),
   ...(pi.value.length ? { pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } } : {}),
 }))
 
@@ -122,11 +135,13 @@ async function submit() {
     err.value = '没有选择任何模型供应商——不选 = 不碰该工具的落盘配置，保存无意义'
     return
   }
-  for (const [name, t] of [['OpenCode', b.opencode], ['Pi', b.pi]] as const) {
-    if (t && t.providers.length && !t.wires?.length) {
-      err.value = `${name} 选了模型供应商但协议为空（不写接入点请清空模型供应商选择）`
-      return
-    }
+  if (b.opencode && b.opencode.entries.some((e) => !e.wires.length)) {
+    err.value = 'OpenCode 有的供应商还没勾协议'
+    return
+  }
+  if (b.pi && b.pi.providers.length && !b.pi.wires?.length) {
+    err.value = 'Pi 选了模型供应商但协议为空（不写接入点请清空模型供应商选择）'
+    return
   }
   busy.value = true
   result.value = null
@@ -194,15 +209,12 @@ async function submit() {
         />
       </div>
       <div class="space-y-2 rounded-md border p-3">
-        <AiFieldMulti
-          tool="opencode"
+        <AiOpenCodeField
           :providers="providers"
-          :provider-ids="oc"
-          :wires="ocWires"
-          :set-default="ocDefault"
-          @update:provider-ids="(v) => (oc = v)"
-          @update:wires="(v) => (ocWires = v)"
-          @update:set-default="(v) => (ocDefault = v)"
+          :entries="ocEntries"
+          :default-model="ocDefaultModel"
+          @update:entries="(v) => (ocEntries = v)"
+          @update:default-model="(v) => (ocDefaultModel = v)"
         />
       </div>
       <div class="space-y-2 rounded-md border p-3">

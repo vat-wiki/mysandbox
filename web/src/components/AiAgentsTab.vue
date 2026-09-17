@@ -12,9 +12,11 @@ import {
   getAiView,
   saveAiBinding,
   saveAiClaudePage,
+  normalizeOpenCodeBinding,
   Unauthorized,
   type AiView,
   type AiBinding,
+  type AiOpenCodeEntry,
   type BatchResult,
   type GatewayWire,
 } from '@/lib/api'
@@ -26,6 +28,7 @@ import { Bot } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
+import AiOpenCodeField from './AiOpenCodeField.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -49,7 +52,7 @@ const toolTabs: { key: ToolTab; label: string }[] = [
 const toolOn = computed<Record<ToolTab, boolean>>(() => ({
   claude: !!claude.value,
   codex: !!codex.value,
-  opencode: oc.value.length > 0,
+  opencode: ocEntries.value.length > 0,
   pi: pi.value.length > 0,
 }))
 
@@ -62,9 +65,8 @@ const result = ref<BatchResult | null>(null)
 const claude = ref('')
 const codex = ref('')
 const codexDefault = ref(false)
-const oc = ref<string[]>([])
-const ocWires = ref<GatewayWire[]>(['openai-chat'])
-const ocDefault = ref(false)
+const ocEntries = ref<AiOpenCodeEntry[]>([])
+const ocDefaultModel = ref('')
 // OpenCode 配置（落 opencode.json 顶层，user scope）：权限 auto 缺省开，model 优先于
 // 绑定 setDefault 的自动推导，small_model 给了才写。
 const ocAuto = ref(true)
@@ -90,9 +92,9 @@ function fillFrom(b: AiBinding | null | undefined) {
   claude.value = b?.claude?.provider ?? ''
   codex.value = b?.codex?.provider ?? ''
   codexDefault.value = !!b?.codex?.setDefault
-  oc.value = b?.opencode?.providers ? [...b.opencode.providers] : []
-  ocWires.value = b?.opencode?.wires?.length ? [...b.opencode.wires] : ['openai-chat']
-  ocDefault.value = !!b?.opencode?.setDefault
+  const ocSlot = normalizeOpenCodeBinding(b?.opencode)
+  ocEntries.value = ocSlot?.entries ?? []
+  ocDefaultModel.value = ocSlot?.defaultModel ?? ''
   pi.value = b?.pi?.providers ? [...b.pi.providers] : []
   piWires.value = b?.pi?.wires?.length ? [...b.pi.wires] : ['openai-chat']
 }
@@ -153,12 +155,12 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       return
     }
   } else if (tool === 'opencode') {
-    if (!oc.value.length) {
+    if (!ocEntries.value.length) {
       err.value = 'OpenCode：先选至少一个模型供应商（不选 = 不碰该工具的落盘配置）'
       return
     }
-    if (!ocWires.value.length) {
-      err.value = 'OpenCode 选了模型供应商但协议为空'
+    if (ocEntries.value.some((e) => !e.wires.length)) {
+      err.value = 'OpenCode 有的供应商还没勾协议'
       return
     }
     if (ocModel.value.trim() && !ocModel.value.trim().includes('/')) {
@@ -186,7 +188,17 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
         tool === 'codex'
           ? { ...stored, codex: { provider: codex.value, setDefault: codexDefault.value } }
           : tool === 'opencode'
-            ? { ...stored, opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } }
+            ? {
+                ...stored,
+                opencode: {
+                  entries: ocEntries.value.map((e) => ({
+                    provider: e.provider,
+                    wires: e.wires.map((w) => ({ wire: w.wire, ...(w.models?.length ? { models: [...w.models] } : {}) })),
+                  })),
+                  setDefault: true,
+                  ...(ocDefaultModel.value ? { defaultModel: ocDefaultModel.value } : {}),
+                },
+              }
             : { ...stored, pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } }
       const ocTc =
         tool === 'opencode'
@@ -311,17 +323,14 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             </div>
           </div>
 
-          <!-- ③ OpenCode / ④ Pi：多 provider × wire 变体 -->
+          <!-- ③ OpenCode（entries：每 provider 独立协议、每协议独立模型）/ ④ Pi：多 provider × wire 变体 -->
           <div v-show="toolTab === 'opencode'" class="space-y-3 pt-3">
-            <AiFieldMulti
-              tool="opencode"
+            <AiOpenCodeField
               :providers="providers"
-              :provider-ids="oc"
-              :wires="ocWires"
-              :set-default="ocDefault"
-              @update:provider-ids="(v) => (oc = v)"
-              @update:wires="(v) => (ocWires = v)"
-              @update:set-default="(v) => (ocDefault = v)"
+              :entries="ocEntries"
+              :default-model="ocDefaultModel"
+              @update:entries="(v) => (ocEntries = v)"
+              @update:default-model="(v) => (ocDefaultModel = v)"
             />
             <!-- OpenCode 配置（opencode.json 顶层，user scope）：权限 auto = permission:'allow'
                  （等价 --auto）；主模型优先于绑定 setDefault 自动推导；small_model 给了才写 -->

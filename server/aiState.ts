@@ -65,13 +65,31 @@ export interface AiProvider {
   updatedAt?: string;
 }
 
+// opencode 绑定：provider 多选，每个 provider 独立配协议，每个协议独立配模型——
+// wires[].models 缺省 = 该 provider 库里的全部模型。defaultModel = "<变体>/<模型>"
+// 显式默认；缺省（setDefault）自动取第一个配置组合。旧形状 {providers, wires?,
+// setDefault?} 读入时经 aiconfig.normalizeOpenCodeSlot 懒归一，下一次保存落新形状。
+export interface AiOpenCodeWireBinding {
+  wire: GatewayWire;
+  models?: string[];
+}
+export interface AiOpenCodeEntry {
+  provider: string;
+  wires: AiOpenCodeWireBinding[];
+}
+export interface AiOpenCodeBinding {
+  entries: AiOpenCodeEntry[];
+  setDefault?: boolean;
+  defaultModel?: string;
+}
+
 // 绑定（智能体配置的声明层）：工具 → 用哪些 provider。单槽工具绑一个；多槽工具
 // 绑 N 个共存，setDefault 取 providers[0]。providers 空数组 = 显式清空该工具的
 // 全部受管条目。缺某工具键 = 不碰该工具的落盘配置。
 export interface AiBinding {
   claude?: { provider: string };
   codex?: { provider: string; setDefault?: boolean };
-  opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
+  opencode?: AiOpenCodeBinding;
   pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
 }
 
