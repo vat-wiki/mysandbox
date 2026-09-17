@@ -2,7 +2,7 @@
 // 模型名输入组合框：输入框恒在（自由输入不设限），右侧下拉手柄仅当探测到模型
 // 清单时出现——点开是带过滤的选择面板，点选即回填。清单拉不到（网关不支持
 // /models、网络失败）= 手柄不渲染，退化为普通输入框，两种形态零切换成本。
-// 清单由父级探测传入（AiClaudeToolConfig 按所选模型服务拉取），本组件纯受控。
+// 清单由父级探测传入（AiClaudeToolConfig 按所选模型供应商拉取），本组件纯受控。
 import { ref, computed } from 'vue'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'

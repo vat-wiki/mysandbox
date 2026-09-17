@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 目标覆盖绑定表单（AI 配置覆盖弹框的表单本体）：绑定 = 工具 → 用哪些模型服务
+// 目标覆盖绑定表单（AI 配置覆盖弹框的表单本体）：绑定 = 工具 → 用哪些模型供应商
 // （provider id 引用，不内联端点）。target 模式——props.target 传入 = 该容器自己的
 // 专属绑定：覆盖存在即生效（全局不再应用到这台），可清除恢复跟随全局。容器卡片
 // 菜单「AI 配置…」的 pull 入口（本机跟随全局绑定，不是覆盖目标——这里只有容器）。
@@ -40,7 +40,7 @@ const err = ref('')
 const result = ref<BatchResult | null>(null)
 const overrideExists = ref(false)
 
-// —— 表单：每工具一行；没选模型服务 = 该工具不参与（不碰落盘配置）——
+// —— 表单：每工具一行；没选模型供应商 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
 const codex = ref('')
 const codexDefault = ref(false)
@@ -119,12 +119,12 @@ const bindingOut = computed<AiBinding>(() => ({
 async function submit() {
   const b = bindingOut.value
   if (!b.claude && !b.codex && !b.opencode && !b.pi) {
-    err.value = '没有选择任何模型服务——不选 = 不碰该工具的落盘配置，保存无意义'
+    err.value = '没有选择任何模型供应商——不选 = 不碰该工具的落盘配置，保存无意义'
     return
   }
   for (const [name, t] of [['OpenCode', b.opencode], ['Pi', b.pi]] as const) {
     if (t && t.providers.length && !t.wires?.length) {
-      err.value = `${name} 选了模型服务但协议为空（不写接入点请清空模型服务选择）`
+      err.value = `${name} 选了模型供应商但协议为空（不写接入点请清空模型供应商选择）`
       return
     }
   }
@@ -173,7 +173,7 @@ async function submit() {
       </div>
 
       <p v-if="noProviders" class="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-        模型服务库还是空的——先到「AI 工具 → 模型供应商」添加提供商（端点 + key），再回来绑定工具。
+        模型供应商库还是空的——先到「AI 工具 → 模型供应商」添加提供商（端点 + key），再回来绑定工具。
       </p>
 
       <!-- 四工具字段组（与全局 Agent 工具页共用同一组组件） -->

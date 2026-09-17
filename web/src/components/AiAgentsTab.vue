@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Agent 工具页签（AI 工作区三板块之三）：每个 agent CLI 一个页签（单个单个配置 +
-// 单独保存）——绑定（用哪些模型服务）+ 各自的特殊配置（本期 Claude Code 页内挂
+// 单独保存）——绑定（用哪些模型供应商）+ 各自的特殊配置（本期 Claude Code 页内挂
 // AiClaudeToolConfig 自身配置）。每个页签有自己的「保存并应用到全部目标」：只提交
 // 该工具的绑定，与已存绑定合并后整体提交（后端 AiBinding 整体替换语义 + 四层追平
 // 链路不动，其余工具原样带上 = 落盘配置不碰）；应用目标 = 本机 + 受管容器（同权）。
@@ -54,7 +54,7 @@ const busy = ref(false)
 const err = ref('')
 const result = ref<BatchResult | null>(null)
 
-// —— 绑定表单：每工具一段；没选模型服务 = 该工具不参与（不碰落盘配置）——
+// —— 绑定表单：每工具一段；没选模型供应商 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
 const codex = ref('')
 const codexDefault = ref(false)
@@ -123,30 +123,30 @@ async function submitTool(tool: ToolTab) {
       return
     }
     if (!claude.value) {
-      err.value = 'Claude Code：先选一个模型服务（不选 = 不碰该工具的落盘配置）'
+      err.value = 'Claude Code：先选一个模型供应商（不选 = 不碰该工具的落盘配置）'
       return
     }
   } else if (tool === 'codex') {
     if (!codex.value) {
-      err.value = 'Codex：先选一个模型服务（不选 = 不碰该工具的落盘配置）'
+      err.value = 'Codex：先选一个模型供应商（不选 = 不碰该工具的落盘配置）'
       return
     }
   } else if (tool === 'opencode') {
     if (!oc.value.length) {
-      err.value = 'OpenCode：先选至少一个模型服务（不选 = 不碰该工具的落盘配置）'
+      err.value = 'OpenCode：先选至少一个模型供应商（不选 = 不碰该工具的落盘配置）'
       return
     }
     if (!ocWires.value.length) {
-      err.value = 'OpenCode 选了模型服务但协议为空'
+      err.value = 'OpenCode 选了模型供应商但协议为空'
       return
     }
   } else {
     if (!pi.value.length) {
-      err.value = 'Pi：先选至少一个模型服务（不选 = 不碰该工具的落盘配置）'
+      err.value = 'Pi：先选至少一个模型供应商（不选 = 不碰该工具的落盘配置）'
       return
     }
     if (!piWires.value.length) {
-      err.value = 'Pi 选了模型服务但协议为空'
+      err.value = 'Pi 选了模型供应商但协议为空'
       return
     }
   }
@@ -220,7 +220,7 @@ async function submitTool(tool: ToolTab) {
 
         <div class="p-3">
           <p v-if="noProviders" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-            模型服务库还是空的——
+            模型供应商库还是空的——
             <button type="button" class="font-medium text-primary underline-offset-2 hover:underline" @click="emit('switch-providers')">先到「模型供应商」添加</button>
             （端点 + key），再回来绑定工具。
           </p>
@@ -231,6 +231,7 @@ async function submitTool(tool: ToolTab) {
             <AiFieldClaude
               :providers="providers"
               :provider-id="claude"
+              :show-header="false"
               @update:provider-id="(v) => (claude = v)"
             />
           </div>

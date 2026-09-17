@@ -3226,7 +3226,7 @@ onUnmounted(() => {
             class="absolute right-1 top-1 inline-flex h-1.5 w-1.5 rounded-full bg-amber-400 ring-1 ring-background"
           />
         </button>
-        <!-- AI 工具入口：环境级全局面板（技能中心/模型服务/智能体配置），与「所有终端」
+        <!-- AI 工具入口：环境级全局面板（技能中心/模型供应商/智能体配置），与「所有终端」
              同为常驻全局钮——不挂任何分区（从容器分区头挪出，全局功能不借容器菜单位）。 -->
         <button
           class="flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"

@@ -61,7 +61,7 @@ const emit = defineEmits<{
       设为默认（首个服务的首个协议 + 首个模型）
     </label>
     <p class="text-[11px] leading-snug text-muted-foreground/80">
-      不选模型服务 = 该工具不参与绑定（落盘配置不动）。
+      不选模型供应商 = 该工具不参与绑定（落盘配置不动）。
     </p>
   </div>
 </template>

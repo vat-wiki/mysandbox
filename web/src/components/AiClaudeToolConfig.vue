@@ -15,7 +15,7 @@
 // 渐进式披露：高频项常驻，低频项收进「高级配置」折叠区（已填项数给徽标）；
 // settings.json 预览/原文（Monaco）是落盘全貌的确认口，恒常驻不折叠。
 // envOut + settingsOut 是唯一出口；Monaco 原文 = 整份 settings.json 形状
-//（{…顶级键, env: {…}}）：实时预览（随表单与所选模型服务即时更新）+ 高级编辑
+//（{…顶级键, env: {…}}）：实时预览（随表单与所选模型供应商即时更新）+ 高级编辑
 //（改对自动套用回表单，env 块与非 env 顶级键各回各的表单区）。
 // 本组件是纯表单：不持有保存按钮——保存由页签统一走 POST /api/ai/claude-config
 // （绑定 + 自身配置一次提交），父级经 defineExpose 拿校验状态与 toolConfig 输出。
@@ -44,7 +44,7 @@ const props = defineProps<{
   // 绑定注入的受管键（ANTHROPIC_BASE_URL/AUTH_TOKEN，来自当前选中的 provider）——
   // 预览要展示落盘全貌就得带上；Monaco 里改它们恒被绑定覆盖，不进表单。
   bindingEnv?: Record<string, string> | null
-  // 当前选中的模型服务（claude 绑定槽）：用于探测 /models 清单——模型名字段
+  // 当前选中的模型供应商（claude 绑定槽）：用于探测 /models 清单——模型名字段
   // （*_MODEL）升级为「输入恒在 + 有清单弹选择」的组合框；拉不到 = 纯手输。
   provider?: AiProvider | null
 }>()
@@ -354,7 +354,7 @@ const keyClash = computed(() =>
 // 父级统一保存前取校验状态与输出（页签一个保存按钮 = 绑定 + 自身配置一次提交）。
 defineExpose({
   validationError: (): string | null =>
-    parseErr.value || (keyClash.value ? `${RESERVED} 由模型服务绑定管——删掉再保存` : null),
+    parseErr.value || (keyClash.value ? `${RESERVED} 由模型供应商绑定管——删掉再保存` : null),
   toolConfigOut: (): AiClaudeToolConfig => ({
     ...(model.value.trim() ? { model: model.value.trim() } : {}),
     ...(Object.keys(envOut.value).length ? { env: envOut.value } : {}),
@@ -507,7 +507,7 @@ defineExpose({
           </button>
         </div>
         <p v-if="keyClash" class="text-[11px] text-destructive">
-          {{ RESERVED }} 由模型服务绑定管——删掉再保存（后端会拒绝）。
+          {{ RESERVED }} 由模型供应商绑定管——删掉再保存（后端会拒绝）。
         </p>
       </div>
 
@@ -541,12 +541,12 @@ defineExpose({
       </div>
     </div>
 
-    <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型服务即时更新）+ 高级编辑。
+    <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型供应商即时更新）+ 高级编辑。
          落盘全貌的确认口，恒常驻不进折叠区 -->
     <div class="space-y-1.5">
       <div class="flex items-center justify-between">
         <Label>settings.json 预览 / 原文（JSON）</Label>
-        <span class="text-[10px] text-muted-foreground/70">随表单与所选模型服务实时更新 · 可直接改（改对自动套用）</span>
+        <span class="text-[10px] text-muted-foreground/70">随表单与所选模型供应商实时更新 · 可直接改（改对自动套用）</span>
       </div>
       <CodeEditor
         v-model="raw"

@@ -105,14 +105,14 @@ async function saveBinding() {
   const selection: { claude?: { provider: string }; opencode?: { providers: string[]; wires: GatewayWire[] } } = {}
   if (claudeOn.value) {
     if (!claude.value) {
-      bindErr.value = 'Claude Code 已启用：选一个模型服务'
+      bindErr.value = 'Claude Code 已启用：选一个模型供应商'
       return
     }
     selection.claude = { provider: claude.value }
   }
   if (ocOn.value) {
     if (!oc.value.length || !ocWires.value.length) {
-      bindErr.value = 'OpenCode 已启用：选模型服务与协议'
+      bindErr.value = 'OpenCode 已启用：选模型供应商与协议'
       return
     }
     selection.opencode = { providers: [...oc.value], wires: [...ocWires.value] }
@@ -241,9 +241,9 @@ onMounted(async () => {
           </p>
 
           <p v-if="providers && !providers.length" class="text-xs text-amber-500/90">
-            模型服务库是空的——先在「AI 工具 → 模型服务」添加提供商。
+            模型供应商库是空的——先在「AI 工具 → 模型供应商」添加提供商。
           </p>
-          <p v-else-if="!providers" class="text-xs text-muted-foreground">读取模型服务…</p>
+          <p v-else-if="!providers" class="text-xs text-muted-foreground">读取模型供应商…</p>
 
           <!-- claude -->
           <div class="space-y-2 rounded-md border p-3">
@@ -259,7 +259,7 @@ onMounted(async () => {
             <div v-if="claudeOn" class="pl-6">
               <Select :model-value="claude" @update:model-value="(v) => (claude = v as string)">
                 <SelectTrigger size="sm" class="w-full">
-                  <SelectValue placeholder="选模型服务（anthropic 端点）" />
+                  <SelectValue placeholder="选模型供应商（anthropic 端点）" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem v-for="p in anthropicProviders" :key="p.id" :value="p.id">

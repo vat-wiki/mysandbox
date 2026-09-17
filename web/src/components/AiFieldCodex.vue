@@ -34,7 +34,7 @@ const openaiProviders = computed(() => props.providers.filter((p) => p.endpoints
     </div>
     <div class="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
       <Select :model-value="providerId" @update:model-value="(v) => emit('update:providerId', v as string)">
-        <SelectTrigger size="sm" class="w-full"><SelectValue placeholder="选模型服务（openai 端点）" /></SelectTrigger>
+        <SelectTrigger size="sm" class="w-full"><SelectValue placeholder="选模型供应商（openai 端点）" /></SelectTrigger>
         <SelectContent>
           <SelectItem v-for="p in openaiProviders" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</SelectItem>
         </SelectContent>

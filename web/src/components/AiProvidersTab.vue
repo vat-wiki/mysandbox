@@ -150,7 +150,7 @@ async function save() {
       apiKey: d.apiKey.trim(),
       models: d.models.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean),
     })
-    toast(`已保存模型服务：${provider.name}（${provider.id}）`)
+    toast(`已保存模型供应商：${provider.name}（${provider.id}）`)
     draft.value = null
     await load()
     emit('done')
@@ -191,7 +191,7 @@ async function doRemoveProvider() {
 
 <template>
   <div class="flex flex-col gap-3">
-    <!-- 模型服务（provider 库）：薄行常驻，表单内联展开。板块外框与技能中心/
+    <!-- 模型供应商（provider 库）：薄行常驻，表单内联展开。板块外框与技能中心/
          Agent 工具同款（rounded-md border + muted 头部条）——三页签统一板块语言 -->
     <section class="rounded-md border">
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
@@ -259,7 +259,7 @@ async function doRemoveProvider() {
 
         <!-- 库列表（常驻） -->
         <p v-if="!providers.length && !draft" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-          还没有模型服务——点「添加」把网关的端点与 key 存进来。
+          还没有模型供应商——点「添加」把网关的端点与 key 存进来。
           <template v-if="!draft">旧版单网关档已自动迁移为 <code class="font-mono">myapikey</code> 条目（重启过服务即有），直接编辑改 key。</template>
         </p>
         <div v-else class="space-y-1.5">
@@ -295,7 +295,7 @@ async function doRemoveProvider() {
 
     <ConfirmDialog
       v-if="delProvider"
-      title="删除模型服务"
+      title="删除模型供应商"
       :description="`删除「${delProvider.name}」？本机与全部容器里的接入条目一并回收（claude 的 env 注入除外）。`"
       confirm-text="删除"
       variant="destructive"
