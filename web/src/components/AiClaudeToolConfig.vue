@@ -27,7 +27,6 @@ import { fetchAiModels } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Plus, Trash2, ChevronDown } from 'lucide-vue-next'
 import {
@@ -37,7 +36,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import InfoHint from './InfoHint.vue'
 import AiModelCombo from './AiModelCombo.vue'
 
 const props = defineProps<{
@@ -367,19 +365,6 @@ defineExpose({
 
 <template>
   <div class="space-y-3 border-t pt-3">
-    <div class="flex items-center gap-2">
-      <Badge variant="outline" class="px-1.5 text-[10px] text-muted-foreground">自身配置</Badge>
-      <span class="ml-auto"><InfoHint label="自身配置说明">
-        <p>「自身配置」是 Claude Code 绑定之外的特殊配置，落进 settings.json 两处：env 块（默认模型写入 ANTHROPIC_MODEL，常用项与自定义 env 原样写入）与顶级键（effortLevel、skipDangerousModePermissionPrompt 等 CLI 原生配置）。</p>
-        <p>只保存全局一份，不进绑定四层（本机/容器覆盖/项目规则都不带它）；落点跟着 claude 绑定走——未绑 claude 的目标不写。</p>
-        <p>小模型用 ANTHROPIC_DEFAULT_HAIKU_MODEL；旧版 CLI 的变量名是 ANTHROPIC_SMALL_FAST_MODEL，可在自定义 env 补写。</p>
-        <p>压缩窗口（CLAUDE_CODE_AUTO_COMPACT_WINDOW）是 token 数——剩余上下文不足该值即触发 auto-compact，不是百分比。</p>
-        <p>顶级设置的值按 JSON 解析：true / false / 数字直接写，字面量字符串 "true" 要带引号；嵌套结构（permissions 等）在下方原文里编辑，「默认模式」选的值会合并进顶级 permissions 块（permissions.defaultMode），其余 permissions 键仍在自定义行。注意环境变量优先级高于同名顶级配置（如 ANTHROPIC_MODEL 盖过顶级 model）——「默认模型」字段留空后顶级 model 才生效。</p>
-        <p>{{ RESERVED }} 由模型服务绑定管，这里写了会被拒；settings 里不能写 env（env 块另有归属）。</p>
-        <p>预览里出现的 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 来自上面选中的模型服务（落盘全貌），在原文里改它们会被绑定覆盖。</p>
-      </InfoHint></span>
-    </div>
-
     <!-- 常驻高频项：全部同一格式（Label 上 / h-8 mono 输入 / 键名注下）——
          默认模型、小模型 / 压缩窗口 / 自动压缩触发 %（env 预设）、思考力度（settings 顶级键）、默认模式（permissions 嵌套键） -->
     <div class="grid gap-3 sm:grid-cols-2">
