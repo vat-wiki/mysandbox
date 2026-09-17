@@ -376,12 +376,17 @@ export interface AiProjectRule {
   opencode?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
   createdAt?: string
 }
+export interface AiOpenCodeToolConfig {
+  permissionAuto?: boolean
+  model?: string
+  smallModel?: string
+}
 export interface AiView {
   hostHome: string // 宿主 home（宿主 spot → 规则 ~/rel 归一化用）
   providers: AiProvider[]
   binding: AiBinding | null
   overrides: Record<string, AiBinding>
-  toolConfig: { claude?: AiClaudeToolConfig }
+  toolConfig: { claude?: AiClaudeToolConfig; opencode?: AiOpenCodeToolConfig }
   projectRules: AiProjectRule[]
 }
 export const getAiView = () => api('/api/ai/view') as Promise<AiView>
@@ -398,10 +403,11 @@ export const fetchAiModels = (endpoints: AiProvider['endpoints'], apiKey: string
 // 保存全局绑定并应用（ids 缺省 = 本机 + 全部受管容器，本机与容器同权）。
 // apply = 只下发这些工具槽（存储仍整份保存）——按工具页签保存时传 [tool]，
 // 落盘只写本工具、不连带重写其他工具的配置（工具间互相独立）。
-export const saveAiBinding = (binding: AiBinding, ids?: string[], apply?: string[]) => {
+export const saveAiBinding = (binding: AiBinding, ids?: string[], apply?: string[], toolConfig?: { opencode?: AiOpenCodeToolConfig }) => {
   const body: Record<string, unknown> = { binding }
   if (ids) body.ids = ids
   if (apply) body.apply = apply
+  if (toolConfig) body.toolConfig = toolConfig
   return postJson('/api/ai/binding', body, 120_000) as Promise<BatchResult>
 }
 // 保存工具自身配置（全局一份）并下发（落点跟着 claude 绑定走；ids 显式给 = 只写这些）。

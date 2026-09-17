@@ -62,6 +62,7 @@ import {
   type AiProjectRule,
   type AiGatewayState,
   type AiClaudeToolConfig,
+  type AiOpenCodeToolConfig,
   type GatewayWire,
 } from './aiState.js';
 import type { BatchItemResult, BatchResult } from './batch.js';
@@ -390,6 +391,18 @@ export function validateToolConfig(tool: 'claude', tc: unknown): string | null {
   return null;
 }
 
+// opencode 配置校验（routes 转 400）。
+export function validateOpenCodeToolConfig(tc: unknown): string | null {
+  if (tc === undefined || tc === null) return null;
+  if (typeof tc !== 'object' || Array.isArray(tc)) return 'opencode 配置必须是对象';
+  const c = tc as { permissionAuto?: unknown; model?: unknown; smallModel?: unknown };
+  if (c.permissionAuto !== undefined && typeof c.permissionAuto !== 'boolean') return 'opencode.permissionAuto 必须是布尔';
+  for (const k of ['model', 'smallModel'] as const) {
+    if (c[k] !== undefined && typeof c[k] !== 'string') return `opencode.${k} 必须是字符串`;
+  }
+  return null;
+}
+
 // —— 各工具写入器。全部幂等，成功后往 notes 推一行人话摘要。——
 
 // Claude 页签保存的写入策略：merge = 合并（默认，读旧文件只覆盖受管键，用户其它键保留）；
@@ -606,6 +619,7 @@ async function configOpencode(
   wires: GatewayWire[],
   setDefault: boolean | undefined,
   managedIds: string[],
+  tc: AiOpenCodeToolConfig | undefined,
   notes: string[],
 ): Promise<void> {
   // 先全量校验端点侧，再动文件——单个 provider 缺侧不落半个写。
@@ -642,19 +656,26 @@ async function configOpencode(
   if (setDefault && providers.length && wires.length && providers[0].models.length) {
     obj.model = `${providers[0].id}-${WIRE_SUFFIX[wires[0]]}/${providers[0].models[0]}`;
   }
-  // 权限默认 auto（等价 CLI --auto：自动批准未显式拒绝的权限）——受管键 permission='allow'，
-  // 用户手改会被下一次保存拉回（与 claude 受管键同语义）。只写 user scope：项目级
-  // opencode.json 往往进仓库，权限放宽不该由 mysandbox 带进共享目录。
-  if (scope === 'user') obj.permission = 'allow';
+  // opencode 配置（config 面板项，仅 user scope——项目级文件常进仓库，权限放宽不带进去）：
+  // 权限 auto 缺省开 → permission='allow'（等价 CLI --auto；显式关 = 不碰权限键，回收不猜）；
+  // model 优先于上面的 setDefault 自动推导；small_model 给了才写。
+  if (scope === 'user' && tc?.permissionAuto !== false) obj.permission = 'allow';
+  if (tc?.model) obj.model = tc.model;
+  if (tc?.smallModel) obj.small_model = tc.smallModel;
+  const tcBits = [
+    scope === 'user' && tc?.permissionAuto !== false ? '权限 auto' : '',
+    tc?.model ? `模型 ${tc.model}` : '',
+    tc?.smallModel ? `轻量 ${tc.smallModel}` : '',
+  ].filter(Boolean);
   await writeJsonObject(path, obj);
   notes.push(
     `opencode: 写 ${relTo(base, path)}（${providers.map((p) => p.id).join('、') || '无'} × ${
       wires.map(wireLabel).join('、') || '无变体'
     }）${hadComments ? '（原文件含注释，已按 JSON 重写）' : ''}${
-      setDefault && providers.length && wires.length && providers[0].models.length
+      setDefault && providers.length && wires.length && providers[0].models.length && !tc?.model
         ? `（默认 ${String(obj.model)}）`
         : ''
-    }${scope === 'user' ? '（权限 auto）' : ''}`,
+    }${tcBits.length ? `（${tcBits.join('，')}）` : ''}`,
   );
 }
 
@@ -717,9 +738,9 @@ async function applyPlanToHome(
   const failed: string[] = [];
   // 自身配置（env + 顶级键）只在 user scope 注入——项目级 settings.json 不吃全局
   // 自身配置（否则全局自定义 env/顶级键会被抹到每个项目）。
-  const tc = (await getAiToolConfig()).claude;
-  const claudeExtra = scope === 'user' ? buildClaudeExtraEnv(tc) : {};
-  const claudeSettings = scope === 'user' ? buildClaudeSettings(tc) : {};
+  const toolCfg = await getAiToolConfig();
+  const claudeExtra = scope === 'user' ? buildClaudeExtraEnv(toolCfg.claude) : {};
+  const claudeSettings = scope === 'user' ? buildClaudeSettings(toolCfg.claude) : {};
   if (plan.claude) {
     try {
       await configClaude(base, plan.claude, claudeExtra, claudeSettings, notes, claudeMode);
@@ -740,7 +761,7 @@ async function applyPlanToHome(
   }
   if (plan.opencode) {
     try {
-      await configOpencode(base, scope, plan.opencode.providers, plan.opencode.wires, plan.opencode.setDefault, managedIds, notes);
+      await configOpencode(base, scope, plan.opencode.providers, plan.opencode.wires, plan.opencode.setDefault, managedIds, scope === 'user' ? toolCfg.opencode : undefined, notes);
     } catch (e) {
       failed.push('opencode');
       notes.push(`opencode: 失败 — ${errMsg(e)}`);
@@ -1347,7 +1368,7 @@ function hostRel(p: string): string {
 // 全部 AI 配置目标：本机 + 全部受管容器 + 模板容器（本机排最前——展示/结果里它先出现）。
 // 模板不在 listManaged 里（UI 列表刻意排除），但 AI 配置它也要追平——新容器克隆模板即
 // 自带正确配置；模板不存在时静默跳过。
-async function allTargets(cfg: Config): Promise<string[]> {
+export async function allTargets(cfg: Config): Promise<string[]> {
   const ids = new Set<string>();
   try {
     for (const v of await listManaged(cfg)) ids.add(v.id);

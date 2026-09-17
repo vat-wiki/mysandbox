@@ -92,8 +92,19 @@ export interface AiClaudeToolConfig {
   settings?: Record<string, unknown>; // settings.json 顶级键（禁 env——env 块另有归属，路由层校验）
 }
 
+// OpenCode 自身配置（全局一份，像 claude 的 toolConfig）：权限 auto（permission='allow'，
+// 等价 CLI --auto——自动批准未显式拒绝的权限，缺省开）+ model/small_model（provider
+// 变体/模型 格式，如 myapikey-chat/opencode-coding）。由 aiconfig 的 configOpencode
+// 在写 opencode.json 时消费，仅 user scope（项目级文件常进仓库，权限放宽不带进去）。
+export interface AiOpenCodeToolConfig {
+  permissionAuto?: boolean; // 缺省 true → permission:'allow'；显式 false = 不碰权限键（回收不猜，手改值保留）
+  model?: string; // 默认主模型 → 顶层 model（优先于绑定 setDefault 的自动推导）
+  smallModel?: string; // 轻量任务模型（会话标题等）→ 顶层 small_model（给了才写，清空不碰已有值）
+}
+
 export interface AiToolConfigState {
   claude?: AiClaudeToolConfig;
+  opencode?: AiOpenCodeToolConfig;
 }
 
 // 项目级 AI 配置规则（像技能规则）：去向 = 项目目录（容器内 ~/rel，唯一），写入

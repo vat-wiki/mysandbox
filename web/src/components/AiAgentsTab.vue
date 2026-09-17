@@ -19,6 +19,8 @@ import {
   type GatewayWire,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Bot } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
@@ -63,6 +65,11 @@ const codexDefault = ref(false)
 const oc = ref<string[]>([])
 const ocWires = ref<GatewayWire[]>(['openai-chat'])
 const ocDefault = ref(false)
+// OpenCode 配置（落 opencode.json 顶层，user scope）：权限 auto 缺省开，model 优先于
+// 绑定 setDefault 的自动推导，small_model 给了才写。
+const ocAuto = ref(true)
+const ocModel = ref('')
+const ocSmallModel = ref('')
 const pi = ref<string[]>([])
 const piWires = ref<GatewayWire[]>(['openai-chat'])
 
@@ -97,7 +104,13 @@ onMounted(() => loadView(true))
 async function loadView(fill: boolean) {
   try {
     view.value = await getAiView()
-    if (fill) fillFrom(view.value.binding)
+    if (fill) {
+      fillFrom(view.value.binding)
+      const oc = view.value.toolConfig.opencode
+      ocAuto.value = oc?.permissionAuto !== false
+      ocModel.value = oc?.model ?? ''
+      ocSmallModel.value = oc?.smallModel ?? ''
+    }
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -148,6 +161,10 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       err.value = 'OpenCode 选了模型供应商但协议为空'
       return
     }
+    if (ocModel.value.trim() && !ocModel.value.trim().includes('/')) {
+      err.value = 'OpenCode 主模型格式：provider/模型（如 myapikey-chat/opencode-coding）'
+      return
+    }
   } else {
     if (!pi.value.length) {
       err.value = 'Pi：先选至少一个模型供应商（不选 = 不碰该工具的落盘配置）'
@@ -171,8 +188,16 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
           : tool === 'opencode'
             ? { ...stored, opencode: { providers: [...oc.value], wires: [...ocWires.value] as GatewayWire[], setDefault: ocDefault.value } }
             : { ...stored, pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } }
-      result.value = await saveAiBinding(b, undefined, [tool])
-      if (view.value) view.value = { ...view.value, binding: b }
+      const ocTc =
+        tool === 'opencode'
+          ? {
+              permissionAuto: ocAuto.value,
+              ...(ocModel.value.trim() ? { model: ocModel.value.trim() } : {}),
+              ...(ocSmallModel.value.trim() ? { smallModel: ocSmallModel.value.trim() } : {}),
+            }
+          : undefined
+      result.value = await saveAiBinding(b, undefined, [tool], ocTc ? { opencode: ocTc } : undefined)
+      if (view.value) view.value = { ...view.value, binding: b, ...(ocTc ? { toolConfig: { ...view.value.toolConfig, opencode: ocTc } } : {}) }
     }
     emit('done')
   } catch (e) {
@@ -298,8 +323,18 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:wires="(v) => (ocWires = v)"
               @update:set-default="(v) => (ocDefault = v)"
             />
+            <!-- OpenCode 配置（opencode.json 顶层，user scope）：权限 auto = permission:'allow'
+                 （等价 --auto）；主模型优先于绑定 setDefault 自动推导；small_model 给了才写 -->
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <label class="flex items-center gap-1.5 text-xs">
+                <Checkbox :model-value="ocAuto" @update:model-value="(v) => (ocAuto = !!v)" />
+                权限默认 auto
+              </label>
+              <Input v-model="ocModel" class="h-7 w-64 text-xs" placeholder="主模型 provider/模型（可选）" />
+              <Input v-model="ocSmallModel" class="h-7 w-60 text-xs" placeholder="轻量模型 small_model（可选）" />
+            </div>
             <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）</p>
+              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</p>
               <Button :disabled="busy" @click="submitTool('opencode')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>
@@ -315,7 +350,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:wires="(v) => (piWires = v)"
             />
             <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）</p>
+              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</p>
               <Button :disabled="busy" @click="submitTool('pi')">{{
                 busy ? '应用中…' : '保存并应用到全部目标'
               }}</Button>

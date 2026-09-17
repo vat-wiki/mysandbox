@@ -26,9 +26,7 @@ const emit = defineEmits<{
   <div class="space-y-2">
     <div class="flex items-center gap-2 text-sm">
       <span class="font-medium">{{ tool === 'opencode' ? 'OpenCode' : 'Pi' }}</span>
-      <span class="text-[11px] text-muted-foreground">{{
-        tool === 'opencode' ? '多服务共存，/models 切换 · 权限默认 auto（免 --auto）' : '多服务共存，工具内 /models 切换'
-      }}</span>
+      <span class="text-[11px] text-muted-foreground">多服务共存，工具内 /models 切换</span>
     </div>
     <ToggleGroup
       type="multiple"
