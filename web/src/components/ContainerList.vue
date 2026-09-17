@@ -49,6 +49,7 @@ import {
   QUIET_CONFIRM_MS,
   SUSTAIN_MS,
 } from '@/lib/terminalActivity'
+import { setFaviconBusy } from '@/lib/faviconStatus'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
@@ -2287,6 +2288,24 @@ const busyGroupIds = computed(() => {
 })
 let actTimer: ReturnType<typeof setInterval> | null = null
 const ACTIVITY_MS = 5000
+
+// favicon 运行状态：tab 身份点之外把「有工具在跑/跑完了」带到浏览器标签图标上——
+// 切去别的浏览器 tab 也能瞄到。三态在 lib/faviconStatus（idle/busy蓝点/done绿点，
+// 回到本页即熄）；这里只投影：任一组有输出流即 busy，本轮输出已成段（termRunSpanMs
+// ≥ SUSTAIN_MS，秒级命令不算）再带 sustained 标记，绿点资格由那边确认窗把关。
+watch(
+  () => {
+    const active = busyGroupIds.value
+    if (!active.size) return false as const
+    for (const g of groups.value) {
+      if (active.has(g.id) && leafIds(g.root).some((t) => termRunSpanMs(t) >= SUSTAIN_MS)) {
+        return 'sustained' as const
+      }
+    }
+    return 'busy' as const
+  },
+  (mode) => setFaviconBusy(mode),
+)
 async function refreshActivity() {
   if (!groups.value.length && !hiddenGroups.value.length) return
   let threshold = 15
