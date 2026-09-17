@@ -585,6 +585,16 @@ export interface ServiceEventSubscription {
   closed: Promise<void>;
 }
 
+// 本进程派生的全部 docker events 订阅：node 退出（含 tsx watch 热重启、信号退出——
+// hostTerminal 的 signal 处理器 process.exit 时 exit 事件照发）时同步 SIGKILL。不收割
+// = 每次重启泄一代订阅孤儿，dockerd 被几百条长连接吊着（实测见 engine/lxc.ts 同款注释）。
+const eventChildren = new Set<ChildProcess>();
+process.on('exit', () => {
+  for (const c of eventChildren) {
+    try { c.kill('SIGKILL'); } catch { /* noop */ }
+  }
+});
+
 // start/die/destroy：服务起来了/停了/没了，三种都影响 hosts 里的服务行。
 // 不带 label 过滤：收编容器（无 label）的事件也要进来。受管与否在回调里给
 // （Actor.Attributes 自带容器 label），过滤判定由调用方做——外部容器 churning
@@ -601,6 +611,8 @@ export function subscribeServiceEvents(
     '--filter', 'event=destroy',
     '--format', '{{json .}}',
   ], { stdio: ['ignore', 'pipe', 'ignore'] });
+  eventChildren.add(child);
+  child.on('close', () => eventChildren.delete(child));
 
   let resolveClosed: () => void;
   const closed = new Promise<void>((r) => {

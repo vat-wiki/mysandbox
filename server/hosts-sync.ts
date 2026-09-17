@@ -13,6 +13,7 @@ import pLimit from 'p-limit';
 import { composeHostsContent, stripServicesBlock, serviceBlockLines } from './hosts.js';
 import { listServiceEndpoints } from './docker.js';
 import { listComposeDirServices } from './serviceCompose.js';
+import { relayContainerState } from './events.js';
 import { adoptedContainerNames, getAllServiceMeta } from './state.js';
 import { DOCKER_API_HOSTNAME } from './dockerApi.js';
 import { gatewayOf } from './network.js';
@@ -182,7 +183,10 @@ export function startHostsEventSync(cfg: Config): void {
     for (;;) {
       try {
         const sub = await subscribeEvents(cfg, (ev) => {
-          enqueue(() => handleEvent(cfg, ev.containerId));
+          // 引擎现在透传全部状态迁移，hosts 只关心 start（注释见 engine subscribeEvents）；
+          // 其余状态顺手转给前端事件总线（侧栏 stop 即时变灰）。
+          if (ev.action === 'start') enqueue(() => handleEvent(cfg, ev.containerId));
+          relayContainerState(ev.containerId, ev.action);
         });
         delay = 1_000; // 连上即复位
         log.info({ engine: 'lxc' }, 'hosts event sync: subscribed');

@@ -25,6 +25,8 @@ import { terminalActivity } from './activity.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
 import { beginSse } from './sse.js';
+import { registerEventsRoute } from './events.js';
+import { declareFileWatches } from './fileWatch.js';
 import { ipPoolView } from './network.js';
 import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
 import {
@@ -851,5 +853,20 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const marks = await Promise.all(ports.map((p) => probeHtmlPort(r.ip as string, p)));
     const web = ports.filter((_, i) => marks[i]);
     return { ports, web };
+  });
+
+  // —— 全局事件通道（server/events.ts）+ 文件 watch 声明（server/fileWatch.ts）——
+  // 前端轮询的事件化替代：容器/服务状态来自 lxc-monitor 与 docker events 的旁路转发，
+  // 文件变化来自 fs.watch（前端声明要看的目录）。鉴权在全局 hook（/api/* 全覆盖）。
+  registerEventsRoute(app);
+  app.post('/api/file-watches', async (req) => {
+    const b = (req.body ?? {}) as { clientId?: unknown; items?: unknown };
+    const items = Array.isArray(b.items)
+      ? (b.items as { target?: unknown; dirs?: unknown }[]).map((it) => ({
+          target: typeof it?.target === 'string' ? it.target : '',
+          dirs: Array.isArray(it?.dirs) ? (it.dirs as unknown[]).filter((d): d is string => typeof d === 'string') : [],
+        }))
+      : [];
+    return declareFileWatches(cfg, typeof b.clientId === 'string' ? b.clientId : '', items);
   });
 }

@@ -913,14 +913,27 @@ async function nameExists(_cfg: Config, name: string): Promise<boolean> {
 }
 
 // —— 事件 ——
-// LXC 有 lxc-monitor，但它按 lxcpath 监听、输出是行文本状态迁移。hosts-sync 只关心
-// 「容器起来了，去刷 /etc/hosts」，所以订阅 RUNNING 迁移即可。
-// 注意 lxc-monitor 是常驻前台进程，用 spawn 而非 execFile。
+// LXC 有 lxc-monitor，但它按 lxcpath 监听、输出是行文本状态迁移。订阅方各自过滤
+// （hosts-sync 要 start，前端事件总线透传全部状态）。注意 lxc-monitor 是常驻前台
+// 进程，用 spawn 而非 execFile。
+
+// 本进程派生的全部 lxc-monitor：node 退出（含 tsx watch 热重启、信号退出——hostTerminal
+// 的 signal 处理器 process.exit 时 exit 事件照发）时同步 SIGKILL。不收割 = 每次重启
+// 泄一代 monitor 孤儿（实测攒到 330 个，dockerd/宿主被吊着几百条流）。
+const monitorChildren = new Set<ChildProcess>();
+process.on('exit', () => {
+  for (const c of monitorChildren) {
+    try { c.kill('SIGKILL'); } catch { /* noop */ }
+  }
+});
+
 async function subscribeEvents(
   _cfg: Config,
   onEvent: (ev: EngineEvent) => void,
 ): Promise<EventSubscription> {
   const child = spawn('lxc-monitor', [], { stdio: ['ignore', 'pipe', 'pipe'] });
+  monitorChildren.add(child);
+  child.on('close', () => monitorChildren.delete(child));
   child.stdout?.on('error', () => { /* noop */ });
   child.stderr?.on('error', () => { /* noop */ });
   // closed：monitor 进程退出/起不来即视为断开，调用方退避重连。
@@ -938,9 +951,11 @@ async function subscribeEvents(
       const line = buf.slice(0, idx).trim();
       buf = buf.slice(idx + 1);
       if (!line) continue;
-      // 形如：'ms-dev' changed state to [RUNNING]
-      const m = /^'([^']+)' changed state to \[RUNNING\]/.exec(line);
-      if (m) onEvent({ containerId: m[1], action: 'start' });
+      // 形如：'ms-dev' changed state to [RUNNING]。透传全部状态迁移（action = 状态小写，
+      // 'start'/'stop'/'freeze'…）——前端侧栏要 stop 即时变灰，轮询兜底等不起一个周期。
+      // 只关心 start 的老订阅方（hosts-sync/skillSync/aiconfig）在各自回调里过滤。
+      const m = /^'([^']+)' changed state to \[([A-Z]+)\]/.exec(line);
+      if (m) onEvent({ containerId: m[1], action: m[2].toLowerCase() });
     }
   });
   return {

@@ -148,7 +148,7 @@ export const startAuthSession = () => postJson('/api/auth/session')
 
 // POST 空 body 时不能带 content-type: application/json——Fastify 对「声明 JSON 却无 body」
 // 的请求直接 400（FST_ERR_CTP_EMPTY_JSON_BODY），无参的 start/stop 会被挡掉。
-async function postJson(path: string, body?: unknown, timeoutMs?: number): Promise<any> {
+export async function postJson(path: string, body?: unknown, timeoutMs?: number): Promise<any> {
   return api(path, {
     ...(body ? { method: 'POST', body: JSON.stringify(body) } : { method: 'POST' }),
     ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),

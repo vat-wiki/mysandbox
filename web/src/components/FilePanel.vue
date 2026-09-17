@@ -38,6 +38,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import NameDialog from '@/components/NameDialog.vue'
+import { onSandboxEvent, setWatchDirs, type SandboxEvent } from '@/lib/events'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import AiSpotDialog from '@/components/AiSpotDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
@@ -544,11 +545,17 @@ function sigOf(v: FilesView): string {
   )
 }
 
+// 静默轮询在途闸：同 followCheck——exec 变慢时 3s 一拍的静默列表不叠加。非静默
+// （导航/刷新）不受闸：那是用户主动动作，且 seq 竞态防护已保证慢响应被丢弃。
+let silentLoading = false
 async function loadDir(p: string, opts: { silent?: boolean } = {}) {
+  if (opts.silent && silentLoading) return
   const seq = ++loadSeq
   if (!opts.silent) {
     navOps++
     loading.value = true
+  } else {
+    silentLoading = true
   }
   try {
     const v = await listFiles(targetId(), p)
@@ -580,6 +587,7 @@ async function loadDir(p: string, opts: { silent?: boolean } = {}) {
       navOps = 0
       loading.value = false
     }
+    if (opts.silent) silentLoading = false
   }
 }
 
@@ -596,9 +604,16 @@ function followGuard(): string | null {
   if (!follow.value || !props.termId) return null
   return props.containerId
 }
+// 在途闸：1s 轮询不盯上一拍有没有回来。getTermCwd 是容器内 exec，exec 变慢（宿主
+// 负载/容器忙）时固定间隔会无界叠加出请求雪崩——attach 进程越积越多、服务被打满、
+// 页面所有 API pending 整体假死。跳过本拍即可：间隔自动退化为「最慢一拍」，物理上
+// 叠不起来。tick/nudgeCwd 共用同闸（同一时刻至多一个 cwd 查询在飞）。
+let followBusy = false
 async function followCheck() {
+  if (followBusy) return
   if (menuOpen.value || nameDialog.value || delTarget.value) return
   if (!follow.value || !props.termId || !props.containerId) return
+  followBusy = true
   try {
     const r = await getTermCwd(props.containerId, props.termId)
     noSession.value = false
@@ -613,6 +628,8 @@ async function followCheck() {
     }
     // 终端会话还没建好/容器重启中：温和提示，继续轮询等它回来
     noSession.value = true
+  } finally {
+    followBusy = false
   }
 }
 // 回车驱动的即时检查（终端 onData 的 \r 上抛 → ContainerList 转发到这里）：cd 提交后
@@ -637,26 +654,59 @@ function acceptCwd(p: string) {
   void loadDir(p)
 }
 async function tick() {
-  await followCheck()
-  if (path.value) void loadDir(path.value, { silent: true })
-  // 展开的子目录跟着静默刷新（per-dir 签名，内容没变零 DOM 变更）。
-  for (const [p, st] of expanded) {
-    if (st.open) void loadExpanded(p, true)
+  if (tickBusy) return // 上一拍没跑完（followCheck 在途）：跳过本拍，同 followCheck 的雪崩防护
+  tickBusy = true
+  try {
+    await followCheck()
+    if (path.value) void loadDir(path.value, { silent: true })
+    // 展开的子目录跟着静默刷新（per-dir 签名，内容没变零 DOM 变更）。
+    for (const [p, st] of expanded) {
+      if (st.open) void loadExpanded(p, true)
+    }
+  } finally {
+    tickBusy = false
   }
 }
+let tickBusy = false
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let followTimer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   tick() // 立即一次（首帧就有内容）
-  pollTimer = setInterval(tick, 3000)
-  followTimer = setInterval(() => void followCheck(), 1000)
+  // 事件驱动为主（file-changed → 即时静默刷新），30s 对账兜底（watcher 断链/事件丢失/
+  // s:/ssh 这类 watch 不了的目标）；cwd 跟随的 1s 轮询降为 5s——容器有 OSC 7 事件与
+  // 回车 nudge 直达，慢轮询只剩无集成环境（宿主/SSH/老容器）的兜底职责。
+  pollTimer = setInterval(tick, 30_000)
+  followTimer = setInterval(() => void followCheck(), 5_000)
+  disposeEvents = onSandboxEvent(onFileEvent)
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (followTimer) clearInterval(followTimer)
   if (nudgeTimer) clearTimeout(nudgeTimer)
+  disposeEvents?.()
+  setWatchDirs(watchOwner, null)
 })
+
+// —— 文件变化事件（server/fileWatch.ts 的 fs.watch → events 总线）——
+// watch 声明跟随视图状态：当前目录 + 展开的子目录（全部要即时感知变化的目标）。
+// target 为 s:/ssh: 时服务端跳过（watch 不了），30s 对账轮询兜底。
+let disposeEvents: (() => void) | null = null
+const watchOwner = `panel-${Math.random().toString(36).slice(2)}`
+function syncWatches() {
+  const target = targetId()
+  if (!target || !path.value) {
+    setWatchDirs(watchOwner, null)
+    return
+  }
+  const dirs = [path.value, ...[...expanded].filter(([, st]) => st.open).map(([p]) => p)]
+  setWatchDirs(watchOwner, { target, dirs })
+}
+function onFileEvent(e: SandboxEvent) {
+  if (e.type !== 'file-changed' || e.target !== targetId()) return
+  if (e.dir === path.value) void loadDir(e.dir, { silent: true })
+  else if (expanded.get(e.dir)?.open) void loadExpanded(e.dir, true)
+}
 
 // 切容器（props 变）：无论之前是否手动，都回到跟随态、由下一次轮询定位新容器 cwd。
 // 切 pane（termId 变）：跟随态下立刻拉一次新 pane 的 cwd。
@@ -949,6 +999,10 @@ const ROW_BASE = 10
 const ROW_INDENT = 16
 
 const expanded = reactive(new Map<string, ExpandState>())
+// watch 声明跟随视图状态（目录导航/展开收起/切容器都重发）——expanded 在下文声明，
+// 注册放在声明之后（TS 的 use-before-declare 不吃提升）。
+watch([path, () => props.containerId], syncWatches)
+watch(expanded, syncWatches)
 const expandSeq = new Map<string, number>()
 
 // 展开模式的换目录收尾（path watch 调）：剪掉不在 newPath 子树里的展开状态——当前目录
@@ -965,12 +1019,16 @@ function joinPath(name: string): string {
   return path.value === '/' ? `/${name}` : `${path.value}/${name}`
 }
 
+// 静默刷新在途闸（同 loadDir）：per-dir 记账，exec 变慢时不叠加。
+const expandBusy = new Set<string>()
 async function loadExpanded(p: string, silent: boolean) {
   const st = expanded.get(p)
   if (!st) return
+  if (silent && expandBusy.has(p)) return
   const seq = (expandSeq.get(p) ?? 0) + 1
   expandSeq.set(p, seq)
   if (!silent) st.loading = true
+  else expandBusy.add(p)
   try {
     const v = await listFiles(targetId(), p)
     if (seq !== expandSeq.get(p)) return // 过期响应
@@ -992,6 +1050,7 @@ async function loadExpanded(p: string, silent: boolean) {
     // 同 loadDir：清理不拿 seq 当条件——静默轮询抢先完成推高 expandSeq，手动展开的
     // 响应被当过期后若跳过清理，行内转圈卡死（行上有独立 loading 态）。
     if (!silent) st.loading = false
+    else expandBusy.delete(p)
   }
 }
 

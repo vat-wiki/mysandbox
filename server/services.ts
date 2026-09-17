@@ -55,6 +55,7 @@ import {
   listComposeProjectContainers,
   type DockerContainerRow,
 } from './docker.js';
+import { relayServiceState } from './events.js';
 import {
   adoptedServiceNames,
   adoptedContainerNames,
@@ -1849,6 +1850,7 @@ export function startServicesEventSync(cfg: Config): void {
     for (;;) {
       try {
         const sub = await subscribeServiceEvents((ev) => {
+          relayServiceState(ev.name, ev.action); // 原样转给前端事件总线（侧栏即时跟刷）
           if (!ev.managed) {
             void getServiceMeta(ev.name)
               .then((m) => {

@@ -37,6 +37,7 @@ import {
   type TermActivityView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
+import { onSandboxEvent } from '@/lib/events'
 import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
   lastTermNotableOutput,
@@ -2077,7 +2078,9 @@ watch(
 const svcReachable = ref<boolean | null>(null)
 const svcJobsRunning = ref(0)
 let svcTimer: ReturnType<typeof setInterval> | null = null
-const SVC_IDLE_MS = 5000
+// 闲时 15s 对账（启停即时性由 service-state 事件保证），任务进行中 3s（任务状态没有
+// 事件源，靠这个频次跟踪进度）。
+const SVC_IDLE_MS = 15_000
 const SVC_ACTIVE_MS = 3000
 let svcIntervalMs = SVC_IDLE_MS
 function armSvcTimer() {
@@ -2372,7 +2375,13 @@ async function refreshActivity() {
 onMounted(() => {
   refresh()
   void refreshSshTargets()
-  timer = setInterval(() => refresh(true), 5000)
+  // 容器/服务状态事件驱动（lxc-monitor / docker events 旁路转发，见 lib/events.ts）：
+  // 启停即刷（防抖合并状态风暴），固定轮询只留 30s 对账兜底。
+  disposeEvents = onSandboxEvent((e) => {
+    if (e.type === 'container-state') scheduleEventRefresh('ct')
+    else if (e.type === 'service-state' && !props.popout) scheduleEventRefresh('svc')
+  })
+  timer = setInterval(() => refresh(true), 30_000)
   // 无输出提醒：popout 独立窗口也有自己的终端组，同样参与轮询。
   void refreshActivity()
   actTimer = setInterval(() => void refreshActivity(), ACTIVITY_MS)
@@ -2393,11 +2402,24 @@ onUnmounted(() => {
   if (portsTimer) clearInterval(portsTimer)
   if (svcPortsTimer) clearInterval(svcPortsTimer)
   if (actTimer) clearInterval(actTimer)
+  disposeEvents?.()
   document.removeEventListener('keydown', onEscCloseFile)
   document.removeEventListener('visibilitychange', onVisChange)
   clearHoverTimer()
   disarmHoverPending(false)
 })
+
+// 事件触发的即时刷新：300ms 防抖合并（lxc-monitor 对批量启停会连发状态行）。
+let disposeEvents: (() => void) | null = null
+const eventRefreshTimers = { ct: null, svc: null } as Record<'ct' | 'svc', ReturnType<typeof setTimeout> | null>
+function scheduleEventRefresh(which: 'ct' | 'svc') {
+  if (eventRefreshTimers[which]) return
+  eventRefreshTimers[which] = setTimeout(() => {
+    eventRefreshTimers[which] = null
+    if (which === 'ct') void refresh(true)
+    else void refreshServices()
+  }, 300)
+}
 </script>
 
 <template>

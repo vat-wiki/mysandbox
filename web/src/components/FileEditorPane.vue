@@ -18,6 +18,7 @@ import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, defineAsync
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { langForFilename } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
+import { onSandboxEvent, setWatchDirs } from '@/lib/events'
 import { previewKind, previewMime, extOf } from '@/lib/preview'
 import { hydrateMermaid } from '@/lib/mermaid'
 import {
@@ -406,7 +407,13 @@ function fmtBytes(n?: number): string {
 }
 
 async function save(overwrite = false) {
-  if (busy.value || meta.value?.binary) return
+  if (meta.value?.binary) return
+  if (busy.value) {
+    // 保存飞行期间再按 Ctrl+S：不丢弃，记一拍，本次落盘完成后仍有脏改动就补冲
+    //（「最后一次按键生效」）。直接吞掉会让连按看起来毫无反馈。
+    saveQueued = true
+    return
+  }
   busy.value = true
   err.value = ''
   try {
@@ -442,7 +449,14 @@ async function save(overwrite = false) {
   } finally {
     busy.value = false
   }
+  // 补冲一拍：失败/冲突不自动重试（等用户裁决），无脏改动（飞行期间的编辑已随上一拍
+  // 落盘）也不空写。
+  if (saveQueued) {
+    saveQueued = false
+    if (!err.value && !conflict.value && dirty.value && !meta.value?.binary) void save()
+  }
 }
+let saveQueued = false
 
 // 冲突两路：重载（丢弃本地改动）/ 覆盖（不带 baseMtime 强写）。
 // 重载走 load() 全量重开：文件被删时落到「新建态」空编辑器（可 Ctrl+S 重建）、
@@ -461,14 +475,15 @@ async function overwrite() {
   await save(true)
 }
 
-// —— 外部修改同步（轮询）——
-// 服务端没有文件事件通道（exec 轮询是唯一手段，列目录即轻量 stat 且容器/宿主/服务三端
-// 同一端点形状）：活动 tab 每 3s 比对一次父目录里本文件的 mtime/size。基线 pollBase 在
-// load/save/外部重载时刷新——「我们自己落盘」与「外部改动」由此区分（写后 stat 偶发失败
-// 时 mtime 记 null，退化只比 size）。命中后的分流：干净缓冲静默原地重载（Monaco
-// saveViewState/restoreViewState 保滚动与光标）；脏缓冲复用 409 冲突条交用户裁决。
-// 只轮询活动 tab（后台 tab 激活瞬间立即查一次补上）；浏览器后台（document.hidden）暂停。
-const POLL_MS = 3000
+// —— 外部修改同步（事件驱动 + 慢速对账）——
+// 主路径：server/fileWatch.ts 的 fs.watch（容器 rootfs 即宿主文件，停机也能 watch）→
+// events 总线 file-changed → 即时 checkExternal。轮询只剩 30s 对账兜底（watcher 断链、
+// 事件丢失、s:/ssh 目标）——原来是 3s 高频 exec 轮询，是页面假死风暴的主力源之一。
+// 基线 pollBase 在 load/save/外部重载时刷新——「我们自己落盘」与「外部改动」由此区分
+//（写后 stat 偶发失败时 mtime 记 null，退化只比 size）。命中后的分流：干净缓冲静默
+// 原地重载（Monaco saveViewState/restoreViewState 保滚动与光标）；脏缓冲复用 409 冲突
+// 条交用户裁决。只轮询活动 tab（后台 tab 激活瞬间立即查一次补上）；浏览器后台（document.hidden）暂停。
+const POLL_MS = 30_000
 const utf8 = new TextEncoder()
 // size 用本地字节数兜底而非服务端值：写端点不回 size，而保存后的文件内容就是我们这串
 // utf8（字节数精确相等）。BOM 等只在 load 时由服务端 stat 值兜住（见 load 内注释）。
@@ -506,6 +521,32 @@ onMounted(() => document.addEventListener('visibilitychange', onVisChange))
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisChange)
   stopPoll()
+  disposeEvents?.()
+  setWatchDirs(watchOwner, null)
+})
+
+// —— 文件变化事件（server/fileWatch.ts fs.watch → events 总线）——
+// 活动且非 diff/二进制的 tab 声明 watch 本文件父目录；事件命中（其他窗口/终端/进程
+// 改了这个目录里的东西）即跑一次 checkExternal——它自带基线比对，无变化零副作用。
+const watchOwner = `editor-${Math.random().toString(36).slice(2)}`
+let disposeEvents: (() => void) | null = null
+function syncWatch() {
+  const dir = props.path.slice(0, props.path.lastIndexOf('/') + 1) || '/'
+  const ok =
+    props.active && !props.diff && !loading.value && !conflict.value && !meta.value?.binary
+  setWatchDirs(watchOwner, ok ? { target: props.containerId, dirs: [dir] } : null)
+}
+watch(
+  () => [props.active, props.diff, loading.value, conflict.value, meta.value?.binary] as const,
+  syncWatch,
+  { immediate: true },
+)
+onMounted(() => {
+  disposeEvents = onSandboxEvent((e) => {
+    if (e.type !== 'file-changed' || e.target !== props.containerId || !props.active) return
+    if (e.dir !== (props.path.slice(0, props.path.lastIndexOf('/') + 1) || '/')) return
+    void checkExternal()
+  })
 })
 
 async function checkExternal() {
