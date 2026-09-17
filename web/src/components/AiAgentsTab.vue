@@ -26,6 +26,7 @@ import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const emit = defineEmits<{
   (e: 'done'): void
@@ -118,7 +119,9 @@ const claudeToolRef = ref<InstanceType<typeof AiClaudeToolConfig> | null>(null)
 // Claude 页签写入策略在保存按钮的下拉菜单里选（点「保存并应用」→ 选模式 → 执行）：
 // merge = 合并写入（默认，文件里其它键保留）；replace = 整文件替换（settings.json 只含
 // 本次管理内容，用户手工加的其它键清掉——清历史残留用）。不持久化——replace 是破坏性
-// 动作，每次保存都显式选。
+// 动作，每次保存都显式选，且菜单选中后先过确认步（askReplace）再执行。
+const askReplace = ref(false)
+
 async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merge') {
   err.value = ''
   if (tool === 'claude') {
@@ -259,7 +262,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem @click="submitTool('claude', 'merge')">合并写入（默认）</DropdownMenuItem>
-                <DropdownMenuItem @click="submitTool('claude', 'replace')">替换整个文件</DropdownMenuItem>
+                <DropdownMenuItem class="text-destructive" @click="askReplace = true">替换整个文件…</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -322,6 +325,18 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
           <p v-if="err" class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{{ err }}</p>
         </div>
       </section>
+
+      <!-- 替换整个文件的确认步：破坏性动作（清掉每个目标里用户自己的键），菜单选中后先过这里 -->
+      <ConfirmDialog
+        v-if="askReplace"
+        title="替换整个 settings.json？"
+        description="每个目标（本机 + 受管容器 + 模板）的 settings.json 将被整体重写，只含本次管理内容——你手工加的其它键（主题、插件、模型映射等）会一并清掉。"
+        confirm-text="替换应用"
+        variant="destructive"
+        :busy="busy"
+        @confirm="askReplace = false; submitTool('claude', 'replace')"
+        @close="askReplace = false"
+      />
     </template>
   </div>
 </template>
