@@ -53,6 +53,7 @@ const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vu
 const RESIDENT_PRESET_INPUTS = [
   { key: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', label: '小模型（后台任务）', placeholder: 'claude-haiku-…（标题/摘要等小任务走便宜模型）' },
   { key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', label: '上下文压缩窗口 tokens', placeholder: '如 20000：剩余不足即压缩；留空 = auto' },
+  { key: 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', label: '自动压缩触发 %', placeholder: '如 80：剩余上下文到 80% 即压缩；留空 = 默认' },
 ] as const
 const PRESET_INPUTS = [
   { key: 'CLAUDE_CODE_MAX_OUTPUT_TOKENS', label: '最大输出 tokens', placeholder: '如 32000' },
