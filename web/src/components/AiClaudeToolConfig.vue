@@ -355,22 +355,19 @@ defineExpose({
       </InfoHint>
     </div>
 
-    <!-- 常用项：默认模型 -->
-    <div class="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+    <!-- 常驻高频项：全部同一格式（Label 上 / h-8 mono 输入 / 键名注下）——
+         默认模型、小模型 / 压缩窗口 / 自动压缩触发 %（env 预设）、思考力度（settings 顶级键）、默认模式（permissions 嵌套键） -->
+    <div class="grid gap-3 sm:grid-cols-2">
       <div class="space-y-1.5">
         <Label for="ai-claude-model">默认模型</Label>
         <Input
           id="ai-claude-model"
           v-model="model"
           placeholder="claude-sonnet-4-5"
-          class="font-mono"
+          class="h-8 font-mono text-xs"
         />
+        <p class="font-mono text-[10px] text-muted-foreground/60">ANTHROPIC_MODEL（留空 = 不设）</p>
       </div>
-      <span class="pb-1.5 text-[11px] text-muted-foreground">写入 ANTHROPIC_MODEL（留空 = 不设）</span>
-    </div>
-
-    <!-- 常驻高频预设：小模型 / 压缩窗口 / 思考力度（effortLevel 是 settings 顶级键，与 env 预设同权展示） -->
-    <div class="grid gap-3 sm:grid-cols-2">
       <div v-for="p in RESIDENT_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
         <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
         <Input
