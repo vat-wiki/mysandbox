@@ -22,7 +22,8 @@
 // 配置持久化在服务端 ai-config.json（0600），下次进入回显。
 // 保留键（ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN；settings 里的 env）后端 400 拒绝。
 import { ref, computed, watch, defineAsyncComponent } from 'vue'
-import type { AiClaudeToolConfig } from '@/lib/api'
+import type { AiClaudeToolConfig, AiProvider } from '@/lib/api'
+import { fetchAiModels } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -37,6 +38,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import InfoHint from './InfoHint.vue'
+import AiModelCombo from './AiModelCombo.vue'
 
 const props = defineProps<{
   // 父级传入的当前配置（view.toolConfig.claude，可能是异步到达的初值）。
@@ -44,10 +46,34 @@ const props = defineProps<{
   // 绑定注入的受管键（ANTHROPIC_BASE_URL/AUTH_TOKEN，来自当前选中的 provider）——
   // 预览要展示落盘全貌就得带上；Monaco 里改它们恒被绑定覆盖，不进表单。
   bindingEnv?: Record<string, string> | null
+  // 当前选中的模型服务（claude 绑定槽）：用于探测 /models 清单——模型名字段
+  // （*_MODEL）升级为「输入恒在 + 有清单弹选择」的组合框；拉不到 = 纯手输。
+  provider?: AiProvider | null
 }>()
 
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
+
+// —— 模型清单探测：按所选 provider 的 anthropic 端点拉 /models，失败静默（退化为手输）——
+const modelList = ref<string[]>([])
+watch(
+  () => props.provider?.id,
+  async () => {
+    modelList.value = []
+    const p = props.provider
+    const baseUrl = p?.endpoints.anthropic?.baseUrl
+    if (!p?.apiKey || !baseUrl) return
+    try {
+      const r = await fetchAiModels({ anthropic: { baseUrl } }, p.apiKey)
+      modelList.value = r.models
+    } catch {
+      /* 清单拉不到就手输——不提示不打扰 */
+    }
+  },
+  { immediate: true },
+)
+// 模型名类字段（值是模型 id 而非数字/开关）才上组合框
+const isModelKey = (key: string) => key.endsWith('_MODEL')
 
 // —— env 预设键，按使用频率分两组：常驻（高频）进主表单，其余收「高级配置」折叠区 ——
 const RESIDENT_PRESET_INPUTS = [
@@ -360,17 +386,27 @@ defineExpose({
     <div class="grid gap-3 sm:grid-cols-2">
       <div class="space-y-1.5">
         <Label for="ai-claude-model">默认模型</Label>
-        <Input
-          id="ai-claude-model"
-          v-model="model"
+        <AiModelCombo
+          input-id="ai-claude-model"
+          :model-value="model"
+          :models="modelList"
           placeholder="claude-sonnet-4-5"
-          class="h-8 font-mono text-xs"
+          @update:model-value="(v) => (model = v)"
         />
         <p class="font-mono text-[10px] text-muted-foreground/60">ANTHROPIC_MODEL（留空 = 不设）</p>
       </div>
       <div v-for="p in RESIDENT_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
         <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
+        <AiModelCombo
+          v-if="isModelKey(p.key)"
+          :input-id="`ai-claude-${p.key}`"
+          :model-value="presets[p.key] ?? ''"
+          :models="modelList"
+          :placeholder="p.placeholder"
+          @update:model-value="(v) => (presets[p.key] = v)"
+        />
         <Input
+          v-else
           :id="`ai-claude-${p.key}`"
           v-model="presets[p.key]"
           :placeholder="p.placeholder"
@@ -441,7 +477,16 @@ defineExpose({
       <div class="grid gap-3 sm:grid-cols-2">
         <div v-for="p in PRESET_INPUTS" :key="p.key" class="space-y-1.5">
           <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
+          <AiModelCombo
+            v-if="isModelKey(p.key)"
+            :input-id="`ai-claude-${p.key}`"
+            :model-value="presets[p.key] ?? ''"
+            :models="modelList"
+            :placeholder="p.placeholder"
+            @update:model-value="(v) => (presets[p.key] = v)"
+          />
           <Input
+            v-else
             :id="`ai-claude-${p.key}`"
             v-model="presets[p.key]"
             :placeholder="p.placeholder"

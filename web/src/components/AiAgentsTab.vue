@@ -66,6 +66,8 @@ const piWires = ref<GatewayWire[]>(['openai-chat'])
 
 const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
+// claude 绑定槽选中的 provider（自身配置表单拿它探测 /models 清单）
+const claudeProvider = computed(() => providers.value.find((p) => p.id === claude.value) ?? null)
 
 // 当前选中的 claude provider 将注入的受管键（与 configClaude 的落盘值一致：baseUrl
 // 原样不含 /v1 + apiKey）——自身配置的 env 预览要展示落盘全貌就得带上。
@@ -236,6 +238,7 @@ async function submitTool(tool: ToolTab) {
             ref="claudeToolRef"
             :tc="view?.toolConfig.claude"
             :binding-env="claudeBindingEnv"
+            :provider="claudeProvider"
           />
           <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
           <div class="flex items-center justify-end border-t pt-3">
