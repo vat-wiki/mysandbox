@@ -3,13 +3,15 @@
 // 常用项直接给表单字段（存储仍是同一个 toolConfig 对象，常用项只是预设键的视图）：
 //   默认模型   = env.ANTHROPIC_MODEL（常驻）
 //   开关       = env.PRESET_TOGGLES（非必要流量/自动更新/自动压缩，勾选 = '1'，常驻）
-//   小模型等   = env.PRESET_INPUTS（后台小任务/输出上限/思考预算/超时/子代理/压缩窗口）
+//   小模型/压缩窗口 = env.RESIDENT_PRESET_INPUTS（高频预设，常驻）
+//   思考力度   = effortLevel（low/medium/high，常驻）
+//   输出上限等 = env.PRESET_INPUTS（最大输出/思考预算/超时/子代理，进折叠区）
 //   自定义 env = env.rows 键值对（只放非预设键，避免与常用项重复编辑）
 //   顶级设置   = settings（settings.json 顶级键——effortLevel 等非 env 配置）：
-//     思考力度   = effortLevel（low/medium/high）
 //     开关       = SET_PRESET_TOGGLES（布尔：跳过危险模式确认/自动记忆）
 //     自定义键   = setRows 键值对（值按 JSON 解析：true/false/数字/引号字符串）
-// 渐进式披露：默认模型 + 常用开关常驻，其余收进「高级配置」折叠区（已填项数给徽标）。
+// 渐进式披露：高频项常驻，低频项收进「高级配置」折叠区（已填项数给徽标）；
+// settings.json 预览/原文（Monaco）是落盘全貌的确认口，恒常驻不折叠。
 // envOut + settingsOut 是唯一出口；Monaco 原文 = 整份 settings.json 形状
 //（{…顶级键, env: {…}}）：实时预览（随表单与所选模型服务即时更新）+ 高级编辑
 //（改对自动套用回表单，env 块与非 env 顶级键各回各的表单区）。
@@ -38,15 +40,19 @@ const props = defineProps<{
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多入口不重复下载——见 CodeEditor.vue 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
 
-// —— env 常用项预设键（中转/网关场景高频项；键名以当前 CLI 文档为准）——
-const PRESET_INPUTS = [
+// —— env 预设键，按使用频率分两组：常驻（高频）进主表单，其余收「高级配置」折叠区 ——
+const RESIDENT_PRESET_INPUTS = [
   { key: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', label: '小模型（后台任务）', placeholder: 'claude-haiku-…（标题/摘要等小任务走便宜模型）' },
+  { key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', label: '上下文压缩窗口 tokens', placeholder: '如 20000：剩余不足即压缩；留空 = auto' },
+] as const
+const PRESET_INPUTS = [
   { key: 'CLAUDE_CODE_MAX_OUTPUT_TOKENS', label: '最大输出 tokens', placeholder: '如 32000' },
   { key: 'MAX_THINKING_TOKENS', label: '思考预算 tokens', placeholder: '如 10240，留空 = 默认' },
   { key: 'API_TIMEOUT_MS', label: '请求超时 ms', placeholder: '慢网关调大，如 600000' },
   { key: 'CLAUDE_CODE_SUBAGENT_MODEL', label: '子代理模型', placeholder: 'Task 子代理用，留空 = 跟随主模型' },
-  { key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', label: '上下文压缩窗口 tokens', placeholder: '如 20000：剩余不足即压缩；留空 = auto' },
 ] as const
+// 全量预设键（常驻 + 折叠，逻辑层不分家——init/输出/原文回填都遍历它）
+const ALL_PRESET_INPUTS = [...RESIDENT_PRESET_INPUTS, ...PRESET_INPUTS] as const
 const PRESET_TOGGLES = [
   { key: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', label: '关闭非必要流量（遥测/错误上报/更新检查）' },
   { key: 'DISABLE_AUTOUPDATER', label: '关闭自动更新（容器内建议关）' },
@@ -55,21 +61,19 @@ const PRESET_TOGGLES = [
 // ANTHROPIC_MODEL 归「默认模型」字段，同样不进自定义行
 const PRESET_KEYS = new Set<string>([
   'ANTHROPIC_MODEL',
-  ...PRESET_INPUTS.map((p) => p.key),
+  ...ALL_PRESET_INPUTS.map((p) => p.key),
   ...PRESET_TOGGLES.map((t) => t.key),
 ])
 
 // —— settings 顶级键常用项（settings.json 顶级键 = CLI 原生配置，非 env）——
-const SET_PRESET_INPUTS = [
-  { key: 'effortLevel', label: '思考力度 effortLevel', placeholder: 'low / medium / high' },
-] as const
+// effortLevel 是常驻「思考力度」字段（见模板），此处只认领键防进自定义行
 const SET_PRESET_TOGGLES = [
   { key: 'skipDangerousModePermissionPrompt', label: '跳过危险模式权限确认（不再逐条问）' },
   { key: 'autoMemoryEnabled', label: '启用自动记忆（AUTO MEMORY）' },
 ] as const
 const SET_PRESET_KEYS = new Set<string>([
   'env', // env 块另有归属（绑定 + 自定义 env），settings 里禁写
-  ...SET_PRESET_INPUTS.map((p) => p.key),
+  'effortLevel',
   ...SET_PRESET_TOGGLES.map((t) => t.key),
 ])
 
@@ -108,7 +112,7 @@ function initFrom(tc: AiClaudeToolConfig | undefined) {
   const st = tc?.settings ?? {}
   model.value = tc?.model ?? env.ANTHROPIC_MODEL ?? ''
   presets.value = Object.fromEntries(
-    [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, env[p.key] ?? '']),
+    [...ALL_PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, env[p.key] ?? '']),
   )
   rows.value = Object.entries(env)
     .filter(([k]) => !PRESET_KEYS.has(k))
@@ -166,7 +170,7 @@ function removeSetRow(i: number) {
 const envOut = computed<Record<string, string>>(() => {
   const out: Record<string, string> = {}
   if (model.value.trim()) out.ANTHROPIC_MODEL = model.value.trim()
-  for (const p of [...PRESET_INPUTS, ...PRESET_TOGGLES]) {
+  for (const p of [...ALL_PRESET_INPUTS, ...PRESET_TOGGLES]) {
     const v = (presets.value[p.key] ?? '').trim()
     if (v) out[p.key] = v
   }
@@ -240,7 +244,7 @@ watch(raw, (s) => {
   for (const k of Object.keys(props.bindingEnv ?? {})) delete e[k]
   model.value = e.ANTHROPIC_MODEL ?? ''
   presets.value = Object.fromEntries(
-    [...PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, e[p.key] ?? '']),
+    [...ALL_PRESET_INPUTS, ...PRESET_TOGGLES].map((p) => [p.key, e[p.key] ?? '']),
   )
   rows.value = Object.entries(e)
     .filter(([k]) => !PRESET_KEYS.has(k))
@@ -259,15 +263,13 @@ watch(raw, (s) => {
   if (!setRows.value.length) setRows.value = [{ key: '', value: '' }]
 })
 
-// —— 渐进式披露：默认模型 + 常用开关留在外面，低频项收进「高级配置」折叠区 ——
+// —— 渐进式披露：高频项常驻，低频项收进「高级配置」折叠区 ——
 // 折叠时给已填项数徽标，非空的低频配置不会藏在看不见的地方。
 const advancedOpen = ref(false)
 const advancedFilled = computed(() => {
   let n = 0
   for (const p of PRESET_INPUTS) if ((presets.value[p.key] ?? '').trim()) n++
-  for (const t of PRESET_TOGGLES) if (presets.value[t.key] === '1') n++
   n += rows.value.filter((r) => r.key.trim()).length
-  if (effortLevel.value.trim()) n++
   for (const t of SET_PRESET_TOGGLES) if (setPresets.value[t.key] === true) n++
   n += setRows.value.filter((r) => r.key.trim()).length
   return n
@@ -318,6 +320,30 @@ defineExpose({
         />
       </div>
       <span class="pb-1.5 text-[11px] text-muted-foreground">写入 ANTHROPIC_MODEL（留空 = 不设）</span>
+    </div>
+
+    <!-- 常驻高频预设：小模型 / 压缩窗口 / 思考力度（effortLevel 是 settings 顶级键，与 env 预设同权展示） -->
+    <div class="grid gap-3 sm:grid-cols-2">
+      <div v-for="p in RESIDENT_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
+        <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
+        <Input
+          :id="`ai-claude-${p.key}`"
+          v-model="presets[p.key]"
+          :placeholder="p.placeholder"
+          class="h-8 font-mono text-xs"
+        />
+        <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
+      </div>
+      <div class="space-y-1.5">
+        <Label for="ai-claude-effortLevel">思考力度</Label>
+        <Input
+          id="ai-claude-effortLevel"
+          v-model="effortLevel"
+          placeholder="low / medium / high"
+          class="h-8 font-mono text-xs"
+        />
+        <p class="font-mono text-[10px] text-muted-foreground/60">effortLevel（settings 顶级键）</p>
+      </div>
     </div>
 
     <!-- 常用开关：一行，勾选即写入（值非空即落 env，与展开区同一存储） -->
@@ -397,17 +423,6 @@ defineExpose({
           <Label>顶级设置</Label>
           <Button variant="outline" size="xs" @click="addSetRow"><Plus class="size-3.5" /> 添加键值对</Button>
         </div>
-        <div class="grid gap-3 sm:grid-cols-2">
-          <div v-for="p in SET_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
-            <Input
-              :id="`ai-claude-set-${p.key}`"
-              v-model="effortLevel"
-              :placeholder="p.placeholder"
-              class="h-8 font-mono text-xs"
-            />
-            <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
-          </div>
-        </div>
         <div class="flex flex-wrap gap-x-5 gap-y-1.5">
           <label v-for="t in SET_PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Checkbox
@@ -440,20 +455,21 @@ defineExpose({
         </div>
         <p class="text-[10px] text-muted-foreground/60">settings.json 顶级键原样合并写入（整键覆盖）；嵌套结构（permissions、hooks 等）在下方原文里编辑。env 不能写在这里。</p>
       </div>
+    </div>
 
-      <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型服务即时更新）+ 高级编辑 -->
-      <div class="space-y-1.5">
-        <div class="flex items-center justify-between">
-          <Label>settings.json 预览 / 原文（JSON）</Label>
-          <span class="text-[10px] text-muted-foreground/70">随表单与所选模型服务实时更新 · 可直接改（改对自动套用）</span>
-        </div>
-        <CodeEditor
-          v-model="raw"
-          language="json"
-          class="h-56 overflow-hidden rounded-md border"
-        />
-        <p v-if="parseErr" class="text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
+    <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型服务即时更新）+ 高级编辑。
+         落盘全貌的确认口，恒常驻不进折叠区 -->
+    <div class="space-y-1.5">
+      <div class="flex items-center justify-between">
+        <Label>settings.json 预览 / 原文（JSON）</Label>
+        <span class="text-[10px] text-muted-foreground/70">随表单与所选模型服务实时更新 · 可直接改（改对自动套用）</span>
       </div>
+      <CodeEditor
+        v-model="raw"
+        language="json"
+        class="h-56 overflow-hidden rounded-md border"
+      />
+      <p v-if="parseErr" class="text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
     </div>
   </div>
 </template>
