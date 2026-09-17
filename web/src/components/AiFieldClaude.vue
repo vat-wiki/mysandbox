@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Label } from '@/components/ui/label'
 import type { AiProvider } from '@/lib/api'
 
 const props = defineProps<{
@@ -28,16 +29,19 @@ const anthropicProviders = computed(() => props.providers.filter((p) => p.endpoi
   <div class="space-y-1.5">
     <div class="flex items-center gap-2 text-sm">
       <span class="font-medium">Claude Code</span>
-      <span class="text-[11px] text-muted-foreground">单接入点（env 注入）</span>
+      <span class="text-[11px] text-muted-foreground">单接入点</span>
     </div>
-    <div class="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
+    <div class="space-y-1.5">
+      <Label for="ai-claude-provider">模型服务</Label>
       <Select :model-value="providerId" @update:model-value="(v) => emit('update:providerId', v as string)">
-        <SelectTrigger size="sm" class="w-full"><SelectValue placeholder="选模型服务（anthropic 端点）" /></SelectTrigger>
+        <SelectTrigger id="ai-claude-provider" size="sm" class="h-8 w-full text-xs">
+          <SelectValue placeholder="选模型服务（anthropic 端点）" />
+        </SelectTrigger>
         <SelectContent>
-          <SelectItem v-for="p in anthropicProviders" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</SelectItem>
+          <SelectItem v-for="p in anthropicProviders" :key="p.id" :value="p.id" class="text-xs">{{ p.name }}（{{ p.id }}）</SelectItem>
         </SelectContent>
       </Select>
-      <span class="text-[11px] text-muted-foreground">写 ~/.claude/settings.json（或项目级 .claude/settings.json）</span>
+      <p class="font-mono text-[10px] text-muted-foreground/60">env 注入 ~/.claude/settings.json</p>
     </div>
   </div>
 </template>
