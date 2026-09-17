@@ -1,14 +1,15 @@
 <script setup lang="ts">
 // Claude Code 工具自身配置表单（toolConfig，全局一份）：绑定之外的 CLI 特殊配置。
 // 常用项直接给表单字段（存储仍是同一个 toolConfig 对象，常用项只是预设键的视图）：
-//   默认模型   = env.ANTHROPIC_MODEL
+//   默认模型   = env.ANTHROPIC_MODEL（常驻）
+//   开关       = env.PRESET_TOGGLES（非必要流量/自动更新/自动压缩，勾选 = '1'，常驻）
 //   小模型等   = env.PRESET_INPUTS（后台小任务/输出上限/思考预算/超时/子代理/压缩窗口）
-//   开关       = env.PRESET_TOGGLES（非必要流量/自动更新/自动压缩，勾选 = '1'）
 //   自定义 env = env.rows 键值对（只放非预设键，避免与常用项重复编辑）
 //   顶级设置   = settings（settings.json 顶级键——effortLevel 等非 env 配置）：
 //     思考力度   = effortLevel（low/medium/high）
 //     开关       = SET_PRESET_TOGGLES（布尔：跳过危险模式确认/自动记忆）
 //     自定义键   = setRows 键值对（值按 JSON 解析：true/false/数字/引号字符串）
+// 渐进式披露：默认模型 + 常用开关常驻，其余收进「高级配置」折叠区（已填项数给徽标）。
 // envOut + settingsOut 是唯一出口；Monaco 原文 = 整份 settings.json 形状
 //（{…顶级键, env: {…}}）：实时预览（随表单与所选模型服务即时更新）+ 高级编辑
 //（改对自动套用回表单，env 块与非 env 顶级键各回各的表单区）。
@@ -23,7 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Plus, Trash2 } from 'lucide-vue-next'
+import { Plus, Trash2, ChevronDown } from 'lucide-vue-next'
 import InfoHint from './InfoHint.vue'
 
 const props = defineProps<{
@@ -258,6 +259,20 @@ watch(raw, (s) => {
   if (!setRows.value.length) setRows.value = [{ key: '', value: '' }]
 })
 
+// —— 渐进式披露：默认模型 + 常用开关留在外面，低频项收进「高级配置」折叠区 ——
+// 折叠时给已填项数徽标，非空的低频配置不会藏在看不见的地方。
+const advancedOpen = ref(false)
+const advancedFilled = computed(() => {
+  let n = 0
+  for (const p of PRESET_INPUTS) if ((presets.value[p.key] ?? '').trim()) n++
+  for (const t of PRESET_TOGGLES) if (presets.value[t.key] === '1') n++
+  n += rows.value.filter((r) => r.key.trim()).length
+  if (effortLevel.value.trim()) n++
+  for (const t of SET_PRESET_TOGGLES) if (setPresets.value[t.key] === true) n++
+  n += setRows.value.filter((r) => r.key.trim()).length
+  return n
+})
+
 const RESERVED = 'ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN'
 const keyClash = computed(() =>
   rows.value.some((r) => r.key.trim() === 'ANTHROPIC_BASE_URL' || r.key.trim() === 'ANTHROPIC_AUTH_TOKEN'),
@@ -305,19 +320,7 @@ defineExpose({
       <span class="pb-1.5 text-[11px] text-muted-foreground">写入 ANTHROPIC_MODEL（留空 = 不设）</span>
     </div>
 
-    <!-- 常用项：预设字段（中转/网关场景高频项） -->
-    <div class="grid gap-3 sm:grid-cols-2">
-      <div v-for="p in PRESET_INPUTS" :key="p.key" class="space-y-1.5">
-        <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
-        <Input
-          :id="`ai-claude-${p.key}`"
-          v-model="presets[p.key]"
-          :placeholder="p.placeholder"
-          class="h-8 font-mono text-xs"
-        />
-        <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
-      </div>
-    </div>
+    <!-- 常用开关：一行，勾选即写入（值非空即落 env，与展开区同一存储） -->
     <div class="flex flex-wrap gap-x-5 gap-y-1.5">
       <label v-for="t in PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Checkbox
@@ -325,103 +328,132 @@ defineExpose({
           @update:model-value="(v) => (presets[t.key] = v ? '1' : '')"
         />
         {{ t.label }}
-        <span class="font-mono text-[10px] text-muted-foreground/60">{{ t.key }}</span>
       </label>
     </div>
 
-    <!-- 常用项之外：自定义 env 键值对行 -->
-    <div class="space-y-1.5">
-      <div class="flex items-center justify-between">
-        <Label>自定义 env</Label>
-        <Button variant="outline" size="xs" @click="addRow"><Plus class="size-3.5" /> 添加键值对</Button>
-      </div>
-      <div v-for="(r, i) in rows" :key="i" class="flex items-center gap-2">
-        <Input
-          v-model="r.key"
-          placeholder="键（如 ANTHROPIC_SMALL_FAST_MODEL）"
-          class="h-8 flex-1 font-mono text-xs"
-        />
-        <Input
-          v-model="r.value"
-          placeholder="值"
-          class="h-8 flex-[2] font-mono text-xs"
-        />
-        <button
-          type="button"
-          class="shrink-0 text-muted-foreground/60 hover:text-destructive"
-          title="删除该键值对"
-          @click="removeRow(i)"
-        >
-          <Trash2 class="size-3.5" />
-        </button>
-      </div>
-      <p v-if="keyClash" class="text-[11px] text-destructive">
-        {{ RESERVED }} 由模型服务绑定管——删掉再保存（后端会拒绝）。
-      </p>
-    </div>
+    <!-- 渐进式披露：低频项收进「高级配置」；折叠时徽标 = 已填低频项数 -->
+    <button
+      type="button"
+      class="flex w-fit items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      @click="advancedOpen = !advancedOpen"
+    >
+      <ChevronDown class="size-3.5 transition-transform" :class="advancedOpen && 'rotate-180'" />
+      高级配置
+      <span
+        v-if="advancedFilled && !advancedOpen"
+        class="rounded-full bg-muted px-1.5 text-[10px] tabular-nums text-muted-foreground"
+      >{{ advancedFilled }}</span>
+    </button>
 
-    <!-- 顶级设置：settings.json 顶级键（非 env 的 CLI 原生配置） -->
-    <div class="space-y-1.5">
-      <div class="flex items-center justify-between">
-        <Label>顶级设置</Label>
-        <Button variant="outline" size="xs" @click="addSetRow"><Plus class="size-3.5" /> 添加键值对</Button>
-      </div>
+    <div v-show="advancedOpen" class="space-y-3">
+      <!-- 预设字段（中转/网关场景低频项） -->
       <div class="grid gap-3 sm:grid-cols-2">
-        <div v-for="p in SET_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
+        <div v-for="p in PRESET_INPUTS" :key="p.key" class="space-y-1.5">
+          <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
           <Input
-            :id="`ai-claude-set-${p.key}`"
-            v-model="effortLevel"
+            :id="`ai-claude-${p.key}`"
+            v-model="presets[p.key]"
             :placeholder="p.placeholder"
             class="h-8 font-mono text-xs"
           />
           <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
         </div>
       </div>
-      <div class="flex flex-wrap gap-x-5 gap-y-1.5">
-        <label v-for="t in SET_PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Checkbox
-            :model-value="setPresets[t.key] === true"
-            @update:model-value="(v) => (setPresets[t.key] = v === true)"
-          />
-          {{ t.label }}
-          <span class="font-mono text-[10px] text-muted-foreground/60">{{ t.key }}</span>
-        </label>
-      </div>
-      <div v-for="(r, i) in setRows" :key="i" class="flex items-center gap-2">
-        <Input
-          v-model="r.key"
-          placeholder="键（如 model）"
-          class="h-8 flex-1 font-mono text-xs"
-        />
-        <Input
-          v-model="r.value"
-          placeholder="值（true / 42 / &quot;文本&quot;，按 JSON 解析）"
-          class="h-8 flex-[2] font-mono text-xs"
-        />
-        <button
-          type="button"
-          class="shrink-0 text-muted-foreground/60 hover:text-destructive"
-          title="删除该键值对"
-          @click="removeSetRow(i)"
-        >
-          <Trash2 class="size-3.5" />
-        </button>
-      </div>
-      <p class="text-[10px] text-muted-foreground/60">settings.json 顶级键原样合并写入（整键覆盖）；嵌套结构（permissions、hooks 等）在下方原文里编辑。env 不能写在这里。</p>
-    </div>
 
-    <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型服务即时更新）+ 高级编辑 -->
-    <div class="space-y-1.5">
-      <div class="flex items-center justify-between">
-        <Label>settings.json 预览 / 原文（JSON）</Label>
-        <span class="text-[10px] text-muted-foreground/70">随表单与所选模型服务实时更新 · 可直接改（改对自动套用）</span>
+      <!-- 自定义 env 键值对行 -->
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <Label>自定义 env</Label>
+          <Button variant="outline" size="xs" @click="addRow"><Plus class="size-3.5" /> 添加键值对</Button>
+        </div>
+        <div v-for="(r, i) in rows" :key="i" class="flex items-center gap-2">
+          <Input
+            v-model="r.key"
+            placeholder="键（如 ANTHROPIC_SMALL_FAST_MODEL）"
+            class="h-8 flex-1 font-mono text-xs"
+          />
+          <Input
+            v-model="r.value"
+            placeholder="值"
+            class="h-8 flex-[2] font-mono text-xs"
+          />
+          <button
+            type="button"
+            class="shrink-0 text-muted-foreground/60 hover:text-destructive"
+            title="删除该键值对"
+            @click="removeRow(i)"
+          >
+            <Trash2 class="size-3.5" />
+          </button>
+        </div>
+        <p v-if="keyClash" class="text-[11px] text-destructive">
+          {{ RESERVED }} 由模型服务绑定管——删掉再保存（后端会拒绝）。
+        </p>
       </div>
-      <CodeEditor
-        v-model="raw"
-        language="json"
-        class="h-56 overflow-hidden rounded-md border"
-      />
-      <p v-if="parseErr" class="text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
+
+      <!-- 顶级设置：settings.json 顶级键（非 env 的 CLI 原生配置） -->
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <Label>顶级设置</Label>
+          <Button variant="outline" size="xs" @click="addSetRow"><Plus class="size-3.5" /> 添加键值对</Button>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div v-for="p in SET_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
+            <Input
+              :id="`ai-claude-set-${p.key}`"
+              v-model="effortLevel"
+              :placeholder="p.placeholder"
+              class="h-8 font-mono text-xs"
+            />
+            <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-x-5 gap-y-1.5">
+          <label v-for="t in SET_PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Checkbox
+              :model-value="setPresets[t.key] === true"
+              @update:model-value="(v) => (setPresets[t.key] = v === true)"
+            />
+            {{ t.label }}
+            <span class="font-mono text-[10px] text-muted-foreground/60">{{ t.key }}</span>
+          </label>
+        </div>
+        <div v-for="(r, i) in setRows" :key="i" class="flex items-center gap-2">
+          <Input
+            v-model="r.key"
+            placeholder="键（如 model）"
+            class="h-8 flex-1 font-mono text-xs"
+          />
+          <Input
+            v-model="r.value"
+            placeholder="值（true / 42 / &quot;文本&quot;，按 JSON 解析）"
+            class="h-8 flex-[2] font-mono text-xs"
+          />
+          <button
+            type="button"
+            class="shrink-0 text-muted-foreground/60 hover:text-destructive"
+            title="删除该键值对"
+            @click="removeSetRow(i)"
+          >
+            <Trash2 class="size-3.5" />
+          </button>
+        </div>
+        <p class="text-[10px] text-muted-foreground/60">settings.json 顶级键原样合并写入（整键覆盖）；嵌套结构（permissions、hooks 等）在下方原文里编辑。env 不能写在这里。</p>
+      </div>
+
+      <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型服务即时更新）+ 高级编辑 -->
+      <div class="space-y-1.5">
+        <div class="flex items-center justify-between">
+          <Label>settings.json 预览 / 原文（JSON）</Label>
+          <span class="text-[10px] text-muted-foreground/70">随表单与所选模型服务实时更新 · 可直接改（改对自动套用）</span>
+        </div>
+        <CodeEditor
+          v-model="raw"
+          language="json"
+          class="h-56 overflow-hidden rounded-md border"
+        />
+        <p v-if="parseErr" class="text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
+      </div>
     </div>
   </div>
 </template>
