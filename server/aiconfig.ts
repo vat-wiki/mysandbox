@@ -209,7 +209,10 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
     if (!b.codex?.provider) return 'codex.provider 必填';
     const p = lib[b.codex.provider];
     if (!p) return `codex 引用的 provider 不存在：${b.codex.provider}`;
-    if (!p.endpoints.openai) return `provider ${p.id} 没有配置 OpenAI 兼容端点（codex 需要）`;
+    // codex 固定 responses 协议——responses 端点单独配了用它，否则回落 openai 侧。
+    if (!p.endpoints.openai && !p.endpoints.responses) {
+      return `provider ${p.id} 没有配置 OpenAI 兼容端点（codex 需要 responses 或 openai 端点）`;
+    }
   }
   for (const tool of ['opencode', 'pi'] as const) {
     const t = b[tool];
@@ -536,9 +539,8 @@ async function configCodex(
   managedIds: string[],
   notes: string[],
 ): Promise<void> {
-  if (!p.endpoints.openai?.baseUrl) {
-    throw new Error(`provider ${p.id} 没有配置 OpenAI 兼容端点`);
-  }
+  // codex 固定走 responses 协议——base_url 取 responses 侧（缺省回落 openai 侧）。
+  const baseUrl = baseUrlFor(p, 'openai-responses');
   const tomlPath = join(base, '.codex', 'config.toml');
   const zshPath = join(base, '.zshrc');
   let toml = (await readText(tomlPath)) ?? '';
@@ -549,7 +551,7 @@ async function configCodex(
     a.begin,
     `[model_providers.${p.id}]`,
     `name = "${p.id}"`,
-    `base_url = "${p.endpoints.openai.baseUrl}"`,
+    `base_url = "${baseUrl}"`,
     `wire_api = "responses"`,
     `env_key = "${envKeyFor(p.id)}"`,
     a.end,
@@ -621,12 +623,22 @@ function anthropicV1Url(url: string): string {
   return /\/v1$/.test(stripped) ? stripped : `${stripped}/v1`;
 }
 
-// 指定 wire 取对应侧端点（anthropic-messages 走 anthropic 侧，其余走 openai 侧）。
+// 指定 wire 取对应侧端点（anthropic-messages 走 anthropic 侧；openai-responses 走
+// responses 侧、缺省回落 openai 侧——多数网关两协议同址，单独配了才覆盖；其余走 openai 侧）。
 function baseUrlFor(p: ResolvedProvider, wire: GatewayWire): string {
-  const side = wire === 'anthropic-messages' ? p.endpoints.anthropic : p.endpoints.openai;
+  const side =
+    wire === 'anthropic-messages'
+      ? p.endpoints.anthropic
+      : wire === 'openai-responses'
+        ? (p.endpoints.responses ?? p.endpoints.openai)
+        : p.endpoints.openai;
   if (!side?.baseUrl) {
     throw new Error(
-      `provider ${p.id} 没有 ${wire === 'anthropic-messages' ? 'Anthropic' : 'OpenAI'} 兼容端点（wire=${wire} 需要）`,
+      wire === 'anthropic-messages'
+        ? `provider ${p.id} 没有 Anthropic 兼容端点（wire=${wire} 需要）`
+        : wire === 'openai-responses'
+          ? `provider ${p.id} 没有 OpenAI responses 兼容端点（wire=${wire} 需要 responses 或 openai 端点）`
+          : `provider ${p.id} 没有 OpenAI 兼容端点（wire=${wire} 需要）`,
     );
   }
   return side.baseUrl;
@@ -869,7 +881,7 @@ async function applyPlanToHome(
 // 两侧 baseUrl 约定不同：anthropic 侧按 Claude Code 的 ANTHROPIC_BASE_URL 约定不含
 // /v1（客户端自己拼 /v1/messages），列表在 <base>/v1/models；openai 侧 baseUrl 含
 // /v1，直接拼 /models。
-async function probeHttp(kind: 'OpenAI 兼容' | 'Anthropic 兼容', baseUrl: string, apiKey?: string): Promise<string> {
+async function probeHttp(kind: 'OpenAI 兼容' | 'OpenAI responses 兼容' | 'Anthropic 兼容', baseUrl: string, apiKey?: string): Promise<string> {
   const probePath = kind === 'Anthropic 兼容' ? '/v1/models' : '/models';
   const url = baseUrl.replace(/\/$/, '') + probePath;
   try {
@@ -897,7 +909,7 @@ async function probeHttp(kind: 'OpenAI 兼容' | 'Anthropic 兼容', baseUrl: st
 async function probeContainer(
   cfg: Config,
   id: string,
-  kind: 'OpenAI 兼容' | 'Anthropic 兼容',
+  kind: 'OpenAI 兼容' | 'OpenAI responses 兼容' | 'Anthropic 兼容',
   baseUrl: string,
   apiKey?: string,
 ): Promise<string> {
@@ -930,23 +942,34 @@ async function probePlan(
   target: string,
   plan: AiApplyPlan,
 ): Promise<string[]> {
-  const checks = new Map<string, { kind: 'OpenAI 兼容' | 'Anthropic 兼容'; url: string; apiKey?: string }>();
-  const add = (kind: 'OpenAI 兼容' | 'Anthropic 兼容', url: string | undefined, apiKey?: string) => {
+  const checks = new Map<
+    string,
+    { kind: 'OpenAI 兼容' | 'OpenAI responses 兼容' | 'Anthropic 兼容'; url: string; apiKey?: string }
+  >();
+  const add = (
+    kind: 'OpenAI 兼容' | 'OpenAI responses 兼容' | 'Anthropic 兼容',
+    url: string | undefined,
+    apiKey?: string,
+  ) => {
     if (url) checks.set(`${url}|${apiKey ?? ''}`, { kind, url, apiKey });
   };
+  // responses 侧 URL = responses 端点 ?? openai 端点（同 baseUrl×key 的探测会被
+  // Map 键去重，与 openai-chat 变体并成一条——同址本来就该只探一次）。
+  const openaiSide = (p: ResolvedProvider, wire: GatewayWire): string | undefined =>
+    wire === 'openai-responses' ? (p.endpoints.responses?.baseUrl ?? p.endpoints.openai?.baseUrl) : p.endpoints.openai?.baseUrl;
   if (plan.claude) add('Anthropic 兼容', plan.claude.endpoints.anthropic?.baseUrl, plan.claude.apiKey);
-  if (plan.codex) add('OpenAI 兼容', plan.codex.provider.endpoints.openai?.baseUrl, plan.codex.provider.apiKey);
+  if (plan.codex) add('OpenAI responses 兼容', openaiSide(plan.codex.provider, 'openai-responses'), plan.codex.provider.apiKey);
   if (plan.opencode) {
     for (const v of plan.opencode.variants) {
       if (v.wire === 'anthropic-messages') add('Anthropic 兼容', v.provider.endpoints.anthropic?.baseUrl, v.provider.apiKey);
-      else add('OpenAI 兼容', v.provider.endpoints.openai?.baseUrl, v.provider.apiKey);
+      else add(v.wire === 'openai-responses' ? 'OpenAI responses 兼容' : 'OpenAI 兼容', openaiSide(v.provider, v.wire), v.provider.apiKey);
     }
   }
   if (plan.pi) {
     for (const p of plan.pi.providers) {
       for (const wire of plan.pi.wires) {
         if (wire === 'anthropic-messages') add('Anthropic 兼容', p.endpoints.anthropic?.baseUrl, p.apiKey);
-        else add('OpenAI 兼容', p.endpoints.openai?.baseUrl, p.apiKey);
+        else add(wire === 'openai-responses' ? 'OpenAI responses 兼容' : 'OpenAI 兼容', openaiSide(p, wire), p.apiKey);
       }
     }
   }
@@ -1384,51 +1407,60 @@ export async function removeAiProviderEverywhere(cfg: Config, id: string): Promi
 }
 
 // provider 连通性探测（进程内，库页「探测」按钮用）。HTTP 码不代表鉴权通过。
+// responses 端点单独配了才单独探（回落 openai 同址时探一次没 extra 信息）。
 export async function probeProvider(endpoints: AiProvider['endpoints']): Promise<{
   openai?: string;
+  responses?: string;
   anthropic?: string;
 }> {
-  const out: { openai?: string; anthropic?: string } = {};
+  const out: { openai?: string; responses?: string; anthropic?: string } = {};
   if (endpoints.openai?.baseUrl) out.openai = await probeHttp('OpenAI 兼容', endpoints.openai.baseUrl);
+  if (endpoints.responses?.baseUrl) out.responses = await probeHttp('OpenAI responses 兼容', endpoints.responses.baseUrl);
   if (endpoints.anthropic?.baseUrl) out.anthropic = await probeHttp('Anthropic 兼容', endpoints.anthropic.baseUrl);
   return out;
 }
 
-// 从网关拉模型清单（两路独立，一路失败不影响另一路）。**按侧返回不合并**——openai
-// 侧清单喂 chat 协议（responses 协议网关的 /models 区分不了，前端不预填、手填），
-// anthropic 侧清单喂 anthropic-messages 协议；旧版合并去重成一份正是按协议失真的
-// 根源。模型清单归 provider 所有（opencode/pi 变体下挂的就是它），分发时随绑定走。
+// 从网关拉模型清单（三路独立，一路失败不影响另一路）。**按侧返回不合并**——openai
+// 侧清单喂 chat 协议；responses 侧端点单独配了才拉（网关两协议不同址时各自的
+// /models 才有区分意义，同址回落 openai 时拉了也是同一份）；anthropic 侧喂
+// anthropic-messages 协议。旧版合并去重成一份正是按协议失真的根源。模型清单归
+// provider 所有（opencode/pi 变体下挂的就是它），分发时随绑定走。
 export async function fetchProviderModels(endpoints: AiProvider['endpoints'], apiKey: string): Promise<{
   openai?: string[];
+  responses?: string[];
   anthropic?: string[];
   errors: string[];
 }> {
   const errors: string[] = [];
-  const out: { openai?: string[]; anthropic?: string[] } = {};
-  const o = endpoints.openai?.baseUrl;
-  if (o) {
+  const out: { openai?: string[]; responses?: string[]; anthropic?: string[] } = {};
+  const pullOpenaiStyle = async (label: string, baseUrl: string): Promise<string[] | undefined> => {
     try {
-      const r = await fetch(o.replace(/\/$/, '') + '/models', {
+      const r = await fetch(baseUrl.replace(/\/$/, '') + '/models', {
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(10_000),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as { data?: { id?: string }[] };
       const list = (j.data ?? []).map((m) => m.id).filter((m): m is string => !!m).sort();
-      if (list.length) out.openai = list;
+      return list.length ? list : undefined;
     } catch (e) {
-      errors.push(`OpenAI 侧拉取失败：${errMsg(e)}`);
+      errors.push(`${label}侧拉取失败：${errMsg(e)}`);
+      return undefined;
     }
-  }
+  };
+  const o = endpoints.openai?.baseUrl;
+  if (o) out.openai = await pullOpenaiStyle('OpenAI', o);
+  const r = endpoints.responses?.baseUrl;
+  if (r) out.responses = await pullOpenaiStyle('OpenAI responses', r);
   const a = endpoints.anthropic?.baseUrl;
   if (a) {
     try {
-      const r = await fetch(a.replace(/\/$/, '') + '/v1/models', {
+      const r2 = await fetch(a.replace(/\/$/, '') + '/v1/models', {
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         signal: AbortSignal.timeout(10_000),
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = (await r.json()) as { data?: { id?: string }[] };
+      if (!r2.ok) throw new Error(`HTTP ${r2.status}`);
+      const j = (await r2.json()) as { data?: { id?: string }[] };
       const list = (j.data ?? []).map((m) => m.id).filter((m): m is string => !!m).sort();
       if (list.length) out.anthropic = list;
     } catch (e) {

@@ -41,12 +41,13 @@ const draft = ref<null | {
   name: string
   anthropicUrl: string
   openaiUrl: string
+  responsesUrl: string
   apiKey: string
   chatModels: string
   responsesModels: string
   anthropicModels: string
 }>(null)
-const probeRes = ref<{ openai?: string; anthropic?: string } | null>(null)
+const probeRes = ref<{ openai?: string; responses?: string; anthropic?: string } | null>(null)
 const fetchNote = ref('')
 
 const WIRES: { wire: GatewayWire; label: string }[] = [
@@ -70,7 +71,7 @@ async function load() {
 onMounted(load)
 
 function startAdd() {
-  draft.value = { wantId: '', name: '', anthropicUrl: '', openaiUrl: '', apiKey: '', chatModels: '', responsesModels: '', anthropicModels: '' }
+  draft.value = { wantId: '', name: '', anthropicUrl: '', openaiUrl: '', responsesUrl: '', apiKey: '', chatModels: '', responsesModels: '', anthropicModels: '' }
   probeRes.value = null
   fetchNote.value = ''
   err.value = ''
@@ -82,6 +83,7 @@ function startEdit(p: AiProvider) {
     name: p.name,
     anthropicUrl: p.endpoints.anthropic?.baseUrl ?? '',
     openaiUrl: p.endpoints.openai?.baseUrl ?? '',
+    responsesUrl: p.endpoints.responses?.baseUrl ?? '',
     apiKey: p.apiKey,
     chatModels: wireModels(p, 'openai-chat').join(', '),
     responsesModels: wireModels(p, 'openai-responses').join(', '),
@@ -94,6 +96,7 @@ function startEdit(p: AiProvider) {
 
 const draftEndpoints = computed(() => ({
   ...(draft.value?.openaiUrl.trim() ? { openai: { baseUrl: draft.value.openaiUrl.trim() } } : {}),
+  ...(draft.value?.responsesUrl.trim() ? { responses: { baseUrl: draft.value.responsesUrl.trim() } } : {}),
   ...(draft.value?.anthropicUrl.trim() ? { anthropic: { baseUrl: draft.value.anthropicUrl.trim() } } : {}),
 }))
 
@@ -120,13 +123,19 @@ async function doFetchModels() {
   fetchNote.value = ''
   try {
     const r = await fetchAiModels(draftEndpoints.value, draft.value.apiKey.trim())
-    // openai 侧结果只预填 chat——网关 /models 协议无关，responses 实际可用集区分
-    // 不出来（有的模型不支持），手填；anthropic 侧结果预填 anthropic。
+    // openai 侧结果只预填 chat；responses 端点单独配了才拉它的 /models 预填
+    // responses（同址回落 openai 时拉了也是同一份，不预填、手填）；anthropic 侧
+    // 结果预填 anthropic。
     if (r.openai?.length) draft.value.chatModels = r.openai.join(', ')
+    if (r.responses?.length) draft.value.responsesModels = r.responses.join(', ')
     if (r.anthropic?.length) draft.value.anthropicModels = r.anthropic.join(', ')
     fetchNote.value = [
       r.openai?.length ? `chat 预填 ${r.openai.length} 个` : 'openai 侧没返回模型',
-      ...(draft.value.openaiUrl.trim() ? ['responses 不预填（/models 区分不了，按实际支持手填）'] : []),
+      ...(draft.value.responsesUrl.trim()
+        ? [r.responses?.length ? `responses 预填 ${r.responses.length} 个` : 'responses 侧没返回模型']
+        : draft.value.openaiUrl.trim()
+          ? ['responses 不预填（未单独配端点，同址 /models 区分不了，按实际支持手填）']
+          : []),
       r.anthropic?.length ? `anthropic 预填 ${r.anthropic.length} 个` : '',
       ...r.errors,
     ].filter(Boolean).join('；')
@@ -152,8 +161,8 @@ async function save() {
     err.value = 'ID 必填：小写字母开头，小写字母/数字/短横线，≤32 位（会被用作各工具配置里的 provider 名）'
     return
   }
-  if (!d.openaiUrl.trim() && !d.anthropicUrl.trim()) {
-    err.value = '至少填一个端点（OpenAI 兼容 / Anthropic 兼容）'
+  if (!d.openaiUrl.trim() && !d.responsesUrl.trim() && !d.anthropicUrl.trim()) {
+    err.value = '至少填一个端点（OpenAI 兼容 / OpenAI responses 兼容 / Anthropic 兼容）'
     return
   }
   if (!d.apiKey.trim()) {
@@ -257,7 +266,14 @@ async function doRemoveProvider() {
           </div>
           <div class="space-y-1.5">
             <Label for="ai-p-openai">OpenAI 兼容 Base URL</Label>
-            <Input id="ai-p-openai" v-model="draft.openaiUrl" placeholder="http://…/openai/v1（codex/opencode/pi 用）" />
+            <Input id="ai-p-openai" v-model="draft.openaiUrl" placeholder="http://…/openai/v1（opencode/pi 的 chat 变体用）" />
+          </div>
+          <div class="space-y-1.5 sm:col-span-2">
+            <Label for="ai-p-responses">
+              OpenAI responses 兼容 Base URL
+              <span class="text-[11px] font-normal text-muted-foreground">（缺省 = 上面的 OpenAI 端点同址；两协议不同址才单独填，codex 也走它）</span>
+            </Label>
+            <Input id="ai-p-responses" v-model="draft.responsesUrl" placeholder="http://…/openai/v1" />
           </div>
         </div>
         <div class="space-y-1.5">
@@ -271,13 +287,15 @@ async function doRemoveProvider() {
               <CloudDownload class="size-3.5" /> 从网关拉取
             </Button>
           </div>
-          <div v-if="draft.openaiUrl.trim()" class="grid gap-3 sm:grid-cols-2">
-            <div class="space-y-1">
+          <div v-if="draft.openaiUrl.trim() || draft.responsesUrl.trim()" class="grid gap-3 sm:grid-cols-2">
+            <div v-if="draft.openaiUrl.trim()" class="space-y-1">
               <Label for="ai-p-models-chat" class="text-[11px] text-muted-foreground">chat 协议</Label>
               <Input id="ai-p-models-chat" v-model="draft.chatModels" placeholder="gpt-5, deepseek-chat" />
             </div>
-            <div class="space-y-1">
-              <Label for="ai-p-models-responses" class="text-[11px] text-muted-foreground">responses 协议（/models 区分不了，按实际支持手填）</Label>
+            <div v-if="draft.openaiUrl.trim() || draft.responsesUrl.trim()" class="space-y-1">
+              <Label for="ai-p-models-responses" class="text-[11px] text-muted-foreground">
+                responses 协议{{ draft.responsesUrl.trim() ? '' : '（端点同址区分不了，按实际支持手填）' }}
+              </Label>
               <Input id="ai-p-models-responses" v-model="draft.responsesModels" placeholder="gpt-5, …" />
             </div>
           </div>
@@ -290,6 +308,7 @@ async function doRemoveProvider() {
         <div v-if="probeRes" class="space-y-0.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed">
           <p v-if="probeRes.anthropic">{{ probeRes.anthropic }}</p>
           <p v-if="probeRes.openai">{{ probeRes.openai }}</p>
+          <p v-if="probeRes.responses">{{ probeRes.responses }}</p>
         </div>
         <div class="flex items-center justify-between">
           <Button variant="outline" size="xs" :disabled="busy" @click="doProbe"><Radar class="size-3.5" /> 探测连通</Button>
@@ -312,6 +331,7 @@ async function doRemoveProvider() {
               <Badge variant="outline" class="px-1.5 font-mono text-[10px] text-muted-foreground">{{ p.id }}</Badge>
               <Badge v-if="p.endpoints.anthropic" variant="outline" class="px-1.5 text-[10px]">anthropic</Badge>
               <Badge v-if="p.endpoints.openai" variant="outline" class="px-1.5 text-[10px]">openai</Badge>
+              <Badge v-if="p.endpoints.responses" variant="outline" class="px-1.5 text-[10px]">responses</Badge>
               <Badge v-if="totalModels(p)" variant="outline" class="px-1.5 text-[10px] text-muted-foreground">
                 {{ WIRES.filter(({ wire }) => wireModels(p, wire).length).map(({ label, wire }) => `${label} ${wireModels(p, wire).length}`).join(' · ') }}
               </Badge>
@@ -330,6 +350,7 @@ async function doRemoveProvider() {
               <div class="mt-1 space-y-0.5 pl-4 font-mono text-[11px] text-muted-foreground">
                 <p v-if="p.endpoints.anthropic">anthropic: {{ p.endpoints.anthropic.baseUrl }}</p>
                 <p v-if="p.endpoints.openai">openai:&nbsp;&nbsp;&nbsp;{{ p.endpoints.openai.baseUrl }}</p>
+                <p v-if="p.endpoints.responses">responses: {{ p.endpoints.responses.baseUrl }}</p>
                 <p>key: {{ p.apiKey.slice(0, 6) }}…{{ p.apiKey.slice(-4) }}</p>
                 <p v-for="{ wire, label } in WIRES" v-show="wireModels(p, wire).length" :key="wire">
                   {{ label }}:&nbsp;&nbsp;{{ wireModels(p, wire).join(', ') }}

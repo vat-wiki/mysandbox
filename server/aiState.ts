@@ -62,6 +62,7 @@ export interface AiProvider {
   name: string; // 显示名
   endpoints: {
     openai?: { baseUrl: string }; // OpenAI 兼容端点（…/openai/v1）
+    responses?: { baseUrl: string }; // OpenAI responses 兼容端点（同 openai 约定；多数网关与 openai 同址可不填——缺省回落 openai，两协议不同址才单独填）
     anthropic?: { baseUrl: string }; // Anthropic 兼容端点（…/anthropic，不含 /v1）
   };
   apiKey: string;

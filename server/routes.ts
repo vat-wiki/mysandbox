@@ -556,9 +556,9 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const lib = await getAiProviders();
     if (!id && lib[pid]) throw conflict(`provider id 已存在：${pid}`);
     if (id && !lib[pid]) throw new HttpError(404, `provider 不存在：${pid}`, 'not_found');
-    // 端点两路分开收；填了但不像 URL → 400 点名，不静默当没填。
+    // 端点三路分开收（openai / responses / anthropic）；填了但不像 URL → 400 点名，不静默当没填。
     const epIn = (body.endpoints ?? {}) as Record<string, unknown>;
-    const pickUrl = (v: unknown, side: 'openai' | 'anthropic'): string | undefined => {
+    const pickUrl = (v: unknown, side: 'openai' | 'responses' | 'anthropic'): string | undefined => {
       const raw = typeof v === 'string' ? v : (v as { baseUrl?: unknown })?.baseUrl;
       if (raw == null || String(raw).trim() === '') return undefined;
       const s = String(raw).trim();
@@ -569,9 +569,12 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     };
     const endpoints = {
       ...(pickUrl(epIn.openai, 'openai') ? { openai: { baseUrl: pickUrl(epIn.openai, 'openai')! } } : {}),
+      ...(pickUrl(epIn.responses, 'responses') ? { responses: { baseUrl: pickUrl(epIn.responses, 'responses')! } } : {}),
       ...(pickUrl(epIn.anthropic, 'anthropic') ? { anthropic: { baseUrl: pickUrl(epIn.anthropic, 'anthropic')! } } : {}),
     };
-    if (!endpoints.openai && !endpoints.anthropic) throw badRequest('至少填一个端点（OpenAI 兼容 / Anthropic 兼容）');
+    if (!endpoints.openai && !endpoints.responses && !endpoints.anthropic) {
+      throw badRequest('至少填一个端点（OpenAI 兼容 / OpenAI responses 兼容 / Anthropic 兼容）');
+    }
     const apiKey = String(body.apiKey ?? '').trim();
     if (!apiKey) throw badRequest('apiKey 必填');
     // 模型清单按协议（wire）各一份：对象键 ∈ WIRES、值数组或逗号串，空清单视为未配；
@@ -629,11 +632,12 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     };
     return probeProvider({
       ...(pick(epIn.openai) ? { openai: { baseUrl: pick(epIn.openai)! } } : {}),
+      ...(pick(epIn.responses) ? { responses: { baseUrl: pick(epIn.responses)! } } : {}),
       ...(pick(epIn.anthropic) ? { anthropic: { baseUrl: pick(epIn.anthropic)! } } : {}),
     });
   });
 
-  // 拉模型清单（两路独立，一路失败不影响另一路；错误在 errors 里点侧）。
+  // 拉模型清单（三路独立，一路失败不影响另一路；错误在 errors 里点侧）。
   app.post('/api/ai/providers/models', async (req) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const epIn = (body.endpoints ?? {}) as Record<string, unknown>;
@@ -644,11 +648,12 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     };
     const endpoints = {
       ...(pick(epIn.openai) ? { openai: { baseUrl: pick(epIn.openai)! } } : {}),
+      ...(pick(epIn.responses) ? { responses: { baseUrl: pick(epIn.responses)! } } : {}),
       ...(pick(epIn.anthropic) ? { anthropic: { baseUrl: pick(epIn.anthropic)! } } : {}),
     };
     const apiKey = String(body.apiKey ?? '').trim();
     if (!apiKey) throw badRequest('apiKey 必填');
-    if (!endpoints.openai && !endpoints.anthropic) throw badRequest('至少填一个端点');
+    if (!endpoints.openai && !endpoints.responses && !endpoints.anthropic) throw badRequest('至少填一个端点');
     return fetchProviderModels(endpoints, apiKey);
   });
 

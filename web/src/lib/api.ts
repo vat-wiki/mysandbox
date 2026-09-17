@@ -349,7 +349,9 @@ export const HOST_TARGET = '__host__'
 export interface AiProvider {
   id: string
   name: string
-  endpoints: { openai?: { baseUrl: string }; anthropic?: { baseUrl: string } }
+  // responses = OpenAI responses 兼容端点（多数网关与 openai 同址可不填，缺省回落
+  // openai；两协议不同址才单独填——codex 固定 responses，也走它）。
+  endpoints: { openai?: { baseUrl: string }; responses?: { baseUrl: string }; anthropic?: { baseUrl: string } }
   apiKey: string
   // 模型清单按协议各一份：OpenAI 兼容网关同一条 /models 下 chat 与 responses 两套
   // 协议实际可用的模型不同（有的模型不支持 responses），anthropic 侧也各是各的。
@@ -431,12 +433,13 @@ export const upsertAiProvider = (p: { id?: string; wantId?: string; name: string
 export const deleteAiProvider = (id: string) =>
   api(`/api/ai/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<{ ok: boolean }>
 export const probeAiProvider = (endpoints: AiProvider['endpoints']) =>
-  postJson('/api/ai/providers/probe', { endpoints }, 30_000) as Promise<{ openai?: string; anthropic?: string }>
-// 按侧返回不合并：openai 侧清单喂 chat 协议（responses 网关的 /models 区分不了，
-// 手填），anthropic 侧喂 anthropic-messages。
+  postJson('/api/ai/providers/probe', { endpoints }, 30_000) as Promise<{ openai?: string; responses?: string; anthropic?: string }>
+// 按侧返回不合并：openai 侧清单喂 chat 协议；responses 侧端点单独配了才拉（同址
+// 回落 openai 时拉了也是同一份）；anthropic 侧喂 anthropic-messages。
 export const fetchAiModels = (endpoints: AiProvider['endpoints'], apiKey: string) =>
   postJson('/api/ai/providers/models', { endpoints, apiKey }, 60_000) as Promise<{
     openai?: string[]
+    responses?: string[]
     anthropic?: string[]
     errors: string[]
   }>
