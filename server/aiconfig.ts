@@ -642,6 +642,10 @@ async function configOpencode(
   if (setDefault && providers.length && wires.length && providers[0].models.length) {
     obj.model = `${providers[0].id}-${WIRE_SUFFIX[wires[0]]}/${providers[0].models[0]}`;
   }
+  // 权限默认 auto（等价 CLI --auto：自动批准未显式拒绝的权限）——受管键 permission='allow'，
+  // 用户手改会被下一次保存拉回（与 claude 受管键同语义）。只写 user scope：项目级
+  // opencode.json 往往进仓库，权限放宽不该由 mysandbox 带进共享目录。
+  if (scope === 'user') obj.permission = 'allow';
   await writeJsonObject(path, obj);
   notes.push(
     `opencode: 写 ${relTo(base, path)}（${providers.map((p) => p.id).join('、') || '无'} × ${
@@ -650,7 +654,7 @@ async function configOpencode(
       setDefault && providers.length && wires.length && providers[0].models.length
         ? `（默认 ${String(obj.model)}）`
         : ''
-    }`,
+    }${scope === 'user' ? '（权限 auto）' : ''}`,
   );
 }
 
