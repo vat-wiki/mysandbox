@@ -25,7 +25,6 @@ import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
-import InfoHint from './InfoHint.vue'
 
 const emit = defineEmits<{
   (e: 'done'): void
@@ -298,23 +297,6 @@ async function submitTool(tool: ToolTab) {
           </div>
 
           <p v-if="err" class="rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{{ err }}</p>
-
-          <!-- 追平语义：一行常驻（触发时机 + key 明文风险句），机制细节收 InfoHint——
-               讲的是绑定保存的后果，收在绑定面板尾 -->
-          <div
-            v-if="view"
-            class="flex items-start gap-1.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
-          >
-            <div class="flex-1 space-y-0.5">
-              <p>绑定保存后自动追平（目标 = 本机 + 受管容器）：启动 sweep、新建容器、start 事件。</p>
-              <p class="text-amber-500/90">API Key 会明文落盘到各目标（sidecar 存档同面；本机 = 宿主 home 的真实文件）。</p>
-            </div>
-            <InfoHint label="追平与落盘机制说明">
-              <p>追平按「目标覆盖 ?? 全局绑定」写一份，容器不必在运行，CLI 下次启动即生效；本机跟随全局绑定（没有专属覆盖）。</p>
-              <p>各工具落盘：claude 走 settings.json env 注入（含自身配置的模型/env）；codex 加 provider 块（key 经 ~/.zshrc 环境变量，固定 responses）；opencode / pi 在配置里内联 key，按所选协议注册 <code>&lt;服务&gt;-chat/-responses/-anthropic</code> 接入点。</p>
-              <p>已有配置只合并本方案的键；换绑 / 清空会回收旧接入点。</p>
-            </InfoHint>
-          </div>
         </div>
       </section>
     </template>
