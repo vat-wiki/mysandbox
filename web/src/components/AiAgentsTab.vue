@@ -25,6 +25,7 @@ import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
+import InfoHint from './InfoHint.vue'
 
 const emit = defineEmits<{
   (e: 'done'): void
@@ -243,11 +244,12 @@ async function submitTool(tool: ToolTab) {
               />
             </template>
           </AiClaudeToolConfig>
-          <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动 -->
-          <div class="flex items-center justify-end gap-3 border-t pt-3">
-            <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
+          <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动。
+               应用范围说明挂 ? （InfoHint）——目标集合后端 allTargets：本机+受管容器+模板 -->
+          <div class="flex items-center justify-end gap-2 border-t pt-3">
+            <span class="mr-auto"><InfoHint tip="应用目标 = 本机 + 全部受管系统容器 + 模板容器（均含停机的）。停机的直接写文件系统，下次启动即生效；新容器克隆模板即自带配置。" /></span>
             <Button :disabled="busy" @click="submitTool('claude')">{{
-              busy ? '应用中…' : '保存并应用到全部目标'
+              busy ? '应用中…' : '保存并应用'
             }}</Button>
           </div>
           </div>
@@ -262,10 +264,10 @@ async function submitTool(tool: ToolTab) {
               @update:set-default="(v) => (codexDefault = v)"
             />
             <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
-            <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 全部受管系统容器（含停机的；模板除外）</p>
+            <div class="flex items-center justify-end gap-2 border-t pt-3">
+              <span class="mr-auto"><InfoHint tip="应用目标 = 本机 + 全部受管系统容器 + 模板容器（均含停机的）。停机的直接写文件系统，下次启动即生效。" /></span>
               <Button :disabled="busy" @click="submitTool('codex')">{{
-                busy ? '应用中…' : '保存并应用到全部目标'
+                busy ? '应用中…' : '保存并应用'
               }}</Button>
             </div>
           </div>

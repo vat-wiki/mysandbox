@@ -933,9 +933,7 @@ export async function setClaudeToolConfig(
   } else {
     const overrides = await getAiTargetOverrides();
     const global = await getAiBinding();
-    targets = [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)].filter(
-      (n) => (overrides[n] ?? global)?.claude,
-    );
+    targets = (await allTargets(cfg)).filter((n) => (overrides[n] ?? global)?.claude);
   }
 
   log.info({ op: 'ai-tool-config', count: targets.length, keys: Object.keys(extraEnv).length }, 'ai-tool-config start');
@@ -1013,7 +1011,7 @@ export async function setClaudePageConfig(
   await setAiToolConfig({ claude: tc });
   await setAiBinding(binding);
 
-  const targets = ids?.length ? ids : [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
+  const targets = ids?.length ? ids : await allTargets(cfg);
 
   // removedKeys 回收：逐目标剥掉上一版自身配置写进 settings.json 的已移除键（env 键
   // 与顶级键各自一套）。尽力而为——失败不挡应用段（configClaude 的整体合并会把期望值
@@ -1157,7 +1155,7 @@ export async function applyAiToContainer(cfg: Config, name: string): Promise<voi
   }
 }
 
-// 启动 sweep（cli.ts 装配）：逐目标（本机 + 受管容器）按「覆盖 ?? 全局」应用（宿主
+// 启动 sweep（cli.ts 装配）：逐目标（本机 + 受管容器 + 模板，见 allTargets）按「覆盖 ?? 全局」应用（宿主
 // 直写 rootfs，容器不必在跑；本机与容器同权——2026-09-16 起全局绑定同样追平本机）。
 // 都没有 = 无事发生；尽力而为不抛。
 export async function applyAiAll(cfg: Config): Promise<void> {
@@ -1166,7 +1164,7 @@ export async function applyAiAll(cfg: Config): Promise<void> {
     const global = await getAiBinding();
     const overrides = await getAiTargetOverrides();
     if (global || Object.keys(overrides).length) {
-      const targets = [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
+      const targets = await allTargets(cfg);
       const limit = pLimit(CONCURRENCY);
       const items = await Promise.all(
         targets.map((t) =>
@@ -1325,14 +1323,26 @@ function hostRel(p: string): string {
   throw new Error(`宿主路径必须在 home 内（${home}）："${p}"`);
 }
 
-// 全部 AI 配置目标：本机 + 全部受管容器（本机排最前——展示/结果里它先出现）。
+// 全部 AI 配置目标：本机 + 全部受管容器 + 模板容器（本机排最前——展示/结果里它先出现）。
+// 模板不在 listManaged 里（UI 列表刻意排除），但 AI 配置它也要追平——新容器克隆模板即
+// 自带正确配置；模板不存在时静默跳过。
 async function allTargets(cfg: Config): Promise<string[]> {
+  const ids = new Set<string>();
   try {
-    return [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
+    for (const v of await listManaged(cfg)) ids.add(v.id);
+    const tpl = cfg.lxc.template;
+    if (tpl && !ids.has(tpl)) {
+      try {
+        await inspectContainer(cfg, tpl);
+        ids.add(tpl);
+      } catch {
+        /* 模板不存在，跳过 */
+      }
+    }
   } catch (e) {
     log.warn({ err: String(e) }, 'ai-config: list managed failed, host only');
-    return [HOST_TARGET];
   }
+  return [HOST_TARGET, ...ids];
 }
 
 // 项目规则校验：codex/pi 没有项目级配置形状（一期不支持，别硬凑），只收 claude/opencode。
