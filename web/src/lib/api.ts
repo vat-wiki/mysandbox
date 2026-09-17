@@ -351,10 +351,15 @@ export interface AiProvider {
   name: string
   endpoints: { openai?: { baseUrl: string }; anthropic?: { baseUrl: string } }
   apiKey: string
-  models?: string[]
+  // 模型清单按协议各一份：OpenAI 兼容网关同一条 /models 下 chat 与 responses 两套
+  // 协议实际可用的模型不同（有的模型不支持 responses），anthropic 侧也各是各的。
+  models?: Partial<Record<GatewayWire, string[]>>
   createdAt?: string
   updatedAt?: string
 }
+// provider 某协议的模型清单（容忍旧共享数组形状；与后端 aiState.wireModels 同语义）。
+export const wireModels = (p: Pick<AiProvider, 'models'>, wire: GatewayWire): string[] =>
+  Array.isArray(p.models) ? (p.models as unknown as string[]) : (p.models?.[wire] ?? [])
 // opencode 绑定：provider 多选，每个 provider 独立配协议，每个协议独立配模型——
 // wires[].models 缺省 = 该 provider 全部模型；defaultModel = "<变体>/<模型>" 显式默认。
 export interface AiOpenCodeWireBinding {
@@ -421,14 +426,20 @@ export interface AiView {
 export const getAiView = () => api('/api/ai/view') as Promise<AiView>
 // provider 库 CRUD（wantId = 新建时的 id；带 id = 更新）。探测/拉模型直接吃端点形状，
 // 编辑中未入库也能用。
-export const upsertAiProvider = (p: { id?: string; wantId?: string; name: string; endpoints: AiProvider['endpoints']; apiKey: string; models?: string[] }) =>
+export const upsertAiProvider = (p: { id?: string; wantId?: string; name: string; endpoints: AiProvider['endpoints']; apiKey: string; models?: AiProvider['models'] }) =>
   postJson('/api/ai/providers', p, 60_000) as Promise<{ provider: AiProvider }>
 export const deleteAiProvider = (id: string) =>
   api(`/api/ai/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<{ ok: boolean }>
 export const probeAiProvider = (endpoints: AiProvider['endpoints']) =>
   postJson('/api/ai/providers/probe', { endpoints }, 30_000) as Promise<{ openai?: string; anthropic?: string }>
+// 按侧返回不合并：openai 侧清单喂 chat 协议（responses 网关的 /models 区分不了，
+// 手填），anthropic 侧喂 anthropic-messages。
 export const fetchAiModels = (endpoints: AiProvider['endpoints'], apiKey: string) =>
-  postJson('/api/ai/providers/models', { endpoints, apiKey }, 60_000) as Promise<{ models: string[]; errors: string[] }>
+  postJson('/api/ai/providers/models', { endpoints, apiKey }, 60_000) as Promise<{
+    openai?: string[]
+    anthropic?: string[]
+    errors: string[]
+  }>
 // 保存全局绑定并应用（ids 缺省 = 本机 + 全部受管容器，本机与容器同权）。
 // apply = 只下发这些工具槽（存储仍整份保存）——按工具页签保存时传 [tool]，
 // 落盘只写本工具、不连带重写其他工具的配置（工具间互相独立）。

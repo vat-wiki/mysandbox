@@ -65,6 +65,7 @@ import {
   type AiOpenCodeToolConfig,
   type AiOpenCodeBinding,
   type GatewayWire,
+  wireModels,
 } from './aiState.js';
 import type { BatchItemResult, BatchResult } from './batch.js';
 import { log } from './logger.js';
@@ -126,12 +127,12 @@ export function sliceBinding(b: AiBinding, apply: AiToolKey[]): AiBinding {
 
 // —— 解析层：绑定 + provider 库 → 应用计划 ——
 
-// 写盘用的 provider 形状（解析后）。
+// 写盘用的 provider 形状（解析后）。models 按协议各一份（取用走 wireModels）。
 export interface ResolvedProvider {
   id: string;
   endpoints: AiProvider['endpoints'];
   apiKey: string;
-  models: string[];
+  models: AiProvider['models'];
 }
 
 // 解析后的应用计划：每个工具一组已解析 provider。单槽工具一个；多槽工具数组。
@@ -160,7 +161,7 @@ export function buildPlan(
       if (!missing.includes(id)) missing.push(id);
       return null;
     }
-    return { id: p.id, endpoints: p.endpoints, apiKey: p.apiKey, models: p.models ?? [] };
+    return { id: p.id, endpoints: p.endpoints, apiKey: p.apiKey, models: p.models ?? {} };
   };
   const plan: AiApplyPlan = {};
   if (binding.claude) {
@@ -229,7 +230,9 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
           if (w.models !== undefined) {
             if (!Array.isArray(w.models)) return `opencode 协议 ${w.wire} 的 models 必须是数组`;
             for (const m of w.models) {
-              if (!p.models?.includes(m)) return `opencode provider ${e.provider} 协议 ${w.wire} 引用了库里没有的模型：${m}`;
+              if (!wireModels(p, w.wire).includes(m)) {
+                return `opencode provider ${e.provider} 协议 ${w.wire} 引用了库里没有的模型：${m}`;
+              }
             }
           }
         }
@@ -243,7 +246,7 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
         const ok = slot.entries.some((e) =>
           e.wires.some((w) => {
             if (variant !== `${e.provider}-${WIRE_SUFFIX[w.wire]}`) return false;
-            const models = w.models?.length ? w.models : (lib[e.provider].models ?? []);
+            const models = w.models?.length ? w.models : wireModels(lib[e.provider], w.wire);
             return models.includes(model);
           }),
         );
@@ -707,7 +710,7 @@ async function configOpencode(
   for (const v of variants) {
     const key = `${v.provider.id}-${WIRE_SUFFIX[v.wire]}`;
     keep.add(key);
-    const models = v.models?.length ? v.models : v.provider.models;
+    const models = v.models?.length ? v.models : wireModels(v.provider, v.wire);
     const entry = {
       npm:
         v.wire === 'anthropic-messages'
@@ -731,7 +734,7 @@ async function configOpencode(
     obj.model = defaultModel;
   } else if (setDefault && variants.length) {
     const v0 = variants[0];
-    const models = v0.models?.length ? v0.models : v0.provider.models;
+    const models = v0.models?.length ? v0.models : wireModels(v0.provider, v0.wire);
     if (models.length) obj.model = `${v0.provider.id}-${WIRE_SUFFIX[v0.wire]}/${models[0]}`;
   }
   // opencode 配置（config 面板项，仅 user scope——项目级文件常进仓库，权限放宽不带进去）：
@@ -748,7 +751,7 @@ async function configOpencode(
   await writeJsonObject(path, obj);
   notes.push(
     `opencode: 写 ${relTo(base, path)}（${
-      variants.map((v) => `${v.provider.id}:${wireLabel(v.wire)}×${(v.models?.length ? v.models : v.provider.models).length}模型`).join('、') || '无变体'
+      variants.map((v) => `${v.provider.id}:${wireLabel(v.wire)}×${(v.models?.length ? v.models : wireModels(v.provider, v.wire)).length}模型`).join('、') || '无变体'
     }）${hadComments ? '（原文件含注释，已按 JSON 重写）' : ''}${
       !tc?.model && typeof obj.model === 'string' && (defaultModel || (setDefault && variants.length)) ? `（默认 ${obj.model}）` : ''
     }${tcBits.length ? `（${tcBits.join('，')}）` : ''}`,
@@ -773,6 +776,9 @@ async function configPi(
     for (const wire of wires) {
       const key = `${p.id}-${WIRE_SUFFIX[wire]}`;
       keep.add(key);
+      // 各协议变体挂各自协议的清单（旧版全变体共享一份，responses/anthropic 变体
+      // 会挂上 chat 才有的模型——按协议区分后自然修正）。
+      const wm = wireModels(p, wire);
       obj.providers = {
         ...((obj.providers as object) ?? {}),
         [key]: {
@@ -785,7 +791,7 @@ async function configPi(
                 ? 'openai-responses'
                 : 'openai-completions',
           apiKey: p.apiKey,
-          ...(p.models.length ? { models: p.models.map((id) => ({ id, name: id })) } : {}),
+          ...(wm.length ? { models: wm.map((id) => ({ id, name: id })) } : {}),
         },
       };
     }
@@ -1388,14 +1394,17 @@ export async function probeProvider(endpoints: AiProvider['endpoints']): Promise
   return out;
 }
 
-// 从网关拉模型清单（两路独立，一路失败不影响另一路）。模型清单归 provider 所有
-// （opencode/pi 变体下挂的就是它），分发时随绑定走。
+// 从网关拉模型清单（两路独立，一路失败不影响另一路）。**按侧返回不合并**——openai
+// 侧清单喂 chat 协议（responses 协议网关的 /models 区分不了，前端不预填、手填），
+// anthropic 侧清单喂 anthropic-messages 协议；旧版合并去重成一份正是按协议失真的
+// 根源。模型清单归 provider 所有（opencode/pi 变体下挂的就是它），分发时随绑定走。
 export async function fetchProviderModels(endpoints: AiProvider['endpoints'], apiKey: string): Promise<{
-  models: string[];
+  openai?: string[];
+  anthropic?: string[];
   errors: string[];
 }> {
-  const models = new Set<string>();
   const errors: string[] = [];
+  const out: { openai?: string[]; anthropic?: string[] } = {};
   const o = endpoints.openai?.baseUrl;
   if (o) {
     try {
@@ -1405,7 +1414,8 @@ export async function fetchProviderModels(endpoints: AiProvider['endpoints'], ap
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as { data?: { id?: string }[] };
-      for (const m of j.data ?? []) if (m.id) models.add(m.id);
+      const list = (j.data ?? []).map((m) => m.id).filter((m): m is string => !!m).sort();
+      if (list.length) out.openai = list;
     } catch (e) {
       errors.push(`OpenAI 侧拉取失败：${errMsg(e)}`);
     }
@@ -1419,12 +1429,13 @@ export async function fetchProviderModels(endpoints: AiProvider['endpoints'], ap
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as { data?: { id?: string }[] };
-      for (const m of j.data ?? []) if (m.id) models.add(m.id);
+      const list = (j.data ?? []).map((m) => m.id).filter((m): m is string => !!m).sort();
+      if (list.length) out.anthropic = list;
     } catch (e) {
       errors.push(`Anthropic 侧拉取失败：${errMsg(e)}`);
     }
   }
-  return { models: [...models].sort(), errors };
+  return { ...out, errors };
 }
 
 // —— 项目级 AI 配置（像技能的项目规则）——
@@ -1674,7 +1685,8 @@ export async function ensureAiMigrated(): Promise<void> {
         name: 'myapikey（迁移）',
         endpoints: src.endpoints,
         apiKey: src.apiKey,
-        models: src.models,
+        // 旧档共享清单归 chat 协议（旧拉取的主消费方）；responses/anthropic 空着待补。
+        ...(src.models?.length ? { models: { 'openai-chat': src.models } } : {}),
         createdAt: new Date().toISOString(),
         updatedAt: src.updatedAt,
       });

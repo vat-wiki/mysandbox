@@ -63,7 +63,7 @@ watch(
     if (!p?.apiKey || !baseUrl) return
     try {
       const r = await fetchAiModels({ anthropic: { baseUrl } }, p.apiKey)
-      modelList.value = r.models
+      modelList.value = r.anthropic ?? []
     } catch {
       /* 清单拉不到就手输——不提示不打扰 */
     }

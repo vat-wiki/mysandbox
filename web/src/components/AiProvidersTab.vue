@@ -10,8 +10,10 @@ import {
   deleteAiProvider,
   probeAiProvider,
   fetchAiModels,
+  wireModels,
   Unauthorized,
   type AiProvider,
+  type GatewayWire,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,6 +33,8 @@ const busy = ref(false)
 const err = ref('')
 
 // 编辑草稿：null = 列表态。draft.id 存在 = 更新，wantId 仅新建时收。
+// 模型清单按协议各一份（chat/responses/anthropic 各一串逗号分隔）——OpenAI 兼容
+// 网关同一条 /models 下两套协议实际可用的模型不同，单一共享清单会失真。
 const draft = ref<null | {
   id?: string
   wantId: string
@@ -38,10 +42,19 @@ const draft = ref<null | {
   anthropicUrl: string
   openaiUrl: string
   apiKey: string
-  models: string
+  chatModels: string
+  responsesModels: string
+  anthropicModels: string
 }>(null)
 const probeRes = ref<{ openai?: string; anthropic?: string } | null>(null)
 const fetchNote = ref('')
+
+const WIRES: { wire: GatewayWire; label: string }[] = [
+  { wire: 'openai-chat', label: 'chat' },
+  { wire: 'openai-responses', label: 'responses' },
+  { wire: 'anthropic-messages', label: 'anthropic' },
+]
+const totalModels = (p: AiProvider) => new Set(WIRES.flatMap(({ wire }) => wireModels(p, wire))).size
 
 async function load() {
   try {
@@ -57,7 +70,7 @@ async function load() {
 onMounted(load)
 
 function startAdd() {
-  draft.value = { wantId: '', name: '', anthropicUrl: '', openaiUrl: '', apiKey: '', models: '' }
+  draft.value = { wantId: '', name: '', anthropicUrl: '', openaiUrl: '', apiKey: '', chatModels: '', responsesModels: '', anthropicModels: '' }
   probeRes.value = null
   fetchNote.value = ''
   err.value = ''
@@ -70,7 +83,9 @@ function startEdit(p: AiProvider) {
     anthropicUrl: p.endpoints.anthropic?.baseUrl ?? '',
     openaiUrl: p.endpoints.openai?.baseUrl ?? '',
     apiKey: p.apiKey,
-    models: (p.models ?? []).join(', '),
+    chatModels: wireModels(p, 'openai-chat').join(', '),
+    responsesModels: wireModels(p, 'openai-responses').join(', '),
+    anthropicModels: wireModels(p, 'anthropic-messages').join(', '),
   }
   probeRes.value = null
   fetchNote.value = ''
@@ -105,11 +120,16 @@ async function doFetchModels() {
   fetchNote.value = ''
   try {
     const r = await fetchAiModels(draftEndpoints.value, draft.value.apiKey.trim())
-    if (r.models.length) draft.value.models = r.models.join(', ')
+    // openai 侧结果只预填 chat——网关 /models 协议无关，responses 实际可用集区分
+    // 不出来（有的模型不支持），手填；anthropic 侧结果预填 anthropic。
+    if (r.openai?.length) draft.value.chatModels = r.openai.join(', ')
+    if (r.anthropic?.length) draft.value.anthropicModels = r.anthropic.join(', ')
     fetchNote.value = [
-      r.models.length ? `拉到 ${r.models.length} 个模型` : '网关没返回模型',
+      r.openai?.length ? `chat 预填 ${r.openai.length} 个` : 'openai 侧没返回模型',
+      ...(draft.value.openaiUrl.trim() ? ['responses 不预填（/models 区分不了，按实际支持手填）'] : []),
+      r.anthropic?.length ? `anthropic 预填 ${r.anthropic.length} 个` : '',
       ...r.errors,
-    ].join('；')
+    ].filter(Boolean).join('；')
   } catch (e) {
     if (e instanceof Unauthorized) {
       emit('unauthorized')
@@ -143,12 +163,22 @@ async function save() {
   busy.value = true
   err.value = ''
   try {
+    // 组装 per-wire 清单（空串的 wire 不带键）；后端收到 models 键即整体替换，
+    // 清空某协议输入框 = 清掉该协议清单。
+    const models: AiProvider['models'] = {}
+    const put = (wire: GatewayWire, s: string) => {
+      const l = s.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean)
+      if (l.length) models[wire] = l
+    }
+    put('openai-chat', d.chatModels)
+    put('openai-responses', d.responsesModels)
+    put('anthropic-messages', d.anthropicModels)
     const { provider } = await upsertAiProvider({
       ...(d.id ? { id: d.id } : { wantId: d.wantId.trim() }),
       name: d.name.trim(),
       endpoints: draftEndpoints.value,
       apiKey: d.apiKey.trim(),
-      models: d.models.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean),
+      models,
     })
     toast(`已保存模型供应商：${provider.name}（${provider.id}）`)
     draft.value = null
@@ -236,12 +266,25 @@ async function doRemoveProvider() {
         </div>
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <Label for="ai-p-models">模型 ID（逗号分隔；opencode/pi 的变体下挂）</Label>
+            <Label>模型清单（按协议各一份，逗号分隔；opencode/pi 的对应变体下挂）</Label>
             <Button variant="outline" size="xs" :disabled="busy" @click="doFetchModels">
               <CloudDownload class="size-3.5" /> 从网关拉取
             </Button>
           </div>
-          <Input id="ai-p-models" v-model="draft.models" placeholder="claude-sonnet-4-5, gpt-5" />
+          <div v-if="draft.openaiUrl.trim()" class="grid gap-3 sm:grid-cols-2">
+            <div class="space-y-1">
+              <Label for="ai-p-models-chat" class="text-[11px] text-muted-foreground">chat 协议</Label>
+              <Input id="ai-p-models-chat" v-model="draft.chatModels" placeholder="gpt-5, deepseek-chat" />
+            </div>
+            <div class="space-y-1">
+              <Label for="ai-p-models-responses" class="text-[11px] text-muted-foreground">responses 协议（/models 区分不了，按实际支持手填）</Label>
+              <Input id="ai-p-models-responses" v-model="draft.responsesModels" placeholder="gpt-5, …" />
+            </div>
+          </div>
+          <div v-if="draft.anthropicUrl.trim()" class="space-y-1">
+            <Label for="ai-p-models-anthropic" class="text-[11px] text-muted-foreground">anthropic 协议</Label>
+            <Input id="ai-p-models-anthropic" v-model="draft.anthropicModels" placeholder="claude-sonnet-4-5" />
+          </div>
           <p v-if="fetchNote" class="text-[11px] text-muted-foreground">{{ fetchNote }}</p>
         </div>
         <div v-if="probeRes" class="space-y-0.5 rounded-md border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed">
@@ -269,7 +312,9 @@ async function doRemoveProvider() {
               <Badge variant="outline" class="px-1.5 font-mono text-[10px] text-muted-foreground">{{ p.id }}</Badge>
               <Badge v-if="p.endpoints.anthropic" variant="outline" class="px-1.5 text-[10px]">anthropic</Badge>
               <Badge v-if="p.endpoints.openai" variant="outline" class="px-1.5 text-[10px]">openai</Badge>
-              <Badge v-if="p.models?.length" variant="outline" class="px-1.5 text-[10px] text-muted-foreground">{{ p.models.length }} 模型</Badge>
+              <Badge v-if="totalModels(p)" variant="outline" class="px-1.5 text-[10px] text-muted-foreground">
+                {{ WIRES.filter(({ wire }) => wireModels(p, wire).length).map(({ label, wire }) => `${label} ${wireModels(p, wire).length}`).join(' · ') }}
+              </Badge>
               <div class="ml-auto flex gap-1">
                 <Button variant="ghost" size="icon-xs" title="编辑" @click="startEdit(p)"><Pencil class="size-3.5" /></Button>
                 <Button variant="ghost" size="icon-xs" class="text-destructive" title="删除（回收全部落盘条目）" @click="delProvider = p">
@@ -285,7 +330,10 @@ async function doRemoveProvider() {
               <div class="mt-1 space-y-0.5 pl-4 font-mono text-[11px] text-muted-foreground">
                 <p v-if="p.endpoints.anthropic">anthropic: {{ p.endpoints.anthropic.baseUrl }}</p>
                 <p v-if="p.endpoints.openai">openai:&nbsp;&nbsp;&nbsp;{{ p.endpoints.openai.baseUrl }}</p>
-                <p>key: {{ p.apiKey.slice(0, 6) }}…{{ p.apiKey.slice(-4) }}<span v-if="p.models?.length"> · 模型: {{ p.models.join(', ') }}</span></p>
+                <p>key: {{ p.apiKey.slice(0, 6) }}…{{ p.apiKey.slice(-4) }}</p>
+                <p v-for="{ wire, label } in WIRES" v-show="wireModels(p, wire).length" :key="wire">
+                  {{ label }}:&nbsp;&nbsp;{{ wireModels(p, wire).join(', ') }}
+                </p>
               </div>
             </details>
           </div>

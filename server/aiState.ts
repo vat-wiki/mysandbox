@@ -52,6 +52,11 @@ export type GatewayWire = 'openai-chat' | 'openai-responses' | 'anthropic-messag
 
 // AI 模型服务提供商库：N 个 OpenAI/Anthropic 兼容网关的凭据与端点。绑定只引用
 // id 不内联端点——provider 改 key 重推即全局生效。id 落进各工具配置当 provider 名。
+//
+// models 按协议（wire）各一份：OpenAI 兼容网关同一条 /models 端点下 chat completions
+// 与 responses 两套协议实际可用的模型集合不同（有的模型不支持 responses），anthropic
+// 侧同样各是各的——单一共享清单会失真。取某协议的清单一律走 wireModels（容忍旧
+// 数组形状，见其注释）。
 export interface AiProvider {
   id: string; // /^[a-z][a-z0-9-]{0,31}$/；工具配置里的 provider key 前缀（禁 _ 防与 - 转换后撞名）
   name: string; // 显示名
@@ -60,9 +65,17 @@ export interface AiProvider {
     anthropic?: { baseUrl: string }; // Anthropic 兼容端点（…/anthropic，不含 /v1）
   };
   apiKey: string;
-  models?: string[]; // opencode/pi 变体下挂的模型清单（手填或从网关 /models 拉取）
+  models?: Partial<Record<GatewayWire, string[]>>; // 各协议（opencode/pi 变体）下挂的模型清单（手填或从网关 /models 拉取）
   createdAt?: string;
   updatedAt?: string;
+}
+
+// provider 某协议的模型清单。旧档的共享清单（string[]）读入时已自愈归 openai-chat
+//（loadAiConfigState），这里再兜一层数组形状防迁移窗口内的半旧数据；键没配 = 空
+// 清单（该协议变体不挂模型，工具端手填不受限）。
+export function wireModels(p: Pick<AiProvider, 'models'>, wire: GatewayWire): string[] {
+  if (Array.isArray(p.models)) return p.models;
+  return p.models?.[wire] ?? [];
 }
 
 // opencode 绑定：provider 多选，每个 provider 独立配协议，每个协议独立配模型——
@@ -362,13 +375,29 @@ async function loadAiConfigState(): Promise<AiConfigStateFile> {
       await persistAiConfigState(file);
     }
   }
-  // 存量自愈：__host__ 覆盖已随「本机跟随全局绑定」退役（2026-09-16）——清理存档里
+  // 存量自愈①：__host__ 覆盖已随「本机跟随全局绑定」退役（2026-09-16）——清理存档里
   // 的旧键（一次性，删了才持久化），本机从此回落跟随全局绑定。
   if (file.targetOverrides && HOST_TARGET in file.targetOverrides) {
     delete file.targetOverrides[HOST_TARGET];
     if (!Object.keys(file.targetOverrides).length) delete file.targetOverrides;
     await persistAiConfigState(file);
     log.info('ai state: __host__ override pruned (host now follows global binding)');
+  }
+  // 存量自愈②：provider.models 旧形状（全协议共享 string[]）→ 按协议对象（旧清单
+  // 归 openai-chat——旧拉取的主消费方；responses/anthropic 空着待补，编辑页重新拉/
+  // 手填）。一次性，归一后才持久化；wireModels 对数组形状兜底防迁移窗口半旧数据。
+  if (file.providers) {
+    let healed = false;
+    for (const p of Object.values(file.providers)) {
+      if (Array.isArray((p as { models?: unknown }).models)) {
+        p.models = { 'openai-chat': (p.models as unknown as string[]).filter((m) => typeof m === 'string' && m) };
+        healed = true;
+      }
+    }
+    if (healed) {
+      await persistAiConfigState(file);
+      log.info('ai state: provider.models legacy shared list normalized to per-wire shape');
+    }
   }
   return file;
 }

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // OpenCode 绑定字段组（受控展示）：provider 多选共存；每个 provider 独立配接入点协议，
-// 每个协议独立配用哪些模型（不选 = 该 provider 全部模型）；defaultModel 显式默认
-// （<变体>/<模型>，空 = 自动取第一个配置组合）。与 AiFieldMulti（pi 用）同族。
-// 没选任何 provider = 该工具不参与绑定（不碰落盘配置）。
+// 每个协议独立配用哪些模型（不选 = 库内该协议的清单——provider 的模型清单按协议各
+// 一份）；defaultModel 显式默认（<变体>/<模型>，空 = 自动取第一个配置组合）。
+// 与 AiFieldMulti（pi 用）同族。没选任何 provider = 该工具不参与绑定（不碰落盘配置）。
 import { computed } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import type { AiOpenCodeEntry, AiProvider, GatewayWire } from '@/lib/api'
+import { wireModels, type AiOpenCodeEntry, type AiProvider, type GatewayWire } from '@/lib/api'
 
 const props = defineProps<{
   providers: AiProvider[]
@@ -35,6 +35,11 @@ const WIRE_SUFFIX: Record<GatewayWire, string> = {
 const WIRES = Object.keys(WIRE_SUFFIX) as GatewayWire[]
 
 const providerById = (id: string) => props.providers.find((p) => p.id === id)
+// 某条目某协议的库内清单（模型清单按协议各一份；provider 缺失 = 空数组）。
+const wireModelsOf = (pid: string, wire: GatewayWire): string[] => {
+  const p = providerById(pid)
+  return p ? wireModels(p, wire) : []
+}
 
 // 选中即按库内顺序增条目（新条目缺省 chat 协议）；取消选中即移除。
 function setProviders(ids: string[]) {
@@ -61,12 +66,13 @@ function toggleWire(i: number, wire: GatewayWire, on: boolean) {
   updateEntry(i, { wires })
 }
 
-// 默认模型候选 = 全部已配置 变体/模型 组合（该协议勾了模型就取勾选的，否则全部）。
+// 默认模型候选 = 全部已配置 变体/模型 组合（该协议勾了模型就取勾选的，否则该
+// provider 该协议的库内清单——模型清单按协议各一份）。
 const defaultOptions = computed(() =>
   props.entries.flatMap((e) =>
     e.wires.flatMap((w) => {
       const p = providerById(e.provider)
-      const models = w.models?.length ? w.models : (p?.models ?? [])
+      const models = w.models?.length ? w.models : (p ? wireModels(p, w.wire) : [])
       return models.map((m) => ({ value: `${e.provider}-${WIRE_SUFFIX[w.wire]}/${m}`, label: `${e.provider}-${WIRE_SUFFIX[w.wire]} / ${m}` }))
     }),
   ),
@@ -108,7 +114,7 @@ const defaultOptions = computed(() =>
         </label>
       </div>
       <div v-for="w in e.wires" :key="w.wire" class="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span class="w-20 shrink-0 text-[11px] text-muted-foreground">{{ WIRE_SUFFIX[w.wire] }} 模型</span>
+        <span class="w-24 shrink-0 text-[11px] text-muted-foreground">{{ WIRE_SUFFIX[w.wire] }} 模型</span>
         <ToggleGroup
           type="multiple"
           size="sm"
@@ -117,17 +123,17 @@ const defaultOptions = computed(() =>
           :model-value="w.models ?? []"
           @update:model-value="
             (v) => {
-              const cur = providerById(e.provider)?.models ?? []
+              const cur = wireModelsOf(e.provider, w.wire)
               const next = cur.filter((m) => (v as string[]).includes(m))
-              // 全选/全不选都归 undefined（= 全部模型），只存真子集
+              // 全选/全不选都归 undefined（= 该协议全部模型），只存真子集
               const models = next.length && next.length < cur.length ? next : undefined
               updateEntry(i, { wires: e.wires.map((x) => (x.wire === w.wire ? { wire: w.wire, models } : x)) })
             }
           "
         >
-          <ToggleGroupItem v-for="m in providerById(e.provider)?.models ?? []" :key="m" :value="m">{{ m }}</ToggleGroupItem>
+          <ToggleGroupItem v-for="m in wireModelsOf(e.provider, w.wire)" :key="m" :value="m">{{ m }}</ToggleGroupItem>
         </ToggleGroup>
-        <span v-if="!w.models?.length" class="text-[11px] text-muted-foreground">未选 = 全部模型</span>
+        <span v-if="!w.models?.length" class="text-[11px] text-muted-foreground">{{ wireModelsOf(e.provider, w.wire).length ? '未选 = 该协议全部模型' : '库内该协议没有清单，落盘不挂模型' }}</span>
       </div>
     </div>
 

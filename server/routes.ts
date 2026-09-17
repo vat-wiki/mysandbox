@@ -15,7 +15,7 @@ import {
   getEngine,
 } from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
-import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiToolConfig, getAiProjectRules, setAiProvider, setAiBinding, setAiToolConfig, AI_TOOL_KEYS, type AiProvider, type AiBinding, type AiToolKey, type AiClaudeToolConfig, type AiOpenCodeToolConfig } from './aiState.js';
+import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiToolConfig, getAiProjectRules, setAiProvider, setAiBinding, setAiToolConfig, AI_TOOL_KEYS, type AiProvider, type AiBinding, type AiToolKey, type AiClaudeToolConfig, type AiOpenCodeToolConfig, type GatewayWire } from './aiState.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { log } from './logger.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
@@ -45,6 +45,7 @@ import {
   validateProjectSelection,
   allTargets,
   PROVIDER_ID_RE,
+  WIRES,
   HOST_TARGET,
 } from './aiconfig.js';
 import { testlensView, testlensInstall } from './testlens.js';
@@ -573,18 +574,34 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     if (!endpoints.openai && !endpoints.anthropic) throw badRequest('至少填一个端点（OpenAI 兼容 / Anthropic 兼容）');
     const apiKey = String(body.apiKey ?? '').trim();
     if (!apiKey) throw badRequest('apiKey 必填');
-    const models = Array.isArray(body.models)
-      ? body.models.map(String).map((s) => s.trim()).filter(Boolean)
-      : typeof body.models === 'string'
-        ? body.models.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
-        : undefined;
+    // 模型清单按协议（wire）各一份：对象键 ∈ WIRES、值数组或逗号串，空清单视为未配；
+    // 兼容旧共享形状（数组/逗号串归 openai-chat）。没给 models 键 = 保留原值。
+    const list = (v: unknown): string[] => {
+      const arr = Array.isArray(v) ? v : typeof v === 'string' ? v.split(/[,\s]+/) : [];
+      return arr.map(String).map((s) => s.trim()).filter(Boolean);
+    };
+    let models: AiProvider['models'] | undefined;
+    if (body.models !== undefined) {
+      if (typeof body.models === 'object' && body.models !== null && !Array.isArray(body.models)) {
+        const m = body.models as Record<string, unknown>;
+        models = {};
+        for (const k of Object.keys(m)) {
+          if (!(WIRES as string[]).includes(k)) throw badRequest(`models.${k} 不是合法协议（合法值 ${WIRES.join('/')}）`);
+          const l = list(m[k]);
+          if (l.length) models[k as GatewayWire] = l;
+        }
+      } else {
+        const l = list(body.models);
+        models = l.length ? { 'openai-chat': l } : {};
+      }
+    }
     const prev = lib[pid];
     const p: AiProvider = {
       id: pid,
       name,
       endpoints,
       apiKey,
-      ...(models && models.length ? { models } : prev?.models?.length ? { models: prev.models } : {}),
+      ...(models ? { models } : prev?.models ? { models: prev.models } : {}),
       createdAt: prev?.createdAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

@@ -8,3 +8,6 @@ config.yaml
 # 构建缓存（vue-tsc 增量信息，不该进版本库）
 *.tsbuildinfo
 .claude/worktrees/
+
+# Claude Code 项目级配置——AI 配置规则会往里写带 token 的 settings.json，永不入库
+.claude/
