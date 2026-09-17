@@ -21,31 +21,29 @@ const emit = defineEmits<{
 }>()
 
 const tab = ref<'skills' | 'providers' | 'agents'>('skills')
+const tabs = [
+  { key: 'skills', label: '技能中心' },
+  { key: 'providers', label: '模型供应商' },
+  { key: 'agents', label: 'Agent 工具' },
+] as const
 </script>
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
-    <!-- 头部：只有页签行——页的身份由底部 tab 栏的「AI 工具」页签表达，不再重复标题 -->
+    <!-- 头部：页签行——页的身份由底部 tab 栏的「AI 工具」页签表达，不再重复标题。
+         页签用分段控件（与 Agent 工具页的工具切换同款）：选中底色明显，不只靠文字高亮 -->
     <div class="shrink-0 border-b">
-      <div class="flex gap-1 px-5 pt-2.5">
-        <button
-          type="button"
-          class="border-b-2 px-3 pb-2 text-xs transition-colors"
-          :class="tab === 'skills' ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
-          @click="tab = 'skills'"
-        >技能中心</button>
-        <button
-          type="button"
-          class="border-b-2 px-3 pb-2 text-xs transition-colors"
-          :class="tab === 'providers' ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
-          @click="tab = 'providers'"
-        >模型供应商</button>
-        <button
-          type="button"
-          class="border-b-2 px-3 pb-2 text-xs transition-colors"
-          :class="tab === 'agents' ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
-          @click="tab = 'agents'"
-        >Agent 工具</button>
+      <div class="flex px-5 py-2">
+        <div class="flex gap-0.5 rounded-md border bg-muted/30 p-0.5">
+          <button
+            v-for="t in tabs"
+            :key="t.key"
+            type="button"
+            class="rounded px-3 py-1 text-xs transition-colors"
+            :class="tab === t.key ? 'bg-background font-medium text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+            @click="tab = t.key"
+          >{{ t.label }}</button>
+        </div>
       </div>
     </div>
 
