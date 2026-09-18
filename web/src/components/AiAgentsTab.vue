@@ -188,6 +188,11 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
   try {
     if (tool === 'claude') {
       result.value = await saveAiClaudePage(claude.value, claudeToolRef.value!.toolConfigOut(), undefined, claudeMode)
+      // claude 槽已并进服务端绑定（claude-config 是合并语义），但本地 view 还停在挂载
+      // 时的旧底稿——别的页签保存走 {...stored, 本工具槽} 整体提交，会拿旧底稿把刚存的
+      // claude（及本窗口内其他页签新改的槽）冲掉。这里刷新数据不重填表单（各页签草稿
+      // 是独立编辑现场，不能被回灌冲掉）。
+      await loadView(false)
     } else {
       const stored = view.value?.binding ?? {}
       const b: AiBinding =
