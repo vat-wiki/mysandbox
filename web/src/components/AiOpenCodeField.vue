@@ -3,14 +3,17 @@
 // 每个协议独立配用哪些模型（不选 = 库内该协议的清单——provider 的模型清单按协议各
 // 一份）；defaultModel 显式默认（<变体>/<模型>，空 = 自动取第一个配置组合）。
 // 布局对齐模型供应商表单的网格语言（8rem 标签列 + 内容列）：每 provider 卡内三协议
-// 固定三行，勾选即启用该行——协议与模型清单的归属一眼可见，不再两段式（勾选一行 +
-// 明细另起）。与 AiFieldMulti（pi 用）同族。没选任何 provider = 该工具不参与绑定
+// 固定三行，勾选即启用该行。模型选择不铺全量 pills（多模型 provider 又高又乱）——
+// 只显示已选 chip（点 × 移除）+「添加模型」下拉（搜索 + 勾选）；全不选 = 该协议
+// 全部模型。与 AiFieldMulti（pi 用）同族。没选任何 provider = 该工具不参与绑定
 // （不碰落盘配置）。
-import { computed } from 'vue'
-import { X } from 'lucide-vue-next'
+import { ref, computed, watch } from 'vue'
+import { Plus, X } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   Select,
@@ -19,7 +22,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { wireModels, type AiOpenCodeEntry, type AiProvider, type GatewayWire } from '@/lib/api'
+import {
+  openCodeVariants,
+  WIRE_SUFFIX,
+  wireModels,
+  type AiOpenCodeEntry,
+  type AiProvider,
+  type GatewayWire,
+} from '@/lib/api'
 
 const props = defineProps<{
   providers: AiProvider[]
@@ -31,12 +41,6 @@ const emit = defineEmits<{
   (e: 'update:defaultModel', v: string): void
 }>()
 
-// 协议 → 变体后缀（与后端 WIRE_SUFFIX 一致）+ 短标签（同一词）。
-const WIRE_SUFFIX: Record<GatewayWire, string> = {
-  'openai-chat': 'chat',
-  'openai-responses': 'responses',
-  'anthropic-messages': 'anthropic',
-}
 const WIRES = Object.keys(WIRE_SUFFIX) as GatewayWire[]
 
 const providerById = (id: string) => props.providers.find((p) => p.id === id)
@@ -71,17 +75,30 @@ function toggleWire(i: number, wire: GatewayWire, on: boolean) {
   updateEntry(i, { wires })
 }
 
-// 默认模型候选 = 全部已配置 变体/模型 组合（该协议勾了模型就取勾选的，否则该
-// provider 该协议的库内清单——模型清单按协议各一份）。
-const defaultOptions = computed(() =>
-  props.entries.flatMap((e) =>
-    e.wires.flatMap((w) => {
-      const p = providerById(e.provider)
-      const models = w.models?.length ? w.models : (p ? wireModels(p, w.wire) : [])
-      return models.map((m) => ({ value: `${e.provider}-${WIRE_SUFFIX[w.wire]}/${m}`, label: `${e.provider}-${WIRE_SUFFIX[w.wire]} / ${m}` }))
-    }),
-  ),
-)
+// 勾/去一个模型。保持存档语义：空集/全集都归 undefined（= 该协议全部模型），只存真子集。
+function toggleModel(i: number, wire: GatewayWire, m: string, on: boolean) {
+  const e = props.entries[i]
+  const cur = e.wires.find((x) => x.wire === wire)?.models ?? []
+  const next = on ? [...cur, m] : cur.filter((x) => x !== m)
+  const all = wireModelsOf(e.provider, wire)
+  const models = next.length && next.length < all.length ? next : undefined
+  updateEntry(i, { wires: e.wires.map((x) => (x.wire === wire ? { wire, models } : x)) })
+}
+
+// 「添加模型」下拉：每行独立开合（key = provider|wire，同一时刻只记一个打开的行），
+// 共享搜索词（打开即清）。
+const addOpenKey = ref<string | null>(null)
+const addQuery = ref('')
+watch(addOpenKey, (v) => { if (v) addQuery.value = '' })
+const addCandidates = (pid: string, wire: GatewayWire): string[] => {
+  const q = addQuery.value.trim().toLowerCase()
+  const all = wireModelsOf(pid, wire)
+  return q ? all.filter((m) => m.toLowerCase().includes(q)) : all
+}
+
+// 默认模型候选 = 全部已配置 变体/模型 组合（单源 openCodeVariants，主模型/轻量模型
+// 的下拉建议同源）。
+const defaultOptions = computed(() => openCodeVariants(props.entries, props.providers))
 </script>
 
 <template>
@@ -125,28 +142,55 @@ const defaultOptions = computed(() =>
           />
           {{ WIRE_SUFFIX[w] }}
         </label>
-        <!-- 内容列：启用 → 模型 pills（+ 未选提示）；库内无清单 → 说明；未启用 → 空 -->
-        <div v-if="e.wires.some((x) => x.wire === w)" class="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <!-- 内容列：启用 → 已选 chips + 添加下拉；库内无清单 → 说明；未启用 → 空 -->
+        <div v-if="e.wires.some((x) => x.wire === w)" class="flex flex-wrap items-center gap-1.5">
           <template v-if="wireModelsOf(e.provider, w).length">
-            <ToggleGroup
-              type="multiple"
-              size="sm"
+            <Badge
+              v-for="m in e.wires.find((x) => x.wire === w)?.models ?? []"
+              :key="m"
               variant="outline"
-              class="flex-wrap text-xs"
-              :model-value="e.wires.find((x) => x.wire === w)?.models ?? []"
-              @update:model-value="
-                (v) => {
-                  const cur = wireModelsOf(e.provider, w)
-                  const next = cur.filter((m) => (v as string[]).includes(m))
-                  // 全选/全不选都归 undefined（= 该协议全部模型），只存真子集
-                  const models = next.length && next.length < cur.length ? next : undefined
-                  updateEntry(i, { wires: e.wires.map((x) => (x.wire === w ? { wire: w, models } : x)) })
-                }
-              "
+              class="gap-0.5 px-1.5 text-[11px] font-normal"
             >
-              <ToggleGroupItem v-for="m in wireModelsOf(e.provider, w)" :key="m" :value="m">{{ m }}</ToggleGroupItem>
-            </ToggleGroup>
-            <span v-if="!e.wires.find((x) => x.wire === w)?.models?.length" class="text-[11px] text-muted-foreground">未选 = 该协议全部模型</span>
+              {{ m }}
+              <button type="button" class="rounded-sm text-muted-foreground hover:text-foreground" :title="`移除 ${m}`" @click="toggleModel(i, w, m, false)">
+                <X class="size-3" />
+              </button>
+            </Badge>
+            <Popover
+              :open="addOpenKey === `${e.provider}|${w}`"
+              @update:open="(v) => (addOpenKey = v ? `${e.provider}|${w}` : null)"
+            >
+              <PopoverTrigger as-child>
+                <!-- 裸 button + click.prevent：shadcn Button 在 as-child 下会吞掉触发展开（AiModelCombo 同款写法） -->
+                <button
+                  type="button"
+                  class="inline-flex h-5 items-center gap-0.5 rounded-md border px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  title="勾选该协议要用的模型"
+                  @click.prevent
+                >
+                  <Plus class="size-3" /> 模型
+                </button>
+              </PopoverTrigger>
+              <PopoverContent class="w-60 p-0" align="start">
+                <Input v-model="addQuery" placeholder="搜索模型…" class="h-8 rounded-b-none border-x-0 border-t-0 text-xs focus-visible:ring-0" />
+                <div class="max-h-56 overflow-y-auto p-1">
+                  <label
+                    v-for="m in addCandidates(e.provider, w)"
+                    :key="m"
+                    class="flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1.5 text-xs hover:bg-muted"
+                  >
+                    <Checkbox
+                      :model-value="(e.wires.find((x) => x.wire === w)?.models ?? []).includes(m)"
+                      @update:model-value="(v) => toggleModel(i, w, m, !!v)"
+                    />
+                    <span class="truncate font-mono">{{ m }}</span>
+                  </label>
+                  <p v-if="!addCandidates(e.provider, w).length" class="px-1.5 py-2 text-[11px] text-muted-foreground">无匹配模型</p>
+                </div>
+                <p class="border-t px-2 py-1.5 text-[10px] text-muted-foreground/70">一个都不勾 = 该协议全部模型</p>
+              </PopoverContent>
+            </Popover>
+            <span v-if="!e.wires.find((x) => x.wire === w)?.models?.length" class="text-[11px] text-muted-foreground">未选 = 全部 {{ wireModelsOf(e.provider, w).length }} 个模型</span>
           </template>
           <span v-else class="text-[11px] text-muted-foreground">库内该协议没有清单，落盘不挂模型（到「模型供应商」编辑该行补齐）</span>
         </div>

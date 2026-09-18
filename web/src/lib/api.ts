@@ -377,6 +377,26 @@ export interface AiOpenCodeBinding {
   setDefault?: boolean
   defaultModel?: string
 }
+// 协议 → 变体后缀（与后端 WIRE_SUFFIX 一致）：opencode 变体 key = <pid>-<后缀>。
+export const WIRE_SUFFIX: Record<GatewayWire, string> = {
+  'openai-chat': 'chat',
+  'openai-responses': 'responses',
+  'anthropic-messages': 'anthropic',
+}
+// 全部已配置 变体/模型 组合（该协议勾了模型就取勾选的，否则该 provider 该协议的库内
+// 清单）——defaultModel 候选与主模型/轻量模型的下拉建议共用。
+export const openCodeVariants = (
+  entries: AiOpenCodeEntry[],
+  providers: AiProvider[],
+): { value: string; label: string }[] =>
+  entries.flatMap((e) =>
+    e.wires.flatMap((w) => {
+      const p = providers.find((x) => x.id === e.provider)
+      const models = w.models?.length ? w.models : (p ? wireModels(p, w.wire) : [])
+      const sfx = WIRE_SUFFIX[w.wire]
+      return models.map((m) => ({ value: `${e.provider}-${sfx}/${m}`, label: `${e.provider}-${sfx} / ${m}` }))
+    }),
+  )
 // 存量旧形状（{providers, wires?, setDefault?}）懒归一成 entries——与后端 normalizeOpenCodeSlot 同构。
 export const normalizeOpenCodeBinding = (t: unknown): AiOpenCodeBinding | undefined => {
   if (!t || typeof t !== 'object' || Array.isArray(t)) return undefined

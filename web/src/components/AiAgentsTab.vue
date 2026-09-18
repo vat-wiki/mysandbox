@@ -13,6 +13,7 @@ import {
   saveAiBinding,
   saveAiClaudePage,
   normalizeOpenCodeBinding,
+  openCodeVariants,
   Unauthorized,
   type AiView,
   type AiBinding,
@@ -30,6 +31,7 @@ import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
 import AiFieldMulti from './AiFieldMulti.vue'
 import AiOpenCodeField from './AiOpenCodeField.vue'
+import AiModelCombo from './AiModelCombo.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -78,6 +80,8 @@ const piWires = ref<GatewayWire[]>(['openai-chat'])
 
 const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
+// 主模型/轻量模型的下拉候选 = 已配置 变体/模型 组合（与绑定默认模型候选同源）
+const ocModelCandidates = computed(() => openCodeVariants(ocEntries.value, providers.value))
 // claude 绑定槽选中的 provider（自身配置表单拿它探测 /models 清单）
 const claudeProvider = computed(() => providers.value.find((p) => p.id === claude.value) ?? null)
 
@@ -349,11 +353,21 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               </div>
               <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
                 <Label for="ai-oc-model" class="text-[11px] text-muted-foreground">主模型</Label>
-                <Input id="ai-oc-model" v-model="ocModel" class="h-7 text-xs" placeholder="provider/模型（可选，优先于绑定默认推导，如 myapikey-chat/opencode-coding）" />
+                <AiModelCombo
+                  input-id="ai-oc-model"
+                  v-model="ocModel"
+                  :models="ocModelCandidates.map((o) => o.value)"
+                  placeholder="provider/模型（可选，优先于绑定默认推导，如 myapikey-chat/opencode-coding）"
+                />
               </div>
               <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
                 <Label for="ai-oc-small" class="text-[11px] text-muted-foreground">轻量模型</Label>
-                <Input id="ai-oc-small" v-model="ocSmallModel" class="h-7 text-xs" placeholder="small_model（可选，后台任务用）" />
+                <AiModelCombo
+                  input-id="ai-oc-small"
+                  v-model="ocSmallModel"
+                  :models="ocModelCandidates.map((o) => o.value)"
+                  placeholder="small_model（可选，后台任务用）"
+                />
               </div>
             </div>
             <div class="flex items-center justify-end gap-3 border-t pt-3">
