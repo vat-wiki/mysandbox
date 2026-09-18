@@ -23,6 +23,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Bot } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
@@ -332,15 +333,28 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:entries="(v) => (ocEntries = v)"
               @update:default-model="(v) => (ocDefaultModel = v)"
             />
-            <!-- OpenCode 配置（opencode.json 顶层，user scope）：权限 auto = permission:'allow'
-                 （等价 --auto）；主模型优先于绑定 setDefault 自动推导；small_model 给了才写 -->
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-              <label class="flex items-center gap-1.5 text-xs">
-                <Checkbox :model-value="ocAuto" @update:model-value="(v) => (ocAuto = !!v)" />
-                权限默认 auto
-              </label>
-              <Input v-model="ocModel" class="h-7 w-64 text-xs" placeholder="主模型 provider/模型（可选）" />
-              <Input v-model="ocSmallModel" class="h-7 w-60 text-xs" placeholder="轻量模型 small_model（可选）" />
+            <!-- OpenCode 自身配置（opencode.json 顶层，user scope）：与协议行同网格
+                 （8rem 标签列），权限 auto = permission:'allow'（等价 --auto）；主模型
+                 优先于绑定 setDefault 的自动推导；small_model 给了才写 -->
+            <div class="space-y-2 rounded-md border bg-muted/20 p-2.5">
+              <div class="flex items-baseline justify-between gap-2">
+                <span class="text-[11px] font-medium text-muted-foreground">工具自身配置（opencode.json，user scope）</span>
+              </div>
+              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
+                <span class="text-[11px] text-muted-foreground">权限</span>
+                <label class="flex items-center gap-1.5 text-xs">
+                  <Checkbox :model-value="ocAuto" @update:model-value="(v) => (ocAuto = !!v)" />
+                  默认 auto（permission: 'allow'，等价 --auto）
+                </label>
+              </div>
+              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
+                <Label for="ai-oc-model" class="text-[11px] text-muted-foreground">主模型</Label>
+                <Input id="ai-oc-model" v-model="ocModel" class="h-7 text-xs" placeholder="provider/模型（可选，优先于绑定默认推导，如 myapikey-chat/opencode-coding）" />
+              </div>
+              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
+                <Label for="ai-oc-small" class="text-[11px] text-muted-foreground">轻量模型</Label>
+                <Input id="ai-oc-small" v-model="ocSmallModel" class="h-7 text-xs" placeholder="small_model（可选，后台任务用）" />
+              </div>
             </div>
             <div class="flex items-center justify-end gap-3 border-t pt-3">
               <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</p>

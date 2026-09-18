@@ -8,15 +8,20 @@ import { readFile } from 'node:fs/promises'
 // dev: vite 5173，/api 与 /ws 代理到后端 7321。
 // build: 产物到 web/dist（root 后端 @fastify/static 同源服务，无 CORS）。
 
-// 解析代理 target：读 ~/.config/mysandbox/config.yaml 的 listen.host（vite 不会读 mysandbox
+// 解析代理 target：读 mysandbox config.yaml 的 listen.host（vite 不会读 mysandbox
 // config，得自己来）。host 为 auto 时镜像 server/cli.ts 的解析逻辑（默认路由接口 IPv4，
 // 读 /proc/net/route）——本机 IP 变了这里自动跟，不用手工同步。任何失败退回 127.0.0.1。
+// config 根已迁 ~/.mysandbox/（config.ts 一次性迁移），旧 XDG 路径留兜底。
 async function backendHost(): Promise<{ host: string; tls: boolean }> {
+  for (const dir of [`${process.env.HOME ?? ''}/.mysandbox`, `${process.env.HOME ?? ''}/.config/mysandbox`]) {
+    const r = await backendHostFrom(`${dir}/config.yaml`)
+    if (r) return r
+  }
+  return { host: '127.0.0.1', tls: false }
+}
+async function backendHostFrom(path: string): Promise<{ host: string; tls: boolean } | null> {
   try {
-    const y = await readFile(
-      `${process.env.HOME ?? ''}/.config/mysandbox/config.yaml`,
-      'utf8',
-    )
+    const y = await readFile(path, 'utf8')
     // listen 块内的 host 键（简单缩进匹配足够；yaml 库不值得为两条代理配置引入）
     const m = y.match(/^listen:[\s\S]*?^\s+host:\s*(\S+)/m)
     const host = m?.[1] ?? '127.0.0.1'
@@ -40,7 +45,7 @@ async function backendHost(): Promise<{ host: string; tls: boolean }> {
     const ip = pick(ifname) ?? Object.keys(ifaces).map(pick).find(Boolean) ?? '127.0.0.1'
     return { host: ip, tls }
   } catch {
-    return { host: '127.0.0.1', tls: false }
+    return null
   }
 }
 

@@ -2,9 +2,14 @@
 // OpenCode 绑定字段组（受控展示）：provider 多选共存；每个 provider 独立配接入点协议，
 // 每个协议独立配用哪些模型（不选 = 库内该协议的清单——provider 的模型清单按协议各
 // 一份）；defaultModel 显式默认（<变体>/<模型>，空 = 自动取第一个配置组合）。
-// 与 AiFieldMulti（pi 用）同族。没选任何 provider = 该工具不参与绑定（不碰落盘配置）。
+// 布局对齐模型供应商表单的网格语言（8rem 标签列 + 内容列）：每 provider 卡内三协议
+// 固定三行，勾选即启用该行——协议与模型清单的归属一眼可见，不再两段式（勾选一行 +
+// 明细另起）。与 AiFieldMulti（pi 用）同族。没选任何 provider = 该工具不参与绑定
+// （不碰落盘配置）。
 import { computed } from 'vue'
+import { X } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
@@ -81,66 +86,78 @@ const defaultOptions = computed(() =>
 
 <template>
   <div class="space-y-2">
-    <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <ToggleGroup
-        type="multiple"
-        size="sm"
-        variant="outline"
-        class="flex-wrap text-xs"
-        :model-value="entries.map((e) => e.provider)"
-        @update:model-value="(v) => setProviders(v as string[])"
-      >
-        <ToggleGroupItem v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</ToggleGroupItem>
-      </ToggleGroup>
+    <!-- 分区头：左说明右规则（同模型供应商表单「协议接入」头） -->
+    <div class="flex items-baseline justify-between gap-2">
+      <span class="text-[11px] font-medium text-muted-foreground">模型供应商（多选共存，工具内 /models 切换）</span>
+      <span class="text-[10px] text-muted-foreground/70">不选 = 该工具不参与绑定（落盘配置不动）</span>
     </div>
 
-    <div v-for="(e, i) in entries" :key="e.provider" class="space-y-1.5 rounded-md border p-2">
+    <ToggleGroup
+      type="multiple"
+      size="sm"
+      variant="outline"
+      class="flex-wrap text-xs"
+      :model-value="entries.map((e) => e.provider)"
+      @update:model-value="(v) => setProviders(v as string[])"
+    >
+      <ToggleGroupItem v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</ToggleGroupItem>
+    </ToggleGroup>
+
+    <!-- 每 provider 一卡：头（名称 + id + 移除）+ 三协议固定行（勾选 = 启用该行） -->
+    <div v-for="(e, i) in entries" :key="e.provider" class="space-y-2 rounded-md border p-2.5">
       <div class="flex items-center gap-2">
-        <span class="text-xs font-medium">{{ providerById(e.provider)?.name }}（{{ e.provider }}）</span>
+        <span class="text-xs font-medium">{{ providerById(e.provider)?.name ?? e.provider }}</span>
+        <Badge variant="outline" class="px-1.5 font-mono text-[10px] text-muted-foreground">{{ e.provider }}</Badge>
         <Button
           variant="ghost"
-          size="sm"
-          class="ml-auto h-6 px-2 text-[11px] text-muted-foreground"
+          size="icon-xs"
+          class="ml-auto text-muted-foreground hover:text-foreground"
+          title="移除该供应商"
           @click="setProviders(entries.map((x) => x.provider).filter((id) => id !== e.provider))"
-        >移除</Button>
+        ><X class="size-3.5" /></Button>
       </div>
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <label v-for="w in WIRES" :key="w" class="flex items-center gap-1 text-xs">
+
+      <div v-for="w in WIRES" :key="w" class="grid items-start gap-2 sm:grid-cols-[8rem_1fr]">
+        <label class="flex items-center gap-1.5 text-xs" :class="e.wires.some((x) => x.wire === w) ? '' : 'text-muted-foreground/70'">
           <Checkbox
             :model-value="e.wires.some((x) => x.wire === w)"
             @update:model-value="(v) => toggleWire(i, w, !!v)"
           />
           {{ WIRE_SUFFIX[w] }}
         </label>
-      </div>
-      <div v-for="w in e.wires" :key="w.wire" class="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span class="w-24 shrink-0 text-[11px] text-muted-foreground">{{ WIRE_SUFFIX[w.wire] }} 模型</span>
-        <ToggleGroup
-          type="multiple"
-          size="sm"
-          variant="outline"
-          class="flex-wrap text-xs"
-          :model-value="w.models ?? []"
-          @update:model-value="
-            (v) => {
-              const cur = wireModelsOf(e.provider, w.wire)
-              const next = cur.filter((m) => (v as string[]).includes(m))
-              // 全选/全不选都归 undefined（= 该协议全部模型），只存真子集
-              const models = next.length && next.length < cur.length ? next : undefined
-              updateEntry(i, { wires: e.wires.map((x) => (x.wire === w.wire ? { wire: w.wire, models } : x)) })
-            }
-          "
-        >
-          <ToggleGroupItem v-for="m in wireModelsOf(e.provider, w.wire)" :key="m" :value="m">{{ m }}</ToggleGroupItem>
-        </ToggleGroup>
-        <span v-if="!w.models?.length" class="text-[11px] text-muted-foreground">{{ wireModelsOf(e.provider, w.wire).length ? '未选 = 该协议全部模型' : '库内该协议没有清单，落盘不挂模型' }}</span>
+        <!-- 内容列：启用 → 模型 pills（+ 未选提示）；库内无清单 → 说明；未启用 → 空 -->
+        <div v-if="e.wires.some((x) => x.wire === w)" class="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <template v-if="wireModelsOf(e.provider, w).length">
+            <ToggleGroup
+              type="multiple"
+              size="sm"
+              variant="outline"
+              class="flex-wrap text-xs"
+              :model-value="e.wires.find((x) => x.wire === w)?.models ?? []"
+              @update:model-value="
+                (v) => {
+                  const cur = wireModelsOf(e.provider, w)
+                  const next = cur.filter((m) => (v as string[]).includes(m))
+                  // 全选/全不选都归 undefined（= 该协议全部模型），只存真子集
+                  const models = next.length && next.length < cur.length ? next : undefined
+                  updateEntry(i, { wires: e.wires.map((x) => (x.wire === w ? { wire: w, models } : x)) })
+                }
+              "
+            >
+              <ToggleGroupItem v-for="m in wireModelsOf(e.provider, w)" :key="m" :value="m">{{ m }}</ToggleGroupItem>
+            </ToggleGroup>
+            <span v-if="!e.wires.find((x) => x.wire === w)?.models?.length" class="text-[11px] text-muted-foreground">未选 = 该协议全部模型</span>
+          </template>
+          <span v-else class="text-[11px] text-muted-foreground">库内该协议没有清单，落盘不挂模型（到「模型供应商」编辑该行补齐）</span>
+        </div>
       </div>
     </div>
 
-    <div v-if="entries.length" class="flex items-center gap-2 text-xs">
-      <span class="text-muted-foreground">默认模型</span>
+    <!-- 默认模型：与协议行同网格对齐 -->
+    <div v-if="entries.length" class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
+      <span class="text-[11px] text-muted-foreground">默认模型</span>
       <Select :model-value="defaultModel" @update:model-value="(v) => emit('update:defaultModel', v as string)">
-        <SelectTrigger size="sm" class="w-64"><SelectValue placeholder="自动（第一个配置组合）" /></SelectTrigger>
+        <SelectTrigger size="sm" class="w-full max-w-md"><SelectValue placeholder="自动（第一个配置组合）" /></SelectTrigger>
         <SelectContent>
           <SelectItem v-for="o in defaultOptions" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
         </SelectContent>
