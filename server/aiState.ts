@@ -443,9 +443,12 @@ export async function getAiToolConfig(): Promise<AiToolConfigState> {
   return (await loadAiConfigState()).toolConfig ?? {};
 }
 
+// 按工具键合并写入：调用方（claude 页签保存 / opencode 页签保存）都只传本次管的
+// 工具槽，整份替换会把其他工具的自身配置冲掉（保存 OpenCode 丢 Claude 配置、反之
+// 亦然）。单键内仍是整体替换（传 {claude:{}} 即清 Claude 自身配置）。
 export async function setAiToolConfig(tc: AiToolConfigState): Promise<void> {
   const s = await loadAiConfigState();
-  s.toolConfig = tc;
+  s.toolConfig = { ...(s.toolConfig ?? {}), ...tc };
   await persistAiConfigState(s);
 }
 

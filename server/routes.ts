@@ -693,8 +693,9 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     return applyAiBindingToTargets(cfg, ids, binding, apply);
   });
 
-  // 工具自身配置（toolConfig，全局一份；claude：默认模型 + 自定义 env）。PUT = 整份
-  // 替换 + 立即下发（落点跟着 claude 绑定走，见 aiconfig.setClaudeToolConfig）。
+  // 工具自身配置（toolConfig，全局一份；claude：默认模型 + 自定义 env）。PUT 按工具键
+  // 替换（claude 槽整体替换，其他工具的槽保留）+ 立即下发（落点跟着 claude 绑定走，
+  // 见 aiconfig.setClaudeToolConfig）。
   // env 保留键（BASE_URL/AUTH_TOKEN）路由层点名拒绝——由模型服务绑定管。
   app.put('/api/ai/tool-config', async (req): Promise<BatchResult> => {
     await ensureAiMigrated();
