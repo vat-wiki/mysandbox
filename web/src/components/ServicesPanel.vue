@@ -102,6 +102,27 @@ const cfgYaml = ref('')
 const cfgErr = ref('')
 const cfgLoading = ref(false)
 const applying = ref(false)
+// 应用两段式：同步段只做校验+写盘（秒回），compose up 在后台 job——拿返回的 jobId
+// 让按钮/提示跟 job 走，直到看到终态才松开。否则「秒回 + 片刻后 drift 自己归零」
+// 像失联，且 drift 提示（本意是"改了没应用"）会被当成报错。
+const applyJobId = ref('')
+const applyingJob = computed(() => {
+  if (!applyJobId.value) return null
+  const j = jobs.value.find((x) => x.id === applyJobId.value)
+  return j && j.name === selService.value && j.state === 'running' ? j : null
+})
+watch(
+  () => (applyJobId.value ? jobs.value.find((x) => x.id === applyJobId.value)?.state : undefined),
+  (st) => {
+    if (!st || st === 'running') return
+    const j = jobs.value.find((x) => x.id === applyJobId.value)
+    applyJobId.value = ''
+    // 失败也在创建任务横幅有展示；配置页开着且还停在该服务时补一份内联回显。
+    if (j?.state === 'error' && j.name === selService.value && openCfg.value) {
+      cfgErr.value = `应用失败：${j.error ?? '未知错误（详见任务日志）'}`
+    }
+  },
+)
 const cfgDirty = computed(() => cfg.value != null && cfgYaml.value !== cfg.value.yaml)
 // 配置编辑器放大态：同一编辑器实例在「抽屉内嵌」与「全屏覆盖」两种形态间切换
 //（class 切换不重建，编辑内容/光标/撤销栈全保留；automaticLayout 负责重排）。
@@ -128,12 +149,13 @@ async function loadCfg(name: string) {
 }
 async function applyCfg(build = false) {
   const name = selService.value
-  if (!name || applying.value || cfg.value?.yaml == null) return
+  if (!name || applying.value || applyingJob.value || cfg.value?.yaml == null) return
   applying.value = true
   cfgErr.value = ''
   try {
-    await applyServiceConfig(name, cfgYaml.value, build)
-    // 文件已被后端落盘（应用校验通过）：以编辑器内容为新基准，drift 等任务完成后由刷新归零。
+    const r = await applyServiceConfig(name, cfgYaml.value, build)
+    applyJobId.value = r.jobId
+    // 文件已被后端落盘（应用校验通过）：以编辑器内容为新基准，drift 等 job 完成后由刷新归零。
     cfg.value = { ...cfg.value, yaml: cfgYaml.value, drift: true }
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -778,7 +800,8 @@ onUnmounted(() => {
                   <!-- 放大态工具条：路径/dirty 状态 + 应用动作原样可用 + 退出 -->
                   <div v-if="cfgZoom" class="flex shrink-0 items-center gap-2 border-b px-2 py-1.5">
                     <span class="truncate font-mono text-[11px] text-muted-foreground" :title="cfg.path">{{ cfg.path }}</span>
-                    <span v-if="cfgDirty" class="shrink-0 text-[11px] text-amber-600">未保存</span>
+                    <span v-if="applyingJob" class="shrink-0 text-[11px] text-muted-foreground">应用中…</span>
+                    <span v-else-if="cfgDirty" class="shrink-0 text-[11px] text-amber-600">未保存</span>
                     <span v-else-if="cfg.drift" class="shrink-0 text-[11px] text-amber-600">待应用</span>
                     <span class="min-w-0 flex-1" />
                     <span class="shrink-0 text-[11px] text-muted-foreground/60">Esc 或</span>
@@ -793,13 +816,15 @@ onUnmounted(() => {
                     @save="applyCfg(false)"
                   />
                   <div v-if="cfgZoom" class="flex shrink-0 flex-wrap items-center gap-1.5 border-t px-2 py-1.5">
-                    <Button size="sm" :disabled="applying || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
-                      <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 应用
+                    <Button size="sm" :disabled="applying || !!applyingJob || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
+                      <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" />
+                      {{ applyingJob ? '应用中…' : '应用' }}
                     </Button>
-                    <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying" @click="applyCfg(true)">
-                      <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 构建并应用
+                    <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying || !!applyingJob" @click="applyCfg(true)">
+                      <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" /> 构建并应用
                     </Button>
-                    <span v-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
+                    <span v-if="applyingJob" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
+                    <span v-else-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
                     <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
                   </div>
                   <!-- 内嵌态：放大入口浮在编辑器右上角 -->
@@ -815,13 +840,15 @@ onUnmounted(() => {
                   </Button>
                 </div>
                 <div v-if="!cfgZoom" class="flex flex-wrap items-center gap-1.5">
-                  <Button size="sm" :disabled="applying || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
-                    <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 应用
+                  <Button size="sm" :disabled="applying || !!applyingJob || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
+                    <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" />
+                    {{ applyingJob ? '应用中…' : '应用' }}
                   </Button>
-                  <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying" @click="applyCfg(true)">
-                    <LoaderCircle v-if="applying" class="size-3.5 animate-spin" /> 构建并应用
+                  <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying || !!applyingJob" @click="applyCfg(true)">
+                    <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" /> 构建并应用
                   </Button>
-                  <span v-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
+                  <span v-if="applyingJob" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
+                  <span v-else-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
                   <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
                 </div>
               </div>
