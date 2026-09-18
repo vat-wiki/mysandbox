@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Agent 工具页签（AI 工作区三板块之三）：每个 agent CLI 一个页签（单个单个配置 +
 // 单独保存）——绑定（用哪些模型供应商）+ 各自的特殊配置（本期 Claude Code 页内挂
-// AiClaudeToolConfig 自身配置）。每个页签有自己的「保存并应用到全部目标」：只提交
+// AiClaudeToolConfig 自身配置）。每个页签有自己的「保存并应用」（应用范围在按钮旁
+// 常显短句）：只提交
 // 该工具的绑定，与已存绑定合并后整体提交（后端 AiBinding 整体替换语义 + 四层追平
 // 链路不动，其余工具原样带上 = 落盘配置不碰）；应用目标 = 本机 + 受管容器（同权）。
 // 容器的临时任务走 AiOverrideDialog（AiBindingTargetForm）。本页 = 全局配置——项目级
@@ -370,10 +371,10 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
                 />
               </div>
             </div>
-            <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</p>
+            <div class="flex items-center justify-end gap-2 border-t pt-3">
+              <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
               <Button :disabled="busy" @click="submitTool('opencode')">{{
-                busy ? '应用中…' : '保存并应用到全部目标'
+                busy ? '应用中…' : '保存并应用'
               }}</Button>
             </div>
           </div>
@@ -386,10 +387,10 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:provider-ids="(v) => (pi = v)"
               @update:wires="(v) => (piWires = v)"
             />
-            <div class="flex items-center justify-end gap-3 border-t pt-3">
-              <p class="mr-auto self-center text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</p>
+            <div class="flex items-center justify-end gap-2 border-t pt-3">
+              <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
               <Button :disabled="busy" @click="submitTool('pi')">{{
-                busy ? '应用中…' : '保存并应用到全部目标'
+                busy ? '应用中…' : '保存并应用'
               }}</Button>
             </div>
           </div>

@@ -75,13 +75,15 @@ function toggleWire(i: number, wire: GatewayWire, on: boolean) {
   updateEntry(i, { wires })
 }
 
-// 勾/去一个模型。保持存档语义：空集/全集都归 undefined（= 该协议全部模型），只存真子集。
+// 勾/去一个模型。存档语义：空集归 undefined（= 该协议全部模型）。全集不折叠——
+// 折叠回 undefined 后勾选态（models?.includes 派生）原地消失，勾最后一颗打不上、
+// 单模型清单永远勾不上（表现为「有些模型无法选中」）；显式全集与 undefined 落盘
+// 解析等价，只是存法不归一。
 function toggleModel(i: number, wire: GatewayWire, m: string, on: boolean) {
   const e = props.entries[i]
   const cur = e.wires.find((x) => x.wire === wire)?.models ?? []
   const next = on ? [...cur, m] : cur.filter((x) => x !== m)
-  const all = wireModelsOf(e.provider, wire)
-  const models = next.length && next.length < all.length ? next : undefined
+  const models = next.length ? next : undefined
   updateEntry(i, { wires: e.wires.map((x) => (x.wire === wire ? { wire, models } : x)) })
 }
 
