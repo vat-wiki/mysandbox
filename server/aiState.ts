@@ -96,6 +96,14 @@ export interface AiOpenCodeBinding {
   setDefault?: boolean;
   defaultModel?: string;
 }
+// pi 绑定：与 opencode 同形状（entries：每 provider 独立配协议、每协议独立配模型清单；
+// 变体 key 同为 <pid>-<后缀>，落 .pi/agent/models.json）。pi 没有显式默认模型的概念
+// （defaultModel 不存在）。旧形状 {providers, wires?, setDefault?}（providers × wires
+// 笛卡尔积）读到时经 aiconfig.normalizePiSlot 懒归一，下一次保存落新形状。
+export interface AiPiBinding {
+  entries: AiOpenCodeEntry[];
+  setDefault?: boolean;
+}
 
 // 绑定（智能体配置的声明层）：工具 → 用哪些 provider。单槽工具绑一个；多槽工具
 // 绑 N 个共存，setDefault 取 providers[0]。providers 空数组 = 显式清空该工具的
@@ -104,7 +112,7 @@ export interface AiBinding {
   claude?: { provider: string };
   codex?: { provider: string; setDefault?: boolean };
   opencode?: AiOpenCodeBinding;
-  pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean };
+  pi?: AiPiBinding;
 }
 
 // 绑定里的工具键（下发的 apply 过滤、绑定校验共用）。

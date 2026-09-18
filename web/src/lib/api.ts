@@ -364,6 +364,7 @@ export const wireModels = (p: Pick<AiProvider, 'models'>, wire: GatewayWire): st
   Array.isArray(p.models) ? (p.models as unknown as string[]) : (p.models?.[wire] ?? [])
 // opencode 绑定：provider 多选，每个 provider 独立配协议，每个协议独立配模型——
 // wires[].models 缺省 = 该 provider 全部模型；defaultModel = "<变体>/<模型>" 显式默认。
+// entry 形状 pi 同构复用（AiPiBinding，无 defaultModel）。
 export interface AiOpenCodeWireBinding {
   wire: GatewayWire
   models?: string[]
@@ -411,11 +412,21 @@ export const normalizeOpenCodeBinding = (t: unknown): AiOpenCodeBinding | undefi
   }
   return undefined
 }
+// pi 绑定：与 opencode 同形状（entries），无显式默认模型的概念（defaultModel 不存在）。
+export interface AiPiBinding {
+  entries: AiOpenCodeEntry[]
+  setDefault?: boolean
+}
+// pi 旧形状 {providers, wires?, setDefault?} 懒归一成 entries——复用 opencode 归一剥掉 defaultModel。
+export const normalizePiBinding = (t: unknown): AiPiBinding | undefined => {
+  const slot = normalizeOpenCodeBinding(t)
+  return slot ? { entries: slot.entries, setDefault: slot.setDefault } : undefined
+}
 export interface AiBinding {
   claude?: { provider: string }
   codex?: { provider: string; setDefault?: boolean }
   opencode?: AiOpenCodeBinding
-  pi?: { providers: string[]; wires?: GatewayWire[]; setDefault?: boolean }
+  pi?: AiPiBinding
 }
 // 工具自身配置（全局一份，不进绑定四层）：agent CLI 绑定之外的特殊配置。本期只做
 // claude——model → env.ANTHROPIC_MODEL；env 禁含 BASE_URL/AUTH_TOKEN（绑定管，后端 400）。

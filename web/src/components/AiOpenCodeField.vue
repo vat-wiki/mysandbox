@@ -1,12 +1,12 @@
 <script setup lang="ts">
-// OpenCode 绑定字段组（受控展示）：provider 多选共存；每个 provider 独立配接入点协议，
-// 每个协议独立配用哪些模型（不选 = 库内该协议的清单——provider 的模型清单按协议各
-// 一份）；defaultModel 显式默认（<变体>/<模型>，空 = 自动取第一个配置组合）。
-// 布局对齐模型供应商表单的网格语言（8rem 标签列 + 内容列）：每 provider 卡内三协议
-// 固定三行，勾选即启用该行。模型选择不铺全量 pills（多模型 provider 又高又乱）——
-// 只显示已选 chip（点 × 移除）+「添加模型」下拉（搜索 + 勾选）；全不选 = 该协议
-// 全部模型。与 AiFieldMulti（pi 用）同族。没选任何 provider = 该工具不参与绑定
-// （不碰落盘配置）。
+// 多槽工具（opencode / pi）绑定字段组（受控展示）：provider 多选共存；每个 provider
+// 独立配接入点协议，每个协议独立配用哪些模型（不选 = 库内该协议的清单——provider 的
+// 模型清单按协议各一份）；opencode 另有 defaultModel 显式默认（<变体>/<模型>，空 =
+// 自动取第一个配置组合），pi 没有这个概念、不渲染该行。布局对齐模型供应商表单的
+// 网格语言（8rem 标签列 + 内容列）：每 provider 卡内三协议固定三行，勾选即启用该行。
+// 模型选择不铺全量 pills（多模型 provider 又高又乱）——只显示已选 chip（点 × 移除）
+// +「添加模型」下拉（搜索 + 勾选）；全不选 = 该协议全部模型。没选任何 provider =
+// 该工具不参与绑定（不碰落盘配置）。
 import { ref, computed, watch } from 'vue'
 import { Plus, X } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
@@ -32,6 +32,7 @@ import {
 } from '@/lib/api'
 
 const props = defineProps<{
+  tool: 'opencode' | 'pi'
   providers: AiProvider[]
   entries: AiOpenCodeEntry[]
   defaultModel: string
@@ -199,8 +200,8 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
       </div>
     </div>
 
-    <!-- 默认模型：与协议行同网格对齐 -->
-    <div v-if="entries.length" class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
+    <!-- 默认模型（pi 无此概念不渲染）：与协议行同网格对齐 -->
+    <div v-if="tool === 'opencode' && entries.length" class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
       <span class="text-[11px] text-muted-foreground">默认模型</span>
       <Select :model-value="defaultModel" @update:model-value="(v) => emit('update:defaultModel', v as string)">
         <SelectTrigger size="sm" class="w-full max-w-md"><SelectValue placeholder="自动（第一个配置组合）" /></SelectTrigger>

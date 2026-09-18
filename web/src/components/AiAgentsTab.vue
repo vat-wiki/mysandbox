@@ -14,13 +14,13 @@ import {
   saveAiBinding,
   saveAiClaudePage,
   normalizeOpenCodeBinding,
+  normalizePiBinding,
   openCodeVariants,
   Unauthorized,
   type AiView,
   type AiBinding,
   type AiOpenCodeEntry,
   type BatchResult,
-  type GatewayWire,
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -30,7 +30,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Bot } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
-import AiFieldMulti from './AiFieldMulti.vue'
 import AiOpenCodeField from './AiOpenCodeField.vue'
 import AiModelCombo from './AiModelCombo.vue'
 import AiBindingResult from './AiBindingResult.vue'
@@ -57,7 +56,7 @@ const toolOn = computed<Record<ToolTab, boolean>>(() => ({
   claude: !!claude.value,
   codex: !!codex.value,
   opencode: ocEntries.value.length > 0,
-  pi: pi.value.length > 0,
+  pi: piEntries.value.length > 0,
 }))
 
 const view = ref<AiView | null>(null)
@@ -76,8 +75,8 @@ const ocDefaultModel = ref('')
 const ocAuto = ref(true)
 const ocModel = ref('')
 const ocSmallModel = ref('')
-const pi = ref<string[]>([])
-const piWires = ref<GatewayWire[]>(['openai-chat'])
+// Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型），无默认模型。
+const piEntries = ref<AiOpenCodeEntry[]>([])
 
 const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
@@ -101,8 +100,7 @@ function fillFrom(b: AiBinding | null | undefined) {
   const ocSlot = normalizeOpenCodeBinding(b?.opencode)
   ocEntries.value = ocSlot?.entries ?? []
   ocDefaultModel.value = ocSlot?.defaultModel ?? ''
-  pi.value = b?.pi?.providers ? [...b.pi.providers] : []
-  piWires.value = b?.pi?.wires?.length ? [...b.pi.wires] : ['openai-chat']
+  piEntries.value = normalizePiBinding(b?.pi)?.entries ?? []
 }
 
 onMounted(() => loadView(true))
@@ -174,12 +172,12 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       return
     }
   } else {
-    if (!pi.value.length) {
+    if (!piEntries.value.length) {
       err.value = 'Pi：先选至少一个模型供应商（不选 = 不碰该工具的落盘配置）'
       return
     }
-    if (!piWires.value.length) {
-      err.value = 'Pi 选了模型供应商但协议为空'
+    if (piEntries.value.some((e) => !e.wires.length)) {
+      err.value = 'Pi 有的供应商还没勾协议'
       return
     }
   }
@@ -195,6 +193,12 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       await loadView(false)
     } else {
       const stored = view.value?.binding ?? {}
+      // entries 落盘形状：models 空集不写（= 该协议全部模型）。
+      const entriesOut = (entries: AiOpenCodeEntry[]) =>
+        entries.map((e) => ({
+          provider: e.provider,
+          wires: e.wires.map((w) => ({ wire: w.wire, ...(w.models?.length ? { models: [...w.models] } : {}) })),
+        }))
       const b: AiBinding =
         tool === 'codex'
           ? { ...stored, codex: { provider: codex.value, setDefault: codexDefault.value } }
@@ -202,15 +206,12 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             ? {
                 ...stored,
                 opencode: {
-                  entries: ocEntries.value.map((e) => ({
-                    provider: e.provider,
-                    wires: e.wires.map((w) => ({ wire: w.wire, ...(w.models?.length ? { models: [...w.models] } : {}) })),
-                  })),
+                  entries: entriesOut(ocEntries.value),
                   setDefault: true,
                   ...(ocDefaultModel.value ? { defaultModel: ocDefaultModel.value } : {}),
                 },
               }
-            : { ...stored, pi: { providers: [...pi.value], wires: [...piWires.value] as GatewayWire[] } }
+            : { ...stored, pi: { entries: entriesOut(piEntries.value) } }
       const ocTc =
         tool === 'opencode'
           ? {
@@ -334,9 +335,10 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             </div>
           </div>
 
-          <!-- ③ OpenCode（entries：每 provider 独立协议、每协议独立模型）/ ④ Pi：多 provider × wire 变体 -->
+          <!-- ③ OpenCode / ④ Pi：同 entries 形状（每 provider 独立协议、每协议独立模型；pi 无默认模型） -->
           <div v-show="toolTab === 'opencode'" class="space-y-3 pt-3">
             <AiOpenCodeField
+              tool="opencode"
               :providers="providers"
               :entries="ocEntries"
               :default-model="ocDefaultModel"
@@ -384,13 +386,12 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             </div>
           </div>
           <div v-show="toolTab === 'pi'" class="space-y-3 pt-3">
-            <AiFieldMulti
+            <AiOpenCodeField
               tool="pi"
               :providers="providers"
-              :provider-ids="pi"
-              :wires="piWires"
-              @update:provider-ids="(v) => (pi = v)"
-              @update:wires="(v) => (piWires = v)"
+              :entries="piEntries"
+              default-model=""
+              @update:entries="(v) => (piEntries = v)"
             />
             <div class="flex items-center justify-end gap-2 border-t pt-3">
               <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
