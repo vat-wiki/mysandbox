@@ -82,7 +82,6 @@ import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Mon
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
-import AiOverrideDialog from '@/components/AiOverrideDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
@@ -685,9 +684,6 @@ function closeAi() {
   // 没有才回终端。
   if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
 }
-// AI 配置覆盖弹框目标（容器名）：容器右键「AI 配置…」的临时任务——AiOverrideDialog
-// 弹框承载，即来即走不劫持主区。本机跟随全局绑定（Agent 工具页保存即追平宿主）。
-const aiOverrideFor = ref<string | null>(null)
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
 const delTarget = ref<ContainerView | null>(null)
@@ -2517,12 +2513,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 >
                 <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
                 <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
-                <ContextMenuItem
-                  title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
-                  @click="aiOverrideFor = c.name"
-                >
-                  <Bot /> AI 配置…
-                </ContextMenuItem>
                 <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
                 <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
               </template>
@@ -2831,12 +2821,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               >
               <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
               <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
-              <ContextMenuItem
-                title="本容器的专属网关配置（覆盖全局；清除后恢复跟随全局）"
-                @click="aiOverrideFor = c.name"
-              >
-                <Bot /> AI 配置…
-              </ContextMenuItem>
               <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
               <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
             </template>
@@ -3806,15 +3790,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     "
     @done="refresh()"
     @close="showBatch = false"
-    @unauthorized="emit('unauthorized')"
-  />
-
-  <!-- AI 配置覆盖弹框：容器右键「AI 配置…」——临时任务走弹框，即来即走 -->
-  <AiOverrideDialog
-    v-if="aiOverrideFor"
-    :target="aiOverrideFor"
-    @changed="refresh()"
-    @close="aiOverrideFor = null"
     @unauthorized="emit('unauthorized')"
   />
 
