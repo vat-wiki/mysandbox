@@ -110,7 +110,10 @@ export interface AiPiBinding {
 // 全部受管条目。缺某工具键 = 不碰该工具的落盘配置。
 export interface AiBinding {
   claude?: { provider: string };
-  codex?: { provider: string; setDefault?: boolean };
+  // codex 单槽：model 必填（不写顶层 model = codex 落回内置 gpt-5.x slug，第三方
+  // 网关没有这些模型，请求必 404）。旧形状的 setDefault 读到即弃（单槽恒写
+  // model_provider，勾不勾没有语义差——勾选框是 opencode 多槽时代的遗留概念）。
+  codex?: { provider: string; model?: string };
   opencode?: AiOpenCodeBinding;
   pi?: AiPiBinding;
 }

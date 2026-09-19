@@ -67,7 +67,7 @@ const result = ref<BatchResult | null>(null)
 // —— 绑定表单：每工具一段；没选模型供应商 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
 const codex = ref('')
-const codexDefault = ref(false)
+const codexModel = ref('')
 const ocEntries = ref<AiOpenCodeEntry[]>([])
 const ocDefaultModel = ref('')
 // OpenCode 配置（落 opencode.json 顶层，user scope）：权限 auto 缺省开，model 优先于
@@ -96,7 +96,7 @@ const claudeBindingEnv = computed<Record<string, string> | null>(() => {
 function fillFrom(b: AiBinding | null | undefined) {
   claude.value = b?.claude?.provider ?? ''
   codex.value = b?.codex?.provider ?? ''
-  codexDefault.value = !!b?.codex?.setDefault
+  codexModel.value = b?.codex?.model ?? ''
   const ocSlot = normalizeOpenCodeBinding(b?.opencode)
   ocEntries.value = ocSlot?.entries ?? []
   ocDefaultModel.value = ocSlot?.defaultModel ?? ''
@@ -158,6 +158,10 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       err.value = 'Codex：先选一个模型供应商（不选 = 不碰该工具的落盘配置）'
       return
     }
+    if (!codexModel.value.trim()) {
+      err.value = 'Codex：先填默认模型（不写 model = codex 用内置 gpt-5.x，网关没有这些模型）'
+      return
+    }
   } else if (tool === 'opencode') {
     if (!ocEntries.value.length) {
       err.value = 'OpenCode：先选至少一个模型供应商（不选 = 不碰该工具的落盘配置）'
@@ -201,7 +205,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
         }))
       const b: AiBinding =
         tool === 'codex'
-          ? { ...stored, codex: { provider: codex.value, setDefault: codexDefault.value } }
+          ? { ...stored, codex: { provider: codex.value, model: codexModel.value.trim() } }
           : tool === 'opencode'
             ? {
                 ...stored,
@@ -322,9 +326,9 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             <AiFieldCodex
               :providers="providers"
               :provider-id="codex"
-              :set-default="codexDefault"
+              :model="codexModel"
               @update:provider-id="(v) => (codex = v)"
-              @update:set-default="(v) => (codexDefault = v)"
+              @update:model="(v) => (codexModel = v)"
             />
             <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
             <div class="flex items-center justify-end gap-2 border-t pt-3">

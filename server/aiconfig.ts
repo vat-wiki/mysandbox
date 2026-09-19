@@ -20,8 +20,10 @@
 //
 // 各工具落点（base = 用户 home 或项目根）：
 // - claude   .claude/settings.json          env 块注入 BASE_URL/AUTH_TOKEN（单槽，重绑即覆盖）
-// - codex    .codex/config.toml            每 provider 一个锚点块（多 provider 共存）
-//            .zshrc                        各自的 env export 锚点块（codex 只认 env_key 引用的运行时环境）
+// - codex    .codex/config.toml            单槽（同 claude 重绑即覆盖）：一份
+//                                          [model_providers.<pid>] 锚点块 + 顶层
+//                                          model_provider / model
+//            .zshrc                        env export 锚点块（codex 只认 env_key 引用的运行时环境）
 // - opencode user: .config/opencode/opencode.json   合并 provider.<变体>*（key 明文内联）
 //            project: <dir>/opencode.json
 // - pi       .pi/agent/models.json         合并 providers.<变体>*（项目级无此形状，不支持）
@@ -140,7 +142,7 @@ export interface ResolvedProvider {
 // opencode/pi 是 provider × wire 变体列表（models 缺省 = 该 provider 该协议全部模型）。
 export interface AiApplyPlan {
   claude?: ResolvedProvider;
-  codex?: { provider: ResolvedProvider; setDefault?: boolean };
+  codex?: { provider: ResolvedProvider; model?: string };
   opencode?: {
     variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[] }[];
     setDefault?: boolean;
@@ -174,7 +176,7 @@ export function buildPlan(
   }
   if (binding.codex) {
     const p = resolve(binding.codex.provider);
-    if (p) plan.codex = { provider: p, setDefault: binding.codex.setDefault };
+    if (p) plan.codex = { provider: p, model: binding.codex.model };
   }
   for (const tool of ['opencode', 'pi'] as const) {
     const t = binding[tool];
@@ -221,6 +223,12 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
     // codex 固定 responses 协议——responses 端点单独配了用它，否则回落 openai 侧。
     if (!p.endpoints.openai && !p.endpoints.responses) {
       return `provider ${p.id} 没有配置 OpenAI 兼容端点（codex 需要 responses 或 openai 端点）`;
+    }
+    // model 必填：codex 没有顶层 model 会落回内置 gpt-5.x slug（第三方网关没有，
+    // 请求必 404）。清单是提示不是白名单——网关 /models 拉不全时仍可手填，故不做
+    // 成员校验（opencode 的 wires[].models 是变体配置，语义不同）。
+    if (b.codex.model === undefined || typeof b.codex.model !== 'string' || !b.codex.model.trim()) {
+      return 'codex.model 必填（codex 没有顶层 model 会用内置 gpt-5.x，网关没有这些模型）';
     }
   }
   for (const tool of ['opencode', 'pi'] as const) {
@@ -421,8 +429,8 @@ export function tomlRemoveTopLevelIf(content: string, key: string, expect: strin
   return content;
 }
 
-// codex env_key 指向的环境变量名：每 provider 独立（多 provider 共存时 key 隔离）。
-// myapikey → MYAPIKEY_API_KEY，与旧版同名（存量 .zshrc 块语义不变）。
+// codex env_key 指向的环境变量名：按 provider 独立（切 provider 时旧 env 块按 pid
+// 回收，不串）。myapikey → MYAPIKEY_API_KEY，与旧版同名（存量 .zshrc 块语义不变）。
 export function envKeyFor(pid: string): string {
   return pid.toUpperCase().replace(/-/g, '_') + '_API_KEY';
 }
@@ -545,12 +553,15 @@ async function configClaude(
   notes.push(`claude: ${how} ${relTo(base, path)}（${p.id} env 注入${extra}${set}，CLI 启动即生效）`);
 }
 
-// codex：config.toml 每 provider 一个锚点块 + .zshrc 各自的 env export 块。回收 =
-// managedIds 里未绑定的 provider：整块移除 + 悬空 model_provider 删行。
+// codex：config.toml 单槽（[model_providers.<pid>] 锚点块 + 顶层 model_provider /
+// model）+ .zshrc env export 锚点块。重绑即覆盖：managedIds 里其余 provider 的块
+// 整块移除 + 悬空 model_provider 删行。model_provider 恒写（单槽绑定 = 启用，不写
+// codex 继续走内置 OpenAI 鉴权——「绑了没生效」无报错，勾选框时代的坑）；model 有
+// 才写（旧档绑定无模型概念，落盘不碰用户已有 model 行）。
 async function configCodex(
   base: string,
   p: ResolvedProvider,
-  opts: { setDefault?: boolean },
+  model: string | undefined,
   managedIds: string[],
   notes: string[],
 ): Promise<void> {
@@ -580,13 +591,14 @@ async function configCodex(
     zsh = removeAnchored(zsh, pid);
     toml = tomlRemoveTopLevelIf(toml, 'model_provider', pid);
   }
-  if (opts.setDefault) {
-    toml = tomlSetTopLevel(toml, 'model_provider', `model_provider = "${p.id}"`);
+  toml = tomlSetTopLevel(toml, 'model_provider', `model_provider = "${p.id}"`);
+  if (model) {
+    toml = tomlSetTopLevel(toml, 'model', `model = "${model.trim()}"`);
   }
   await writeText(tomlPath, toml);
   await writeText(zshPath, zsh);
   notes.push(
-    `codex: 写 ${relTo(base, tomlPath)}${opts.setDefault ? `（默认 provider = ${p.id}）` : ''} + ${relTo(base, zshPath)}`,
+    `codex: 写 ${relTo(base, tomlPath)}（${p.id}${model ? `，model = ${model.trim()}` : ''}）+ ${relTo(base, zshPath)}`,
   );
 }
 
@@ -857,7 +869,7 @@ async function applyPlanToHome(
   }
   if (plan.codex && scope === 'user') {
     try {
-      await configCodex(base, plan.codex.provider, { setDefault: plan.codex.setDefault }, managedIds, notes);
+      await configCodex(base, plan.codex.provider, plan.codex.model, managedIds, notes);
     } catch (e) {
       failed.push('codex');
       notes.push(`codex: 失败 — ${errMsg(e)}`);
@@ -1733,7 +1745,7 @@ export async function ensureAiMigrated(): Promise<void> {
       });
       const toBinding = (g: AiGatewayState): AiBinding => ({
         ...(g.tools.claude ? { claude: { provider: LEGACY_PROVIDER_ID } } : {}),
-        ...(g.tools.codex ? { codex: { provider: LEGACY_PROVIDER_ID, setDefault: g.setDefault } } : {}),
+        ...(g.tools.codex ? { codex: { provider: LEGACY_PROVIDER_ID } } : {}),
         ...(g.tools.opencode
           ? {
               opencode: {

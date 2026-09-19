@@ -45,7 +45,7 @@ const overrideExists = ref(false)
 // —— 表单：每工具一行；没选模型供应商 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
 const codex = ref('')
-const codexDefault = ref(false)
+const codexModel = ref('')
 const ocEntries = ref<AiOpenCodeEntry[]>([])
 const ocDefaultModel = ref('')
 // Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型），无默认模型。
@@ -57,7 +57,7 @@ const noProviders = computed(() => !providers.value.length)
 function fillFrom(b: AiBinding | null | undefined) {
   claude.value = b?.claude?.provider ?? ''
   codex.value = b?.codex?.provider ?? ''
-  codexDefault.value = !!b?.codex?.setDefault
+  codexModel.value = b?.codex?.model ?? ''
   const ocSlot = normalizeOpenCodeBinding(b?.opencode)
   ocEntries.value = ocSlot?.entries ?? []
   ocDefaultModel.value = ocSlot?.defaultModel ?? ''
@@ -111,7 +111,7 @@ async function clearOverride() {
 
 const bindingOut = computed<AiBinding>(() => ({
   ...(claude.value ? { claude: { provider: claude.value } } : {}),
-  ...(codex.value ? { codex: { provider: codex.value, setDefault: codexDefault.value } } : {}),
+  ...(codex.value ? { codex: { provider: codex.value, model: codexModel.value.trim() } } : {}),
   ...(ocEntries.value.length
     ? {
         opencode: {
@@ -140,6 +140,10 @@ async function submit() {
   const b = bindingOut.value
   if (!b.claude && !b.codex && !b.opencode && !b.pi) {
     err.value = '没有选择任何模型供应商——不选 = 不碰该工具的落盘配置，保存无意义'
+    return
+  }
+  if (b.codex && !b.codex.model?.trim()) {
+    err.value = 'Codex：先填默认模型（不写 model = codex 用内置 gpt-5.x，网关没有这些模型）'
     return
   }
   if (b.opencode && b.opencode.entries.some((e) => !e.wires.length)) {
@@ -210,9 +214,9 @@ async function submit() {
         <AiFieldCodex
           :providers="providers"
           :provider-id="codex"
-          :set-default="codexDefault"
+          :model="codexModel"
           @update:provider-id="(v) => (codex = v)"
-          @update:set-default="(v) => (codexDefault = v)"
+          @update:model="(v) => (codexModel = v)"
         />
       </div>
       <div class="space-y-2 rounded-md border p-3">

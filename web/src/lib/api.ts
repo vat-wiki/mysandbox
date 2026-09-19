@@ -424,7 +424,8 @@ export const normalizePiBinding = (t: unknown): AiPiBinding | undefined => {
 }
 export interface AiBinding {
   claude?: { provider: string }
-  codex?: { provider: string; setDefault?: boolean }
+  // codex 单槽 + 默认模型必填（不写顶层 model = codex 落回内置 gpt-5.x，网关没有）。
+  codex?: { provider: string; model?: string }
   opencode?: AiOpenCodeBinding
   pi?: AiPiBinding
 }
