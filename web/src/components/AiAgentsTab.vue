@@ -26,6 +26,13 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Bot } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
@@ -77,6 +84,12 @@ const ocModel = ref('')
 const ocSmallModel = ref('')
 // Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型），无默认模型。
 const piEntries = ref<AiOpenCodeEntry[]>([])
+// Codex 自身配置（config.toml 顶层键，user scope）：推理力度 / 输出详略，给了才写、
+// 清空保存即落盘回收（后端差集回收，与 claude 顶级键同口径）。EMPTY = 「不写」选项
+// 的哨兵值（SelectItem 空 value 与 placeholder 渲染打架，用哨兵映射回空串）。
+const EMPTY = '__none__'
+const cdEffort = ref('')
+const cdVerbosity = ref('')
 
 const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
@@ -116,6 +129,9 @@ async function loadView(fill: boolean) {
       ocAuto.value = oc?.permissionAuto !== false
       ocModel.value = oc?.model ?? ''
       ocSmallModel.value = oc?.smallModel ?? ''
+      const cd = view.value.toolConfig.codex
+      cdEffort.value = cd?.reasoningEffort ?? ''
+      cdVerbosity.value = cd?.verbosity ?? ''
     }
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -216,16 +232,27 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
                 },
               }
             : { ...stored, pi: { entries: entriesOut(piEntries.value) } }
-      const ocTc =
+      // 本工具的自身配置（toolConfig 单键合并写入，其他工具的槽不受影响）：空值不写
+      //（后端给了才写、清空不碰已有值）。
+      const tcOut =
         tool === 'opencode'
           ? {
-              permissionAuto: ocAuto.value,
-              ...(ocModel.value.trim() ? { model: ocModel.value.trim() } : {}),
-              ...(ocSmallModel.value.trim() ? { smallModel: ocSmallModel.value.trim() } : {}),
+              opencode: {
+                permissionAuto: ocAuto.value,
+                ...(ocModel.value.trim() ? { model: ocModel.value.trim() } : {}),
+                ...(ocSmallModel.value.trim() ? { smallModel: ocSmallModel.value.trim() } : {}),
+              },
             }
-          : undefined
-      result.value = await saveAiBinding(b, undefined, [tool], ocTc ? { opencode: ocTc } : undefined)
-      if (view.value) view.value = { ...view.value, binding: b, ...(ocTc ? { toolConfig: { ...view.value.toolConfig, opencode: ocTc } } : {}) }
+          : tool === 'codex'
+            ? {
+                codex: {
+                  ...(cdEffort.value ? { reasoningEffort: cdEffort.value } : {}),
+                  ...(cdVerbosity.value ? { verbosity: cdVerbosity.value } : {}),
+                },
+              }
+            : undefined
+      result.value = await saveAiBinding(b, undefined, [tool], tcOut)
+      if (view.value) view.value = { ...view.value, binding: b, ...(tcOut ? { toolConfig: { ...view.value.toolConfig, ...tcOut } } : {}) }
     }
     emit('done')
   } catch (e) {
@@ -330,7 +357,37 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:provider-id="(v) => (codex = v)"
               @update:model="(v) => (codexModel = v)"
             />
-            <p class="text-[11px] text-muted-foreground/70">Codex 暂无绑定之外的自身配置。</p>
+            <!-- Codex 自身配置（config.toml 顶层键，user scope）：与 opencode 同网格
+                 （8rem 标签列）；给了才写、清空不碰已有值（回收不猜） -->
+            <div class="space-y-2 rounded-md border bg-muted/20 p-2.5">
+              <div class="flex items-baseline justify-between gap-2">
+                <span class="text-[11px] font-medium text-muted-foreground">工具自身配置（config.toml，user scope）</span>
+              </div>
+              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
+                <Label for="ai-cd-effort" class="text-[11px] text-muted-foreground">推理力度</Label>
+                <Select :model-value="cdEffort" @update:model-value="(v) => (cdEffort = v === EMPTY ? '' : (v as string))">
+                  <SelectTrigger id="ai-cd-effort" size="sm" class="w-full max-w-md">
+                    <SelectValue placeholder="不写（清空保存即回收已落盘键）" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem :value="EMPTY">不写</SelectItem>
+                    <SelectItem v-for="e in ['minimal', 'low', 'medium', 'high', 'xhigh']" :key="e" :value="e">{{ e }}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
+                <Label for="ai-cd-verbosity" class="text-[11px] text-muted-foreground">输出详略</Label>
+                <Select :model-value="cdVerbosity" @update:model-value="(v) => (cdVerbosity = v === EMPTY ? '' : (v as string))">
+                  <SelectTrigger id="ai-cd-verbosity" size="sm" class="w-full max-w-md">
+                    <SelectValue placeholder="不写（清空保存即回收已落盘键）" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem :value="EMPTY">不写</SelectItem>
+                    <SelectItem v-for="v in ['low', 'medium', 'high']" :key="v" :value="v">{{ v }}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
             <div class="flex items-center justify-end gap-2 border-t pt-3">
               <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
               <Button :disabled="busy" @click="submitTool('codex')">{{

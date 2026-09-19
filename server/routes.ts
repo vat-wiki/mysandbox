@@ -15,7 +15,7 @@ import {
   getEngine,
 } from './engine/index.js';
 import { setMeta, getMeta, deleteMeta } from './state.js';
-import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiToolConfig, getAiProjectRules, setAiProvider, setAiBinding, setAiToolConfig, AI_TOOL_KEYS, type AiProvider, type AiBinding, type AiToolKey, type AiClaudeToolConfig, type AiOpenCodeToolConfig, type GatewayWire } from './aiState.js';
+import { getSkillHub, getSkillRegistry, getAiProviders, getAiBinding, getAiTargetOverrides, getAiToolConfig, getAiProjectRules, setAiProvider, setAiBinding, setAiToolConfig, AI_TOOL_KEYS, type AiProvider, type AiBinding, type AiToolKey, type AiClaudeToolConfig, type AiOpenCodeToolConfig, type AiCodexToolConfig, type GatewayWire } from './aiState.js';
 import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { log } from './logger.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
@@ -42,6 +42,8 @@ import {
   validateBinding,
   validateToolConfig,
   validateOpenCodeToolConfig,
+  validateCodexToolConfig,
+  removedCodexKeys,
   setClaudeToolConfig,
   setClaudePageConfig,
   validateProjectSelection,
@@ -679,18 +681,27 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       if (!apply.length) throw badRequest('apply 不能为空数组');
     }
     await setAiBinding(binding);
-    // opencode 配置随页签保存一起提交（页签一个保存按钮）；校验过再落存储，
-    // 下发时 configOpencode 读到的就是新值。
+    // opencode/codex 配置随页签保存一起提交（页签一个保存按钮）；校验过再落存储，
+    // 下发时 configOpencode/configCodex 读到的就是新值。
     const ocTc = (body.toolConfig as { opencode?: unknown } | undefined)?.opencode;
     if (ocTc !== undefined) {
       const invalidOc = validateOpenCodeToolConfig(ocTc);
       if (invalidOc) throw badRequest(invalidOc);
       await setAiToolConfig({ opencode: ocTc as AiOpenCodeToolConfig });
     }
+    const cdTc = (body.toolConfig as { codex?: unknown } | undefined)?.codex;
+    let removedCd: string[] | undefined;
+    if (cdTc !== undefined) {
+      const invalidCd = validateCodexToolConfig(cdTc);
+      if (invalidCd) throw badRequest(invalidCd);
+      // 差集回收键要在覆盖存储前算（对比的是上一版 toolConfig.codex）。
+      removedCd = removedCodexKeys((await getAiToolConfig()).codex, cdTc as AiCodexToolConfig);
+      await setAiToolConfig({ codex: cdTc as AiCodexToolConfig });
+    }
     // 缺省目标 = 本机 + 受管容器 + 模板（allTargets，与 Claude 页签同集）——模板追平
     // 让新容器克隆即自带配置。
     const ids = Array.isArray(body.ids) && body.ids.length ? (body.ids as unknown[]).map(String) : await allTargets(cfg);
-    return applyAiBindingToTargets(cfg, ids, binding, apply);
+    return applyAiBindingToTargets(cfg, ids, binding, apply, { removedCodexKeys: removedCd });
   });
 
   // 工具自身配置（toolConfig，全局一份；claude：默认模型 + 自定义 env）。PUT 按工具键

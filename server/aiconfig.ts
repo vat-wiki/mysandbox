@@ -64,6 +64,7 @@ import {
   type AiProjectRule,
   type AiGatewayState,
   type AiClaudeToolConfig,
+  type AiCodexToolConfig,
   type AiOpenCodeToolConfig,
   type AiOpenCodeBinding,
   type AiPiBinding,
@@ -429,6 +430,42 @@ export function tomlRemoveTopLevelIf(content: string, key: string, expect: strin
   return content;
 }
 
+// TOML 顶层键无条件移除（不看值）——codex 自身配置的差集回收用：上一版 toolConfig
+// 写过的键这版没了 = 是我们写的，整行剥掉（值匹配不了——用户可能手改过）。
+export function tomlRemoveTopLevel(content: string, key: string): string {
+  const lines = content.split('\n');
+  let headerIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.startsWith('[') && !t.startsWith('#[')) {
+      headerIdx = i;
+      break;
+    }
+  }
+  const scopeEnd = headerIdx === -1 ? lines.length : headerIdx;
+  const re = new RegExp(`^${key}\\s*=`);
+  for (let i = 0; i < scopeEnd; i++) {
+    if (re.test(lines[i].trim())) {
+      lines.splice(i, 1);
+      return lines.join('\n');
+    }
+  }
+  return content;
+}
+
+// codex 自身配置的差集回收键（保存路径专属语义，同 removedClaudeKeys）：旧 toolConfig
+// 有、新的没了 → 上一版 configCodex 写进 config.toml 顶层的行要剥掉。sweep 不走这里
+//（只合并不删，与 claude 同口径）。
+export function removedCodexKeys(
+  oldTc: AiCodexToolConfig | undefined,
+  newTc: AiCodexToolConfig | undefined,
+): string[] {
+  const out: string[] = [];
+  if (oldTc?.reasoningEffort && !newTc?.reasoningEffort) out.push('model_reasoning_effort');
+  if (oldTc?.verbosity && !newTc?.verbosity) out.push('model_verbosity');
+  return out;
+}
+
 // codex env_key 指向的环境变量名：按 provider 独立（切 provider 时旧 env 块按 pid
 // 回收，不串）。myapikey → MYAPIKEY_API_KEY，与旧版同名（存量 .zshrc 块语义不变）。
 export function envKeyFor(pid: string): string {
@@ -508,6 +545,25 @@ export function validateOpenCodeToolConfig(tc: unknown): string | null {
   return null;
 }
 
+// codex 配置校验（routes 转 400）：两个键都落 config.toml 顶层，codex 对枚举值
+// 启动即拒——这里按已知枚举收紧（UI 下拉同源），比让它坏在 codex 启动强。
+export function validateCodexToolConfig(tc: unknown): string | null {
+  if (tc === undefined || tc === null) return null;
+  if (typeof tc !== 'object' || Array.isArray(tc)) return 'codex 配置必须是对象';
+  const c = tc as AiCodexToolConfig;
+  const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+  if (c.reasoningEffort !== undefined) {
+    if (typeof c.reasoningEffort !== 'string' || !c.reasoningEffort.trim()) return 'codex.reasoningEffort 必须是非空字符串';
+    if (!efforts.includes(c.reasoningEffort)) return `codex.reasoningEffort 非法：${c.reasoningEffort}（合法值 ${efforts.join('/')}）`;
+  }
+  const verbosity = ['low', 'medium', 'high'];
+  if (c.verbosity !== undefined) {
+    if (typeof c.verbosity !== 'string' || !c.verbosity.trim()) return 'codex.verbosity 必须是非空字符串';
+    if (!verbosity.includes(c.verbosity)) return `codex.verbosity 非法：${c.verbosity}（合法值 ${verbosity.join('/')}）`;
+  }
+  return null;
+}
+
 // —— 各工具写入器。全部幂等，成功后往 notes 推一行人话摘要。——
 
 // Claude 页签保存的写入策略：merge = 合并（默认，读旧文件只覆盖受管键，用户其它键保留）；
@@ -557,11 +613,17 @@ async function configClaude(
 // model）+ .zshrc env export 锚点块。重绑即覆盖：managedIds 里其余 provider 的块
 // 整块移除 + 悬空 model_provider 删行。model_provider 恒写（单槽绑定 = 启用，不写
 // codex 继续走内置 OpenAI 鉴权——「绑了没生效」无报错，勾选框时代的坑）；model 有
-// 才写（旧档绑定无模型概念，落盘不碰用户已有 model 行）。
+// 才写（旧档绑定无模型概念，落盘不碰用户已有 model 行）。tc = 工具自身配置
+//（toolConfig.codex）——model_reasoning_effort / model_verbosity 顶层键，给了才写；
+// removeKeys = 保存路径差集回收（removedCodexKeys，上一版写过这版没了的键整行剥掉，
+// sweep 不传 = 只合并不删）。⚠️ 这两个键可能落进锚点块区域（块在文件头时第一个表头
+// 在块内）——整块替换会顺手带走它们，所以回收行是布局无关的兜底，别删。
 async function configCodex(
   base: string,
   p: ResolvedProvider,
   model: string | undefined,
+  tc: AiCodexToolConfig | undefined,
+  removeKeys: string[],
   managedIds: string[],
   notes: string[],
 ): Promise<void> {
@@ -595,10 +657,23 @@ async function configCodex(
   if (model) {
     toml = tomlSetTopLevel(toml, 'model', `model = "${model.trim()}"`);
   }
+  if (tc?.reasoningEffort) {
+    toml = tomlSetTopLevel(toml, 'model_reasoning_effort', `model_reasoning_effort = "${tc.reasoningEffort.trim()}"`);
+  }
+  if (tc?.verbosity) {
+    toml = tomlSetTopLevel(toml, 'model_verbosity', `model_verbosity = "${tc.verbosity.trim()}"`);
+  }
+  for (const key of removeKeys) {
+    toml = tomlRemoveTopLevel(toml, key);
+  }
   await writeText(tomlPath, toml);
   await writeText(zshPath, zsh);
+  const tcExtra = [
+    tc?.reasoningEffort ? `effort = ${tc.reasoningEffort.trim()}` : '',
+    tc?.verbosity ? `verbosity = ${tc.verbosity.trim()}` : '',
+  ].filter(Boolean).join('，');
   notes.push(
-    `codex: 写 ${relTo(base, tomlPath)}（${p.id}${model ? `，model = ${model.trim()}` : ''}）+ ${relTo(base, zshPath)}`,
+    `codex: 写 ${relTo(base, tomlPath)}（${p.id}${model ? `，model = ${model.trim()}` : ''}${tcExtra ? `，${tcExtra}` : ''}）+ ${relTo(base, zshPath)}`,
   );
 }
 
@@ -851,6 +926,7 @@ async function applyPlanToHome(
   notes: string[],
   scope: 'user' | 'project' = 'user',
   claudeMode: ClaudeSaveMode = 'merge',
+  removedCodexKeys: string[] = [],
 ): Promise<string[]> {
   const failed: string[] = [];
   // 自身配置（env + 顶级键）只在 user scope 注入——项目级 settings.json 不吃全局
@@ -869,7 +945,7 @@ async function applyPlanToHome(
   }
   if (plan.codex && scope === 'user') {
     try {
-      await configCodex(base, plan.codex.provider, plan.codex.model, managedIds, notes);
+      await configCodex(base, plan.codex.provider, plan.codex.model, toolCfg.codex, removedCodexKeys, managedIds, notes);
     } catch (e) {
       failed.push('codex');
       notes.push(`codex: 失败 — ${errMsg(e)}`);
@@ -1031,7 +1107,7 @@ async function applyOneTarget(
   cfg: Config,
   target: string,
   binding: AiBinding | undefined | null,
-  opts?: { claudeMode?: ClaudeSaveMode },
+  opts?: { claudeMode?: ClaudeSaveMode; removedCodexKeys?: string[] },
 ): Promise<BatchItemResult> {
   const id = target;
   const name = targetName(target);
@@ -1054,7 +1130,7 @@ async function applyOneTarget(
     }
     const notes: string[] = [];
     for (const pid of missing) notes.push(`${pid}: provider 不在库中，跳过（「模型服务」补建或改绑定）`);
-    const failed = await applyPlanToHome(home, plan, Object.keys(lib), notes, 'user', opts?.claudeMode);
+    const failed = await applyPlanToHome(home, plan, Object.keys(lib), notes, 'user', opts?.claudeMode, opts?.removedCodexKeys);
     notes.push(...(await probePlan(cfg, target, plan)));
     const ok = failed.length === 0 && missing.length === 0;
     return finish(ok, {
@@ -1073,7 +1149,7 @@ export async function applyAiBindingToTargets(
   targets: string[],
   binding: AiBinding,
   apply?: AiToolKey[],
-  opts?: { claudeMode?: ClaudeSaveMode },
+  opts?: { claudeMode?: ClaudeSaveMode; removedCodexKeys?: string[] },
 ): Promise<BatchResult> {
   const effective = apply?.length ? sliceBinding(binding, apply) : binding;
   const limit = pLimit(CONCURRENCY);

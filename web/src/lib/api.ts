@@ -449,12 +449,19 @@ export interface AiOpenCodeToolConfig {
   model?: string
   smallModel?: string
 }
+// Codex 自身配置（全局一份，像 opencode 的 toolConfig）：config.toml 顶层键，给了
+// 才写；保存路径差集回收（写过又删掉的键落盘时剥掉）。reasoning effort 只对
+// responses 协议生效。
+export interface AiCodexToolConfig {
+  reasoningEffort?: string
+  verbosity?: string
+}
 export interface AiView {
   hostHome: string // 宿主 home（宿主 spot → 规则 ~/rel 归一化用）
   providers: AiProvider[]
   binding: AiBinding | null
   overrides: Record<string, AiBinding>
-  toolConfig: { claude?: AiClaudeToolConfig; opencode?: AiOpenCodeToolConfig }
+  toolConfig: { claude?: AiClaudeToolConfig; opencode?: AiOpenCodeToolConfig; codex?: AiCodexToolConfig }
   projectRules: AiProjectRule[]
 }
 export const getAiView = () => api('/api/ai/view') as Promise<AiView>
@@ -478,7 +485,7 @@ export const fetchAiModels = (endpoints: AiProvider['endpoints'], apiKey: string
 // 保存全局绑定并应用（ids 缺省 = 本机 + 全部受管容器，本机与容器同权）。
 // apply = 只下发这些工具槽（存储仍整份保存）——按工具页签保存时传 [tool]，
 // 落盘只写本工具、不连带重写其他工具的配置（工具间互相独立）。
-export const saveAiBinding = (binding: AiBinding, ids?: string[], apply?: string[], toolConfig?: { opencode?: AiOpenCodeToolConfig }) => {
+export const saveAiBinding = (binding: AiBinding, ids?: string[], apply?: string[], toolConfig?: { opencode?: AiOpenCodeToolConfig; codex?: AiCodexToolConfig }) => {
   const body: Record<string, unknown> = { binding }
   if (ids) body.ids = ids
   if (apply) body.apply = apply

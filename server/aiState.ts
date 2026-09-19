@@ -145,9 +145,19 @@ export interface AiOpenCodeToolConfig {
   smallModel?: string; // 轻量任务模型（会话标题等）→ 顶层 small_model（给了才写，清空不碰已有值）
 }
 
+// Codex 自身配置（全局一份，像 claude/opencode 的 toolConfig）：config.toml 顶层键，
+// 由 aiconfig 的 configCodex 消费——给了才写；保存路径对上一版做差集回收（removedCodexKeys
+// 写过又删掉的键整行剥掉，sweep 只合并不删，与 claude 顶级键同口径）。reasoning effort
+// 只对 responses 协议生效（codex 固定走 responses，恒适用）。
+export interface AiCodexToolConfig {
+  reasoningEffort?: string; // → 顶层 model_reasoning_effort（minimal/low/medium/high/xhigh，路由层枚举校验）
+  verbosity?: string; // → 顶层 model_verbosity（low/medium/high，路由层枚举校验）
+}
+
 export interface AiToolConfigState {
   claude?: AiClaudeToolConfig;
   opencode?: AiOpenCodeToolConfig;
+  codex?: AiCodexToolConfig;
 }
 
 // 项目级 AI 配置规则（像技能规则）：去向 = 项目目录（容器内 ~/rel，唯一），写入
