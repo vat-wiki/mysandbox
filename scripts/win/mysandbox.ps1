@@ -173,15 +173,21 @@ switch ($Action) {
 
     $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
     # 看门狗：每 5 分钟重复触发一次；已在跑时被 IgnoreNew 挡住，死了则被拉起。
-    # 这一条是对「任务计划程序自身不自带健康检查」的补齐。
-    # ⚠️ Duration 必须是 PT0S（= 无限重复）：直接传 [TimeSpan]::MaxValue 会生成
-    #    P99999999DT23H59M59S，超出任务 XML 的 Duration 取值上限，Register 被直接拒绝
-    #    （实测报「任务 XML 包含格式不正确或超出范围的值 (8,42):Duration:…」）。
+    # 这一条是对「任务计划程序自身不自带健康检查」的补齐（RestartCount 只在任务被判定
+    # 为「失败」时生效，而进程被外部杀掉、exit 0 等情形未必判失败）。
+    #
+    # ⚠️ Duration 的取值区间是实测出来的，别想当然（本机 Windows 10.0.26100 实测）：
+    #    [TimeSpan]::MaxValue → P99999999DT23H59M59S  拒（超上限）
+    #    PT0S（=「无限」的直觉写法）                   拒
+    #    PT1M / PT1H 以下                             拒（有效下限 ≥ PT1H）
+    #    P100Y                                        拒
+    #    P3650D（10 年）                               通过 ← 用它
+    #    拒的表现是 Register 报「任务 XML 包含格式不正确或超出范围的值(8,26):Duration:…」。
     try {
       $rep = (New-ScheduledTaskTrigger -Once -At (Get-Date) `
           -RepetitionInterval (New-TimeSpan -Minutes 5) `
           -RepetitionDuration ([TimeSpan]::MaxValue)).Repetition
-      $rep.Duration = 'PT0S'
+      $rep.Duration = 'P3650D'
       $taskTrigger.Repetition = $rep
     } catch {
       Write-Warning "看门狗重复触发未应用（不影响其他功能）：$_"
@@ -210,9 +216,10 @@ switch ($Action) {
     }
     if (-not (Get-Task)) { throw "注册失败：任务 '$TaskName' 没有出现在计划任务库里" }
 
+    $watchdog = if ($taskTrigger.Repetition) { "登录时 + 每 5 分钟看门狗" } else { "登录时（看门狗未应用）" }
     Write-Host "已注册计划任务 '$TaskName'"
     Write-Host "  身份    : $UserId（交互式会话——WSL2 要求，别改成 SYSTEM/服务账户）"
-    Write-Host "  触发    : 登录时 + 每 5 分钟看门狗；失败后 1 分钟重试（最多 3 次）"
+    Write-Host "  触发    : $watchdog；任务判失败后 1 分钟重试（最多 3 次）"
     Write-Host "  监听    : 127.0.0.1:$Port"
     Write-Host "  日志    : $WrapperLog"
     Write-Host "  卸载    : mysandbox.ps1 uninstall"
