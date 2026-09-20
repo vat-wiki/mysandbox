@@ -55,6 +55,35 @@ mysandbox 跑 unprivileged LXC 容器（容器 root → 宿主 uid 100000），�
 
 ## 安装与运行
 
+### Windows（WSL2 引擎）
+
+Windows 上不用 LXC（没有对等物），后端跑 Windows 原生 node，**一个「容器」= 一个 WSL2 发行版实例**
+（`config.yaml` 里 `engine: wsl2`，设计与实测清单见 `docs/wsl2-migration.md`）。日常操作由
+`scripts/win/mysandbox.ps1` 包办，只需 Windows 自带组件，**不需要管理员、不需要第三方工具**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\win\mysandbox.ps1 install   # 注册登录自启 + 自愈
+powershell -ExecutionPolicy Bypass -File scripts\win\mysandbox.ps1 status    # 任务/监听/health/容器
+```
+
+动作：`install | uninstall | start | stop | restart | status | update | logs`。
+`update` = `git pull` → 装依赖 → 构建 → 重启（改完代码用这个）；`logs` 同时打 wrapper 日志与
+mysandbox 自身日志尾部。
+
+**为什么是计划任务，而不是 Windows 服务**：WSL2 发行版绑定「登录用户的会话」，从 Session 0 的
+服务上下文（LocalSystem / 任何服务账户）调 `wsl.exe` 会直接 `Access is denied`
+（microsoft/WSL#4803、#9451）——所以 NSSM / WinSW / `sc.exe` 这条路对本项目不成立。启动链条分四层，
+且**刻意不把重启指望在调度器上**（实测任务 XML 里的 `<RestartOnFailure>` 写进去了也不生效）：
+
+1. **runner 自愈循环**（`run` 动作）——node 一退出就重启，秒级，不依赖任何调度器语义；
+2. **登录时触发**——开机 / 重新登录后自动拉起；
+3. **任务级 5 分钟看门狗**——兜「runner 自己也没了」的极端情况；
+4. **停止哨兵** `~/.mysandbox/stopped.flag`——保证 `stop` 不会被上面任何一层复活。
+
+> ⚠️ `npm run dev`（tsx watch）是 Linux 开发用的，Windows 上不要用；起服务走上面的脚本，或
+> 直接 `node dist/server/cli.js`。WSL2 引擎下 docker 服务层 / peer / dockerApi / 防火墙（netsh）
+> 尚未移植，`services.available=false` 与 peer 网关重试日志属预期现象。
+
 ### 一键安装（唯一需要 sudo 的一步）
 
 ```bash

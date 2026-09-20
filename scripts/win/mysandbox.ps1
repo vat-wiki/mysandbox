@@ -8,6 +8,12 @@
     这条路对本项目不成立，systemd 的对应物在 Windows 上是**计划任务**：
     以当前登录用户 + 交互式会话身份常驻，才能正常驱动 wsl.exe。
 
+  分层（这是「稳定重启」的实际来源，别把重启指望在调度器上）：
+    ① runner 自愈循环（run 动作）——node 一退出就重启，秒级，不依赖任何调度器语义；
+    ② 登录时启动——解决开机/重登后自动拉起；
+    ③ 任务级 5 分钟看门狗——兜「runner 自己也没了」的极端情况；
+    ④ 停止哨兵文件——保证 stop 不会被上面任何一层复活。
+
   依赖：仅 Windows 自带组件（ScheduledTasks 模块），无需管理员、无需第三方工具。
 
   用法（在仓库根目录或任意位置）：
@@ -15,13 +21,13 @@
     powershell -ExecutionPolicy Bypass -File scripts\win\mysandbox.ps1 status
 
   动作：
-    install     注册计划任务（登录时启动 + 崩溃自愈看门狗）
+    install     注册计划任务（登录时启动 + 5 分钟看门狗）
     uninstall   注销计划任务并停掉残留监听
     start/stop/restart
     status      任务状态 + 监听进程 + /api/health + 容器清单
     update      git pull -> npm install -> build -> 重启（改完代码用这个）
-    logs        看 wrapper.log 与 mysandbox 自身日志尾部
-    run         任务本体：前台跑 node dist/server/cli.js（由计划任务调用，一般不用手敲）
+    logs        看 wrapper 日志与 mysandbox 自身日志尾部
+    run         任务本体：自愈循环跑 node dist/server/cli.js（由计划任务调用，一般不用手敲）
 #>
 [CmdletBinding()]
 param(
@@ -44,7 +50,12 @@ $ErrorActionPreference = 'Stop'
 
 $ConfigFile = Join-Path $env:USERPROFILE '.mysandbox\config.yaml'
 $LogDir = Join-Path $env:USERPROFILE '.mysandbox\logs'
-$WrapperLog = Join-Path $LogDir 'wrapper.log'
+# 按天命名：既避免「重启时旧文件仍被运行中的进程持有、删不掉/写不进」的句柄冲突
+# （实测 wrapper.log 固定名时 Remove-Item 会被静默跳过），也顺带留了个自然的轮转边界。
+$WrapperLog = Join-Path $LogDir ("wrapper-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd'))
+# 停止哨兵：stop / uninstall 落它，run 见到就退出循环。没有它的话，「停」会被 runner 的
+# 自愈循环或任务计划程序残留的重启逻辑当场复活——停机必须是一个写得进磁盘的意图。
+$StopFlag = Join-Path $env:USERPROFILE '.mysandbox\stopped.flag'
 
 if (-not $RepoDir) {
   $RepoDir = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -60,6 +71,11 @@ if (-not $PSBoundParameters.ContainsKey('Port')) {
 }
 
 $UserId = "$env:USERDOMAIN\$env:USERNAME"
+
+function Write-Wrap {
+  param([string]$Message)
+  "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" | Add-Content -Path $WrapperLog -Encoding UTF8
+}
 
 function Get-ConfigToken {
   if (-not (Test-Path $ConfigFile)) { return $null }
@@ -112,6 +128,8 @@ function Start-Mysandbox {
   if (-not $t) {
     throw "计划任务 '$TaskName' 未注册——先跑：mysandbox.ps1 install"
   }
+  # 先撤掉停止哨兵，否则 run 起来会立刻退出（见 run 分支）。
+  Remove-Item $StopFlag -Force -ErrorAction SilentlyContinue
   if ((Get-ListenerPids -P $Port).Count -gt 0) {
     Write-Host "端口 $Port 已被占用，先停掉当前实例（幂等）"
     Stop-Listener -P $Port | Out-Null
@@ -126,6 +144,8 @@ function Start-Mysandbox {
 }
 
 function Stop-Mysandbox {
+  # 先落停止哨兵再停进程：runner 的自愈循环会检查它，避免「停了又被自己拉起来」。
+  try { New-Item -ItemType File -Path $StopFlag -Force | Out-Null } catch { }
   $t = Get-Task
   if ($t) { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
   if (Stop-Listener -P $Port) {
@@ -138,29 +158,65 @@ function Stop-Mysandbox {
 switch ($Action) {
 
   'run' {
-    # 计划任务调用的本体：前台跑 node，stdout/stderr 追加进 wrapper.log。
+    # 计划任务调用的本体：前台跑 node，stdout/stderr 追加进按天命名的 wrapper 日志。
     # 走 in-process（& $node）而不是 cmd 包装，是为了让 node 复用 powershell 的控制台
     # ——任务用 -WindowStyle Hidden 拉起时，控制台窗口不会弹出来。
     if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
     $node = if ($env:MYSANDBOX_NODE) { $env:MYSANDBOX_NODE } else { 'node' }
     Set-Location $RepoDir
-    "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] run start  cwd=$RepoDir" | Add-Content -Path $WrapperLog -Encoding UTF8
-    $rc = 1
-    try {
-      & $node 'dist\server\cli.js' *>> $WrapperLog
-      $rc = $LASTEXITCODE
-    } catch {
-      "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] run failed: $_" | Add-Content -Path $WrapperLog -Encoding UTF8
-      $rc = 1
+    # PS 5.1 按控制台 OEM 代码页（本机 GBK/936）解码原生进程的 stdout，而 node 吐的是
+    # UTF-8 字节——中文会先被误读成 GBK、再按 UTF-8 落盘，变成「鐗堟湰」这种双层乱码（实测）。
+    # 把控制台输出编码对齐成 UTF-8 即可；若上下文没有控制台，赋值可能抛，忽略。
+    try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+
+    if (Test-Path $StopFlag) {
+      Write-Wrap 'run 直接退出：存在停止哨兵（先 start 清掉它）'
+      exit 0
     }
-    "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] run exit   rc=$rc" | Add-Content -Path $WrapperLog -Encoding UTF8
-    exit $rc
+
+    # 自愈循环——这是「稳定重启」的真正落点。
+    # 为什么不用任务计划程序自带的失败重试：XML 里 <RestartOnFailure><Count>3</Count>
+    # <Interval>PT1M</Interval> 确实写进去了，但实测强杀进程后 85 秒内**并没有**被拉起
+    # （任务停在 Ready、LastTaskResult=0xFFFFFFFF）；而任务级看门狗只有 PT5M 粒度。
+    # 把重启做进 runner：恢复延迟从分钟级降到秒级，且完全不依赖调度器的失败判定语义。
+    $failStreak = 0
+    while ($true) {
+      if (Test-Path $StopFlag) { Write-Wrap 'run 退出循环：停止哨兵出现'; exit 0 }
+      $t0 = Get-Date
+      Write-Wrap 'run start'
+      $rc = 1
+      try {
+        # 刻意用 Out-File -Encoding UTF8，而不是 `*>> $WrapperLog`：PS 5.1 的重定向默认按
+        # UTF-16LE 落盘，日志在 grep/tail 下会变二进制乱码（实测）。走管道则编码可控。
+        & $node 'dist\server\cli.js' *>&1 | Out-File -FilePath $WrapperLog -Append -Encoding UTF8
+        $rc = $LASTEXITCODE
+      } catch {
+        Write-Wrap "run failed: $_"
+        $rc = 1
+      }
+      Write-Wrap "run exit rc=$rc"
+
+      if (Test-Path $StopFlag) { Write-Wrap 'run 退出循环：停止哨兵出现'; exit $rc }
+
+      if (((Get-Date) - $t0).TotalSeconds -lt 10) {
+        # 跑不到 10 秒就挂，通常是引擎不可达（WSL 还没起来）——退避，别热循环刷日志。
+        $failStreak++
+        $delay = [int][Math]::Min(5 * [Math]::Pow(2, $failStreak - 1), 60)
+        Write-Wrap "run 快速失败第 $failStreak 次，$delay 秒后重试"
+        Start-Sleep -Seconds $delay
+      } else {
+        $failStreak = 0
+        Write-Wrap 'run 意外退出，2 秒后重启'
+        Start-Sleep -Seconds 2
+      }
+    }
   }
 
   'install' {
     if (-not (Test-Path (Join-Path $RepoDir 'dist\server\cli.js'))) {
       throw "找不到 dist\server\cli.js——先在仓库根跑 npm run build"
     }
+    Remove-Item $StopFlag -Force -ErrorAction SilentlyContinue
 
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $self = $PSCommandPath
@@ -219,13 +275,16 @@ switch ($Action) {
     $watchdog = if ($taskTrigger.Repetition) { "登录时 + 每 5 分钟看门狗" } else { "登录时（看门狗未应用）" }
     Write-Host "已注册计划任务 '$TaskName'"
     Write-Host "  身份    : $UserId（交互式会话——WSL2 要求，别改成 SYSTEM/服务账户）"
-    Write-Host "  触发    : $watchdog；任务判失败后 1 分钟重试（最多 3 次）"
+    Write-Host "  触发    : $watchdog"
+    Write-Host "  自愈    : runner 内部循环——node 一退出即重启（秒级）；看门狗是最后一道兜底"
     Write-Host "  监听    : 127.0.0.1:$Port"
     Write-Host "  日志    : $WrapperLog"
+    Write-Host "  停止    : mysandbox.ps1 stop（落停止哨兵，不会被自愈循环复活）"
     Write-Host "  卸载    : mysandbox.ps1 uninstall"
   }
 
   'uninstall' {
+    try { New-Item -ItemType File -Path $StopFlag -Force | Out-Null } catch { }
     $t = Get-Task
     if ($t) {
       Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -308,10 +367,10 @@ switch ($Action) {
 
   'logs' {
     if (Test-Path $WrapperLog) {
-      Write-Host "--- wrapper.log（最后 $Tail 行）---"
+      Write-Host "--- $(Split-Path $WrapperLog -Leaf)（最后 $Tail 行）---"
       Get-Content $WrapperLog -Tail $Tail
     } else {
-      Write-Host "--- wrapper.log 还不存在 ---"
+      Write-Host "--- $(Split-Path $WrapperLog -Leaf) 还不存在 ---"
     }
     Write-Host "--- mysandbox 自身日志（最后 $Tail 行）---"
     Push-Location $RepoDir
