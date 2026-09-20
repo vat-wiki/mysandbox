@@ -16,7 +16,7 @@
 // 会话 cwd：普通连接 = 宿主 home；分屏（WS query from=源 termId）继承源 pane 当前目录。
 //
 // 降级：宿主无 tmux → script 直接跑 shell（一次性，断开即死、无宽限）；无 script → 报错关闭。
-// token 本就等价宿主 leon 用户（uid 1000 直通，见 CLAUDE.md 安全模型），宿主终端不扩大
+// token 本就等价宿主 leon 用户（uid 1000 直通，见 AGENTS.md 安全模型），宿主终端不扩大
 // 权限面，只是把它摆上 UI。
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';

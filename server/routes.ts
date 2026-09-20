@@ -149,7 +149,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       engine: engine.name,
       caps: engine.caps,
       // docker 服务层可用性（1.5s 快败，不拖死 health）。只回 bool：health 免鉴权，
-      // 不放名字/路径/配置值（约束见 CLAUDE.md）。
+      // 不放名字/路径/配置值（约束见 AGENTS.md）。
       services: {
         available: cfg.services.enabled ? (await dockerStatus()).reachable : false,
       },

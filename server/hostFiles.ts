@@ -3,7 +3,7 @@
 // 语义完全一致，前端 api.ts 按 '__host__' 哨兵切端点后 FilePanel/FileEditorDialog 零改动。
 // 实现差异仅在执行层：容器侧走 execRun（find/base64/cat），本文件走 node:fs 直操作。
 //
-// 安全边界：token 本就等价宿主 leon 用户（uid 1000 直通，见 CLAUDE.md 安全模型），文件路由不
+// 安全边界：token 本就等价宿主 leon 用户（uid 1000 直通，见 AGENTS.md 安全模型），文件路由不
 // 扩大权限面；实际权限受 server 运行用户约束，EACCES/EPERM 如实反馈 403（与容器侧 400
 // 的唯一刻意差异——容器内以 uid 1000 执行，宿主侧无这层包装）。
 import { stat, lstat, readdir, readFile, writeFile, mkdir, rename, rm, open } from 'node:fs/promises';

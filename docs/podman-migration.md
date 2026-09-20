@@ -1,7 +1,7 @@
 # podman 迁移方案——「应用容器」运行时从 docker 迁到 podman
 
 状态：**设计稿，未实施**。界面名词已先行改为「应用容器」（与实现解耦，本文沿用）。
-服务层现状见 CLAUDE.md「docker 服务层」；本文回答三件事：rootless 为什么碰不得固定 IP、
+服务层现状见 AGENTS.md「docker 服务层」；本文回答三件事：rootless 为什么碰不得固定 IP、
 两条可行路线各自长什么样、一期（rootful CLI 平移）具体怎么做。
 
 ## 0. 背景与动机
@@ -56,7 +56,7 @@ rootful podman（netavark，桥网络）语义与 docker 接近，固定 IP/桥/
 
 - 安装 podman（rootful，`storage_driver=overlay`）、确认 `netavark`；
 - leon 免密：sudoers 精确放行 `/usr/bin/podman`（token 本就等价宿主 leon 权限，
-  安全模型不变，见 CLAUDE.md；备选：rootful `podman.socket` 的 Docker 兼容 REST
+  安全模型不变，见 AGENTS.md；备选：rootful `podman.socket` 的 Docker 兼容 REST
   API `/run/podman/podman.sock`，但 leon 侧授权要额外配置，一期不做）；
 - `ip_forward` 与 ufw 的桥转发规则（见 3.5）。
 

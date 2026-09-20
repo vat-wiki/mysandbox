@@ -154,7 +154,7 @@ server/engine/
 | P4 lxc engine | `engine/lxc.ts` 全函数 + `cfg.engine` 切换 | ✅ 全方法对活容器实测(见 commit) |
 | P5 业务层 | lifecycle/files/terminal/batch 适配 + `EngineCaps` | ✅ 端到端实测通过(见下「P5 实测结论」) |
 | P6 基座层 | image.ts 收缩为 docker 实现 + 统一 `/api/base` + web 基座面板 | ✅ clone/export/import 端到端实测(见下「P6 实测结论」) |
-| P7 收尾 | 全流程 + CLAUDE.md 更新 | ✅ 双引擎端到端 + 文档反映现实 |
+| P7 收尾 | 全流程 + AGENTS.md 更新 | ✅ 双引擎端到端 + 文档反映现实 |
 
 ### P5 待解决的具体点(P4 实测暴露)
 

@@ -11,3 +11,6 @@ config.yaml
 
 # Claude Code 项目级配置——AI 配置规则会往里写带 token 的 settings.json，永不入库
 .claude/
+
+# 代理的工作记忆（daily log + 项目长期笔记）——本机状态，不进共享仓库
+.workbuddy/

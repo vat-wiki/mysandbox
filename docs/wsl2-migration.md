@@ -206,7 +206,7 @@ wsl2→cfg.wsl.template），四处全部改走它。config 加 `engine`（lxc|w
     `wsl.exe not found or WSL not installed`。实测用两个替身固化验证：不存在的 bin →
     `wsl.exe not usable (ENOENT)`，被安全策略拦的 bin → `wsl.exe not usable (EPERM)`。
     `status()` 刻意只回**类别**不回原始文本——它经 `/api/health` 免鉴权下发，原始 spawn
-    错误含完整可执行路径，撞 CLAUDE.md 的 health 约束。
+    错误含完整可执行路径，撞 AGENTS.md 的 health 约束。
   - **未验证项（本轮的真实阻塞）**：本机 `wsl.exe` 的 spawn 被程序黑名单拦截（EPERM，
     与 `reg.exe` 同一机制同一类别），因此 `status / listManaged / inspect / create /
     base*` 全部未能实测；`cli.ts` 的启动前 `engine.status()` 检查一票否决，**服务直接

@@ -218,7 +218,7 @@ async function status(_cfg: Config) {
   const v = await runWsl(['--version'], 10_000);
   if (!v.ok) {
     // 只回错误**类别**，不回原始文本：status 经 /api/health 免鉴权下发，而原始 spawn
-    // 错误里带完整可执行路径（可能含用户路径）——CLAUDE.md 的 health 约束不放路径/配置值。
+    // 错误里带完整可执行路径（可能含用户路径）——AGENTS.md 的 health 约束不放路径/配置值。
     // 类别已够分清「没装（ENOENT）/ 被安全策略或权限拦（EPERM、EACCES）/ 环境或参数坏
     // （EINVAL）」；原先固定一句 "not found or WSL not installed" 把这三者糊成一种，
     // Windows 实测第一次撞上的是「被拦」却报「没装」，误导排查。
