@@ -34,10 +34,10 @@ export async function registerBaseRoutes(app: FastifyInstance, cfg: Config): Pro
   // 基座状态。App 轮询这个接口，所以实现里 context 定位失败不能变 500（见 BaseStatus 注释）。
   app.get('/api/base', async () => getEngine(cfg).baseStatus(cfg));
 
-  // 体积单独一个接口：算一次要遍历整个 rootfs（2.8G），不能塞进被轮询的 status。
+  // 体积单独一个接口：算一次要遍历整个 rootfs（LXC 2.8G）/ stat VHD（wsl2），
+  // 不能塞进被轮询的 status。
   app.get('/api/base/size', async () => {
-    const { lxcTemplateSize } = await import('./engine/lxc.js');
-    return { size: await lxcTemplateSize(cfg) };
+    return { size: await getEngine(cfg).baseSize(cfg) };
   });
 
   // 新建容器的 hosts 多源预览（CreateDialog）：模板 rootfs 的 /etc/hosts（源头，

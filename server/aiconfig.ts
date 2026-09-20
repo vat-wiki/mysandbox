@@ -1749,7 +1749,7 @@ export async function allTargets(cfg: Config): Promise<string[]> {
   const ids = new Set<string>();
   try {
     for (const v of await listManaged(cfg)) ids.add(v.id);
-    const tpl = cfg.lxc.template;
+    const tpl = getEngine(cfg).baseName(cfg);
     if (tpl && !ids.has(tpl)) {
       try {
         await inspectContainer(cfg, tpl);

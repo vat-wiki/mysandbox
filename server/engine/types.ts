@@ -150,6 +150,11 @@ export interface EngineCaps {
   // 基座支持的动作。/api/base/<action> 用它做准入（不在表里 → 400），
   // 前端也按它渲染按钮，不必自己记引擎能干什么。
   baseActions: BaseAction[];
+  // IP 权威源（WSL2 引擎引入）：'config' = 引擎侧配死的静态 IP（LXC 容器 config，
+  // 停机也不漂移，assignedIps 扫配置即权威）；'runtime' = 运行时动态分配（WSL2 NAT，
+  // 引擎侧的 spec.ip 只是记账，真实 IP 每次现查）。业务层凡「拿 IP 直连」的路径
+  // （proxy 端口探测、peer 直连）在 runtime 引擎下要意识到 IP 会漂。
+  ipAuthority: 'config' | 'runtime';
 }
 
 // 基座动作的输入。动作参数交集小，所以是个宽松的可选集合，
@@ -176,7 +181,7 @@ export interface BaseProgress {
 
 // —— IP 池权威源（network.ts）：当前网内已占 IP（含停掉未删的容器）——
 export interface Engine {
-  name: 'lxc';
+  name: 'lxc' | 'wsl2';
 
   // 能力声明（业务层/web 按此分支，见 EngineCaps）
   caps: EngineCaps;
@@ -233,6 +238,15 @@ export interface Engine {
     opts: BaseActionOpts,
     onProgress?: (e: BaseProgress) => void,
   ): Promise<Record<string, unknown>>;
+
+  // —— 引擎差异出口（业务层直接消费的语义）——
+  // 基座名：业务层过滤/记账用（hosts-sync dropTemplate、lifecycle source、aiconfig
+  // allTargets）。LXC = cfg.lxc.template；wsl2 = cfg.wsl.template。别再让业务层直接
+  // 读 cfg.lxc.template——那是把 LXC 概念钉死进业务层的老路。
+  baseName(cfg: import('../config.js').Config): string;
+  // 基座体积（字节）。算起来慢（LXC 遍历 2.8G rootfs），只进 /api/base/size 单独接口，
+  // 不塞进被轮询的 baseStatus。算不出（基座不在/引擎无此概念）返回 null。
+  baseSize(cfg: import('../config.js').Config): Promise<number | null>;
 
   // —— 宿主侧路径与查重（建容器/种子/CLI 推断用）——
   // 容器名是否已被占用（查 lxc-ls）。建容器前置查重。

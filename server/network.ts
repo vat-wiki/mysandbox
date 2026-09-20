@@ -1,9 +1,11 @@
-// LXC IP 池：权威源 = 各容器 config 里的 lxc.net.0.ipv4.address（停机容器的 IP 也算占用）。
+// IP 池：权威源 = 引擎的 assignedIps（LXC 扫容器 config 的 lxc.net.0.ipv4.address；
+// wsl2 扫安装簿记账，见 docs/wsl2-migration.md D5——记账 IP 管去重，真实 IP 是 NAT 动态的）。
 // 假设 /24：前 3 段为前缀，第 4 段在 from..to 间分配。
 // 网关约定为 <前缀>.1（宿主在 mysandbox0 桥上的副 IP，由
-// /etc/systemd/system/mysandbox-net.service 挂载，含网段出网 MASQUERADE）。
+// /etc/systemd/system/mysandbox-net.service 挂载，含网段出网 MASQUERADE）——
+// 仅 LXC 语义；wsl2 引擎下 gatewayOf 无消费方（无网关 IP 直连路径）。
 import type { Config } from './config.js';
-import { lxcEngine } from './engine/index.js';
+import { getEngine } from './engine/index.js';
 
 function prefix(ip: string): string {
   return ip.split('.').slice(0, 3).join('.');
@@ -17,7 +19,7 @@ export function gatewayOf(cfg: Config): string {
 }
 
 export async function assignedIps(cfg: Config): Promise<Set<string>> {
-  return lxcEngine.assignedIps(cfg);
+  return getEngine(cfg).assignedIps(cfg);
 }
 
 export async function isFree(cfg: Config, ip: string): Promise<boolean> {

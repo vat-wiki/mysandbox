@@ -12,12 +12,13 @@ const DEFAULTS: EngineCaps = {
   portMappings: false,
   baseKind: 'template',
   baseActions: ['create', 'clone', 'export', 'import'] as BaseAction[],
+  ipAuthority: 'config',
 }
 
 // reactive 而非 ref：消费方写 `caps.portMappings` 而不是 `caps.value.portMappings`，
 // 模板里少一层、脚本里也不会漏 .value。
 const capsState = reactive<EngineCaps>({ ...DEFAULTS })
-const engineRef = ref<'lxc'>('lxc')
+const engineRef = ref<'lxc' | 'wsl2'>('lxc')
 
 export const caps = readonly(capsState)
 export const engineName = readonly(engineRef)
@@ -28,7 +29,7 @@ export function hasBaseAction(a: BaseAction): boolean {
   return capsState.baseActions.includes(a)
 }
 
-export function setEngineInfo(engine: 'lxc', c: EngineCaps): void {
+export function setEngineInfo(engine: 'lxc' | 'wsl2', c: EngineCaps): void {
   engineRef.value = engine
   Object.assign(capsState, DEFAULTS, c)
 }

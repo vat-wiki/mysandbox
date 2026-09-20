@@ -65,6 +65,10 @@ export const STATE_DIR = MYSANDBOX_DIR;
 export const STATE_FILE = join(STATE_DIR, 'state.json');
 
 export const ConfigSchema = z.object({
+  // 容器引擎（engine 抽象见 server/engine/types.ts；wsl2 设计见 docs/wsl2-migration.md）。
+  // lxc = Linux unprivileged LXC（默认，本机）；wsl2 = Windows WSL2 发行版实例。
+  // 引擎差异出口走 EngineCaps（/api/health 下发），业务层不判引擎名。
+  engine: z.enum(['lxc', 'wsl2']).default('lxc'),
   listen: z.object({
     host: z.string().default('127.0.0.1'),
     port: z.number().int().default(7321),
@@ -75,6 +79,12 @@ export const ConfigSchema = z.object({
   // 模板容器：建容器 = lxc-copy 克隆它。
   // 克隆要求模板处于 STOPPED（lxc-copy 对运行中的源静默失败）。
   lxc: z
+    .object({
+      template: z.string().default('ms-template'),
+    })
+    .default({ template: 'ms-template' }),
+  // wsl2 引擎段（engine: wsl2 时消费）：模板发行版名，建容器 = export/import 克隆它。
+  wsl: z
     .object({
       template: z.string().default('ms-template'),
     })
@@ -274,8 +284,10 @@ export async function loadConfig(): Promise<LoadResult> {
   if (!fileExisted || tokenGenerated) {
     await mkdir(CONFIG_DIR, { recursive: true });
     const out = yamlDump({
+      engine: parsed.engine,
       listen: parsed.listen,
       lxc: parsed.lxc,
+      wsl: parsed.wsl,
       network: parsed.network,
       services: parsed.services,
       sshSource: parsed.sshSource,

@@ -108,12 +108,12 @@ export async function createContainer(
     await applyServicesBlock(cfg, { ids: [id], reason: 'create' });
   }
 
-  // 来源按实际出处记（详情面板展示「从哪儿来」）：模板/容器克隆 = lxc:<名字>，
+  // 来源按实际出处记（详情面板展示「从哪儿来」）：模板/容器克隆 = <引擎>:<名字>，
   // 包导入 = archive:<绝对路径>（expandTilde 归一，与 config 的路径口径一致）。
   const source = !input.source
-    ? `lxc:${cfg.lxc.template}`
+    ? `${engine.name}:${engine.baseName(cfg)}`
     : input.source.kind === 'container'
-      ? `lxc:${input.source.name}`
+      ? `${engine.name}:${input.source.name}`
       : `archive:${resolve(expandTilde(input.source.path))}`;
 
   await setMeta(name, {

@@ -8,6 +8,11 @@
 #   - 永远只 listen 127.0.0.1（默认），除非你在受控网络内明确要远程访问。
 #   - token 是唯一凭据，config 文件务必保持 0600。
 
+# 容器引擎：lxc = Linux unprivileged LXC（默认）；wsl2 = Windows WSL2 发行版实例
+# （engine/wsl2.ts，设计/实测清单见 docs/wsl2-migration.md）。引擎差异经 EngineCaps
+# 出口（/api/health 下发），业务层与前端判 caps 不判引擎名。
+engine: lxc
+
 # Web 监听。host 可设 auto（= 默认路由接口的 IPv4，绑本机网卡 IP）。
 # host 为任何非 127.0.0.1 值都会触发启动警告（见 CLI 输出）。
 # tls: 自签名 HTTPS（本地 CA + *.基域名/IP 泛叶子证书，首次启用自动生成到
@@ -22,6 +27,11 @@ lxc:
   # 模板容器名：新建容器 = lxc-copy 克隆它。
   # ⚠️ 克隆时模板必须处于 STOPPED——lxc-copy 对运行中的源会静默失败（exit 1、无输出）。
   # 制作模板：scripts/lxc-template.sh <容器名>（见 docs/lxc-migration.md）。
+  template: ms-template
+
+# wsl2 引擎段（engine: wsl2 时消费；见 docs/wsl2-migration.md）。
+wsl:
+  # 模板发行版名：新建容器 = export/import 克隆它。落地目录 ~/.mysandbox/wsl/<名>/。
   template: ms-template
 
 # 容器 veth 挂的宿主网桥设备名（不是 docker 网络名）。必须是 /sys/class/net 下存在的桥。

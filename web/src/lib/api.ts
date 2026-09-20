@@ -117,12 +117,13 @@ export interface EngineCaps {
   portMappings: boolean // false：固定 IP 直连，无端口映射
   baseKind: 'image' | 'template' // 基座形态：模板容器（决定文案）
   baseActions: BaseAction[] // 可用动作（决定按钮）：create/clone/export/import
+  ipAuthority: 'config' | 'runtime' // 'runtime'（wsl2）：IP 动态分配，「拿 IP 直连」会漂
 }
 export interface Health {
   ok: boolean
   version: string
   engineStatus: { reachable: boolean; version?: string }
-  engine: 'lxc'
+  engine: 'lxc' | 'wsl2'
   caps: EngineCaps
   services?: { available: boolean }
 }

@@ -78,12 +78,15 @@ const execFileAsync = promisify(execFile);
 // - baseKind/baseActions：基座是「模板容器」而非镜像，没有 registry 所以没有 build/pull/push；
 //   create（从零制作：lxc-create 下载 rootfs + 跑制作脚本）、clone（把调好的容器固化成模板）、
 //   export/import（打包成 tar.zst 当分发形态）见 template.ts。
+// - ipAuthority 'config'：IP 配在容器 config 里（D2 静态分配），停机不漂——assignedIps
+//   扫全部 config 就是权威源。
 const CAPS: EngineCaps = {
   dataInsideContainer: true,
   liveRename: false,
   portMappings: false,
   baseKind: 'template',
   baseActions: ['create', 'clone', 'export', 'import'],
+  ipAuthority: 'config',
 };
 
 // 受管理标记（D5：LXC 没有 label，用 config 里的纯文本键；可 diff、可手改）。
@@ -1025,6 +1028,8 @@ export const lxcEngine: Engine = {
   subscribeEvents,
   baseStatus,
   runBaseAction,
+  baseName: (cfg) => cfg.lxc.template,
+  baseSize: (cfg) => lxcTemplateSize(cfg),
   nameExists,
   hostHomePath: (_cfg, name) => containerHomePath(name),
   rootfsPath: (_cfg, name) => join(containerDir(name), 'rootfs'),

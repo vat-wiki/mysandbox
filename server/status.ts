@@ -17,7 +17,10 @@ import type { Config } from './config.js';
 import { STATE_FILE } from './config.js';
 import { getEngine, listManaged } from './engine/index.js';
 import type { ContainerView } from './engine/index.js';
+// LXC 专属的展示与扫描（模板 config 直读、lxcPath 扫描提示）——status CLI 本职就是
+// 「每类对象的标志扫一遍」，LXC 段保持直读；但**数据判定**一律走 engine（见 collectTemplate）。
 import { lxcPath, configPath, configValue } from './engine/lxc.js';
+import { installRoot as wslInstallRoot } from './engine/wsl2.js';
 import { HOST_SOCKET } from './hostTerminal.js';
 import { dockerStatus, listServiceContainers, listManagedVolumes, rowLabels } from './docker.js';
 import { getAllMeta, getAllServiceMeta, adoptedContainerNames } from './state.js';
@@ -77,16 +80,24 @@ async function collectContainers(cfg: Config): Promise<StatusContainer[] | null>
 
 // 模板（基座）单独一段：它带标记但被 listManaged 排除（基座不出现在容器列表）。
 async function collectTemplate(cfg: Config): Promise<StatusReport['template']> {
-  let content: string | null = null;
-  try {
-    content = await readFile(configPath(cfg.lxc.template), 'utf8');
-  } catch {
-    /* 模板不存在 */
+  const engine = getEngine(cfg);
+  // LXC：直读模板 config 拿静态 IP（零 fork，展示口径与 listManaged 一致）。
+  if (engine.name === 'lxc') {
+    let content: string | null = null;
+    try {
+      content = await readFile(configPath(cfg.lxc.template), 'utf8');
+    } catch {
+      /* 模板不存在 */
+    }
+    const ip = content
+      ? (configValue(content, 'lxc.net.0.ipv4.address') || '').split('/')[0] || null
+      : null;
+    return { name: cfg.lxc.template, exists: content != null, ip };
   }
-  const ip = content
-    ? (configValue(content, 'lxc.net.0.ipv4.address') || '').split('/')[0] || null
-    : null;
-  return { name: cfg.lxc.template, exists: content != null, ip };
+  // 其余引擎：exists 走 baseStatus；IP 不展示（wsl2 的记账 IP 不是真实 IP，
+  // 见 docs/wsl2-migration.md D5）。
+  const st = await engine.baseStatus(cfg).catch(() => null);
+  return { name: engine.baseName(cfg), exists: !!st?.exists, ip: null };
 }
 
 // docker 服务层：label 过滤的服务容器 + label 过滤的卷。孤儿卷 = 有 label 但 meta 里没有
@@ -190,7 +201,8 @@ export async function collectStatusReport(cfg: Config): Promise<StatusReport> {
   return {
     version: getVersion(),
     generatedAt: new Date().toISOString(),
-    lxcPath: lxcPath(),
+    // 字段名沿用（JSON 兼容），值 = 引擎容器根目录（wsl2 = ~/.mysandbox/wsl）。
+    lxcPath: engine.name === 'lxc' ? lxcPath() : wslInstallRoot(),
     engine: {
       name: engine.name,
       reachable: d.reachable,
@@ -216,7 +228,7 @@ function renderText(r: StatusReport): void {
   );
 
   // 与 listManaged 同口径：每容器一行（名字 | 状态 | IP | 身份）。IP 停机读 config 静态值。
-  process.stdout.write(`\n容器（LXC，config 标记 MYSANDBOX_MANAGED=true）\n`);
+  process.stdout.write(`\n容器（${r.engine.name}）\n`);
   if (r.containers == null) {
     process.stdout.write(`  引擎不可达，扫不出\n`);
   } else if (r.containers.length === 0) {
@@ -230,7 +242,12 @@ function renderText(r: StatusReport): void {
       process.stdout.write(`  ${c.name.padEnd(20)} ${bits.join(' ')}\n`);
     }
   }
-  process.stdout.write(`  扫描: grep -l MYSANDBOX_MANAGED ${r.lxcPath}/*/config\n`);
+  // 扫描提示按引擎给（每行对回一个可独立验证的外部命令，见文件头）。
+  process.stdout.write(
+    r.engine.name === 'lxc'
+      ? `  扫描: grep -l MYSANDBOX_MANAGED ${r.lxcPath}/*/config\n`
+      : `  扫描: ls ${r.lxcPath}/*/mysandbox.json\n`,
+  );
 
   if (r.template.exists) {
     process.stdout.write(

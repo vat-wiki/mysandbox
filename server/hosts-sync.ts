@@ -6,7 +6,7 @@
 //   - overwriteHosts：显式整体覆写（批量配置 tab / 新建容器选宿主源），覆写内容
 //     同样组合服务块——显式动作不丢服务发现。
 import type { Config } from './config.js';
-import { listManaged, rootfsPath, execRun, inspectContainer, subscribeEvents, type ExecOpts } from './engine/index.js';
+import { listManaged, rootfsPath, execRun, inspectContainer, subscribeEvents, getEngine, type ExecOpts } from './engine/index.js';
 import type { BatchResult } from './batch.js';
 import { readFile } from 'node:fs/promises';
 import pLimit from 'p-limit';
@@ -17,6 +17,7 @@ import { relayContainerState } from './events.js';
 import { adoptedContainerNames, getAllServiceMeta } from './state.js';
 import { DOCKER_API_HOSTNAME } from './dockerApi.js';
 import { gatewayOf } from './network.js';
+import { peerServiceEndpoints } from './cluster.js';
 import { log } from './logger.js';
 
 export type ApplyHostsResult = BatchResult & { skipped: number };
@@ -37,6 +38,13 @@ async function currentSvcLines(cfg: Config): Promise<string[]> {
     const dirs = await listComposeDirServices();
     endpoints.push(...(await listServiceEndpoints(cfg, adopted, dirs)));
   }
+  // 集群 peer 服务：`<peer名>.<服务名>` → peer 的服务 IP（WireGuard overlay 路由可达）。
+  // 失败不阻塞本机服务——peer 掉线只少几行 hosts，不影响正常使用。
+  try {
+    endpoints.push(...(await peerServiceEndpoints(cfg)));
+  } catch (e) {
+    log.debug({ err: String(e) }, 'hosts: peer service fetch failed, skipping');
+  }
   return serviceBlockLines(endpoints);
 }
 
@@ -54,8 +62,10 @@ function writeCmd(content: string): ExecOpts {
 
 // 模板永远不是目标：它的 /etc/hosts 是新容器的源头资产，被追平等于污染模板。
 // 事件路径曾在这里漏过（模板 running 时被覆写，state.json 里的旧 hostsHash 是铁证）。
+// 模板名经 engine.baseName（wsl2 是 cfg.wsl.template，别直读 cfg.lxc.template）。
 function dropTemplate(cfg: Config, ids: string[]): string[] {
-  return ids.filter((id) => id !== cfg.lxc.template);
+  const tpl = getEngine(cfg).baseName(cfg);
+  return ids.filter((id) => id !== tpl);
 }
 
 // 容器 rootfs 里当前 hosts 内容；读不到（容器不存在/刚删）返回 null，调用方记失败。
@@ -206,7 +216,7 @@ async function handleEvent(cfg: Config, id: string): Promise<void> {
   // 模板 start 不追平：模板的 /etc/hosts 是新容器的源头资产（dropTemplate 是写侧
   // 的同款防线，这里前置省一次 inspect）。受管理判定异常一律当不受管理——
   // 容器删除瞬间的 start 竞态等不该炸事件循环。
-  if (id === cfg.lxc.template) return;
+  if (id === getEngine(cfg).baseName(cfg)) return;
   try {
     const info = await inspectContainer(cfg, id);
     if (!info.managed && !info.networks.includes(cfg.network)) return;
