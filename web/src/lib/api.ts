@@ -1185,3 +1185,29 @@ export const gitWorktreeRemove = (id: string, path: string, dir: string, force =
   }>
 export const gitWorktreePrune = (id: string, path: string) =>
   postJson(`${filesBase(id)}/git/worktree-prune`, { path }) as Promise<{ ok: true }>
+
+// —— 集群（peer-to-peer 组网；server/cluster.ts）——
+export interface ClusterPeerInfo {
+  machineId: string
+  name: string
+  url: string
+  overlayIp: string
+  containerSubnet: string
+  addedAt: string
+  lastSeenAt?: string
+}
+export interface ClusterStatusView {
+  machineId: string | null
+  name: string | null
+  peers: ClusterPeerInfo[]
+  tunnel: { up: boolean; peers: number; handshakePeers: number }
+}
+export const getClusterStatus = () => api('/api/cluster/status') as Promise<ClusterStatusView>
+export const clusterJoin = (url: string, token: string, name?: string) =>
+  postJson('/api/cluster/join', { url, token, ...(name ? { name } : {}) }, 30_000) as Promise<ClusterStatusView>
+export const clusterLeave = (machineId: string) =>
+  api(`/api/cluster/peer/${machineId}`, { method: 'DELETE' }) as Promise<{ ok: boolean }>
+export const clusterPullTemplate = (machineId: string) =>
+  postJson('/api/cluster/template/pull', { machineId }, 600_000) as Promise<{ ok: boolean; error?: string }>
+export const clusterSyncSkills = (machineId: string) =>
+  postJson('/api/cluster/skills/sync', { machineId }, 120_000) as Promise<{ ok: boolean; installed: string[]; error?: string }>

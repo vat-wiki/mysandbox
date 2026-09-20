@@ -12,6 +12,7 @@ import { runFirewallCommand } from './firewall.js';
 import { runLogsCommand } from './logs.js';
 import { runSkillsCommand, runSkillsListCommand, runSkillsUpdateCommand, startSkillSyncEvents, syncSkillsAll } from './skillSync.js';
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
+import { startHeartbeat } from './cluster.js';
 import { applyAiAll, startAiConfigEvents } from './aiconfig.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
@@ -258,6 +259,7 @@ async function main(): Promise<void> {
   // peer API（peer.enabled）：容器间命令互通的转发枢纽（server/peer.ts，绑网关
   // IP:peer.port，失败非致命）——容器内 `mysandbox exec <目标> -- 命令` 打到这里。
   startPeerApi(config);
+  startHeartbeat(config);
   await app.listen({ host: config.listen.host, port: config.listen.port });
   log.info({ logFile: LOG_DIR }, 'file logging active (daily rotate, 14d retention; also on journald)');
 

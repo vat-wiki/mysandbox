@@ -93,8 +93,8 @@ const previewSize = ref(0)
 // 刻意用 data: URL 而非 blob:（两者都受控渲染，效果一致），避免与文件预览的 blob 生命周期混管。
 const isSvg = computed(() => !props.diff && extOf(name.value) === 'svg')
 const isMd = computed(() => !props.diff && ['md', 'markdown'].includes(extOf(name.value)))
-// 默认落在预览（svg 直接看形状、md 直接读排版，编辑是少数场景）；打开即编辑
-// （右键「编辑」editing=true）时直接落源码态。渲染用当前编辑内容实时生成。
+// 面板打开带 editing=true：md/svg 也先进源码态，与普通文本一致；
+// 右下角仍可切渲染预览。渲染用当前编辑内容实时生成。
 const textPreview = ref(!props.editing)
 function clearPreview() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
@@ -278,7 +278,7 @@ async function load() {
     const v = await readFile(props.containerId, props.path)
     meta.value = v
     isNew.value = false
-    editing.value = false
+    editing.value = props.editing === true
     if (!v.binary) {
       content.value = v.content ?? ''
       savedContent.value = v.content ?? ''
@@ -347,9 +347,9 @@ function onEditorMount(ed: unknown) {
 }
 watch(() => [props.line, props.col], revealTarget)
 
-// —— 只读默认 + 浮动铅笔 ——
-// 使用画像是预览/复制为主、编辑偶发：打开默认 readOnly（Monaco 只读仍可选中/复制/
-// 双击选词，高频路径零成本，且不点铅笔永远不会写盘），右下角浮动铅笔进入编辑。
+// —— 打开意图 + 浮动铅笔 ——
+// 文件面板行点击/右键都会带 editing=true：文本文件直接可改，配合自动保存与 mtime
+// 乐观锁兜底；右下角眼睛仍可锁回只读。
 // 编辑态右下角眼睛 = 回程：md/svg 回预览渲染、普通文件锁回只读，双向自由切换。
 // 新建态（文件不存在，打开意图必然是写）直接落在编辑态。diff/二进制形态无编辑
 // 语义无按钮。

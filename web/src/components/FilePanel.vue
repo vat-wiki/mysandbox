@@ -82,7 +82,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void
   // opts.diff 存在 = git 变更对比形态（Git 变更区块点击上抛；目录列表点文件不传）。
-  // opts.editing = 右键「编辑」直接落编辑态（默认只读）。
+  // opts.editing = 文件行/右键「编辑」直接落编辑态；diff 打开不受影响。
   (e: 'open-file', path: string, opts?: { diff?: { headPath?: string }; editing?: boolean }): void
   (e: 'pane-pick', termId: string): void
   (e: 'browse-mode', mode: 'drill' | 'expand'): void
@@ -774,7 +774,7 @@ async function openLink(p: string) {
     lastSig = sigOf(v)
     err.value = ''
   } catch {
-    emit('open-file', p)
+    emit('open-file', p, { editing: true })
   }
 }
 function goParent() {
@@ -1076,7 +1076,7 @@ function openRow(row: EntryRow) {
     if (props.browseMode === 'expand') toggleExpand(row)
     else openDir(row.path)
   } else if (row.entry.type === 'link') void openLink(row.path)
-  else emit('open-file', row.path)
+  else emit('open-file', row.path, { editing: true })
 }
 
 // 平面化渲染模型：主列表 + 各展开目录的子内容（递归，带缩进层级），v-for 直接吃它。

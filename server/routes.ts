@@ -74,6 +74,17 @@ import { getVersion } from './version.js';
 import { readHostHosts } from './hosts.js';
 import { overwriteHosts, type ApplyHostsResult } from './hosts-sync.js';
 import { probeHtmlPort } from './portprobe.js';
+import {
+  joinCluster,
+  acceptPeer,
+  leaveCluster,
+  receiveGossip,
+  selfInfo,
+  loadClusterState,
+  pullTemplate,
+  syncSkillsFromPeer,
+} from './cluster.js';
+import { loadWgState, wgStatus } from './wireguard.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
 
@@ -880,5 +891,66 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
         }))
       : [];
     return declareFileWatches(cfg, typeof b.clientId === 'string' ? b.clientId : '', items);
+  });
+
+  // —— 集群（peer-to-peer 组网）——
+  app.get('/api/cluster/info', async () => {
+    return selfInfo(cfg);
+  });
+
+  app.get('/api/cluster/status', async () => {
+    const cluster = await loadClusterState();
+    const wg = await loadWgState();
+    const tunnel = await wgStatus();
+    return {
+      machineId: cluster?.machineId ?? wg?.machineId ?? null,
+      name: cluster?.name ?? null,
+      peers: cluster?.peers ?? [],
+      wgPeers: wg?.peers ?? [],
+      tunnel,
+    };
+  });
+
+  app.post('/api/cluster/join', async (req) => {
+    const b = (req.body ?? {}) as { url?: unknown; token?: unknown; name?: unknown };
+    if (typeof b.url !== 'string' || !b.url) throw badRequest('url required');
+    if (typeof b.token !== 'string' || !b.token) throw badRequest('token required');
+    return joinCluster(cfg, b.url, b.token, typeof b.name === 'string' ? b.name : undefined);
+  });
+
+  app.put('/api/cluster/peer', async (req) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof b.machineId !== 'string') throw badRequest('machineId required');
+    if (typeof b.publicKey !== 'string') throw badRequest('publicKey required');
+    await acceptPeer(cfg, b as { machineId: string; name: string; overlayIp: string; containerSubnet: string; serviceSubnet: string; publicKey: string; endpoint: string });
+    return { ok: true };
+  });
+
+  app.delete('/api/cluster/peer/:machineId', async (req) => {
+    const { machineId } = req.params as { machineId: string };
+    await leaveCluster(cfg, machineId);
+    return { ok: true };
+  });
+
+  app.post('/api/cluster/gossip', async (req) => {
+    const b = (req.body ?? {}) as { from?: { machineId?: unknown } | unknown; peers?: unknown };
+    if (!Array.isArray(b.peers)) throw badRequest('peers array required');
+    const from = typeof b.from === 'object' && b.from !== null && 'machineId' in b.from
+      ? String((b.from as { machineId: unknown }).machineId)
+      : typeof b.from === 'string' ? b.from : '';
+    await receiveGossip(cfg, from, b.peers as { machineId: string; name: string; overlayIp: string; containerSubnet: string; serviceSubnet: string; url?: string; token?: string }[]);
+    return { ok: true };
+  });
+
+  app.post('/api/cluster/template/pull', async (req) => {
+    const b = (req.body ?? {}) as { machineId?: unknown };
+    if (typeof b.machineId !== 'string') throw badRequest('machineId required');
+    return pullTemplate(cfg, b.machineId);
+  });
+
+  app.post('/api/cluster/skills/sync', async (req) => {
+    const b = (req.body ?? {}) as { machineId?: unknown };
+    if (typeof b.machineId !== 'string') throw badRequest('machineId required');
+    return syncSkillsFromPeer(cfg, b.machineId);
   });
 }

@@ -11,7 +11,7 @@
 // 天然优先于 home 种子，不被这里破坏。
 import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { Bot, ChevronLeft, ChevronRight, Globe, Loader2 } from 'lucide-vue-next'
+import { Bot, ChevronLeft, ChevronRight, Globe, Loader2, Network } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -31,6 +31,7 @@ import {
   type TestlensView,
 } from '@/lib/api'
 import InfoHint from '@/components/InfoHint.vue'
+import ClusterPanel from '@/components/ClusterPanel.vue'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -43,7 +44,7 @@ const DEFAULT_HOST = 'http://testlens:10004'
 
 // 两层导航：'list' 目录页 / 'testlens' TestLens 详情。将来加分区 = 加一个 section 值
 // + 一条入口行。
-const section = ref<'list' | 'testlens'>('list')
+const section = ref<'list' | 'testlens' | 'cluster'>('list')
 
 const view = ref<TestlensView | null>(null)
 const loading = ref(false)
@@ -143,10 +144,10 @@ onMounted(load)
           <ChevronLeft class="size-4" />
         </button>
         <DialogTitle class="text-lg font-semibold">
-          {{ section === 'list' ? '设置' : 'TestLens' }}
+          {{ section === 'list' ? '设置' : section === 'cluster' ? '集群' : 'TestLens' }}
         </DialogTitle>
         <DialogDescription class="sr-only">
-          {{ section === 'list' ? '全局性配置的入口目录' : 'TestLens 配置批量下发' }}
+          {{ section === 'list' ? '全局性配置的入口目录' : section === 'cluster' ? '跨机组网与资源互通' : 'TestLens 配置批量下发' }}
         </DialogDescription>
       </div>
 
@@ -181,10 +182,24 @@ onMounted(load)
           <span class="shrink-0 text-xs text-muted-foreground">{{ testlensSummary }}</span>
           <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
         </button>
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
+          @click="section = 'cluster'"
+        >
+          <Network class="size-4 shrink-0 text-muted-foreground" />
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-medium">集群</span>
+            <span class="block truncate text-xs text-muted-foreground">
+              跨机组网 · 容器互通 · 模板与技能分发
+            </span>
+          </span>
+          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
+        </button>
       </div>
 
       <!-- TestLens 详情层 -->
-      <div v-else class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div v-else-if="section === 'testlens'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <section class="space-y-3">
           <div class="flex items-center gap-1.5">
             <p class="text-xs leading-relaxed text-muted-foreground">往所选目标的 home 写入 agent-browser 与 testlens 两份配置。</p>
@@ -246,6 +261,11 @@ onMounted(load)
             </Button>
           </div>
         </section>
+      </div>
+
+      <!-- 集群分区 -->
+      <div v-else-if="section === 'cluster'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <ClusterPanel @unauthorized="emit('unauthorized')" />
       </div>
     </DialogContent>
   </Dialog>

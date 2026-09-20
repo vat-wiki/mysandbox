@@ -1352,7 +1352,7 @@ async function locateContainerPath(
 
 // 文件面板 open-file 汇聚点：目录列表点文件（无 opts）与 Git 变更条目点击（opts.diff
 // = 对比形态）共用。写成函数而非模板内联箭头——对象类型字面量在模板表达式里编不过。
-function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string } }) {
+function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string }; editing?: boolean }) {
   if (activeGroup.value) openFile(fileTargetId(activeGroup.value), activeGroup.value.name, p, o)
 }
 

@@ -108,10 +108,11 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 # ---------- 系统级 ----------
-log "1/8 apt 包（lxc uidmap lxcfs iptables zstd）"
+log "1/8 apt 包（lxc uidmap lxcfs iptables zstd wireguard-tools）"
 MISSING=""
-for p in lxc uidmap lxcfs iptables zstd; do
+for p in lxc uidmap lxcfs iptables zstd wireguard-tools; do
   # zstd：base export 的 tar --zstd 必需——精简环境（嵌套/容器内）默认没有，缺了导出直接挂。
+  # wireguard-tools：集群组网的 wg/wg-quick（Linux 5.6+ 内核内建 wireguard 模块）。
   dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"
 done
 if [ -n "$MISSING" ]; then
@@ -294,6 +295,15 @@ fi
 
 log "7/8 linger（用户级 systemd 常驻）"
 loginctl enable-linger "$TARGET_USER" 2>/dev/null || true
+
+log "7.5/8 sudoers（wg-quick 免密，集群组网用）"
+# mysandbox 是 user service，wg-quick up/down 需要 root。给 TARGET_USER 开
+# wg-quick 的 NOPASSWD 白名单（只限这一个命令，不开全局 NOPASSWD）。
+WG_SUDOERS="/etc/sudoers.d/mysandbox-wg"
+if [ ! -f "$WG_SUDOERS" ] || ! grep -q "wg-quick" "$WG_SUDOERS" 2>/dev/null; then
+  echo "${TARGET_USER} ALL=(root) NOPASSWD: /usr/bin/wg-quick, /usr/bin/wg, /usr/bin/cp /home/*/.mysandbox/wireguard/*.conf /etc/wireguard/*, /usr/bin/chmod 600 /etc/wireguard/*" > "$WG_SUDOERS"
+  chmod 440 "$WG_SUDOERS"
+fi
 
 log "8/8 user service（mysandbox 本体）"
 # mkdir -p 会把缺失的父目录建成 root 属主（.config 原本不存在时）——devtest 的服务
