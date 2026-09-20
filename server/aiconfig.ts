@@ -23,12 +23,14 @@
 // - codex    .codex/config.toml            单槽（同 claude 重绑即覆盖）：一份
 //                                          [model_providers.<pid>] 锚点块 + 顶层
 //                                          model_provider / model
-//            .zshrc                        env export 锚点块（codex 只认 env_key 引用的运行时环境）
+//            .codex/.env                   env 键值锚点块（codex 0.149+ 启动自读
+//                                          CODEX_HOME/.env，不依赖 shell——旧版写
+//                                          .zshrc export 的块在写入时顺手回收）
 // - opencode user: .config/opencode/opencode.json   合并 provider.<变体>*（key 明文内联）
 //            project: <dir>/opencode.json
 // - pi       .pi/agent/models.json         合并 providers.<变体>*（项目级无此形状，不支持）
 //
-// 幂等靠两类锚点：JSON 只深改本方案的键（保留用户其余配置）；TOML/zshrc 用
+// 幂等靠两类锚点：JSON 只深改本方案的键（保留用户其余配置）；TOML/.env 用
 // `# >>> <pid> >>>` … `# <<< <pid> <<<` 标记块整块替换（旧版 pid 恒为 myapikey，
 // 形状一致 → 存量块天然兼容，无需落盘迁移）。变体 key = <pid>-<wire 后缀>。
 import { existsSync } from 'node:fs';
@@ -303,7 +305,7 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
 
 // —— 小工具 ——
 
-// sh/zsh 通用的单引号转义（.zshrc 里 export 用）
+// .env 值的单引号转义（dotenvy 单引号值为字面量，不展开变量）
 function shq(s: string): string {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
@@ -349,7 +351,7 @@ function relTo(base: string, path: string): string {
   return path;
 }
 
-// —— 锚点块（TOML/zshrc）——
+// —— 锚点块（TOML/.env）——
 
 // 标记块锚点按 provider 独立：`# >>> <pid> >>>`。旧版形状就是 `# >>> myapikey >>>`
 // （pid=myapikey），存量块天然被新读写兼容。
@@ -453,6 +455,58 @@ export function tomlRemoveTopLevel(content: string, key: string): string {
   return content;
 }
 
+// TOML 表内标量键设置/移除：用于 sandbox_workspace_write.network_access 与
+// history.persistence 这类小嵌套键。表不存在时创建空表头；已表内键则原位替换，
+// 不动表内其它键；移除只剥这一行，保留用户手工配置的同表其它键。
+export function tomlSetTableScalar(content: string, table: string, key: string, line: string): string {
+  const lines = content.split('\n');
+  let tableIdx = lines.findIndex((line) => line.trim() === `[${table}]`);
+  if (tableIdx === -1) {
+    tableIdx = lines.length;
+    lines.push('', `[${table}]`, line);
+    return lines.join('\n');
+  }
+  let scopeEnd = lines.length;
+  for (let i = tableIdx + 1; i < lines.length; i++) {
+    const value = lines[i].trim();
+    if (value.startsWith('[') && !value.startsWith('#[')) {
+      scopeEnd = i;
+      break;
+    }
+  }
+  const keyRe = new RegExp(`^${key}\\s*=`);
+  for (let i = tableIdx + 1; i < scopeEnd; i++) {
+    if (keyRe.test(lines[i].trim())) {
+      lines[i] = line;
+      return lines.join('\n');
+    }
+  }
+  lines.splice(scopeEnd, 0, line);
+  return lines.join('\n');
+}
+
+export function tomlRemoveTableScalar(content: string, table: string, key: string): string {
+  const lines = content.split('\n');
+  const tableIdx = lines.findIndex((line) => line.trim() === `[${table}]`);
+  if (tableIdx === -1) return content;
+  let scopeEnd = lines.length;
+  for (let i = tableIdx + 1; i < lines.length; i++) {
+    const value = lines[i].trim();
+    if (value.startsWith('[') && !value.startsWith('#[')) {
+      scopeEnd = i;
+      break;
+    }
+  }
+  const keyRe = new RegExp(`^${key}\\s*=`);
+  for (let i = tableIdx + 1; i < scopeEnd; i++) {
+    if (keyRe.test(lines[i].trim())) {
+      lines.splice(i, 1);
+      return lines.join('\n');
+    }
+  }
+  return content;
+}
+
 // codex 自身配置的差集回收键（保存路径专属语义，同 removedClaudeKeys）：旧 toolConfig
 // 有、新的没了 → 上一版 configCodex 写进 config.toml 顶层的行要剥掉。sweep 不走这里
 //（只合并不删，与 claude 同口径）。
@@ -461,13 +515,20 @@ export function removedCodexKeys(
   newTc: AiCodexToolConfig | undefined,
 ): string[] {
   const out: string[] = [];
+  if (oldTc?.approvalPolicy && !newTc?.approvalPolicy) out.push('approval_policy');
   if (oldTc?.reasoningEffort && !newTc?.reasoningEffort) out.push('model_reasoning_effort');
   if (oldTc?.verbosity && !newTc?.verbosity) out.push('model_verbosity');
+  if (oldTc?.sandboxMode && !newTc?.sandboxMode) out.push('sandbox_mode');
+  if (oldTc?.networkAccess !== undefined && (newTc?.networkAccess === undefined || newTc.sandboxMode !== 'workspace-write')) out.push('sandbox_workspace_write');
+  if (oldTc?.contextWindow !== undefined && newTc?.contextWindow === undefined) out.push('model_context_window');
+  if (oldTc?.autoCompactTokenLimit !== undefined && newTc?.autoCompactTokenLimit === undefined) out.push('model_auto_compact_token_limit');
+  if (oldTc?.reasoningSummary && !newTc?.reasoningSummary) out.push('model_reasoning_summary');
+  if (oldTc?.historyPersistence && !newTc?.historyPersistence) out.push('history');
   return out;
 }
 
 // codex env_key 指向的环境变量名：按 provider 独立（切 provider 时旧 env 块按 pid
-// 回收，不串）。myapikey → MYAPIKEY_API_KEY，与旧版同名（存量 .zshrc 块语义不变）。
+// 回收，不串）。myapikey → MYAPIKEY_API_KEY，与旧版同名（存量块锚点形状不变）。
 export function envKeyFor(pid: string): string {
   return pid.toUpperCase().replace(/-/g, '_') + '_API_KEY';
 }
@@ -545,12 +606,17 @@ export function validateOpenCodeToolConfig(tc: unknown): string | null {
   return null;
 }
 
-// codex 配置校验（routes 转 400）：两个键都落 config.toml 顶层，codex 对枚举值
+// codex 配置校验（routes 转 400）：各键都落 config.toml 顶层，codex 对枚举值
 // 启动即拒——这里按已知枚举收紧（UI 下拉同源），比让它坏在 codex 启动强。
 export function validateCodexToolConfig(tc: unknown): string | null {
   if (tc === undefined || tc === null) return null;
   if (typeof tc !== 'object' || Array.isArray(tc)) return 'codex 配置必须是对象';
   const c = tc as AiCodexToolConfig;
+  const approvalPolicy = ['on-request', 'on-failure', 'never'];
+  if (c.approvalPolicy !== undefined) {
+    if (typeof c.approvalPolicy !== 'string' || !c.approvalPolicy.trim()) return 'codex.approvalPolicy 必须是非空字符串';
+    if (!approvalPolicy.includes(c.approvalPolicy)) return `codex.approvalPolicy 非法：${c.approvalPolicy}（合法值 ${approvalPolicy.join('/')}）`;
+  }
   const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh'];
   if (c.reasoningEffort !== undefined) {
     if (typeof c.reasoningEffort !== 'string' || !c.reasoningEffort.trim()) return 'codex.reasoningEffort 必须是非空字符串';
@@ -560,6 +626,26 @@ export function validateCodexToolConfig(tc: unknown): string | null {
   if (c.verbosity !== undefined) {
     if (typeof c.verbosity !== 'string' || !c.verbosity.trim()) return 'codex.verbosity 必须是非空字符串';
     if (!verbosity.includes(c.verbosity)) return `codex.verbosity 非法：${c.verbosity}（合法值 ${verbosity.join('/')}）`;
+  }
+  const sandboxMode = ['read-only', 'workspace-write', 'danger-full-access'];
+  if (c.sandboxMode !== undefined) {
+    if (typeof c.sandboxMode !== 'string' || !c.sandboxMode.trim()) return 'codex.sandboxMode 必须是非空字符串';
+    if (!sandboxMode.includes(c.sandboxMode)) return `codex.sandboxMode 非法：${c.sandboxMode}（合法值 ${sandboxMode.join('/')}）`;
+  }
+  if (c.networkAccess !== undefined && typeof c.networkAccess !== 'boolean') return 'codex.networkAccess 必须是布尔';
+  for (const [name, value] of [['contextWindow', c.contextWindow], ['autoCompactTokenLimit', c.autoCompactTokenLimit]] as const) {
+    if (value === undefined) continue;
+    if (!Number.isInteger(value) || value < 1 || value > 10_000_000) return `codex.${name} 必须是 1 到 10000000 的整数`;
+  }
+  const reasoningSummary = ['auto', 'concise', 'detailed', 'none'];
+  if (c.reasoningSummary !== undefined) {
+    if (typeof c.reasoningSummary !== 'string' || !c.reasoningSummary.trim()) return 'codex.reasoningSummary 必须是非空字符串';
+    if (!reasoningSummary.includes(c.reasoningSummary)) return `codex.reasoningSummary 非法：${c.reasoningSummary}（合法值 ${reasoningSummary.join('/')}）`;
+  }
+  const historyPersistence = ['save-all', 'none'];
+  if (c.historyPersistence !== undefined) {
+    if (typeof c.historyPersistence !== 'string' || !c.historyPersistence.trim()) return 'codex.historyPersistence 必须是非空字符串';
+    if (!historyPersistence.includes(c.historyPersistence)) return `codex.historyPersistence 非法：${c.historyPersistence}（合法值 ${historyPersistence.join('/')}）`;
   }
   return null;
 }
@@ -610,11 +696,13 @@ async function configClaude(
 }
 
 // codex：config.toml 单槽（[model_providers.<pid>] 锚点块 + 顶层 model_provider /
-// model）+ .zshrc env export 锚点块。重绑即覆盖：managedIds 里其余 provider 的块
-// 整块移除 + 悬空 model_provider 删行。model_provider 恒写（单槽绑定 = 启用，不写
-// codex 继续走内置 OpenAI 鉴权——「绑了没生效」无报错，勾选框时代的坑）；model 有
-// 才写（旧档绑定无模型概念，落盘不碰用户已有 model 行）。tc = 工具自身配置
-//（toolConfig.codex）——model_reasoning_effort / model_verbosity 顶层键，给了才写；
+// model）+ .codex/.env 键值锚点块（codex 0.149+ 启动自读 CODEX_HOME/.env，实测
+// 0.149.1/0.155.1 都认，不依赖 shell——tmux 老窗口也好使）。重绑即覆盖：managedIds
+// 里其余 provider 的块整块移除 + 悬空 model_provider 删行。model_provider 恒写
+//（单槽绑定 = 启用，不写 codex 继续走内置 OpenAI 鉴权——「绑了没生效」无报错，
+// 勾选框时代的坑）；model 有才写（旧档绑定无模型概念，落盘不碰用户已有 model 行）。
+// tc = 工具自身配置
+//（toolConfig.codex）——approval/reasoning/sandbox/history 等常用与高级键，给了才写；
 // removeKeys = 保存路径差集回收（removedCodexKeys，上一版写过这版没了的键整行剥掉，
 // sweep 不传 = 只合并不删）。⚠️ 这两个键可能落进锚点块区域（块在文件头时第一个表头
 // 在块内）——整块替换会顺手带走它们，所以回收行是布局无关的兜底，别删。
@@ -630,9 +718,9 @@ async function configCodex(
   // codex 固定走 responses 协议——base_url 取 responses 侧（缺省回落 openai 侧）。
   const baseUrl = baseUrlFor(p, 'openai-responses');
   const tomlPath = join(base, '.codex', 'config.toml');
-  const zshPath = join(base, '.zshrc');
+  const envPath = join(base, '.codex', '.env');
   let toml = (await readText(tomlPath)) ?? '';
-  let zsh = (await readText(zshPath)) ?? '';
+  let env = (await readText(envPath)) ?? '';
   const a = anchorsOf(p.id);
   // codex 官方 API 已停 chat completions，wire_api 固定 responses——没有选项可言。
   const tomlBlock = [
@@ -644,14 +732,17 @@ async function configCodex(
     `env_key = "${envKeyFor(p.id)}"`,
     a.end,
   ].join('\n');
-  const zshBlock = [a.begin, `export ${envKeyFor(p.id)}=${shq(p.apiKey)}`, a.end].join('\n');
+  const envBlock = [a.begin, `${envKeyFor(p.id)}=${shq(p.apiKey)}`, a.end].join('\n');
   toml = replaceAnchored(toml, tomlBlock, p.id);
-  zsh = replaceAnchored(zsh, zshBlock, p.id);
+  env = replaceAnchored(env, envBlock, p.id);
   for (const pid of managedIds) {
     if (pid === p.id) continue;
     toml = removeAnchored(toml, pid);
-    zsh = removeAnchored(zsh, pid);
+    env = removeAnchored(env, pid);
     toml = tomlRemoveTopLevelIf(toml, 'model_provider', pid);
+  }
+  if (tc?.approvalPolicy) {
+    toml = tomlSetTopLevel(toml, 'approval_policy', `approval_policy = "${tc.approvalPolicy.trim()}"`);
   }
   toml = tomlSetTopLevel(toml, 'model_provider', `model_provider = "${p.id}"`);
   if (model) {
@@ -663,17 +754,56 @@ async function configCodex(
   if (tc?.verbosity) {
     toml = tomlSetTopLevel(toml, 'model_verbosity', `model_verbosity = "${tc.verbosity.trim()}"`);
   }
+  if (tc?.sandboxMode) {
+    toml = tomlSetTopLevel(toml, 'sandbox_mode', `sandbox_mode = "${tc.sandboxMode.trim()}"`);
+  }
+  if (tc?.sandboxMode === 'workspace-write' && tc?.networkAccess !== undefined) {
+    toml = tomlSetTableScalar(toml, 'sandbox_workspace_write', 'network_access', `network_access = ${tc.networkAccess}`);
+  }
+  if (tc?.contextWindow !== undefined) {
+    toml = tomlSetTopLevel(toml, 'model_context_window', `model_context_window = ${tc.contextWindow}`);
+  }
+  if (tc?.autoCompactTokenLimit !== undefined) {
+    toml = tomlSetTopLevel(toml, 'model_auto_compact_token_limit', `model_auto_compact_token_limit = ${tc.autoCompactTokenLimit}`);
+  }
+  if (tc?.reasoningSummary) {
+    toml = tomlSetTopLevel(toml, 'model_reasoning_summary', `model_reasoning_summary = "${tc.reasoningSummary.trim()}"`);
+  }
+  if (tc?.historyPersistence) {
+    toml = tomlSetTableScalar(toml, 'history', 'persistence', `persistence = "${tc.historyPersistence.trim()}"`);
+  }
   for (const key of removeKeys) {
-    toml = tomlRemoveTopLevel(toml, key);
+    if (key === 'sandbox_workspace_write') {
+      toml = tomlRemoveTopLevel(toml, key);
+      toml = tomlRemoveTableScalar(toml, key, 'network_access');
+    } else if (key === 'history') {
+      toml = tomlRemoveTableScalar(toml, key, 'persistence');
+    } else {
+      toml = tomlRemoveTopLevel(toml, key);
+    }
   }
   await writeText(tomlPath, toml);
-  await writeText(zshPath, zsh);
+  await writeText(envPath, env);
+  // 旧版 env 落 .zshrc export 锚点块——codex 自读 .codex/.env 后它只剩遗留语义，
+  // 顺手按同一套锚点回收（幂等，无块则不写盘）。
+  const zshPath = join(base, '.zshrc');
+  const zshOrig = (await readText(zshPath)) ?? '';
+  let zsh = zshOrig;
+  for (const pid of managedIds) zsh = removeAnchored(zsh, pid);
+  if (zsh !== zshOrig) await writeText(zshPath, zsh);
   const tcExtra = [
+    tc?.approvalPolicy ? `approval = ${tc.approvalPolicy.trim()}` : '',
     tc?.reasoningEffort ? `effort = ${tc.reasoningEffort.trim()}` : '',
     tc?.verbosity ? `verbosity = ${tc.verbosity.trim()}` : '',
+    tc?.sandboxMode ? `sandbox = ${tc.sandboxMode.trim()}` : '',
+    tc?.networkAccess !== undefined && tc.sandboxMode === 'workspace-write' ? `network = ${tc.networkAccess}` : '',
+    tc?.contextWindow !== undefined ? `context = ${tc.contextWindow}` : '',
+    tc?.autoCompactTokenLimit !== undefined ? `compact = ${tc.autoCompactTokenLimit}` : '',
+    tc?.reasoningSummary ? `summary = ${tc.reasoningSummary.trim()}` : '',
+    tc?.historyPersistence ? `history = ${tc.historyPersistence.trim()}` : '',
   ].filter(Boolean).join('，');
   notes.push(
-    `codex: 写 ${relTo(base, tomlPath)}（${p.id}${model ? `，model = ${model.trim()}` : ''}${tcExtra ? `，${tcExtra}` : ''}）+ ${relTo(base, zshPath)}`,
+    `codex: 写 ${relTo(base, tomlPath)} + ${relTo(base, envPath)}（${p.id}${model ? `，model = ${model.trim()}` : ''}${tcExtra ? `，${tcExtra}` : ''}）${zsh !== zshOrig ? ` + 回收 ${relTo(base, zshPath)} 遗留块` : ''}`,
   );
 }
 
@@ -1328,7 +1458,8 @@ export async function setClaudePageConfig(
 // —— prune-only 回收（清本机覆盖 / 删 provider）——
 
 // 把 base 里全部受管 provider 条目回收。claude 的 env 不动——单槽且可能混有用户
-// 自己的值，删 provider 不猜；codex 块/zshrc 块/opencode+pi 变体按 id 精确回收。
+// 自己的值，删 provider 不猜；codex 块/.env 块（含 .zshrc 遗留块）opencode+pi 变体
+// 按 id 精确回收。
 async function pruneHomeManaged(
   base: string,
   managedIds: string[],
@@ -1338,10 +1469,13 @@ async function pruneHomeManaged(
   if (!managedIds.length) return;
   if (scope === 'user') {
     const tomlPath = join(base, '.codex', 'config.toml');
-    const zshPath = join(base, '.zshrc');
+    const envPath = join(base, '.codex', '.env');
+    const zshPath = join(base, '.zshrc'); // 旧版 env 落点，只做遗留块回收
     let toml = (await readText(tomlPath)) ?? '';
+    let env = (await readText(envPath)) ?? '';
     let zsh = (await readText(zshPath)) ?? '';
     let tomlTouched = false;
+    let envTouched = false;
     let zshTouched = false;
     for (const pid of managedIds) {
       const t2 = removeAnchored(toml, pid);
@@ -1353,6 +1487,11 @@ async function pruneHomeManaged(
         toml = tomlRemoveTopLevelIf(toml, 'model_provider', pid);
         tomlTouched = true;
       }
+      const e2 = removeAnchored(env, pid);
+      if (e2 !== env) {
+        env = e2;
+        envTouched = true;
+      }
       const z2 = removeAnchored(zsh, pid);
       if (z2 !== zsh) {
         zsh = z2;
@@ -1363,9 +1502,13 @@ async function pruneHomeManaged(
       await writeText(tomlPath, toml);
       notes.push(`codex: 回收 ${relTo(base, tomlPath)}`);
     }
+    if (envTouched) {
+      await writeText(envPath, env);
+      notes.push(`codex: 回收 ${relTo(base, envPath)}`);
+    }
     if (zshTouched) {
       await writeText(zshPath, zsh);
-      notes.push(`codex: 回收 ${relTo(base, zshPath)}`);
+      notes.push(`codex: 回收 ${relTo(base, zshPath)} 遗留块`);
     }
   }
   // opencode（user = ~/.config/opencode；project = <dir>）
@@ -1477,7 +1620,7 @@ export async function clearTargetOverride(cfg: Config, target: string): Promise<
 // —— provider 库操作（routes 调用）——
 
 // 删 provider：先从库删，再把它的落盘条目从本机 + 全部可见容器 home 回收（codex 块/
-// zshrc 块/opencode+pi 变体；claude env 不动——单槽可能混用户自己的值）。引用它的
+// .env 块含 .zshrc 遗留块/opencode+pi 变体；claude env 不动——单槽可能混用户自己的值）。引用它的
 // 绑定不自动改：视图层可见引用缺失，重保存绑定即修复。
 export async function removeAiProviderEverywhere(cfg: Config, id: string): Promise<void> {
   await deleteAiProvider(id);

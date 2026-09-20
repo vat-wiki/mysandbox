@@ -31,15 +31,15 @@ const anthropicProviders = computed(() => props.providers.filter((p) => p.endpoi
 </script>
 
 <template>
-  <div class="space-y-1.5">
+  <div class="space-y-3">
     <div v-if="showHeader" class="flex items-center gap-2 text-sm">
       <span class="font-medium">Claude Code</span>
       <span class="text-[11px] text-muted-foreground">单接入点</span>
     </div>
     <div class="space-y-1.5">
-      <Label for="ai-claude-provider">模型供应商</Label>
+      <Label for="ai-claude-provider" class="text-[11px] text-muted-foreground">模型供应商</Label>
       <Select :model-value="providerId" @update:model-value="(v) => emit('update:providerId', v as string)">
-        <SelectTrigger id="ai-claude-provider" size="sm" class="h-8 w-full text-xs">
+        <SelectTrigger id="ai-claude-provider" size="sm" class="w-full">
           <SelectValue placeholder="选模型供应商（anthropic 端点）" />
         </SelectTrigger>
         <SelectContent>

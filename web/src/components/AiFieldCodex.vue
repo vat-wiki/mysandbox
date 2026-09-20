@@ -37,26 +37,31 @@ const modelCandidates = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-1.5">
+  <div class="space-y-3">
     <div class="flex items-center gap-2 text-sm">
       <span class="font-medium">Codex</span>
       <span class="text-[11px] text-muted-foreground">responses 协议 · 单供应商 + 默认模型</span>
     </div>
-    <Select :model-value="providerId" @update:model-value="(v) => emit('update:providerId', v as string)">
-      <SelectTrigger size="sm" class="w-full"><SelectValue placeholder="选模型供应商（openai/responses 端点）" /></SelectTrigger>
-      <SelectContent>
-        <SelectItem v-for="p in codexProviders" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</SelectItem>
-      </SelectContent>
-    </Select>
-    <div v-if="providerId" class="grid gap-2 sm:grid-cols-[8rem_1fr] sm:items-center">
-      <Label for="ai-codex-model" class="text-[11px] text-muted-foreground">默认模型</Label>
-      <AiModelCombo
-        input-id="ai-codex-model"
-        :model-value="model"
-        :models="modelCandidates"
-        placeholder="必填——不写 codex 会用内置 gpt-5.x（网关没有，请求必 404）"
-        @update:model-value="(v) => emit('update:model', v)"
-      />
+    <div class="grid gap-3 sm:grid-cols-2">
+      <div class="space-y-1.5">
+        <Label for="ai-codex-provider" class="text-[11px] text-muted-foreground">模型供应商</Label>
+        <Select :model-value="providerId" @update:model-value="(v) => emit('update:providerId', v as string)">
+          <SelectTrigger id="ai-codex-provider" size="sm" class="w-full"><SelectValue placeholder="选择 openai/responses 供应商" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem v-for="p in codexProviders" :key="p.id" :value="p.id">{{ p.name }}（{{ p.id }}）</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div v-if="providerId" class="space-y-1.5">
+        <Label for="ai-codex-model" class="text-[11px] text-muted-foreground">默认模型</Label>
+        <AiModelCombo
+          input-id="ai-codex-model"
+          :model-value="model"
+          :models="modelCandidates"
+          placeholder="必填——不写会用内置 gpt-5.x"
+          @update:model-value="(v) => emit('update:model', v)"
+        />
+      </div>
     </div>
   </div>
 </template>

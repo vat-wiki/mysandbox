@@ -364,14 +364,17 @@ defineExpose({
 </script>
 
 <template>
-  <div class="space-y-3 border-t pt-3">
+  <div class="space-y-3">
     <!-- 常驻高频项：全部同一格式（Label 上 / h-8 mono 输入 / 键名注下）——
          默认模型、小模型 / 压缩窗口 / 自动压缩触发 %（env 预设）、思考力度（settings 顶级键）、默认模式（permissions 嵌套键） -->
-    <div class="grid gap-3 sm:grid-cols-2">
-      <!-- 父级可把绑定选择器（模型供应商）塞进本网格首格，省掉一整行 -->
-      <slot name="prepend-grid" />
+    <div class="rounded-md border bg-muted/20 p-3 shadow-xs">
+      <div class="flex items-baseline justify-between gap-2">
+        <span class="text-xs font-medium">工具自身配置</span>
+        <span class="text-[11px] text-muted-foreground">settings.json · user scope</span>
+      </div>
+      <div class="mt-3 grid gap-3 sm:grid-cols-2">
       <div class="space-y-1.5">
-        <Label for="ai-claude-model">默认模型</Label>
+        <Label for="ai-claude-model" class="text-[11px] text-muted-foreground">默认模型</Label>
         <AiModelCombo
           input-id="ai-claude-model"
           :model-value="model"
@@ -382,7 +385,7 @@ defineExpose({
         <p class="font-mono text-[10px] text-muted-foreground/60">ANTHROPIC_MODEL（留空 = 不设）</p>
       </div>
       <div v-for="p in RESIDENT_PRESET_INPUTS" :key="p.key" class="space-y-1.5">
-        <Label :for="`ai-claude-${p.key}`">{{ p.label }}</Label>
+        <Label :for="`ai-claude-${p.key}`" class="text-[11px] text-muted-foreground">{{ p.label }}</Label>
         <AiModelCombo
           v-if="isModelKey(p.key)"
           :input-id="`ai-claude-${p.key}`"
@@ -401,7 +404,7 @@ defineExpose({
         <p class="font-mono text-[10px] text-muted-foreground/60">{{ p.key }}</p>
       </div>
       <div class="space-y-1.5">
-        <Label for="ai-claude-effortLevel">思考力度</Label>
+        <Label for="ai-claude-effortLevel" class="text-[11px] text-muted-foreground">思考力度</Label>
         <Input
           id="ai-claude-effortLevel"
           v-model="effortLevel"
@@ -411,7 +414,7 @@ defineExpose({
         <p class="font-mono text-[10px] text-muted-foreground/60">effortLevel（settings 顶级键）</p>
       </div>
       <div class="space-y-1.5">
-        <Label for="ai-claude-defaultmode">默认模式</Label>
+        <Label for="ai-claude-defaultmode" class="text-[11px] text-muted-foreground">默认模式</Label>
         <Select :model-value="defaultMode" @update:model-value="(v) => (defaultMode = (v as string) ?? '')">
           <SelectTrigger id="ai-claude-defaultmode" size="sm" class="w-full">
             <SelectValue placeholder="不设（CLI 默认行为）" />
@@ -424,10 +427,10 @@ defineExpose({
         </Select>
         <p class="font-mono text-[10px] text-muted-foreground/60">permissions.defaultMode</p>
       </div>
-    </div>
+      </div>
 
-    <!-- 常用开关：一行（env 三开关 + settings 顶级两开关），勾选即写入 -->
-    <div class="flex flex-wrap gap-x-5 gap-y-1.5">
+      <!-- 常用开关：env 三开关 + settings 顶级两开关，勾选即写入 -->
+      <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 border-t pt-3">
       <label v-for="t in PRESET_TOGGLES" :key="t.key" class="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Checkbox
           :model-value="presets[t.key] === '1'"
@@ -444,21 +447,24 @@ defineExpose({
       </label>
     </div>
 
-    <!-- 渐进式披露：低频项收进「高级配置」；折叠时徽标 = 已填低频项数 -->
-    <button
-      type="button"
-      class="flex w-fit items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      @click="advancedOpen = !advancedOpen"
-    >
-      <ChevronDown class="size-3.5 transition-transform" :class="advancedOpen && 'rotate-180'" />
-      高级配置
-      <span
-        v-if="advancedFilled && !advancedOpen"
-        class="rounded-full bg-muted px-1.5 text-[10px] tabular-nums text-muted-foreground"
-      >{{ advancedFilled }}</span>
-    </button>
+      <!-- 渐进式披露：低频项收进「高级配置」；标题徽标 = 已填低频项数 -->
+      <details
+        class="group mt-3 rounded-md border bg-background/60"
+        :open="advancedOpen"
+        @toggle="advancedOpen = ($event.target as HTMLDetailsElement).open"
+      >
+        <summary class="flex cursor-pointer select-none items-center justify-between px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+          <span>高级配置</span>
+          <span class="flex items-center gap-2">
+            <span
+              v-if="advancedFilled"
+              class="rounded-full bg-muted px-1.5 text-[10px] tabular-nums text-muted-foreground"
+            >{{ advancedFilled }}</span>
+            <ChevronDown class="size-3.5 transition-transform group-open:rotate-180" />
+          </span>
+        </summary>
 
-    <div v-show="advancedOpen" class="space-y-3">
+        <div class="space-y-3 border-t px-3 py-3">
       <!-- 预设字段（中转/网关场景低频项） -->
       <div class="grid gap-3 sm:grid-cols-2">
         <div v-for="p in PRESET_INPUTS" :key="p.key" class="space-y-1.5">
@@ -541,21 +547,23 @@ defineExpose({
         </div>
         <p class="text-[10px] text-muted-foreground/60">settings.json 顶级键原样合并写入（整键覆盖）；嵌套结构（permissions、hooks 等）在下方原文里编辑。env 不能写在这里。</p>
       </div>
+        </div>
+      </details>
     </div>
 
     <!-- Monaco：整份 settings.json 形状——实时预览（随表单与所选模型供应商即时更新）+ 高级编辑。
          落盘全貌的确认口，恒常驻不进折叠区 -->
-    <div class="space-y-1.5">
-      <div class="flex items-center justify-between">
-        <Label>settings.json 预览 / 原文（JSON）</Label>
-        <span class="text-[10px] text-muted-foreground/70">随表单与所选模型供应商实时更新 · 可直接改（改对自动套用）</span>
+    <div class="rounded-md border bg-background/60 p-3 shadow-xs">
+      <div class="flex items-baseline justify-between gap-2">
+        <span class="text-xs font-medium">settings.json 预览 / 原文</span>
+        <span class="text-[11px] text-muted-foreground">实时更新 · 可直接改</span>
       </div>
       <CodeEditor
         v-model="raw"
         language="json"
-        class="h-56 overflow-hidden rounded-md border"
+        class="mt-3 h-56 overflow-hidden rounded-md border"
       />
-      <p v-if="parseErr" class="text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
+      <p v-if="parseErr" class="mt-2 text-[11px] text-amber-600 dark:text-amber-400">{{ parseErr }}</p>
     </div>
   </div>
 </template>

@@ -84,12 +84,19 @@ const ocModel = ref('')
 const ocSmallModel = ref('')
 // Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型），无默认模型。
 const piEntries = ref<AiOpenCodeEntry[]>([])
-// Codex 自身配置（config.toml 顶层键，user scope）：推理力度 / 输出详略，给了才写、
+// Codex 自身配置（config.toml，user scope）：审批/推理/权限等基础项 + 折叠的高级项，给了才写、
 // 清空保存即落盘回收（后端差集回收，与 claude 顶级键同口径）。EMPTY = 「不写」选项
 // 的哨兵值（SelectItem 空 value 与 placeholder 渲染打架，用哨兵映射回空串）。
 const EMPTY = '__none__'
+const cdApprovalPolicy = ref('')
 const cdEffort = ref('')
 const cdVerbosity = ref('')
+const cdSandboxMode = ref('')
+const cdNetworkAccess = ref(EMPTY)
+const cdContextWindow = ref('')
+const cdAutoCompactTokenLimit = ref('')
+const cdReasoningSummary = ref('')
+const cdHistoryPersistence = ref('')
 
 const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
@@ -130,8 +137,15 @@ async function loadView(fill: boolean) {
       ocModel.value = oc?.model ?? ''
       ocSmallModel.value = oc?.smallModel ?? ''
       const cd = view.value.toolConfig.codex
+      cdApprovalPolicy.value = cd?.approvalPolicy ?? ''
       cdEffort.value = cd?.reasoningEffort ?? ''
       cdVerbosity.value = cd?.verbosity ?? ''
+      cdSandboxMode.value = cd?.sandboxMode ?? ''
+      cdNetworkAccess.value = cd?.networkAccess === undefined ? EMPTY : cd.networkAccess ? 'true' : 'false'
+      cdContextWindow.value = cd?.contextWindow === undefined ? '' : String(cd.contextWindow)
+      cdAutoCompactTokenLimit.value = cd?.autoCompactTokenLimit === undefined ? '' : String(cd.autoCompactTokenLimit)
+      cdReasoningSummary.value = cd?.reasoningSummary ?? ''
+      cdHistoryPersistence.value = cd?.historyPersistence ?? ''
     }
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -246,8 +260,17 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
           : tool === 'codex'
             ? {
                 codex: {
+                  ...(cdApprovalPolicy.value ? { approvalPolicy: cdApprovalPolicy.value } : {}),
                   ...(cdEffort.value ? { reasoningEffort: cdEffort.value } : {}),
                   ...(cdVerbosity.value ? { verbosity: cdVerbosity.value } : {}),
+                  ...(cdSandboxMode.value ? { sandboxMode: cdSandboxMode.value } : {}),
+                  ...(cdSandboxMode.value === 'workspace-write' && cdNetworkAccess.value !== EMPTY
+                    ? { networkAccess: cdNetworkAccess.value === 'true' }
+                    : {}),
+                  ...(cdContextWindow.value.trim() ? { contextWindow: Number(cdContextWindow.value) } : {}),
+                  ...(cdAutoCompactTokenLimit.value.trim() ? { autoCompactTokenLimit: Number(cdAutoCompactTokenLimit.value) } : {}),
+                  ...(cdReasoningSummary.value ? { reasoningSummary: cdReasoningSummary.value } : {}),
+                  ...(cdHistoryPersistence.value ? { historyPersistence: cdHistoryPersistence.value } : {}),
                 },
               }
             : undefined
@@ -313,24 +336,20 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
             （端点 + key），再回来绑定工具。
           </p>
 
-          <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份）——绑定选择器
-               经 prepend-grid 槽并进常驻网格首格，不占独立一行 -->
+          <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份）——绑定与自身
+               配置分块展示，字段风格与 Codex 保持一致 -->
           <div v-show="toolTab === 'claude'" class="space-y-3 pt-3">
-          <AiClaudeToolConfig
-            ref="claudeToolRef"
-            :tc="view?.toolConfig.claude"
-            :binding-env="claudeBindingEnv"
-            :provider="claudeProvider"
-          >
-            <template #prepend-grid>
-              <AiFieldClaude
-                :providers="providers"
-                :provider-id="claude"
-                :show-header="false"
-                @update:provider-id="(v) => (claude = v)"
-              />
-            </template>
-          </AiClaudeToolConfig>
+            <AiFieldClaude
+              :providers="providers"
+              :provider-id="claude"
+              @update:provider-id="(v) => (claude = v)"
+            />
+            <AiClaudeToolConfig
+              ref="claudeToolRef"
+              :tc="view?.toolConfig.claude"
+              :binding-env="claudeBindingEnv"
+              :provider="claudeProvider"
+            />
           <!-- 本工具的保存按钮：绑定 + 自身配置一次提交（合并接口）；其余工具不动。
                应用范围说明挪到按钮旁常显（短句）；写入策略在按钮下拉里选（同 ServicesPanel
                删除菜单范式） -->
@@ -349,7 +368,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
           </div>
 
           <!-- ② Codex -->
-          <div v-show="toolTab === 'codex'" class="space-y-1.5 pt-3">
+          <div v-show="toolTab === 'codex'" class="space-y-3 pt-3">
             <AiFieldCodex
               :providers="providers"
               :provider-id="codex"
@@ -357,36 +376,121 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:provider-id="(v) => (codex = v)"
               @update:model="(v) => (codexModel = v)"
             />
-            <!-- Codex 自身配置（config.toml 顶层键，user scope）：与 opencode 同网格
-                 （8rem 标签列）；给了才写、清空不碰已有值（回收不猜） -->
-            <div class="space-y-2 rounded-md border bg-muted/20 p-2.5">
+            <!-- Codex 自身配置：三个可选键等宽排布；给了才写、清空不碰已有值（回收不猜） -->
+            <div class="rounded-md border bg-muted/20 p-3 shadow-xs">
               <div class="flex items-baseline justify-between gap-2">
-                <span class="text-[11px] font-medium text-muted-foreground">工具自身配置（config.toml，user scope）</span>
+                <span class="text-xs font-medium">工具自身配置</span>
+                <span class="text-[11px] text-muted-foreground">config.toml · user scope</span>
               </div>
-              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
-                <Label for="ai-cd-effort" class="text-[11px] text-muted-foreground">推理力度</Label>
-                <Select :model-value="cdEffort" @update:model-value="(v) => (cdEffort = v === EMPTY ? '' : (v as string))">
-                  <SelectTrigger id="ai-cd-effort" size="sm" class="w-full max-w-md">
-                    <SelectValue placeholder="不写（清空保存即回收已落盘键）" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem :value="EMPTY">不写</SelectItem>
-                    <SelectItem v-for="e in ['minimal', 'low', 'medium', 'high', 'xhigh']" :key="e" :value="e">{{ e }}</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div class="space-y-1.5">
+                  <Label for="ai-cd-approval" class="text-[11px] text-muted-foreground">审批策略</Label>
+                  <Select :model-value="cdApprovalPolicy" @update:model-value="(v) => (cdApprovalPolicy = v === EMPTY ? '' : (v as string))">
+                    <SelectTrigger id="ai-cd-approval" size="sm" class="w-full">
+                      <SelectValue placeholder="不写" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem :value="EMPTY">不写</SelectItem>
+                      <SelectItem value="on-request">模型主动询问</SelectItem>
+                      <SelectItem value="on-failure">失败后询问</SelectItem>
+                      <SelectItem value="never">从不询问</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="space-y-1.5">
+                  <Label for="ai-cd-effort" class="text-[11px] text-muted-foreground">推理力度</Label>
+                  <Select :model-value="cdEffort" @update:model-value="(v) => (cdEffort = v === EMPTY ? '' : (v as string))">
+                    <SelectTrigger id="ai-cd-effort" size="sm" class="w-full">
+                      <SelectValue placeholder="不写" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem :value="EMPTY">不写</SelectItem>
+                      <SelectItem v-for="e in ['minimal', 'low', 'medium', 'high', 'xhigh']" :key="e" :value="e">{{ e }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="space-y-1.5">
+                  <Label for="ai-cd-verbosity" class="text-[11px] text-muted-foreground">输出详略</Label>
+                  <Select :model-value="cdVerbosity" @update:model-value="(v) => (cdVerbosity = v === EMPTY ? '' : (v as string))">
+                    <SelectTrigger id="ai-cd-verbosity" size="sm" class="w-full">
+                      <SelectValue placeholder="不写" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem :value="EMPTY">不写</SelectItem>
+                      <SelectItem v-for="v in ['low', 'medium', 'high']" :key="v" :value="v">{{ v }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="space-y-1.5 sm:col-span-2 xl:col-span-1">
+                  <Label for="ai-cd-sandbox" class="text-[11px] text-muted-foreground">权限模式</Label>
+                  <Select :model-value="cdSandboxMode" @update:model-value="(v) => (cdSandboxMode = v === EMPTY ? '' : (v as string))">
+                    <SelectTrigger id="ai-cd-sandbox" size="sm" class="w-full">
+                      <SelectValue placeholder="不写" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem :value="EMPTY">不写</SelectItem>
+                      <SelectItem v-for="v in ['read-only', 'workspace-write', 'danger-full-access']" :key="v" :value="v">
+                        {{ v === 'read-only' ? '只读' : v === 'workspace-write' ? '工作区可写' : '完整访问' }}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
-                <Label for="ai-cd-verbosity" class="text-[11px] text-muted-foreground">输出详略</Label>
-                <Select :model-value="cdVerbosity" @update:model-value="(v) => (cdVerbosity = v === EMPTY ? '' : (v as string))">
-                  <SelectTrigger id="ai-cd-verbosity" size="sm" class="w-full max-w-md">
-                    <SelectValue placeholder="不写（清空保存即回收已落盘键）" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem :value="EMPTY">不写</SelectItem>
-                    <SelectItem v-for="v in ['low', 'medium', 'high']" :key="v" :value="v">{{ v }}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              <details class="group mt-3 rounded-md border bg-background/60">
+                <summary class="flex cursor-pointer items-center justify-between px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+                  高级选项
+                  <span class="text-[10px] text-muted-foreground/70 group-open:hidden">展开</span>
+                  <span class="hidden text-[10px] text-muted-foreground/70 group-open:inline">收起</span>
+                </summary>
+                <div class="grid gap-3 border-t px-3 py-3 sm:grid-cols-2">
+                  <div class="space-y-1.5" :class="cdSandboxMode === 'workspace-write' ? '' : 'opacity-50'">
+                    <Label for="ai-cd-network" class="text-[11px] text-muted-foreground">工作区网络</Label>
+                    <Select :model-value="cdNetworkAccess" :disabled="cdSandboxMode !== 'workspace-write'" @update:model-value="(v) => (cdNetworkAccess = v as string)">
+                      <SelectTrigger id="ai-cd-network" size="sm" class="w-full">
+                        <SelectValue :placeholder="cdSandboxMode === 'workspace-write' ? '不写' : '仅工作区可写模式适用'" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem :value="EMPTY">不写</SelectItem>
+                        <SelectItem value="true">允许</SelectItem>
+                        <SelectItem value="false">禁止</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-1.5">
+                    <Label for="ai-cd-context" class="text-[11px] text-muted-foreground">上下文窗口</Label>
+                    <Input id="ai-cd-context" v-model="cdContextWindow" type="number" min="1" max="10000000" step="1" placeholder="不写" />
+                  </div>
+                  <div class="space-y-1.5">
+                    <Label for="ai-cd-compact" class="text-[11px] text-muted-foreground">自动压缩阈值</Label>
+                    <Input id="ai-cd-compact" v-model="cdAutoCompactTokenLimit" type="number" min="1" max="10000000" step="1" placeholder="不写" />
+                  </div>
+                  <div class="space-y-1.5">
+                    <Label for="ai-cd-summary" class="text-[11px] text-muted-foreground">推理摘要</Label>
+                    <Select :model-value="cdReasoningSummary" @update:model-value="(v) => (cdReasoningSummary = v === EMPTY ? '' : (v as string))">
+                      <SelectTrigger id="ai-cd-summary" size="sm" class="w-full">
+                        <SelectValue placeholder="不写" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem :value="EMPTY">不写</SelectItem>
+                        <SelectItem v-for="v in ['auto', 'concise', 'detailed', 'none']" :key="v" :value="v">{{ v }}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-1.5 sm:col-span-2">
+                    <Label for="ai-cd-history" class="text-[11px] text-muted-foreground">历史持久化</Label>
+                    <Select :model-value="cdHistoryPersistence" @update:model-value="(v) => (cdHistoryPersistence = v === EMPTY ? '' : (v as string))">
+                      <SelectTrigger id="ai-cd-history" size="sm" class="w-full">
+                        <SelectValue placeholder="不写" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem :value="EMPTY">不写</SelectItem>
+                        <SelectItem value="save-all">保存全部</SelectItem>
+                        <SelectItem value="none">不保存</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </details>
             </div>
             <div class="flex items-center justify-end gap-2 border-t pt-3">
               <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
@@ -406,37 +510,40 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:entries="(v) => (ocEntries = v)"
               @update:default-model="(v) => (ocDefaultModel = v)"
             />
-            <!-- OpenCode 自身配置（opencode.json 顶层，user scope）：与协议行同网格
-                 （8rem 标签列），权限 auto = permission:'allow'（等价 --auto）；主模型
-                 优先于绑定 setDefault 的自动推导；small_model 给了才写 -->
-            <div class="space-y-2 rounded-md border bg-muted/20 p-2.5">
+            <!-- OpenCode 自身配置（opencode.json 顶层，user scope）：与 Codex 同卡片
+                 网格；权限 auto = permission:'allow'（等价 --auto）；主模型优先于绑定
+                 setDefault 的自动推导；small_model 给了才写 -->
+            <div class="rounded-md border bg-muted/20 p-3 shadow-xs">
               <div class="flex items-baseline justify-between gap-2">
-                <span class="text-[11px] font-medium text-muted-foreground">工具自身配置（opencode.json，user scope）</span>
+                <span class="text-xs font-medium">工具自身配置</span>
+                <span class="text-[11px] text-muted-foreground">opencode.json · user scope</span>
               </div>
-              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
-                <span class="text-[11px] text-muted-foreground">权限</span>
-                <label class="flex items-center gap-1.5 text-xs">
-                  <Checkbox :model-value="ocAuto" @update:model-value="(v) => (ocAuto = !!v)" />
-                  默认 auto（permission: 'allow'，等价 --auto）
-                </label>
-              </div>
-              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
-                <Label for="ai-oc-model" class="text-[11px] text-muted-foreground">主模型</Label>
-                <AiModelCombo
-                  input-id="ai-oc-model"
-                  v-model="ocModel"
-                  :models="ocModelCandidates.map((o) => o.value)"
-                  placeholder="provider/模型（可选，优先于绑定默认推导，如 myapikey-chat/opencode-coding）"
-                />
-              </div>
-              <div class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
-                <Label for="ai-oc-small" class="text-[11px] text-muted-foreground">轻量模型</Label>
-                <AiModelCombo
-                  input-id="ai-oc-small"
-                  v-model="ocSmallModel"
-                  :models="ocModelCandidates.map((o) => o.value)"
-                  placeholder="small_model（可选，后台任务用）"
-                />
+              <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div class="space-y-1.5">
+                  <span class="text-[11px] text-muted-foreground">权限</span>
+                  <label class="flex items-center gap-1.5 text-xs">
+                    <Checkbox :model-value="ocAuto" @update:model-value="(v) => (ocAuto = !!v)" />
+                    默认 auto（permission: 'allow'，等价 --auto）
+                  </label>
+                </div>
+                <div class="space-y-1.5">
+                  <Label for="ai-oc-model" class="text-[11px] text-muted-foreground">主模型</Label>
+                  <AiModelCombo
+                    input-id="ai-oc-model"
+                    v-model="ocModel"
+                    :models="ocModelCandidates.map((o) => o.value)"
+                    placeholder="provider/模型（可选，优先于绑定默认推导）"
+                  />
+                </div>
+                <div class="space-y-1.5">
+                  <Label for="ai-oc-small" class="text-[11px] text-muted-foreground">轻量模型</Label>
+                  <AiModelCombo
+                    input-id="ai-oc-small"
+                    v-model="ocSmallModel"
+                    :models="ocModelCandidates.map((o) => o.value)"
+                    placeholder="small_model（可选，后台任务用）"
+                  />
+                </div>
               </div>
             </div>
             <div class="flex items-center justify-end gap-2 border-t pt-3">

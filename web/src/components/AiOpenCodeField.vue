@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
@@ -105,11 +106,11 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
 </script>
 
 <template>
-  <div class="space-y-2">
+  <div class="space-y-3">
     <!-- 分区头：左说明右规则（同模型供应商表单「协议接入」头） -->
     <div class="flex items-baseline justify-between gap-2">
-      <span class="text-[11px] font-medium text-muted-foreground">模型供应商（多选共存，工具内 /models 切换）</span>
-      <span class="text-[10px] text-muted-foreground/70">不选 = 该工具不参与绑定（落盘配置不动）</span>
+      <span class="text-xs font-medium">模型供应商</span>
+      <span class="text-[11px] text-muted-foreground">多选共存 · 不选 = 不参与绑定</span>
     </div>
 
     <ToggleGroup
@@ -124,7 +125,7 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
     </ToggleGroup>
 
     <!-- 每 provider 一卡：头（名称 + id + 移除）+ 三协议固定行（勾选 = 启用该行） -->
-    <div v-for="(e, i) in entries" :key="e.provider" class="space-y-2 rounded-md border p-2.5">
+    <div v-for="(e, i) in entries" :key="e.provider" class="space-y-2 rounded-md border bg-background/60 p-3 shadow-xs">
       <div class="flex items-center gap-2">
         <span class="text-xs font-medium">{{ providerById(e.provider)?.name ?? e.provider }}</span>
         <Badge variant="outline" class="px-1.5 font-mono text-[10px] text-muted-foreground">{{ e.provider }}</Badge>
@@ -138,7 +139,7 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
       </div>
 
       <div v-for="w in WIRES" :key="w" class="grid items-start gap-2 sm:grid-cols-[8rem_1fr]">
-        <label class="flex items-center gap-1.5 text-xs" :class="e.wires.some((x) => x.wire === w) ? '' : 'text-muted-foreground/70'">
+        <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground" :class="e.wires.some((x) => x.wire === w) ? 'text-foreground' : ''">
           <Checkbox
             :model-value="e.wires.some((x) => x.wire === w)"
             @update:model-value="(v) => toggleWire(i, w, !!v)"
@@ -201,10 +202,10 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
     </div>
 
     <!-- 默认模型（pi 无此概念不渲染）：与协议行同网格对齐 -->
-    <div v-if="tool === 'opencode' && entries.length" class="grid items-center gap-2 sm:grid-cols-[8rem_1fr]">
-      <span class="text-[11px] text-muted-foreground">默认模型</span>
+    <div v-if="tool === 'opencode' && entries.length" class="space-y-1.5">
+      <Label class="text-[11px] text-muted-foreground">默认模型</Label>
       <Select :model-value="defaultModel" @update:model-value="(v) => emit('update:defaultModel', v as string)">
-        <SelectTrigger size="sm" class="w-full max-w-md"><SelectValue placeholder="自动（第一个配置组合）" /></SelectTrigger>
+        <SelectTrigger size="sm" class="w-full"><SelectValue placeholder="自动（第一个配置组合）" /></SelectTrigger>
         <SelectContent>
           <SelectItem v-for="o in defaultOptions" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
         </SelectContent>

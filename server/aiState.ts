@@ -150,8 +150,15 @@ export interface AiOpenCodeToolConfig {
 // 写过又删掉的键整行剥掉，sweep 只合并不删，与 claude 顶级键同口径）。reasoning effort
 // 只对 responses 协议生效（codex 固定走 responses，恒适用）。
 export interface AiCodexToolConfig {
+  approvalPolicy?: string; // → 顶层 approval_policy（on-request/on-failure/never，路由层枚举校验）
   reasoningEffort?: string; // → 顶层 model_reasoning_effort（minimal/low/medium/high/xhigh，路由层枚举校验）
   verbosity?: string; // → 顶层 model_verbosity（low/medium/high，路由层枚举校验）
+  sandboxMode?: string; // → 顶层 sandbox_mode（read-only/workspace-write/danger-full-access，路由层枚举校验）
+  networkAccess?: boolean; // → sandbox_workspace_write.network_access（仅 sandbox_mode=workspace-write 时写）
+  contextWindow?: number; // → 顶层 model_context_window
+  autoCompactTokenLimit?: number; // → 顶层 model_auto_compact_token_limit
+  reasoningSummary?: string; // → 顶层 model_reasoning_summary（auto/concise/detailed/none，路由层枚举校验）
+  historyPersistence?: string; // → history.persistence（save-all/none，路由层枚举校验）
 }
 
 export interface AiToolConfigState {

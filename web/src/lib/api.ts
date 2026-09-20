@@ -453,8 +453,15 @@ export interface AiOpenCodeToolConfig {
 // 才写；保存路径差集回收（写过又删掉的键落盘时剥掉）。reasoning effort 只对
 // responses 协议生效。
 export interface AiCodexToolConfig {
+  approvalPolicy?: string
   reasoningEffort?: string
   verbosity?: string
+  sandboxMode?: string
+  networkAccess?: boolean
+  contextWindow?: number
+  autoCompactTokenLimit?: number
+  reasoningSummary?: string
+  historyPersistence?: string
 }
 export interface AiView {
   hostHome: string // 宿主 home（宿主 spot → 规则 ~/rel 归一化用）
