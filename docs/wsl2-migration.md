@@ -323,6 +323,11 @@ wsl2→cfg.wsl.template），四处全部改走它。config 加 `engine`（lxc|w
     `exists:false`；`/` → 200 前端产物。
   - **仍未做**：#8 Windows 版模板制作脚本（本轮只能「裸发行版 + 手工建 dev 用户」；
     正式模板还需要 zsh/node/AI CLI/omz/skel-home 全套，以及 `/etc/wsl.conf` 的默认用户）；
-    #9 docker 服务层 / peer / dockerApi / 防火墙（netsh）的移植。另外服务层日志里
+    #9 docker 服务层 / peer / dockerApi / 防火墙（netsh）的移植。**外加**：随后合入的
+    **cluster / wireguard 线**同属平台相关功能——它依赖宿主有 `wg` / `wg-quick`
+    （install.sh 7.5 段的 sudoers 白名单也是 Linux 口径），Windows 上没有该二进制，
+    实测 `GET /api/cluster/info` 直接 **500**（日志 `err: spawn wg ENOENT`, `cmd: wg genkey`）。
+    即设置页的「集群」分区在 Windows 上目前不可用；要支持就得给这条线加平台探测 + 明确
+    降级（返回「本平台不支持」而不是抛 500），属独立移植线。另外服务层日志里
     `services event sync: subscribed` 在无 docker 时是 1s 级重连循环（噪声，非 wsl2 特有）。
 
