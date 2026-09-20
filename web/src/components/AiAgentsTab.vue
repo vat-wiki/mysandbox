@@ -507,6 +507,8 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               :providers="providers"
               :entries="ocEntries"
               :default-model="ocDefaultModel"
+              :default-model-disabled="!!ocModel.trim()"
+              default-model-disabled-hint="「工具自身配置 → 主模型」已设置，落盘以主模型为准；要这里的默认模型生效，先清空主模型"
               @update:entries="(v) => (ocEntries = v)"
               @update:default-model="(v) => (ocDefaultModel = v)"
             />
@@ -525,6 +527,11 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
                     <Checkbox :model-value="ocAuto" @update:model-value="(v) => (ocAuto = !!v)" />
                     默认 auto（permission: 'allow'，等价 --auto）
                   </label>
+                  <!-- opencode 的 auto 徽标是 TUI 运行时开关（--auto / Ctrl+P 命令面板），
+                       不读配置也不持久化——配置生效与否看行为（不弹审批），别看徽标 -->
+                  <p class="text-[10px] leading-relaxed text-muted-foreground">
+                    免审批即刻生效，但 TUI 的 auto 徽标是运行时开关（Ctrl+P → Enable auto-approve），不随配置显示
+                  </p>
                 </div>
                 <div class="space-y-1.5">
                   <Label for="ai-oc-model" class="text-[11px] text-muted-foreground">主模型</Label>

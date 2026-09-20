@@ -991,6 +991,9 @@ async function configOpencode(
     scope === 'user' && tc?.permissionAuto !== false ? '权限 auto' : '',
     tc?.model ? `模型 ${tc.model}` : '',
     tc?.smallModel ? `轻量 ${tc.smallModel}` : '',
+    // 默认模型（显式或 setDefault 自动推导）被主模型覆盖时明示——不然用户改绑定
+    // 默认模型看不到落盘变化，像「没生效」。
+    tc?.model && (defaultModel || setDefault) ? '（绑定默认模型被主模型覆盖）' : '',
   ].filter(Boolean);
   await writeJsonObject(path, obj);
   notes.push(

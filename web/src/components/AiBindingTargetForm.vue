@@ -41,6 +41,9 @@ const busy = ref(false)
 const err = ref('')
 const result = ref<BatchResult | null>(null)
 const overrideExists = ref(false)
+// 全局主模型（toolConfig.opencode.model）对覆盖目标同样生效（configOpencode 在
+// defaultModel 之后恒写它）——已设时本表单的默认模型整行禁用并说明。
+const globalOcModel = ref('')
 
 // —— 表单：每工具一行；没选模型供应商 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
@@ -70,6 +73,7 @@ onMounted(() => loadView(true))
 async function loadView(fill: boolean) {
   try {
     view.value = await getAiView()
+    globalOcModel.value = view.value.toolConfig.opencode?.model ?? ''
     // 目标模式无覆盖时以全局绑定为编辑底稿（保存才落覆盖）。
     const base = view.value.overrides[props.target] ?? view.value.binding
     overrideExists.value = !!view.value.overrides[props.target]
@@ -225,6 +229,8 @@ async function submit() {
           :providers="providers"
           :entries="ocEntries"
           :default-model="ocDefaultModel"
+          :default-model-disabled="!!globalOcModel.trim()"
+          default-model-disabled-hint="全局「工具自身配置 → 主模型」已设置，落盘以主模型为准"
           @update:entries="(v) => (ocEntries = v)"
           @update:default-model="(v) => (ocDefaultModel = v)"
         />

@@ -37,6 +37,10 @@ const props = defineProps<{
   providers: AiProvider[]
   entries: AiOpenCodeEntry[]
   defaultModel: string
+  // 主模型（toolConfig.model，全局一份）已设置时落盘 model 以它为准——默认模型整行
+  // 禁用并说明原因（调用方传），避免「改了默认模型却不生效」的静默覆盖。
+  defaultModelDisabled?: boolean
+  defaultModelDisabledHint?: string
 }>()
 const emit = defineEmits<{
   (e: 'update:entries', v: AiOpenCodeEntry[]): void
@@ -201,15 +205,26 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
       </div>
     </div>
 
-    <!-- 默认模型（pi 无此概念不渲染）：与协议行同网格对齐 -->
-    <div v-if="tool === 'opencode' && entries.length" class="space-y-1.5">
+    <!-- 默认模型（pi 无此概念不渲染）：与协议行同网格对齐；主模型已设时整行禁用 -->
+    <div
+      v-if="tool === 'opencode' && entries.length"
+      class="space-y-1.5"
+      :class="defaultModelDisabled ? 'pointer-events-none opacity-60' : ''"
+    >
       <Label class="text-[11px] text-muted-foreground">默认模型</Label>
-      <Select :model-value="defaultModel" @update:model-value="(v) => emit('update:defaultModel', v as string)">
-        <SelectTrigger size="sm" class="w-full"><SelectValue placeholder="自动（第一个配置组合）" /></SelectTrigger>
+      <Select
+        :model-value="defaultModel"
+        :disabled="defaultModelDisabled"
+        @update:model-value="(v) => emit('update:defaultModel', v as string)"
+      >
+        <SelectTrigger size="sm" class="w-full">
+          <SelectValue :placeholder="defaultModelDisabled ? '已被主模型覆盖（见下方工具自身配置）' : '自动（第一个配置组合）'" />
+        </SelectTrigger>
         <SelectContent>
           <SelectItem v-for="o in defaultOptions" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
         </SelectContent>
       </Select>
+      <p v-if="defaultModelDisabled && defaultModelDisabledHint" class="text-[10px] text-muted-foreground">{{ defaultModelDisabledHint }}</p>
     </div>
   </div>
 </template>
