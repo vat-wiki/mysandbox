@@ -3,10 +3,12 @@ import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, hostname as osHostname } from 'node:os';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { log } from './logger.js';
 import type { Config } from './config.js';
 import {
-  ensureWgInit, loadWgState, saveWgState, rebuildTunnel,
+  ensureWgInit, loadWgState, saveWgState, rebuildTunnel, wgSupported, WG_UNSUPPORTED_MSG,
   generateMachineId, nextAvailableSubnet, type WgState, type WgPeer,
 } from './wireguard.js';
 
@@ -43,21 +45,74 @@ export async function saveClusterState(state: ClusterState): Promise<void> {
   await chmod(CLUSTER_FILE, 0o600);
 }
 
+// —— 集群 peer 之间的 HTTP 调用 ——
+// ⚠️ 不走全局 `fetch`：集群间的 HTTPS 基本都是**自签证书**（tls.ts 现场签发的那种），
+// 而 node 的 fetch（undici）严格校验 → `UNABLE_TO_VERIFY_LEAF_SIGNATURE`，抛出时只剩一句
+// `fetch failed`，前端 toast 显示「加入失败: fetch failed」——用户只能猜是不是 token 错了
+// （实测：对方 10-12-135-150 的证书就是这样，token 本身是好的，200 能拿回 cluster info）。
+// 集群是**内网互信**场景：token 已经是授权凭据（等同宿主权限），证书在这里不承担身份
+// 验证职责（它只是加密通道），所以这一处放行自签——**只放这一处**，不设全局 dispatcher，
+// 别把它扩散到其它 fetch 调用上。
+// 顺带把网络层错误也翻成人话（连接拒绝 / 超时 / DNS / 401），否则排查只能靠猜。
 async function peerFetch(url: string, token: string, path: string, method: string = 'GET', body?: unknown): Promise<unknown> {
-  const res = await fetch(`${url.replace(/\/$/, '')}${path}`, {
-    method,
-    headers: { 'x-sandbox-token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(10_000),
+  const target = new URL(`${url.replace(/\/$/, '')}${path}`);
+  const mod = target.protocol === 'https:' ? httpsRequest : httpRequest;
+  const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+  const headers: Record<string, string> = {
+    'x-sandbox-token': token,
+    ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) } : {}),
+  };
+  const text = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const req = mod(
+      {
+        hostname: target.hostname,
+        port: target.port || (target.protocol === 'https:' ? 443 : 80),
+        path: target.pathname + target.search,
+        method,
+        headers,
+        // 自签证书放行（理由见上）。仅此一处。
+        rejectUnauthorized: false,
+        timeout: 10_000,
+      },
+      (res) => {
+        let buf = '';
+        res.on('data', (c: Buffer) => { buf += c.toString('utf8'); });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: buf }));
+      },
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error(`连接 ${target.host} 超时（10s）`));
+    });
+    req.on('error', (e: NodeJS.ErrnoException) => {
+      const code = e.code ?? '';
+      const why =
+        code === 'ECONNREFUSED' ? '对方端口未监听/被防火墙挡了'
+          : code === 'ENOTFOUND' ? '域名解析失败'
+            : code === 'ETIMEDOUT' || code === 'EHOSTUNREACH' ? '网络不可达'
+              : code === 'ECONNRESET' ? '连接被重置'
+                : e.message;
+      reject(new Error(`无法连接 ${target.host}：${why}`));
+    });
+    if (payload) req.write(payload);
+    req.end();
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`peer ${url}${path} → ${res.status}: ${text.slice(0, 200)}`);
+  if (text.status < 200 || text.status >= 300) {
+    if (text.status === 401 || text.status === 403) {
+      throw new Error(`对方拒绝了这台机器的身份（HTTP ${text.status}）——token 不对或已换过`);
+    }
+    throw new Error(`对方 ${url}${path} 返回 HTTP ${text.status}: ${text.body.slice(0, 200)}`);
   }
-  return res.json();
+  try {
+    return JSON.parse(text.body) as unknown;
+  } catch {
+    throw new Error(`对方 ${url}${path} 返回的不是 JSON: ${text.body.slice(0, 200)}`);
+  }
 }
 
 export async function joinCluster(cfg: Config, peerUrl: string, peerToken: string, peerName?: string): Promise<ClusterState> {
+  // 先查本机能力：没有 wireguard 时连了对方也没用（隧道建不起来），早失败早给准话。
+  if (!(await wgSupported())) throw new Error(WG_UNSUPPORTED_MSG);
   const info = (await peerFetch(peerUrl, peerToken, '/api/cluster/info')) as {
     machineId: string; name: string; overlayIp: string; containerSubnet: string; serviceSubnet: string; publicKey: string;
   };
@@ -137,6 +192,8 @@ export async function joinCluster(cfg: Config, peerUrl: string, peerToken: strin
 export async function acceptPeer(cfg: Config, peerInfo: {
   machineId: string; name: string; overlayIp: string; containerSubnet: string; serviceSubnet: string; publicKey: string; endpoint: string;
 }): Promise<void> {
+  // 同上：被加入的一方也需要本机有 wireguard 才能建隧道。
+  if (!(await wgSupported())) throw new Error(WG_UNSUPPORTED_MSG);
   const wgState = await ensureWgInit(await getOrCreateMachineId());
   const now = new Date().toISOString();
   const wgPeer: WgPeer = {
@@ -266,6 +323,20 @@ export async function receiveGossip(cfg: Config, fromMachineId: string, peers: A
 export async function selfInfo(cfg: Config): Promise<{
   machineId: string; name: string; overlayIp: string; containerSubnet: string; serviceSubnet: string; publicKey: string;
 }> {
+  // 平台没有 wireguard（Windows）：不再让 ensureWgInit 去 spawn 不存在的 wg 然后抛
+  // ENOENT（那是 /api/cluster/info 在 Windows 上恒 500 的原因）。本机信息照常返回，
+  // 只是**没有 publicKey/overlayIp**——加进来的人拿不到隧道凭据，这是能力边界不是故障。
+  if (!(await wgSupported())) {
+    const cluster = await loadClusterState();
+    return {
+      machineId: cluster?.machineId ?? (await getOrCreateMachineId()),
+      name: cluster?.name ?? hostname(),
+      overlayIp: '',
+      containerSubnet: cfg.ipPool.from.split('.').slice(0, 3).join('.') + '.0/24',
+      serviceSubnet: serviceSubnetOf(cfg),
+      publicKey: '',
+    };
+  }
   const wgState = await ensureWgInit(await getOrCreateMachineId());
   const cluster = await loadClusterState();
   return {

@@ -12,7 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { log } from './logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -54,6 +54,32 @@ function stateFile(): string {
 function wgConfigFile(): string {
   return join(WG_DIR, `${WG_INTERFACE}.conf`);
 }
+
+// —— 平台能力探测 ——
+// Linux 靠 wireguard-tools（`wg` + `wg-quick` + sudo）；Windows 未移植：即便装了
+// WireGuard for Windows，也只有 `wg.exe`（在 Program Files 下、不在 PATH）、**没有
+// wg-quick**，隧道拉不起来。这里探测一次并缓存：不加这层的话，Windows 上加入集群会在
+// `ensureWgInit` 里撞 `spawn wg ENOENT` → 前端只看到 500「internal」，根本不知道缺什么
+// （实测：本机 Windows /api/cluster/info 就是这个 500）。
+let wgSupport: boolean | null = null;
+export async function wgSupported(): Promise<boolean> {
+  if (wgSupport !== null) return wgSupport;
+  if (platform() !== 'linux') {
+    wgSupport = false;
+    return wgSupport;
+  }
+  try {
+    await execFileAsync('sh', ['-c', 'command -v wg >/dev/null && command -v wg-quick >/dev/null'], { timeout: 5_000 });
+    wgSupport = true;
+  } catch {
+    wgSupport = false;
+  }
+  return wgSupport;
+}
+
+// 人话错误：集群隧道在这台机器上不可用的原因（给前端 toast 用）。
+export const WG_UNSUPPORTED_MSG =
+  '集群隧道依赖 wireguard-tools（wg / wg-quick），当前平台没有或未移植（仅 Linux 支持）';
 
 // sudo 封装：wg-quick 和 wg set 需要 root。install.sh 配置 sudoers NOPASSWD。
 async function sudo(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -158,6 +184,9 @@ export async function wgDown(): Promise<void> {
 
 // 隧道状态（wg show 的解析太简单了，直接看接口在不在 + wg show handshake）。
 export async function wgStatus(): Promise<{ up: boolean; peers: number; handshakePeers: number }> {
+  // 平台不支持（Windows / 没装 wireguard-tools）：别去 spawn 一个必然不存在的 wg，
+  // 否则每拍状态轮询都产生一次 ENOENT（/api/cluster/status 的 tunnel 段就是这条）。
+  if (!(await wgSupported())) return { up: false, peers: 0, handshakePeers: 0 };
   try {
     const { stdout } = await execFileAsync('wg', ['show', WG_INTERFACE], { timeout: 5_000 });
     const peerCount = (stdout.match(/^peer:/gm) ?? []).length;
@@ -172,6 +201,7 @@ export async function wgStatus(): Promise<{ up: boolean; peers: number; handshak
 export async function ensureWgInit(machineId: string): Promise<WgState> {
   let state = await loadWgState();
   if (state) return state;
+  if (!(await wgSupported())) throw new Error(WG_UNSUPPORTED_MSG);
 
   const keyPair = await generateKeyPair();
   state = {
@@ -188,6 +218,7 @@ export async function ensureWgInit(machineId: string): Promise<WgState> {
 
 // —— 隧道重建（加/删 peer 后调用）——
 export async function rebuildTunnel(state: WgState): Promise<void> {
+  if (!(await wgSupported())) throw new Error(WG_UNSUPPORTED_MSG);
   // 无 peer 时直接 down（写了空配置的 wg-quick up 会失败，也不该有一个空隧道挂着）
   if (state.peers.length === 0) {
     const status = await wgStatus();
