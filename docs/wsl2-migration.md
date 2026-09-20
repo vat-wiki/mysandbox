@@ -321,6 +321,37 @@ wsl2→cfg.wsl.template），四处全部改走它。config 加 `engine`（lxc|w
     HTTP 层：`/api/health` → `engine=wsl2`、`engineStatus.reachable=true`、
     `caps.ipAuthority='runtime'` 全部正确；`/api/containers` → `[]`；`/api/base` →
     `exists:false`；`/` → 200 前端产物。
+  - **终端/PTY 专项（2026-09-20 补测，两个真问题 + 一个已修）**：
+
+    - **已修：tmux 自动安装硬编码 apt-get**。`server/terminal.ts` 在容器里没 tmux 时会自动装一个，
+      但命令写死 `apt-get`（为项目自带 Debian/Ubuntu 模板写的）。实测 Alpine 基座报
+      `sh: apt-get: not found`（exitCode 127）→ 直接落到「普通 shell」降级，终端失去会话持久化 /
+      tab 复用 / 找回会话。已改为**按包管理器探测**（apt-get → apk → dnf → yum → pacman，
+      各条先 `command -v` 守卫、不存在就 127 秒退）。实测 Alpine：apt-get 161ms 跳过、
+      `apk add --no-cache tmux` **48s 成功**（装了 tmux 3.4 + libevent + ncurses），
+      `command -v tmux` 与 `tmux -V` 均正常。已给本机 `dev` 容器与 `ms-template` 模板都装上。
+    - **★ 未解：服务以「隐藏窗口」拉起时 PTY 会失败**。同一容器、同一引擎调用，
+      **从带控制台的进程跑是好的**（`execStream` 全绿，`tmux attach` 输出能看到
+      `[s] 0:sh*  "Ann" 09:46 20-Sep-26` 状态行）；而由**计划任务用
+      `-WindowStyle Hidden` 拉起的服务**去开终端，WS 里回来的是
+      `参数错误。 Error code: Wsl/Service/E_INVALIDARG`（在 ConPTY 流里，说明 wsl.exe 起来了、
+      是它自己拒了参数）。时间线对照很清楚：17:29/17:31（后台进程在跑）终端能正常走到
+      「装 tmux 失败」这一步 → 说明 PTY 通；17:32 计划任务接管后立刻变成 E_INVALIDARG。
+      **Prime suspect = `-WindowStyle Hidden` 影响 ConPTY 的 console 归属**；待验证的改法：
+      把 `scripts/win/mysandbox.ps1` 的 run 动作去掉 `-WindowStyle Hidden` 重新注册任务后复测。
+    - **★ 未解：node-pty 的 stderr 噪声会被 PS 5.1 放大成服务崩溃**。
+      `node_modules/node-pty/lib/conpty_console_list_agent.js:13` 在本机**每次杀 PTY 都必崩**
+      （`Error: AttachConsole failed`，枚举 console 进程树用的辅助子进程）。它往 **stderr**
+      写一段 uncaught 栈；而 `mysandbox.ps1` 顶部有 `$ErrorActionPreference = 'Stop'`，
+      **PowerShell 5.1 会把原生程序的 stderr 输出当成终止性错误**（NativeCommandError）→ wrapper
+      的 catch 命中 → 进程组被放弃 → **整个服务死掉**。实测 wrapper 日志：
+      `run failed: …conpty_console_list_agent.js:13` 紧跟 `run exit rc=1`，PID 每几分钟换一次，
+      且「一关终端服务就重启」。修法：native 调用期间把 `$ErrorActionPreference` 临时降为
+      `Continue`（仍用 `$LASTEXITCODE` 取退出码）。
+    - 附带事实：终端默认 shell 是 `cfg.ui.defaultShell`（默认 `zsh`），**裸 Alpine 没有 zsh**
+      → 即使 tmux 装上也拿不到可用会话（要 `?shell=/bin/sh` 或补全模板）。这是 #8 模板脚本
+      必须覆盖的内容之一。
+
   - **仍未做**：#8 Windows 版模板制作脚本（本轮只能「裸发行版 + 手工建 dev 用户」；
     正式模板还需要 zsh/node/AI CLI/omz/skel-home 全套，以及 `/etc/wsl.conf` 的默认用户）；
     #9 docker 服务层 / peer / dockerApi / 防火墙（netsh）的移植。**外加**：随后合入的

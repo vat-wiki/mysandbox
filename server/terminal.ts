@@ -71,27 +71,40 @@ async function hasTmux(cfg: Config, id: string): Promise<boolean> {
   return r.exitCode === 0;
 }
 
-// 首次安装 tmux（root）。镜像/容器里 apt lists 已存在，故只 install、不做 update--
-// 实测约 30–60s；做 update 会再拉一遍索引、常超 60s。装失败返回 false（调用方退回普通 shell）。
+// 首次安装 tmux（root）——为「导入了外来镜像」兜底。
+// ⚠️ 原实现硬编码 apt-get（为项目自带的 Debian/Ubuntu 系模板写的）。换成任何非 Debian 系
+// 基座就必然装不上：实测 Alpine 报 `sh: apt-get: not found`、exitCode 127，容器里装的却是
+// 裸 rootfs（连 apt-get 都没有）→ 直接落到「普通 shell」降级，终端失去会话持久化/tab 复用。
+// 改为**按包管理器探测**，逐个试到成功为止；都不认才放弃。
+// 刻意不做 update/refresh：项目模板里索引已预热，install 约 30–60s，加一次 update 常超时；
+// 但 apk 那条要带 --no-cache（Alpine 的 /var/cache/apk 可能是空的，不带会先拉索引再装）。
+const PKG_INSTALLERS: ReadonlyArray<readonly [string, string]> = [
+  ['apt-get', 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tmux'],
+  ['apk', 'apk add --no-cache tmux'],
+  ['dnf', 'dnf install -y -q tmux'],
+  ['yum', 'yum install -y -q tmux'],
+  ['pacman', 'pacman -S --noconfirm --needed tmux'],
+];
 async function installTmux(
   cfg: Config,
   id: string,
   log: FastifyInstance['log'],
 ): Promise<boolean> {
-  const r = await execRun(cfg, id, {
-    Cmd: ['sh', '-c', 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tmux'],
-    User: 'root',
-    Tty: false,
-    timeoutMs: 120_000,
-  });
-  if (r.exitCode === 0) {
-    tmuxReady.add(id);
-    return true;
+  for (const [bin, cmd] of PKG_INSTALLERS) {
+    // `command -v` 不存在就直接 exit 127，省掉一次必然失败的真实安装尝试。
+    const r = await execRun(cfg, id, {
+      Cmd: ['sh', '-c', `command -v ${bin} >/dev/null 2>&1 || exit 127; ${cmd}`],
+      User: 'root',
+      Tty: false,
+      timeoutMs: 120_000,
+    });
+    if (r.exitCode === 0) {
+      tmuxReady.add(id);
+      return true;
+    }
+    log.debug({ id, bin, exitCode: r.exitCode, stderr: r.stderr.slice(0, 160) }, 'tmux install attempt failed');
   }
-  log.warn(
-    { id, exitCode: r.exitCode, stderr: r.stderr.slice(0, 200) },
-    'tmux install failed; fallback to plain shell',
-  );
+  log.warn({ id, tried: PKG_INSTALLERS.map((p) => p[0]) }, 'tmux install failed on every package manager; fallback to plain shell');
   return false;
 }
 
