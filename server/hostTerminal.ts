@@ -15,18 +15,27 @@
 //
 // 会话 cwd：普通连接 = 宿主 home；分屏（WS query from=源 termId）继承源 pane 当前目录。
 //
-// 降级：宿主无 tmux → script 直接跑 shell（一次性，断开即死、无宽限）；无 script → 报错关闭。
+// **Windows 分支**（本机就是 Windows 时的宿主/服务终端）：tmux 与 script(1) 都没有，
+// 整套依赖换掉——PTY 直接由 ConPTY 给（pty.ts），会话本体就是那一个 ConPTY 进程。
+// 语义随之掉到「一次性」那一档（与下面 Linux 的「无 tmux 降级」同档）：断开/关页
+// = 进程结束，不保留、无历史回填、cwd 跟随只能靠 shell 打的 OSC 7（best effort）。
+// 这是平台缺能力的诚实降级，不是 bug——想拿「真 tmux 语义」请在宿主侧跑 Linux。
+//
+// 降级（Linux）：宿主无 tmux → script 直接跑 shell（一次性，断开即死、无宽限）；
+// 无 script → 报错关闭。
 // token 本就等价宿主 leon 用户（uid 1000 直通，见 AGENTS.md 安全模型），宿主终端不扩大
 // 权限面，只是把它摆上 UI。
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { stat } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
+import { existsSync } from 'node:fs';
+import { resolve as resolvePath, join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import type { ChildProcess } from 'node:child_process';
 import { TERMID_RE, LIST_FMT, type TermSessionView } from './terminal.js';
+import { spawnPty, type PtyTerm } from './pty.js';
 import { notFound, badRequest, HttpError } from './errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -92,12 +101,18 @@ process.on('exit', killChildren);
 process.on('SIGINT', () => { killChildren(); process.exit(130); });
 process.on('SIGTERM', () => { killChildren(); process.exit(143); });
 
-// 环境探测缓存：'tmux' | 'plain' | 'none'（none=连 script 都没有，无 PTY 可给）。
-let envCache: 'tmux' | 'plain' | 'none' | null = null;
+// 环境探测缓存：'windows' | 'tmux' | 'plain' | 'none'（none=连 script 都没有，无 PTY 可给）。
+let envCache: 'windows' | 'tmux' | 'plain' | 'none' | null = null;
 
 // 导出给 sshTerminal.ts：本地只需要 script（PTY），ssh 目标端 tmux 在远端探测。
-export async function detectEnv(): Promise<'tmux' | 'plain' | 'none'> {
+export async function detectEnv(): Promise<'windows' | 'tmux' | 'plain' | 'none'> {
   if (envCache) return envCache;
+  // Windows：不走下面的 command -v（它靠 sh），PTY 由 ConPTY 提供——'windows'
+  // 让 ttyHandler 分岔到 Windows 分支。
+  if (platform() === 'win32') {
+    envCache = 'windows';
+    return envCache;
+  }
   const has = async (cmd: string) => {
     try { await execFileAsync('sh', ['-c', `command -v ${cmd}`]); return true; }
     catch { return false; }
@@ -335,6 +350,9 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     const q = (req.query as Record<string, string | undefined>) || {};
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    // Windows：宿主侧没有 tmux，pane_current_path 无从谈起，cwd 的来源只剩「宿主 home」
+    // 这个起点（真实跟随靠 shell 打出的 OSC 7，见容器的 files.ts/前端 FilePanel 同款链路）。
+    if (platform() === 'win32') return { cwd: homedir() };
     const r = await hostTmux([
       'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
     ]);
@@ -361,19 +379,37 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     if (typeof raw !== 'string' || !raw || raw.includes('\0') || raw.includes('\n') || raw.length > 4096) {
       throw badRequest('invalid path');
     }
-    const r = await hostTmux([
-      'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
-    ]);
-    if (!r.ok) throw notFound('terminal session not found');
-    const cwd = r.stdout
-      .split('\n')
-      .map((l) => l.trim())
-      .find((l) => l.startsWith('1 '))
-      ?.slice(2) ?? '';
-    if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
     const home = homedir();
+    let cwd = home;
+    if (platform() !== 'win32') {
+      const r = await hostTmux([
+        'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
+      ]);
+      if (!r.ok) throw notFound('terminal session not found');
+      cwd = r.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l.startsWith('1 '))
+        ?.slice(2) ?? '';
+      if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
+    }
+    // Windows：绝对路径带盘符；相对路径 join 到 cwd（Windows 上 cwd 恒宿主 home）。
     const base =
-      raw === '~' ? home : raw.startsWith('~/') ? home + raw.slice(1) : raw.startsWith('/') ? raw : `${cwd}/${raw}`;
+      platform() === 'win32'
+        ? raw === '~'
+          ? home
+          : raw.startsWith('~/')
+            ? home + raw.slice(1)
+            : /^[A-Za-z]:[\\/]/.test(raw)
+              ? raw
+              : join(cwd, raw)
+        : raw === '~'
+          ? home
+          : raw.startsWith('~/')
+            ? home + raw.slice(1)
+            : raw.startsWith('/')
+              ? raw
+              : `${cwd}/${raw}`;
     const p = resolvePath(base);
     let kind: 'dir' | 'file' | 'missing';
     try {
@@ -386,7 +422,108 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     return { path: p, kind };
   });
 
-  // 宿主与服务终端共用同一套 attach 机制（同 socket、同协议、同生命周期语义），
+
+// —— Windows：宿主/服务终端（ConPTY 直跑）——
+// 与 Linux 路径差别只在两件事：① PTY 来自 ConPTY（pty.ts），不用 script(1) 包一层；
+// ② 会话本体就是这个进程，没有 tmux 兜底 → 一次性语义（断开即结束）。
+// 一次性带来的连锁：无历史回填、无 #T 标题恢复、无 listHostSessions 条目（找不回来），
+// 这些都是「平台没有 tmux」的能力边界，不是缺陷——前端不必为此改写，少一帧就少一帧。
+const OSC7_PS =
+  'function prompt { $p = (Get-Location).Path; ' +
+  '"$([char]27)]7;file:///$p$([char]7)PS $p> " }';
+async function windowsShell(mode: 'host' | 'service'): Promise<{ file: string; args: string[] }> {
+  if (mode === 'service') {
+    // 服务终端：命令本体是 docker CLI（宿主侧 docker.exe，PTY 由 ConPTY 给）。
+    return { file: 'docker', args: [] };
+  }
+  // pwsh（新版 PowerShell，自己装的）优先，退回系统自带的 powershell.exe
+  // （Windows 必有，路径固定）。参数集两边通用；-NoExit 保留交互会话。
+  for (const exe of ['pwsh.exe', 'powershell.exe']) {
+    try {
+      await execFileAsync('where', [exe]);
+      return { file: exe, args: ['-NoLogo', '-NoProfile', '-NoExit', '-Command', OSC7_PS] };
+    } catch {
+      /* 换下一个 */
+    }
+  }
+  return {
+    file: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    args: ['-NoLogo', '-NoProfile', '-NoExit', '-Command', OSC7_PS],
+  };
+}
+
+async function windowsPane(
+  socket: import('ws').WebSocket,
+  log: { warn: (obj: unknown, msg?: string) => void },
+  mode: 'host' | 'service',
+  opts: { svc: string; svcShell: string; termId: string; cols: number; rows: number },
+): Promise<void> {
+  const { file, args } = await windowsShell(mode);
+  const cmd =
+    mode === 'service'
+      ? ['exec', '-it', '-e', `MYSANDBOX_TERM=${opts.termId}`, opts.svc, opts.svcShell]
+      : [];
+  let closed = false;
+  let term: PtyTerm | null = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    try { term?.kill(); } catch { /* 已退出 */ }
+  };
+  try {
+    term = spawnPty(file, [...args, ...cmd], {
+      cols: opts.cols,
+      rows: opts.rows,
+      cwd: homedir(),
+      env: {
+        ...(process.env as Record<string, string>),
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+        CLAUDE_CODE_TMUX_TRUECOLOR: '1',
+        MYSANDBOX_WEB: '1',
+      },
+    });
+  } catch (e) {
+    log.warn({ err: e }, 'windows host pty spawn failed');
+    try { socket.close(1011, 'pty unavailable (node-pty missing?)'); } catch { /* noop */ }
+    return;
+  }
+  // ConPTY 的输出统一按二进制帧发：前端只把文本帧当控制帧（history/title），
+  // 发字符串流会被当成 JSON 解析失败丢掉——这与 Linux 侧 child.stdout 的 Buffer 帧一致。
+  term.onData((d: string) => {
+    if (socket.readyState === 1) socket.send(Buffer.from(d, 'utf8'));
+  });
+  term.onExit(() => {
+    try { socket.close(1000); } catch { /* noop */ }
+    cleanup();
+  });
+  socket.on('message', (data: unknown, isBinary?: boolean) => {
+    if (isBinary === false || typeof data === 'string') {
+      try {
+        const m = JSON.parse(String(data)) as { type?: string; cols?: number; rows?: number };
+        if (m.type === 'resize') {
+          try {
+            term?.resize(
+              Math.min(500, Math.max(1, Number(m.cols) || 80)),
+              Math.min(500, Math.max(1, Number(m.rows) || 24)),
+            );
+          } catch { /* 已退出 */ }
+        } else if (m.type === 'kill') {
+          try { socket.close(1000); } catch { /* noop */ }
+          cleanup();
+        }
+      } catch {
+        /* 心跳空帧等 */
+      }
+      return;
+    }
+    try { term?.write((data as Buffer).toString('utf8')); } catch { /* 已退出 */ }
+  });
+  socket.on('close', cleanup);
+  socket.on('error', cleanup);
+}
+
+// 宿主与服务终端共用同一套 attach 机制（同 socket、同协议、同生命周期语义），
   // 差异只在：会话名前缀、起始 cwd（服务无宿主 cwd 概念）、窗口命令（服务 =
   // docker exec -it <name> <shell>）、连接前的运行检查。
   const ttyHandler = (mode: 'host' | 'service') =>
@@ -403,8 +540,10 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
       socket.close(1008, 'missing or invalid termId');
       return;
     }
-    if (process.platform !== 'linux') {
-      socket.close(1008, 'host terminal is linux-only');
+    // 平台划分：Windows 走 ConPTY 分支（pty.ts）；其余仍是需要 script(1)/tmux 的 POSIX
+    // 路线。早年 win32 是直接拒连接的（'linux-only'），Windows 当一等宿主后改成分支。
+    if (process.platform !== 'linux' && process.platform !== 'win32') {
+      socket.close(1008, `host terminal unsupported on ${process.platform}`);
       return;
     }
 
@@ -428,6 +567,12 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
 
     try {
       const env = await detectEnv();
+      // Windows：PTY 直接由 ConPTY 给，会话 = 那一个进程（一次性语义，见 windowsPane）。
+      // 这条分支在 service 模式下同样成立（宿主 docker.exe + ConPTY，不需要 tmux）。
+      if (env === 'windows') {
+        await windowsPane(socket, log, mode, { svc, svcShell, termId, cols, rows });
+        return;
+      }
       if (env === 'none') {
         socket.send(Buffer.from('\x1b[31m>> 宿主缺少 script(1)，无法提供 PTY\x1b[0m\r\n'));
         socket.close(1011, 'script(1) not available');

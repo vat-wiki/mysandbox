@@ -16,6 +16,7 @@ import { startHeartbeat } from './cluster.js';
 import { applyAiAll, startAiConfigEvents } from './aiconfig.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
+import { guardStdio } from './pty.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
 import { startServicesEventSync } from './services.js';
@@ -141,6 +142,10 @@ Token:  stored in config (mode 0600), printed on first run.
 `;
 
 async function main(): Promise<void> {
+  // 常驻进程的第一件事：把 stdout/stderr 的断裂变成无关痛痒的噪音。Windows runner 下
+  // 「关终端 → 服务被杀」的传导终点就是这里的 EPIPE（详见 pty.ts 的 guardStdio 注释）。
+  guardStdio();
+
   // 一次性子命令：mysandbox logs [N] [--raw]（读落盘日志文件尾部，不需要服务在跑）。
   if (process.argv[2] === 'logs') {
     await runLogsCommand(process.argv.slice(3));

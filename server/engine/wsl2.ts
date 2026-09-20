@@ -18,9 +18,10 @@
 //     用 node-pty（optionalDependencies + createRequire 懒加载，没装报人话错误）（D6）。
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createRequire } from 'node:module';
+import { randomBytes } from 'node:crypto';
 import { readFile, writeFile, stat, mkdir, rm, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { spawnPty } from '../pty.js';
 import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { Duplex } from 'node:stream';
@@ -607,8 +608,33 @@ function execArgv(cfg: Config, opts: ExecOpts): string[] {
   // PATH 不显式设：--exec 下 wsl 给发行版默认 PATH（含 /usr/bin 等），Windows 侧
   // PATH 经 interop 追加在尾部，不遮蔽。
   const args = ['-u', user, '--exec', 'env', ...env];
-  args.push('/bin/sh', '-c', `cd ${shq(cwd)} 2>/dev/null || cd /; exec "$@"`, 'sh', ...opts.Cmd);
+  // Cmd 里的空串必须换成哨兵再传（见 emptyArgSentinel），wrapper 前加一段还原。
+  const { cmd, restore } = emptyArgShim(opts.Cmd);
+  args.push('/bin/sh', '-c', restore + `cd ${shq(cwd)} 2>/dev/null || cd /; exec "$@"`, 'sh', ...cmd);
   return args;
+}
+
+// —— 空串参数（wsl.exe 的 E_INVALIDARG 坑）——
+// wsl.exe **不接受命令行里的空 argv**：只要最终命令行出现 `""`（不论 ConPTY 还是
+// 管道 spawn 模式——两条路最终都是 CreateProcess 的命令行串），它就直接吐
+//   `参数错误。 Error code: Wsl/Service/E_INVALIDARG`
+// 且**根本没进发行版**（实测：同样的命令去掉空串参数立刻正常；终端场景因此表现为
+// 「一开终端就断」，与「容器在不在跑」无关）。
+// 业务层确有传空串的 Cmd：terminal.ts 的 tmux attach 脚本把「分屏继承目录」当位置
+// 参数 $5 传下去，非分屏连接时 splitCwd 是 ''。所以由 engine 统一兜住：
+// 空串 → 随机哨兵，Linux 侧 wrapper 里还原回空串。
+// 哨兵每次随机：业务层不可能撞上，也堵掉伪造路径。
+function emptyArgShim(cmd: string[]): { cmd: string[]; restore: string } {
+  if (!cmd.includes('')) return { cmd, restore: '' };
+  const sentinel = `MSB_EMPTY_${randomBytes(6).toString('hex')}`;
+  return {
+    cmd: cmd.map((a) => (a === '' ? sentinel : a)),
+    // 位置参数重建（POSIX sh，无数组也能做）：从最后一个往前逐个 `set -- "$v" "$@"`
+    // 前插，$@ 翻成两倍长（新的 n + 旧的 n），最后 shift 掉后半即还原出原序列
+    // （空的那些在此过程中被判等替换回 ''）。
+    restore:
+      `_n=$#; while [ $_n -gt 0 ]; do eval "_v=\\\${$_n}"; [ "$_v" = "${sentinel}" ] && _v=; set -- "$_v" "$@"; _n=$((_n-1)); done; shift $(( $# / 2 )); `,
+  };
 }
 
 // ExecOpts.User（LXC 口径，混着名字与数字）→ wsl -u 的用户名。gid 无对应旗标（跟随
@@ -687,49 +713,14 @@ function runExec(
 }
 
 // —— PTY 流（terminal.ts 的底座）——
-// node-pty 的 ConPTY spawn wsl.exe（D6）：wsl.exe 管道模式下 Linux 侧没有 tty，
-// tmux 起不来，必须 ConPTY。resize 走 pty.resize（不再需要 script(1)/stty）。
-// node-pty 是 optionalDependencies + 懒加载：没装时终端报人话错误，其余功能不受牵连。
-// createRequire 兜类型解析（optionalDependencies 在无工具链的机器上可能装不上）。
-interface PtyModule {
-  spawn(
-    file: string,
-    args: string[],
-    opts: { name?: string; cols?: number; rows?: number; cwd?: string; env?: Record<string, string> },
-  ): PtyTerm;
-}
-interface PtyTerm {
-  write(data: string): void;
-  onData(cb: (data: string) => void): void;
-  onExit(cb: (e: { exitCode: number; signal?: number }) => void): void;
-  resize(cols: number, rows: number): void;
-  kill(): void;
-}
-let ptyMod: PtyModule | null = null;
-function loadPty(): PtyModule {
-  if (ptyMod) return ptyMod;
-  try {
-    const req = createRequire(import.meta.url);
-    ptyMod = req('node-pty') as PtyModule;
-    return ptyMod;
-  } catch {
-    throw new Error(
-      'wsl2 terminal requires node-pty (npm install node-pty). Other wsl2 features work without it.',
-    );
-  }
-}
+// ConPTY 见 pty.ts（node-pty 的懒加载/人话报错也统一在那儿）。resize 走 term.resize
+// （不再需要 script(1)/stty 那套）。
 
 async function execStream(cfg: Config, id: string, opts: ExecOpts): Promise<ExecStream> {
   const name = assertName(id);
-  const pty = loadPty();
   const args = ['-d', name, ...execArgv(cfg, opts)];
-  const term = pty.spawn(wslBin(), args, {
-    name: 'xterm-256color',
-    cols: 80,
-    rows: 24,
-    cwd: homedir(),
-    env: { ...process.env } as Record<string, string>,
-  });
+  // ConPTY：wsl.exe 管道模式下 Linux 侧没 tty，tmux 起不来（D6）。
+  const term = spawnPty(wslBin(), args, { cols: 80, rows: 24, cwd: homedir(), env: { ...process.env } as Record<string, string> });
   const duplex = new Duplex({
     read() { /* push 由 onData 驱动 */ },
     write(chunk, _enc, cb) {

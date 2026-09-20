@@ -71,6 +71,40 @@ async function hasTmux(cfg: Config, id: string): Promise<boolean> {
   return r.exitCode === 0;
 }
 
+// 容器里有哪个 shell：返回候选里第一个 command -v 得手的（候选顺序 = 请求的在前，
+// 然后 bash、sh 兜底）。缓存到容器+请求壳粒度——同一容器成千上万个重连也只有一次探测。
+// ⚠️ 候选一律以**位置参数**传给 sh -c（不拼进命令串），超长/带奇怪字符的 query 值
+// 也进不了 shell 语法；不合法字符（正则外）直接弃用该候选。
+const SHELL_RE = /^[\w./-]{1,64}$/;
+const shellCache = new Map<string, string>();
+async function resolveContainerShell(cfg: Config, id: string, want: string): Promise<string> {
+  const key = `${id}::${want}`;
+  const hit = shellCache.get(key);
+  if (hit) return hit;
+  const cands = [want, 'bash', 'sh'].filter((s, i, a) => SHELL_RE.test(s) && a.indexOf(s) === i);
+  try {
+    const r = await execRun(cfg, id, {
+      Cmd: [
+        'sh', '-c',
+        'for s in "$@"; do command -v "$s" >/dev/null 2>&1 && { echo "$s"; exit 0; }; done; exit 1',
+        'sh', ...cands,
+      ],
+      User: 'root',
+      Tty: false,
+      timeoutMs: 8_000,
+    });
+    const found = r.stdout.trim().split('\n')[0]?.trim();
+    if (r.exitCode === 0 && found) {
+      shellCache.set(key, found);
+      return found;
+    }
+  } catch {
+    /* 容器抖动/exec 失败：下面按原样返回请求值，让 shell 自己报错 */
+  }
+  // 一个都没有（连 sh 都查不到？）→ 原样返回：错误可见好过静默换错的。
+  return want;
+}
+
 // 首次安装 tmux（root）——为「导入了外来镜像」兜底。
 // ⚠️ 原实现硬编码 apt-get（为项目自带的 Debian/Ubuntu 系模板写的）。换成任何非 Debian 系
 // 基座就必然装不上：实测 Alpine 报 `sh: apt-get: not found`、exitCode 127，容器里装的却是
@@ -291,7 +325,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   app.get('/ws/terminal', { websocket: true }, async (socket, req) => {
     const q = (req.query as Record<string, string | undefined>) || {};
     const id = q.id;
-    const shell = q.shell || cfg.ui.defaultShell;
+    const requestedShell = q.shell || cfg.ui.defaultShell;
     const cols = Number(q.cols) || 80;
     const rows = Number(q.rows) || 24;
     const termId = q.termId;
@@ -403,6 +437,11 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
         socket.close(1008, 'container not running');
         return;
       }
+
+      // 请求的 shell 在容器里未必存在（Alpine 没有 zsh、精简镜像可能只有 sh）——
+      // 不解析的话 tmux 用 `$2` 起 pane 时直接 `zsh: not found`、会话秒退，前端只看到
+      // 「[exited]」。这时候静态配置（cfg.ui.defaultShell）帮不上忙，得按容器实况降一级。
+      const shell = await resolveContainerShell(cfg, id, requestedShell);
 
       // tmux 可用 -> 走持久会话（new-session -A：有则 attach、无则建）；不可用 -> 退回一次性 shell。
       let useTmux = await hasTmux(cfg, id);

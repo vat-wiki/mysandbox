@@ -20,6 +20,7 @@
 // 远小于维护落盘状态；首轮扫描只建基线，不产生提醒。
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { platform } from 'node:os';
 import type { Config } from './config.js';
 import { listManaged, execRun } from './engine/index.js';
 import { HOST_SOCKET } from './hostTerminal.js';
@@ -110,6 +111,10 @@ async function scanContainer(cfg: Config, id: string): Promise<ScanRow[]> {
 }
 
 async function scanHost(): Promise<ScanRow[]> {
+  // Windows 上宿主终端走 ConPTY 直跑（server/hostTerminal.ts 的 Windows 分支），
+  // 根本没有宿主 tmux socket 可扫——这里若是 Windows 就直接按「0 会话」返回，
+  // 别每轮去 spawn 一个不存在的 sh/tmux（失败要占 SCAN_TIMEOUT_MS 的退避，还刷日志）。
+  if (platform() !== 'linux') return [];
   // 失败直接抛：调用方按「宿主源本拍失败」保留旧状态。
   const { stdout } = await execFileAsync(
     'sh',

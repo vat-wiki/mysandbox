@@ -330,30 +330,49 @@ wsl2→cfg.wsl.template），四处全部改走它。config 加 `engine`（lxc|w
       各条先 `command -v` 守卫、不存在就 127 秒退）。实测 Alpine：apt-get 161ms 跳过、
       `apk add --no-cache tmux` **48s 成功**（装了 tmux 3.4 + libevent + ncurses），
       `command -v tmux` 与 `tmux -V` 均正常。已给本机 `dev` 容器与 `ms-template` 模板都装上。
-    - **★ 未解：服务以「隐藏窗口」拉起时 PTY 会失败**。同一容器、同一引擎调用，
-      **从带控制台的进程跑是好的**（`execStream` 全绿，`tmux attach` 输出能看到
-      `[s] 0:sh*  "Ann" 09:46 20-Sep-26` 状态行）；而由**计划任务用
-      `-WindowStyle Hidden` 拉起的服务**去开终端，WS 里回来的是
-      `参数错误。 Error code: Wsl/Service/E_INVALIDARG`（在 ConPTY 流里，说明 wsl.exe 起来了、
-      是它自己拒了参数）。时间线对照很清楚：17:29/17:31（后台进程在跑）终端能正常走到
-      「装 tmux 失败」这一步 → 说明 PTY 通；17:32 计划任务接管后立刻变成 E_INVALIDARG。
-      **Prime suspect = `-WindowStyle Hidden` 影响 ConPTY 的 console 归属**；待验证的改法：
-      把 `scripts/win/mysandbox.ps1` 的 run 动作去掉 `-WindowStyle Hidden` 重新注册任务后复测。
-    - **★ 未解：node-pty 的 PTY 回收辅助进程必崩，且服务会退出（机制待查）**。
-      `node_modules/node-pty/lib/conpty_console_list_agent.js:13` 在本机**每次杀 PTY 都必崩**
-      （`Error: AttachConsole failed`——它靠 AttachConsole 枚举 console 进程树来杀子进程，
-      无控制台上下文时必然失败）。这条 stderr 栈本身**是无害噪声**（反复复现，PTY 功能不受影响）。
-      但 wrapper 日志里紧跟着 `run failed: …conpty_console_list_agent.js:13` + `run exit rc=1`，
-      服务确实退出了，表现为「关一次终端就重启、PID 每几分钟一换」。
-      ⚠️ **一个被否掉的假设**：曾判断是 `mysandbox.ps1` 的 `$ErrorActionPreference = 'Stop'`
-      在 PS 5.1 下把原生 stderr 放大成 NativeCommandError——**实测不成立**：用同一段
-      `& node -e "console.error(...)"` 分别配 `*>&1 | Out-File` 与 `*>>` 两种形式、两者都
-      `NO THROW rc=0`。所以退出机制仍未定位（`rc=1` 更像是 node 自己退出，怀疑方向：
-      多实例抢 7321 端口 EADDRINUSE、或 node-pty 在无控制台上下文下的其它原生失败）。
-      下一步应按 `wrapper-YYYY-MM-DD.log` 的 start/exit 时序 + 同一时刻的 pid 对照来钉。
-    - 附带事实：终端默认 shell 是 `cfg.ui.defaultShell`（默认 `zsh`），**裸 Alpine 没有 zsh**
-      → 即使 tmux 装上也拿不到可用会话（要 `?shell=/bin/sh` 或补全模板）。这是 #8 模板脚本
-      必须覆盖的内容之一。
+    - **★ 已解（归因被推翻）：E_INVALIDARG 与「隐藏窗口」无关，是**空字符串参数**。
+      同容器、同引擎调用，故意只加/减一个空串就能在这两者之间切换，且与进程的窗口形式无关：
+      - `wsl.exe -d dev -u dev --exec env … /bin/sh -c 'printf "[%s]" "$@"' sh a '' b` → `参数错误。
+        Error code: Wsl/Service/E_INVALIDARG`（连发行版都没进）；去掉 `''` 立刻正常。
+      - **两种模式都中招**：ConPTY（`pty.spawn`）与管道模式的 `spawn` 一样——最终都是
+        `CreateProcess` 的命令行串，node / node-pty 把空串拼成 `""`，wsl.exe 拒收空 argv。
+      - 业务层确有这种调用：`terminal.ts` 的 tmux attach 脚本把「分屏继承目录」当位置参数 `$5`
+        传下去，**非分屏连接时 `splitCwd` 就是 `''`**——所以「普通开终端必断、分屏却能用」
+        这个现象也一并解释了。
+      - 修法（`engine/wsl2.ts` 的 `emptyArgShim`）：Cmd 里的空串换成**随机哨兵**，Linux 侧
+        wrapper 前置一段还原——从后往前 `set -- "$v" "$@"` 前插重建 `$@`（长度翻倍后 `shift`
+        掉后半），有空串时才加这段，常规命令零成本。实测 dev 容器终端恢复正常（含 history/title 帧）。
+    - **★ 已解：`-WindowStyle Hidden` 不影响 PTY**（上面那条结论顺带证明）：同一批对比里，
+      计划任务（隐藏窗口）拉起的服务在去掉空串参数后终端照常起来；`mysandbox.ps1` 不需要改窗口形式。
+    - **★ 已解：node-pty 的 PTY 回收必崩并拖垮服务（原「机制待查」）**。机制链条是：
+      系统 ConPTY 路径的 `kill()` 会 `fork` `conpty_console_list_agent` 枚举控制台进程树，它靠
+      `AttachConsole` 工作、**无控制台上下文必崩**（`Error: AttachConsole failed`），它的 stderr
+      共享本进程的 fd 2 → 崩溃栈出现在**服务自己的 stderr** → Windows runner（`mysandbox.ps1` run
+      的 `*>&1 | Out-File` + `$ErrorActionPreference='Stop'`）判定 node 失败、关掉管道写端 →
+      服务下次写 stdout/stderr 拿 EPIPE，无人处理 → 进程退出、runner 秒级重启（日志里成对的
+      `run failed: …conpty_console_list_agent.js:13` + `run exit rc=1`，即「关一次终端 PID 换一次」）。
+      ⚠️ 否掉过的一个假设（`ErrorActionPreference` 把原生 stderr 放大成 NativeCommandError）的确
+      不成立于「node -e console.error」那个最小复现，但它**不需要成立也能致死**——管用的一环是
+      **管道破裂**：把 node 的 stdout/stderr 重定向到**文件**（而非 PS 管道）实测「关终端不死」，
+      回到管道 + Preference=Stop 就必死。
+      双层修法都已落地：① `server/pty.ts` 的 `spawnPty` 在 Windows 走 node-pty 自带的
+      **conpty.dll**（`useConptyDll: true`）——dll 路径的 kill 是 native 的、**根本不 fork 那个 agent**，
+      崩溃源消失；② `guardStdio()`（服务入口调用）给 stdout/stderr 挂 error 忽略器兜底，
+      任何来源的 EPIPE 都不再顺着「未捕获异常」带崩主进程。实测：连续开关终端 5 次（本机+容器
+      混合），`run failed` 计数与监听 PID 均不变。
+    - **附带事实（已于 2026-09-20 补齐）**：终端默认 shell 是 `cfg.ui.defaultShell`（默认 `zsh`），
+      **裸 Alpine 没有 zsh** → `tmux new-session … zsh` 直接 `sh: zsh: not found`、会话秒退，
+      前端只见 `[exited]`。已由 `terminal.ts` 的 `resolveContainerShell` 按容器实况降级
+      （请求值 → `bash` → `sh`，逐个 `command -v`，按「容器+请求壳」缓存）；模板脚本 #8 仍需
+      把 zsh 装进模板，但「没装也能用」不再是哑火。
+    - **Windows 本机终端（宿主页）：以前直接拒连接，现已支持**。`hostTerminal.ts` 原先遇到
+      `process.platform !== 'linux'` 就 `close(1008, 'host terminal is linux-only')`——Windows 上
+      点「本机」必然秒断。现在分出 Windows 分支：PTY 由 ConPTY 直接给（`server/pty.ts`），
+      会话命令 = pwsh/powershell（`-NoLogo -NoProfile -NoExit`，注入发 OSC 7 的 prompt 让文件面板
+      能跟随 cwd），服务终端则是 `docker exec -it` 挂在同一个 ConPTY 上。代价是会话语义掉到
+      「一次性」那一档——Windows 没有 tmux，断开即进程结束、无历史回填、/cwd 只能返回宿主 home。
+      相关的连坐处一并短路：`activity.ts` 的宿主扫描（不再去 spawn 不存在的 sh/tmux）、
+      `/api/host-terminal/cwd` 与 `/resolve`（Windows 路径含盘符，不能照抄 POSIX 的 `/` 判定）。
 
   - **仍未做**：#8 Windows 版模板制作脚本（本轮只能「裸发行版 + 手工建 dev 用户」；
     正式模板还需要 zsh/node/AI CLI/omz/skel-home 全套，以及 `/etc/wsl.conf` 的默认用户）；
