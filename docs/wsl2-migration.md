@@ -339,15 +339,18 @@ wsl2→cfg.wsl.template），四处全部改走它。config 加 `engine`（lxc|w
       「装 tmux 失败」这一步 → 说明 PTY 通；17:32 计划任务接管后立刻变成 E_INVALIDARG。
       **Prime suspect = `-WindowStyle Hidden` 影响 ConPTY 的 console 归属**；待验证的改法：
       把 `scripts/win/mysandbox.ps1` 的 run 动作去掉 `-WindowStyle Hidden` 重新注册任务后复测。
-    - **★ 未解：node-pty 的 stderr 噪声会被 PS 5.1 放大成服务崩溃**。
+    - **★ 未解：node-pty 的 PTY 回收辅助进程必崩，且服务会退出（机制待查）**。
       `node_modules/node-pty/lib/conpty_console_list_agent.js:13` 在本机**每次杀 PTY 都必崩**
-      （`Error: AttachConsole failed`，枚举 console 进程树用的辅助子进程）。它往 **stderr**
-      写一段 uncaught 栈；而 `mysandbox.ps1` 顶部有 `$ErrorActionPreference = 'Stop'`，
-      **PowerShell 5.1 会把原生程序的 stderr 输出当成终止性错误**（NativeCommandError）→ wrapper
-      的 catch 命中 → 进程组被放弃 → **整个服务死掉**。实测 wrapper 日志：
-      `run failed: …conpty_console_list_agent.js:13` 紧跟 `run exit rc=1`，PID 每几分钟换一次，
-      且「一关终端服务就重启」。修法：native 调用期间把 `$ErrorActionPreference` 临时降为
-      `Continue`（仍用 `$LASTEXITCODE` 取退出码）。
+      （`Error: AttachConsole failed`——它靠 AttachConsole 枚举 console 进程树来杀子进程，
+      无控制台上下文时必然失败）。这条 stderr 栈本身**是无害噪声**（反复复现，PTY 功能不受影响）。
+      但 wrapper 日志里紧跟着 `run failed: …conpty_console_list_agent.js:13` + `run exit rc=1`，
+      服务确实退出了，表现为「关一次终端就重启、PID 每几分钟一换」。
+      ⚠️ **一个被否掉的假设**：曾判断是 `mysandbox.ps1` 的 `$ErrorActionPreference = 'Stop'`
+      在 PS 5.1 下把原生 stderr 放大成 NativeCommandError——**实测不成立**：用同一段
+      `& node -e "console.error(...)"` 分别配 `*>&1 | Out-File` 与 `*>>` 两种形式、两者都
+      `NO THROW rc=0`。所以退出机制仍未定位（`rc=1` 更像是 node 自己退出，怀疑方向：
+      多实例抢 7321 端口 EADDRINUSE、或 node-pty 在无控制台上下文下的其它原生失败）。
+      下一步应按 `wrapper-YYYY-MM-DD.log` 的 start/exit 时序 + 同一时刻的 pid 对照来钉。
     - 附带事实：终端默认 shell 是 `cfg.ui.defaultShell`（默认 `zsh`），**裸 Alpine 没有 zsh**
       → 即使 tmux 装上也拿不到可用会话（要 `?shell=/bin/sh` 或补全模板）。这是 #8 模板脚本
       必须覆盖的内容之一。
