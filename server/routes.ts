@@ -83,6 +83,8 @@ import {
   loadClusterState,
   pullTemplate,
   syncSkillsFromPeer,
+  allocSnapshot,
+  handleAllocate,
 } from './cluster.js';
 import { loadWgState, wgStatus } from './wireguard.js';
 
@@ -902,13 +904,30 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const cluster = await loadClusterState();
     const wg = await loadWgState();
     const tunnel = await wgStatus();
+    // alloc = IP 分配表（裁决节点统一发放、各节点各存一份）。前端据此展示「谁分到哪段」。
+    const alloc = await allocSnapshot(cfg);
     return {
       machineId: cluster?.machineId ?? wg?.machineId ?? null,
       name: cluster?.name ?? null,
       peers: cluster?.peers ?? [],
       wgPeers: wg?.peers ?? [],
       tunnel,
+      alloc,
     };
+  });
+
+  // —— IP 分配表 ——
+  // GET：本节点这份表；POST：向裁决节点申请一段（非裁决节点会转发给裁决节点）。
+  app.get('/api/cluster/allocations', async () => {
+    return allocSnapshot(cfg);
+  });
+
+  app.post('/api/cluster/allocate', async (req) => {
+    const b = (req.body ?? {}) as { machineId?: unknown; name?: unknown };
+    return handleAllocate(cfg, {
+      machineId: typeof b.machineId === 'string' ? b.machineId : undefined,
+      name: typeof b.name === 'string' ? b.name : undefined,
+    });
   });
 
   app.post('/api/cluster/join', async (req) => {

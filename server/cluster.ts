@@ -11,6 +11,10 @@ import {
   ensureWgInit, loadWgState, saveWgState, rebuildTunnel, wgSupported, WG_UNSUPPORTED_MSG,
   generateMachineId, nextAvailableSubnet, type WgState, type WgPeer,
 } from './wireguard.js';
+import {
+  loadAllocTable, saveAllocTable, electCoordinator, allocateIn, lookupEntry, mergeTables, mismatchOf,
+  type AllocTable, type AllocEntry,
+} from './clusterAlloc.js';
 
 const CLUSTER_DIR = join(homedir(), '.mysandbox');
 const CLUSTER_FILE = join(CLUSTER_DIR, 'cluster.json');
@@ -118,27 +122,41 @@ export async function joinCluster(cfg: Config, peerUrl: string, peerToken: strin
   };
   const wgState = await ensureWgInit(await getOrCreateMachineId());
   const mySubnet = cfg.ipPool.from.split('.').slice(0, 3).join('.') + '.0/24';
-  if (info.containerSubnet === mySubnet) {
-    throw new Error(`容器网段冲突：本机 ${mySubnet} 与对方相同。请修改本机或对方的 config.yaml ipPool 后重试。`);
+
+  // —— IP 段：由裁决节点统一分配（详见 clusterAlloc.ts 文件头）——
+  // 入网第一步不是建隧道，是「拿号」：向裁决节点申请三段（overlay / 容器 / 服务网段），
+  // 拿到后连同全表一起存本地。冲突检测随之变成「表里有没有撞」，而不是各算各的再对骂。
+  const alloc = await requestAllocation(cfg, wgState.machineId, {
+    contactUrl: peerUrl,
+    contactToken: peerToken,
+    contactMachineId: info.machineId,
+    other: [
+      { machineId: info.machineId, name: info.name, containerSubnet: info.containerSubnet, serviceSubnet: info.serviceSubnet, overlaySubnet: info.overlayIp ? info.overlayIp.split('.').slice(0, 3).join('.') + '.0/24' : '' },
+    ],
+  });
+  if (alloc) {
+    const mine = lookupEntry(alloc, wgState.machineId);
+    if (mine) {
+      // 表里的 overlay 段就是本机的：机内 IP 恒为 <段>.1。
+      wgState.overlaySubnet = mine.overlaySubnet;
+      wgState.overlayIp = `${mine.overlaySubnet.replace(/\.0\/24$/, '')}.1`;
+      await saveWgState(wgState);
+      log.info({ overlay: mine.overlaySubnet, container: mine.containerSubnet, service: mine.serviceSubnet }, 'cluster: ip allocated');
+      const bad = mismatchOf(mine, mySubnet, serviceSubnetOf(cfg));
+      if (bad.container || bad.service) {
+        // 分配是权威的，但本机 config 还没跟上——不改用户配置，只把话说明白。
+        log.warn(
+          { allocated: mine, actual: { container: mySubnet, service: serviceSubnetOf(cfg) } },
+          'cluster: 已分配的网段与本机 config.yaml 不一致，需要改 ipPool 才能生效',
+        );
+      }
+    }
   }
   const myServiceSubnet = serviceSubnetOf(cfg);
 
-  // overlay 子网冲突检测：本机还没加过 peer（peers 为空）且对方也是 10.99.0.x
-  // → 重新分配本机的 overlay 子网（取下一个可用段）。已有 peer 的 gossip 合并
-  // 阶段由 receiveGossip 的 nextAvailableSubnet 兜底。
-  if (wgState.peers.length === 0) {
-    const peerOverlayPrefix = info.overlayIp.split('.').slice(0, 3).join('.');
-    const myOverlayPrefix = wgState.overlayIp.split('.').slice(0, 3).join('.');
-    if (peerOverlayPrefix === myOverlayPrefix) {
-      const nextPrefix = nextAvailableSubnet(wgState.peers.length
-        ? wgState.peers
-        : [{ id: info.machineId, name: '', publicKey: '', endpoint: '', overlayIp: info.overlayIp, allowedIps: [], addedAt: '' }]);
-      wgState.overlayIp = `${nextPrefix}.1`;
-      wgState.overlaySubnet = `${nextPrefix}.0/24`;
-      await saveWgState(wgState);
-      log.info({ oldIp: `10.99.0.1`, newIp: wgState.overlayIp }, 'cluster: overlay subnet reassigned');
-    }
-  }
+  // overlay 段的冲突检测**已移除**：原先是本机自己算一个没撞的段（各算各的，两台默认
+  // 配置的新机器必然都算出 10.99.0.x，然后互相覆盖）。现在 overlay 与容器/服务段一样由
+  // 裁决节点统一发放（见上方 requestAllocation）。
 
   let cluster = await loadClusterState();
   if (!cluster) cluster = { machineId: wgState.machineId, name: hostname(), peers: [] };
@@ -233,6 +251,158 @@ export async function acceptPeer(cfg: Config, peerInfo: {
   log.info({ peer: peerInfo.name }, 'cluster: peer accepted');
 }
 
+// —— IP 分配表的对外接口（供 routes.ts 与 joinCluster 用）——
+
+// 本机这份表（没有则按已知 peers 现建：把每个已知 peer 的现有网段登记进去，避免新表
+// 把已在跑的网段重新发出去）。
+export async function allocSnapshot(cfg: Config): Promise<AllocTable> {
+  const table = await loadAllocTable();
+  if (table) return table;
+  const cluster = await loadClusterState();
+  const myId = await getOrCreateMachineId();
+  const items: AllocEntry[] = [];
+  const seen = new Set<string>();
+  // 已知 peer 的现有网段先落进表里（老节点没有表，凭它们自报的网段登记）。
+  for (const p of cluster?.peers ?? []) {
+    if (!p.machineId || seen.has(p.machineId)) continue;
+    seen.add(p.machineId);
+    if (!p.containerSubnet) continue;
+    items.push({
+      machineId: p.machineId,
+      name: p.name,
+      overlaySubnet: p.overlayIp ? p.overlayIp.split('.').slice(0, 3).join('.') + '.0/24' : '10.99.0.0/24',
+      containerSubnet: p.containerSubnet,
+      serviceSubnet: p.serviceSubnet || '',
+      updatedAt: p.addedAt || new Date().toISOString(),
+    });
+  }
+  const ids = [myId, ...(cluster?.peers ?? []).map((p) => p.machineId)];
+  const t: AllocTable = { version: 1, coordinator: electCoordinator(ids), updatedAt: new Date().toISOString(), items };
+  await saveAllocTable(t);
+  return t;
+}
+
+// 处理「给我分配一段」：只由裁决节点改表；非裁决节点把请求转发给裁决节点
+// （转发是必要的——新节点只认识它连上的那一个 peer，未必认识裁决节点）。
+export async function handleAllocate(
+  cfg: Config,
+  body: { machineId?: string; name?: string },
+): Promise<AllocTable> {
+  const machineId = String(body.machineId ?? '').trim();
+  if (!machineId) throw new Error('machineId required');
+  const name = String(body.name ?? '').trim();
+  const cluster = await loadClusterState();
+  const myId = await getOrCreateMachineId();
+  const ids = [myId, machineId, ...(cluster?.peers ?? []).map((p) => p.machineId)];
+  const coordinator = electCoordinator(ids);
+
+  let table = (await loadAllocTable()) ?? (await allocSnapshot(cfg));
+  table = { ...table, coordinator };
+
+  if (coordinator !== myId) {
+    // 我不是裁决节点：转给它（我认识它的话），让它签发表。
+    const coord = cluster?.peers.find((p) => p.machineId === coordinator);
+    if (!coord?.url || !coord?.token) {
+      throw new Error(`裁决节点 ${coordinator.slice(0, 8)} 不在线或本机不认识它，无法分配网段`);
+    }
+    const issued = (await peerFetch(coord.url, coord.token, '/api/cluster/allocate', 'POST', { machineId, name })) as AllocTable;
+    await saveAllocTable(mergeTables(table, issued) ?? issued);
+    return issued;
+  }
+  const res = allocateIn(table, machineId, name);
+  if (res.changed) await saveAllocTable(res.table);
+  return res.table;
+}
+
+// 入网时「拿号」：向裁决节点申请；拿不到（老版本节点没有这个端点）则**降级**——
+// 按老逻辑本地算一个不冲突的段，保证旧集群仍能加进来，只是失去了统一分配的好处。
+async function requestAllocation(
+  cfg: Config,
+  myMachineId: string,
+  ctx: { contactUrl: string; contactToken: string; contactMachineId: string; other: Array<{ machineId: string; name: string; containerSubnet: string; serviceSubnet: string; overlaySubnet: string }> },
+): Promise<AllocTable | null> {
+  const cluster = await loadClusterState();
+  const ids = [myMachineId, ctx.contactMachineId, ...(cluster?.peers ?? []).map((p) => p.machineId)];
+  const coordinator = electCoordinator(ids);
+  const myName = cluster?.name ?? hostname();
+
+  let table = (await loadAllocTable()) ?? {
+    version: 1,
+    coordinator,
+    updatedAt: new Date().toISOString(),
+    items: ctx.other
+      .filter((o) => o.machineId && o.containerSubnet)
+      .map((o) => ({
+        machineId: o.machineId,
+        name: o.name,
+        overlaySubnet: o.overlaySubnet || '10.99.0.0/24',
+        containerSubnet: o.containerSubnet,
+        serviceSubnet: o.serviceSubnet,
+        updatedAt: new Date().toISOString(),
+      })),
+  };
+  table = { ...table, coordinator };
+
+  if (coordinator === myMachineId) {
+    const res = allocateIn(table, myMachineId, myName);
+    await saveAllocTable(res.table);
+    return res.table;
+  }
+  // 裁决节点就是我连上的这台：直接向它要；否则从已知 peers 里找它。
+  const coordPeer = coordinator === ctx.contactMachineId
+    ? { url: ctx.contactUrl, token: ctx.contactToken }
+    : (() => {
+        const p = cluster?.peers.find((x) => x.machineId === coordinator);
+        return p?.url && p.token ? { url: p.url, token: p.token } : null;
+      })();
+  if (!coordPeer) {
+    // 认识不到裁决节点：先请联系人转交（老版本联系人会 404，走下面的降级）。
+    try {
+      const issued = (await peerFetch(ctx.contactUrl, ctx.contactToken, '/api/cluster/allocate', 'POST', {
+        machineId: myMachineId,
+        name: myName,
+      })) as AllocTable;
+      await saveAllocTable(mergeTables(table, issued) ?? issued);
+      return issued;
+    } catch (e) {
+      log.warn({ err: String(e) }, 'cluster: 无法从裁决节点取到分配表，降级为本地分配');
+      const res = allocateIn(table, myMachineId, myName);
+      await saveAllocTable(res.table);
+      return res.table;
+    }
+  }
+  try {
+    const issued = (await peerFetch(coordPeer.url, coordPeer.token, '/api/cluster/allocate', 'POST', {
+      machineId: myMachineId,
+      name: myName,
+    })) as AllocTable;
+    await saveAllocTable(mergeTables(table, issued) ?? issued);
+    return issued;
+  } catch (e) {
+    log.warn({ err: String(e) }, 'cluster: allocate 请求失败（对方可能是旧版本），降级为本地分配');
+    const res = allocateIn(table, myMachineId, myName);
+    await saveAllocTable(res.table);
+    return res.table;
+  }
+}
+
+// 心跳同步：向每个 peer 拉它的表，按版本号合并（gossip 最终一致）。
+export async function syncAlloc(cfg: Config): Promise<void> {
+  const cluster = await loadClusterState();
+  if (!cluster || cluster.peers.length === 0) return;
+  let mine = await loadAllocTable();
+  for (const peer of cluster.peers) {
+    if (!peer.url || !peer.token) continue;
+    try {
+      const theirs = (await peerFetch(peer.url, peer.token, '/api/cluster/allocations')) as AllocTable;
+      mine = mergeTables(mine, theirs);
+    } catch (e) {
+      log.debug({ peer: peer.name, err: String(e) }, 'cluster: alloc table sync failed');
+    }
+  }
+  if (mine) await saveAllocTable(mine);
+}
+
 export async function heartbeat(cfg: Config): Promise<void> {
   const cluster = await loadClusterState();
   if (!cluster || cluster.peers.length === 0) return;
@@ -265,6 +435,8 @@ export async function heartbeat(cfg: Config): Promise<void> {
     }
   }
   await saveClusterState(cluster);
+  // IP 分配表随心跳对账（低频、幂等，失败下一拍再来）。
+  await syncAlloc(cfg).catch(() => {});
 }
 
 export async function leaveCluster(cfg: Config, machineId: string): Promise<void> {
@@ -379,12 +551,30 @@ export async function peerServiceEndpoints(cfg: Config): Promise<{ name: string;
 }
 
 let cachedMachineId: string | null = null;
+// machineId 必须**跨进程稳定**：它是集群身份（peer 识别、IP 分配表主键、裁决节点选举的输入）。
+// 原先只存在 wg state 里——而 wg state 由 ensureWgInit 生成，Windows（没有 wireguard）上
+// 永远拿不到 → 每次进程重启都现生成一个随机 id → 集群里表现为「一台新机器」，分配表每
+// 次多一条、裁决节点选举跟着乱（实测：重启前后 coordinator 从 fef5… 变 3e27…）。
+// 故独立落到 ~/.mysandbox/machine-id，先于 wg state 使用。
+const MACHINE_ID_FILE = join(homedir(), '.mysandbox', 'machine-id');
 async function getOrCreateMachineId(): Promise<string> {
   if (cachedMachineId) return cachedMachineId;
   const state = await loadWgState();
-  if (state) { cachedMachineId = state.machineId; return state.machineId; }
-  cachedMachineId = generateMachineId();
-  return cachedMachineId;
+  if (state?.machineId) { cachedMachineId = state.machineId; return state.machineId; }
+  try {
+    const raw = (await readFile(MACHINE_ID_FILE, 'utf8')).trim();
+    if (/^[0-9a-f]{16}$/.test(raw)) { cachedMachineId = raw; return raw; }
+  } catch { /* 还没生成过 */ }
+  const id = generateMachineId();
+  try {
+    await mkdir(join(homedir(), '.mysandbox'), { recursive: true, mode: 0o700 });
+    await writeFile(MACHINE_ID_FILE, id, { mode: 0o600 });
+    await chmod(MACHINE_ID_FILE, 0o600);
+  } catch (e) {
+    log.warn({ err: String(e) }, 'cluster: machine-id 落盘失败（身份将不稳定）');
+  }
+  cachedMachineId = id;
+  return id;
 }
 
 async function detectPublicIp(): Promise<string> {

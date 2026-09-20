@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 集群面板（嵌入 SettingsDialog 的 cluster 分区）：加入集群 + peer 列表 + 隧道状态。
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { toast } from 'vue-sonner'
 import { Plus, Loader2, Trash2, RefreshCw } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
@@ -69,6 +69,16 @@ async function leave(machineId: string, name: string) {
   }
 }
 
+// 裁决节点：显示成名字（表里有就用人名，没有就截断 machineId）+ 标出是否本机。
+const coordLabel = computed(() => {
+  const a = status.value?.alloc
+  if (!a?.coordinator) return '—'
+  const hit = a.items.find((i) => i.machineId === a.coordinator)
+  const short = a.coordinator.slice(0, 8)
+  const isSelf = a.coordinator === status.value?.machineId
+  return `${hit?.name || short}${isSelf ? '（本机）' : ''}`
+})
+
 function lastSeenText(peer: ClusterPeerInfo): string {
   if (!peer.lastSeenAt) return '从未连接'
   const diff = Date.now() - new Date(peer.lastSeenAt).getTime()
@@ -113,6 +123,31 @@ onMounted(refresh)
         <span :class="status.tunnel.up ? 'text-emerald-500' : 'text-muted-foreground'">
           {{ status.tunnel.up ? `已连接（${status.tunnel.handshakePeers}/${status.tunnel.peers} 握手）` : '未启动' }}
         </span>
+      </div>
+    </div>
+
+    <!-- IP 分配表：裁决节点统一发放，各节点各存一份（gossip 拉齐） -->
+    <div v-if="status?.alloc" class="rounded-lg border p-3 text-sm space-y-2">
+      <div class="flex justify-between items-center">
+        <span class="font-medium">IP 分配表</span>
+        <span class="text-xs text-muted-foreground">v{{ status.alloc.version }} · 裁决 {{ coordLabel }}</span>
+      </div>
+      <div v-if="status.alloc.items.length === 0" class="text-xs text-muted-foreground">
+        尚无分配记录（加入集群后自动发号）
+      </div>
+      <div v-else class="space-y-1">
+        <div
+          v-for="it in status.alloc.items"
+          :key="it.machineId"
+          class="flex items-baseline justify-between gap-2 text-xs"
+        >
+          <span :class="it.machineId === status?.machineId ? 'font-medium' : ''">
+            {{ it.name }}<span class="text-muted-foreground">{{ it.machineId === status?.machineId ? '（本机）' : '' }}</span>
+          </span>
+          <span class="font-mono text-muted-foreground">
+            容器 {{ it.containerSubnet }} · 服务 {{ it.serviceSubnet }} · overlay {{ it.overlaySubnet }}
+          </span>
+        </div>
       </div>
     </div>
 

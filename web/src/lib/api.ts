@@ -1196,11 +1196,27 @@ export interface ClusterPeerInfo {
   addedAt: string
   lastSeenAt?: string
 }
+// IP 分配表：裁决节点统一发放，每个节点各存一份，靠 gossip 拉齐（见 server/clusterAlloc.ts）。
+export interface ClusterAllocEntry {
+  machineId: string
+  name: string
+  overlaySubnet: string
+  containerSubnet: string
+  serviceSubnet: string
+  updatedAt: string
+}
+export interface ClusterAllocTable {
+  version: number
+  coordinator: string // 裁决节点 machineId
+  updatedAt: string
+  items: ClusterAllocEntry[]
+}
 export interface ClusterStatusView {
   machineId: string | null
   name: string | null
   peers: ClusterPeerInfo[]
   tunnel: { up: boolean; peers: number; handshakePeers: number }
+  alloc?: ClusterAllocTable
 }
 export const getClusterStatus = () => api('/api/cluster/status') as Promise<ClusterStatusView>
 export const clusterJoin = (url: string, token: string, name?: string) =>
