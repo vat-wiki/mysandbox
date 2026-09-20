@@ -1920,7 +1920,7 @@ export function startAiConfigEvents(cfg: Config): void {
           );
         });
         delay = 1_000;
-        log.info({ engine: 'lxc' }, 'ai-config event sync: subscribed');
+        log.info({ engine: getEngine(cfg).name }, 'ai-config event sync: subscribed');
         await sub.closed;
       } catch (e) {
         log.warn({ err: String(e), retryMs: delay }, 'ai-config event sync: subscribe failed, retrying');

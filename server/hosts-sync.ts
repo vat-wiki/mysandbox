@@ -199,7 +199,7 @@ export function startHostsEventSync(cfg: Config): void {
           relayContainerState(ev.containerId, ev.action);
         });
         delay = 1_000; // 连上即复位
-        log.info({ engine: 'lxc' }, 'hosts event sync: subscribed');
+        log.info({ engine: getEngine(cfg).name }, 'hosts event sync: subscribed');
         // 重连后追平一次，补断线窗口内错过的事件（读-比-写，近零成本）
         enqueue(async () => void (await applyServicesBlock(cfg, { reason: 'reconnect' })));
         await sub.closed; // resolve = 底层断流（引擎侧判定）-> 退避重连

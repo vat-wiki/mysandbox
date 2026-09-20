@@ -817,7 +817,7 @@ export function startSkillSyncEvents(cfg: Config): void {
           );
         });
         delay = 1_000;
-        log.info({ engine: 'lxc' }, 'skills event sync: subscribed');
+        log.info({ engine: getEngine(cfg).name }, 'skills event sync: subscribed');
         await sub.closed;
       } catch (e) {
         log.warn({ err: String(e), retryMs: delay }, 'skills event sync: subscribe failed, retrying');

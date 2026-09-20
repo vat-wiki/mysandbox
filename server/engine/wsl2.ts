@@ -118,35 +118,49 @@ async function runWsl(
     return { ok: true, stdout: decodeWsl(stdout), stderr: decodeWsl(stderr) };
   } catch (e) {
     const err = e as { stdout?: Buffer; stderr?: Buffer; message?: string };
+    // ⚠️ spawn 失败（ENOENT/EINVAL/EPERM）时 err.stderr 是**存在的空 Buffer**——它 truthy，
+    // 所以 `err.stderr ? decodeWsl(err.stderr) : err.message` 会选中空串、把真正的失败
+    // 原因（"spawn wsl.exe EPERM" 之类）整条吞掉，调用方只剩「什么都没有」。必须按长度判。
+    const dec = (b?: Buffer) => (b && b.length ? decodeWsl(b) : '');
     return {
       ok: false,
-      stdout: err.stdout ? decodeWsl(err.stdout) : '',
-      stderr: err.stderr ? decodeWsl(err.stderr) : err.message ?? '',
+      stdout: dec(err.stdout),
+      stderr: dec(err.stderr) || err.message || '',
     };
   }
 }
 
 const execFileAsync = promisify(execFile);
 
-// wsl.exe 管理命令输出 UTF-16LE（D7）：带 BOM 直接认；不带 BOM 时偶数位大量 \0 是
-// 可靠特征（ASCII 文本区隔字节不可能是 \0）。--exec 透传的 Linux 进程输出是原样
-// utf8，走 else 分支。BOM 字符（U+FEFF）解码后必须剥掉——否则 --list --quiet 的
-// 第一个发行版名被污染、过不了名字过滤（mock 冒烟抓到的）。
+// wsl.exe 管理命令输出 UTF-16LE（D7）：带 BOM 直接认；不带 BOM 时按「奇偶零字节对比」判——
+// UTF-16LE 的 NUL 只落在**奇数位**（低字节在前），UTF-8 的 NUL 两边均等（纯 ASCII 文本里
+// 根本没有 NUL）。这一条同时覆盖两种真实输出：
+//   - 管理命令（--version/--help/--list*）恒 UTF-16LE → 奇数位零多；
+//   - `distroIp` 走的 `-d <名> --exec hostname -I` 是 Linux 进程输出（纯 ASCII/UTF-8）→ 两边都 0 → 判 UTF-8。
+// 早期实现按「前 256 字节内奇数位零 > 1/4」判，遇**短且全 CJK** 的输出会失配
+// （实测 `--list --running` 零发行版时输出「没有正在运行的分发版。\r\n」24 字节，
+//  奇数位只有 2 个零，2 > 6 不成立）→ 被当 UTF-8 解成乱码。Windows 实测钉死，见 docs 补记。
+// BOM 字符（U+FEFF）解码后必须剥掉——否则 --list --quiet 的第一个发行版名被污染、
+// 过不了名字过滤（mock 冒烟抓到的）。
 export function decodeWsl(buf: Buffer): string {
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
-    return buf.toString('utf16le').replace(/^﻿/, '');
+    return buf.toString('utf16le').replace(/^\uFEFF/, '');
   }
-  const sample = Math.min(buf.length, 256);
-  if (sample >= 8) {
-    let zeros = 0;
-    for (let i = 1; i < sample; i += 2) if (buf[i] === 0) zeros++;
-    if (zeros > sample / 4) return buf.toString('utf16le');
+  let zerosOdd = 0;
+  let zerosEven = 0;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] !== 0) continue;
+    if (i % 2 === 1) zerosOdd++;
+    else zerosEven++;
   }
+  if (zerosOdd > zerosEven) return buf.toString('utf16le');
   return buf.toString('utf8');
 }
 
-// 全部已注册发行版名（含停止的）。`--quiet` 一行一个；零发行版时 wsl.exe exit 非零
-// 并输出一段提示语——按「名格式」过滤掉噪声行（发行版名不可能含空格/CJK）。
+// 全部已注册发行版名（含停止的）。`--quiet` 一行一个。
+// 实测（WSL 2.3.11.0）：`--list --quiet` 在**零发行版**时是 exit 0 + 空输出，不带提示语；
+// 带中文提示语且 exit -1 的是 `--verbose` / `--running`（那两个函数只读 stdout、忽略 ok，无碍）。
+// 「名格式」过滤保留作兜底——发行版名不可能含空格/CJK。
 async function listRegistered(): Promise<string[]> {
   const r = await runWsl(['--list', '--quiet'], 10_000);
   if (!r.stdout.trim()) return [];
@@ -203,7 +217,13 @@ async function status(_cfg: Config) {
   }
   const v = await runWsl(['--version'], 10_000);
   if (!v.ok) {
-    return { reachable: false, error: 'wsl.exe not found or WSL not installed' };
+    // 只回错误**类别**，不回原始文本：status 经 /api/health 免鉴权下发，而原始 spawn
+    // 错误里带完整可执行路径（可能含用户路径）——CLAUDE.md 的 health 约束不放路径/配置值。
+    // 类别已够分清「没装（ENOENT）/ 被安全策略或权限拦（EPERM、EACCES）/ 环境或参数坏
+    // （EINVAL）」；原先固定一句 "not found or WSL not installed" 把这三者糊成一种，
+    // Windows 实测第一次撞上的是「被拦」却报「没装」，误导排查。
+    const reason = /\b(EPERM|EACCES|ENOENT|EINVAL)\b/i.exec(v.stderr)?.[1]?.toUpperCase() ?? 'unknown';
+    return { reachable: false, error: `wsl.exe not usable (${reason})` };
   }
   const version = v.stdout.split('\n')[0]?.trim() || 'wsl';
   return { reachable: true, version };
@@ -255,11 +275,40 @@ function createdAtMs(m: { createdAt?: string } | undefined): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
-// 运行中发行版的真实 IP（D5）。--exec argv 直传；失败给 null（调用方降级）。
+// 运行中发行版的真实 IP（D5）。两层取法，解析放在 JS 侧：
+//   1) `hostname -I` —— GNU/inetutils 版才有（Ubuntu 之类标准发行版）。
+//   2) `ip -4 -o addr show scope global` —— 精简发行版没有第 1 条（实测 Alpine/ BusyBox：
+//      `hostname: unrecognized option: I`），但这条 busybox / iproute2 都支持。
+// ⚠️ 两条都必须经 `sh -c` 跑，不能直调命令：**`wsl --exec <cmd>` 对首个参数不做完整
+//    PATH 查找**——实测 `/bin`、`/usr/bin` 下的（sh / hostname / env）能找到，而
+//    `/sbin`、`/usr/sbin` 下的（ip / ifconfig）直接
+//    `WSL ERROR: CreateProcessCommon:500: execvpe(ip) failed: No such file or directory`。
+//    经 shell 则用 shell 自己的 PATH 解析，正常。（引擎主执行路径本来就走
+//    `/bin/sh -c 'exec "$@"'`，不受此限；只有这里原先是直调命令。）
+// ⚠️ 第 2 条**必须排除 lo**：WSL 把 DNS 代理绑在 lo 上且标成 `scope global`
+//    （实测 `lo inet 10.255.255.254/32 … scope global lo`），不过滤会拿到它而不是
+//    eth0 的真实地址（实测 `eth0 inet 172.29.240.144/20`）。
+// 两条都拿不到 → null。调用方把 null 显示成「—」，**不回退记账 IP**（wsl2 的记账 IP 在
+// Windows 上不可达，回退等于给前端一个点了必失败的端口，理由见 docs 补记）。
 async function distroIp(name: string): Promise<string | null> {
-  const r = await runWsl(['-d', name, '--exec', 'hostname', '-I'], 10_000);
-  const ip = r.stdout.trim().split(/\s+/)[0];
-  return r.ok && ip ? ip : null;
+  const viaSh = async (cmd: string): Promise<string> => {
+    const r = await runWsl(['-d', name, '--exec', 'sh', '-c', cmd], 10_000);
+    return r.ok ? r.stdout : '';
+  };
+  const first = (await viaSh('hostname -I 2>/dev/null')).trim().split(/\s+/)[0];
+  if (first) return first;
+
+  const out = await viaSh('ip -4 -o addr show scope global 2>/dev/null');
+  for (const line of out.split('\n')) {
+    const cols = line.trim().split(/\s+/);
+    // 形如 `2: eth0    inet 172.29.240.144/20 brd … scope global eth0`
+    if (cols[1] === 'lo') continue;
+    const i = cols.indexOf('inet');
+    if (i < 0) continue;
+    const ip = (cols[i + 1] ?? '').split('/')[0];
+    if (ip) return ip;
+  }
+  return null;
 }
 
 async function inspect(cfg: Config, id: string): Promise<ContainerInfo> {
@@ -346,27 +395,57 @@ async function materialize(
 
 // --vhd 能力探测（D1）：块拷贝秒级 vs tar 全量分钟级。结果缓存（wsl 版本不会中途变）。
 let vhdCache: boolean | null = null;
+// ⚠️ 不能按 r.ok 判：`wsl --help` 的退出码是 **-1**（实测 WSL 2.3.11.0 返回 4294967295），
+// 而 runWsl 走 execFile——非零退出即 reject → ok=false。早期实现写成 `r.ok && …`，
+// 结果 --vhd 恒被判「不支持」，克隆永远退化成 tar 全量导出（分钟级）而非 vhd 块拷贝（秒级）。
+// 改为只看输出文本；连一行输出都拿不到才当不可用，且此时**不缓存**（留给下次重试）。
 async function vhdSupported(): Promise<boolean> {
   if (vhdCache != null) return vhdCache;
   const r = await runWsl(['--help'], 10_000);
-  vhdCache = r.ok && r.stdout.includes('--vhd');
+  if (!r.stdout) return false;
+  vhdCache = r.stdout.includes('--vhd');
   return vhdCache;
 }
 
 // 导出源发行版 → 导入为目标。导出前 terminate 源（一致性；9P/后续访问会自动拉起）。
+//
+// vhd 快路径（D1）实测结论（WSL 2.3.11.0）：`--export --vhd` **要求 WSL2 轻量 VM 处于停止
+// 状态**——只要 VM 还在跑（任一发行版启动后它会存活一段时间，且 `--terminate <发行版>`
+// 只停发行版、不停 VM），ext4.vhdx 被 VM 持有，导出直接报
+// `Wsl/Service/ERROR_SHARING_VIOLATION`（实测 rc=127、无 stderr）。所以 vhd 只是「VM 正好
+// 冷着」时的加速，**必须能降级 tar**（tar 导出实测在 VM 运行时可用），否则模板克隆在常见
+// 状态下会整体失败。刻意**不**用 `wsl --shutdown` 清场：那是全 VM 级操作，会把用户正在跑的
+// 所有发行版一起杀掉，违背 D8「生命周期按发行版」的边界。
 async function cloneDistro(src: string, dst: string): Promise<void> {
-  const useVhd = await vhdSupported();
-  const tmp = join(installRoot(), `.${dst}.export.tmp${useVhd ? '.vhdx' : '.tar'}`);
+  await mkdir(installRoot(), { recursive: true });
+  await runWsl(['--terminate', src], 60_000);
+
+  if (await vhdSupported()) {
+    const tmpVhd = join(installRoot(), `.${dst}.export.tmp.vhdx`);
+    try {
+      const ex = await runWsl(['--export', src, tmpVhd, '--vhd'], 1_800_000);
+      if (ex.ok) {
+        await importDistro(dst, tmpVhd, undefined, true);
+        return;
+      }
+      log.warn(
+        { src, err: ex.stderr.trim().split('\n')[0] },
+        'wsl2 clone: vhd 导出失败（多半是 WSL VM 还在跑、vhdx 被占用），降级 tar',
+      );
+    } finally {
+      await rm(tmpVhd, { force: true }).catch(() => {});
+    }
+  }
+
+  const tmpTar = join(installRoot(), `.${dst}.export.tmp.tar`);
   try {
-    await mkdir(installRoot(), { recursive: true });
-    await runWsl(['--terminate', src], 60_000);
-    const ex = await runWsl(['--export', src, tmp, ...(useVhd ? ['--vhd'] : [])], 1_800_000);
+    const ex = await runWsl(['--export', src, tmpTar], 1_800_000);
     if (!ex.ok) {
       throw new Error(`wsl --export "${src}" failed: ${ex.stderr.trim() || 'unknown error'}`);
     }
-    await importDistro(dst, tmp, undefined, useVhd);
+    await importDistro(dst, tmpTar, undefined, false);
   } finally {
-    await rm(tmp, { force: true }).catch(() => {});
+    await rm(tmpTar, { force: true }).catch(() => {});
   }
 }
 
@@ -829,15 +908,35 @@ async function runBaseAction(
   if (action === 'export') {
     const registered = await listRegistered();
     if (!registered.includes(t)) throw notFound(`template "${t}" not found`);
-    const useVhd = await vhdSupported();
     const outDir = join(homedir(), '.mysandbox', 'exports');
     await mkdir(outDir, { recursive: true });
-    const out = opts.path
-      ? expandTilde(opts.path)
-      : join(outDir, `${t}-${new Date().toISOString().slice(0, 10)}${useVhd ? '.vhdx' : '.tar'}`);
-    onProgress?.({ status: `导出模板 ${t} -> ${out}${useVhd ? '（vhd）' : ''}` });
+    const stamp = new Date().toISOString().slice(0, 10);
+    const explicit = opts.path ? expandTilde(opts.path) : null;
     await runWsl(['--terminate', t], 60_000);
-    const r = await runWsl(['--export', t, out, ...(useVhd ? ['--vhd'] : [])], 1_800_000);
+
+    // vhd 优先（块拷贝）；但实测 VM 在跑时 `--export --vhd` 会被 ext4.vhdx 占用打回
+    // （ERROR_SHARING_VIOLATION，详见 cloneDistro 注释）→ 失败即降级 tar（VM 在跑时可用）。
+    // 显式给了 .vhdx 路径 = 用户点名要这个格式，不偷偷换，直接把真实原因抛出去。
+    const vhdOk = await vhdSupported();
+    const tryVhd = vhdOk && (explicit == null || /\.vhdx$/i.test(explicit));
+    if (tryVhd) {
+      const vhdOut = explicit ?? join(outDir, `${t}-${stamp}.vhdx`);
+      onProgress?.({ status: `导出模板 ${t} -> ${vhdOut}（vhd）` });
+      const rv = await runWsl(['--export', t, vhdOut, '--vhd'], 1_800_000);
+      if (rv.ok) return { name: t, path: vhdOut };
+      if (explicit) {
+        throw new Error(
+          `wsl --export --vhd "${vhdOut}" failed: ${rv.stderr.trim() || 'unknown error（多为 WSL VM 未停、vhdx 被占用）'}`,
+        );
+      }
+      log.warn(
+        { template: t, err: rv.stderr.trim().split('\n')[0] },
+        'wsl2 base export: vhd 导出失败（多半是 WSL VM 还在跑），降级 tar',
+      );
+    }
+    const out = explicit ?? join(outDir, `${t}-${stamp}.tar`);
+    onProgress?.({ status: `导出模板 ${t} -> ${out}` });
+    const r = await runWsl(['--export', t, out], 1_800_000);
     if (!r.ok) throw new Error(`wsl --export failed: ${r.stderr.trim() || 'unknown error'}`);
     return { name: t, path: out };
   }
