@@ -32,6 +32,26 @@ msiexec /i "<路径>\wireguard-amd64-1.1.1.msi" /qn /norestart
 
 约 3 MB、10–15 秒、**无需重启**。
 
+### 已经接在哪了
+
+不用手敲上面那条——`scripts/win/mysandbox.ps1` 已经接好：
+
+| 动作 | 行为 |
+|---|---|
+| `install` | 注册计划任务之前顺手装一次。**尽力而为**：装不上只警告，不影响 install 成功——没有集群隧道时其余功能照常 |
+| `wireguard` | 显式安装，幂等（已装且不低于包内版本直接跳过）。失败会 `throw`，只提示不假装成功 |
+| `status` | 多一行「隧道依赖」，显示已装版本 vs 包内版本 |
+| `uninstall` | **刻意不动它**——别的软件可能共用同一份驱动，且卸内核驱动风险大于收益 |
+
+两个开关：
+
+- `-SkipWireGuard` —— `install` 时跳过依赖那一步（不需要集群隧道、或想自己管依赖）
+- `-Force` —— `install` / `wireguard` 时即使已装也重装一遍（修损坏的安装）
+
+⚠️ `install` 与 `wireguard` **需要管理员终端**：前者是「RunLevel Highest 任务注册」的系统
+要求，后者要装内核驱动。装完 WireGuard 后，如果 mysandbox 正在跑，要用 `restart` 让它重新
+探测——后端把探测结果缓存了（`server/wireguard.ts` 的 `wgSupported()`）。
+
 ### ⚠️ 主安装器不能是 MSI
 
 **MSI 里套 MSI 会把安装搞坏**（Netmaker 踩过这个坑，他们的 MSI 内嵌 WireGuard MSI

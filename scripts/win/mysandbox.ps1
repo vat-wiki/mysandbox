@@ -14,17 +14,29 @@
     ③ 任务级 5 分钟看门狗——兜「runner 自己也没了」的极端情况；
     ④ 停止哨兵文件——保证 stop 不会被上面任何一层复活。
 
-  依赖：仅 Windows 自带组件（ScheduledTasks 模块），无需管理员、无需第三方工具。
+  依赖：Windows 自带组件（ScheduledTasks 模块）+ 仓库自带的 WireGuard 安装包（见下）。
+        没有第三方运行时依赖。
+
+  WireGuard（Windows 侧集群隧道）：
+    Linux 上靠内核模块 + wireguard-tools；Windows 没有对应的「零安装」路径——官方客户端的
+    内核驱动必须由 Microsoft 签名才能被系统加载。所以做法是把官方 MSI 随仓库带上，由
+    install（或 wireguard 动作）静默装一次，用户无感。
+    包与说明见 vendor\wireguard\README.md。
+    注意 uninstall 刻意**不**卸它：别的软件可能用同一份驱动，且卸内核驱动风险大于收益。
+
+  权限：install 与 wireguard 需要**管理员**——前者是「RunLevel Highest 任务注册」的系统要求，
+        后者要装内核驱动。status / start / stop / restart / logs / update / run 不需要。
 
   用法（在仓库根目录或任意位置）：
     powershell -ExecutionPolicy Bypass -File scripts\win\mysandbox.ps1 install
     powershell -ExecutionPolicy Bypass -File scripts\win\mysandbox.ps1 status
 
   动作：
-    install     注册计划任务（登录时启动 + 5 分钟看门狗）
-    uninstall   注销计划任务并停掉残留监听
+    install     注册计划任务（登录时启动 + 5 分钟看门狗）+ 顺带把 WireGuard 依赖装上
+    uninstall   注销计划任务并停掉残留监听（不动 WireGuard）
+    wireguard   确保 vendor\wireguard 里的官方 MSI 已静默装上（幂等；-Force 强制覆盖）
     start/stop/restart
-    status      任务状态 + 监听进程 + /api/health + 容器清单
+    status      任务状态 + 监听进程 + /api/health + WireGuard + 容器清单
     update      git pull -> npm install -> build -> 重启（改完代码用这个）
     logs        看 wrapper 日志与 mysandbox 自身日志尾部
     run         任务本体：自愈循环跑 node dist/server/cli.js（由计划任务调用，一般不用手敲）
@@ -32,7 +44,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'update', 'logs', 'run')]
+  [ValidateSet('install', 'uninstall', 'wireguard', 'start', 'stop', 'restart', 'status', 'update', 'logs', 'run')]
   [string]$Action,
 
   # 仓库根目录；默认取本脚本所在目录的上两级（scripts\win -> 仓库根）。
@@ -43,7 +55,13 @@ param(
   # 监听端口；不传则从 ~/.mysandbox/config.yaml 的 listen.port 读，再退回 7321。
   [int]$Port,
 
-  [int]$Tail = 40
+  [int]$Tail = 40,
+
+  # wireguard / install：即使已装也重装一遍（修损坏的安装用）。
+  [switch]$Force,
+
+  # install：跳过 WireGuard 依赖那一步（不需要集群隧道，或想自己管依赖时用）。
+  [switch]$SkipWireGuard
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +79,12 @@ if (-not $RepoDir) {
   $RepoDir = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 $RepoDir = (Resolve-Path $RepoDir).Path
+
+# WireGuard 依赖：包随仓库分发，装到系统的官方目录（server/wireguard.ts 里硬编码了这个路径）。
+# ProgramW6432 优先——32 位 PS 下 $env:ProgramFiles 会指到 (x86)，会误判成「没装」。
+$WgDir = Join-Path $RepoDir 'vendor\wireguard'
+$WgRoot = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$WgExe = Join-Path $WgRoot 'WireGuard\wireguard.exe'
 
 if (-not $PSBoundParameters.ContainsKey('Port')) {
   $Port = 7321
@@ -121,6 +145,119 @@ function Wait-Health {
 
 function Get-Task {
   return Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+}
+
+# ——— WireGuard 依赖安装（Windows 侧集群隧道）———
+# 为什么要有这一坨：Windows 上集群隧道绕不过官方内核驱动（必须 Microsoft 签名），
+# 「零安装」不可得，只能让用户看不见——包随仓库带、这里静默装一次。
+
+function Get-WgArch {
+  # 32 位 PS 在 64 位系统上是 x86 + PROCESSOR_ARCHITEW6432=AMD64。优先取后者，
+  # 否则会去挑 x86 的包（能装，但不是本机最合适的那个）。
+  $raw = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+  switch ($raw) {
+    'AMD64' { 'amd64' }
+    'ARM64' { 'arm64' }
+    'x86'   { 'x86' }
+    default { 'amd64' }
+  }
+}
+
+function Get-WgMsiVersion {
+  param([string]$Path)
+  # wireguard-amd64-1.1.1.msi -> 1.1.1
+  # 注意别用 Split-Path -LeafBase：那是 PS 6+ 的参数，PS 5.1 上直接报参数不存在。
+  try { return [version]([IO.Path]::GetFileNameWithoutExtension($Path) -replace '^wireguard-[^-]+-') }
+  catch { return $null }
+}
+
+function Get-WgMsi {
+  # 挑本架构的包，多版本取最高；本架构没有就退到 amd64（Windows on ARM 能跑 x64）。
+  if (-not (Test-Path $WgDir)) { return $null }
+  $arch = Get-WgArch
+  foreach ($a in (@($arch, 'amd64') | Select-Object -Unique)) {
+    $cand = @(Get-ChildItem -Path $WgDir -Filter "wireguard-$a-*.msi" -File -ErrorAction SilentlyContinue |
+              Sort-Object { $v = Get-WgMsiVersion $_.FullName; if ($v) { $v } else { [version]'0.0.0' } } -Descending)
+    if ($cand.Count -gt 0) {
+      if ($a -ne $arch) { Write-Warning "本机是 ${arch}，但 vendor\wireguard 里只有 ${a} 的包——将用它" }
+      return $cand[0]
+    }
+  }
+  return $null
+}
+
+function Get-WgInstalledVersion {
+  $roots = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  )
+  foreach ($r in $roots) {
+    $k = Get-ItemProperty -Path $r -ErrorAction SilentlyContinue |
+         Where-Object { $_.DisplayName -like 'WireGuard*' -and $_.DisplayVersion } |
+         Select-Object -First 1
+    if ($k) { return [string]$k.DisplayVersion }
+  }
+  return $null
+}
+
+function Test-IsAdmin {
+  $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+  return ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Install-WgDependency {
+  param([switch]$Force)
+  $msi = Get-WgMsi
+  if (-not $msi) {
+    Write-Warning "vendor\wireguard 里没有匹配的 MSI——用 vendor\wireguard\fetch.sh 拉包（国内需代理）"
+    return $false
+  }
+  $want = Get-WgMsiVersion $msi.FullName
+  $have = Get-WgInstalledVersion
+
+  if (-not $Force) {
+    if ((Test-Path $WgExe) -and -not $have) {
+      Write-Host "  WireGuard 已装（版本读不到，视为满足）；要强制覆盖加 -Force"
+      return $true
+    }
+    if ((Test-Path $WgExe) -and $have -and $want) {
+      if ([version]$have -ge $want) {
+        Write-Host "  WireGuard 已装 ${have}（不低于包内 ${want}），跳过"
+        return $true
+      }
+      Write-Host "  WireGuard 已装 ${have}，包内 ${want} 更新——升级"
+    } elseif (-not (Test-Path $WgExe) -and $have) {
+      Write-Warning "  注册表说装了 ${have}，但 $WgExe 不在——按「装坏了」处理，重装"
+    } else {
+      Write-Host '  未检测到 WireGuard——安装'
+    }
+  }
+
+  if (-not (Test-IsAdmin)) {
+    Write-Warning "  静默安装需要管理员权限。请用管理员终端重跑：mysandbox.ps1 wireguard"
+    return $false
+  }
+
+  Write-Host "  静默安装 $($msi.Name)（/qn /norestart，约 10-15 秒、无需重启）"
+  # 用 Start-Process -Wait -PassThru 拿退出码：msiexec 的码比 $LASTEXITCODE 可靠。
+  # 整段包 try：脚本顶部是 $ErrorActionPreference='Stop'，一次拉不起来的安装不能把
+  # install 整个动作带崩——那一步是尽力而为的。
+  try {
+    $p = Start-Process -FilePath 'msiexec.exe' -Wait -PassThru -ArgumentList @(
+      '/i', "`"$($msi.FullName)`"", '/qn', '/norestart'
+    )
+  } catch {
+    Write-Warning "  拉起 msiexec 失败：$_"
+    return $false
+  }
+  switch ($p.ExitCode) {
+    0       { Write-Host '  ok：已装'; return $true }
+    3010    { Write-Host '  ok：已装，系统要求重启后完全生效'; return $true }
+    1618    { Write-Warning '  1618：另一个安装正在进行，稍后重跑'; return $false }
+    1603    { Write-Warning '  1603：安装失败——权限不足，或被组策略/AppLocker 拦了安装'; return $false }
+    1625    { Write-Warning '  1625：被本机软件限制策略拒绝'; return $false }
+    default { Write-Warning "  msiexec 退出码 $($p.ExitCode)：没装上"; return $false }
+  }
 }
 
 function Start-Mysandbox {
@@ -218,6 +355,17 @@ switch ($Action) {
     }
     Remove-Item $StopFlag -Force -ErrorAction SilentlyContinue
 
+    # WireGuard 依赖：**尽力而为**，失败不算 install 失败——没有集群隧道时其余功能照常。
+    if ($SkipWireGuard) {
+      Write-Host '== WireGuard 依赖：已按 -SkipWireGuard 跳过 =='
+    } else {
+      Write-Host '== WireGuard 依赖（Windows 侧集群隧道要用）=='
+      if (-not (Install-WgDependency -Force:$Force)) {
+        Write-Warning '  WireGuard 未就绪——集群隧道在 Windows 上不可用，其余功能不受影响。'
+        Write-Warning '  装好后重跑：mysandbox.ps1 wireguard（然后 restart 让后端重新探测）'
+      }
+    }
+
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $self = $PSCommandPath
     # -WindowStyle Hidden：任务拉起时不闪控制台窗口（node 复用它这个隐藏控制台）。
@@ -297,6 +445,19 @@ switch ($Action) {
       Write-Host "计划任务 '$TaskName' 本来就没注册"
     }
     Stop-Listener -P $Port | Out-Null
+    # 刻意不卸 WireGuard：别的软件可能共用同一份驱动，且卸内核驱动风险大于收益。
+    Write-Host "（WireGuard 驱动保持原样未动）"
+  }
+
+  'wireguard' {
+    # 显式装依赖：幂等——已装且不低于包内版本就直接跳过。
+    if (-not (Install-WgDependency -Force:$Force)) {
+      throw 'WireGuard 依赖未就绪（原因见上面的警告）'
+    }
+    if ((Get-ListenerPids -P $Port).Count -gt 0) {
+      # 后端把 wgSupported() 探测结果缓存了（server/wireguard.ts），装完必须重启才认。
+      Write-Host '  提示：mysandbox 正在运行，需要重启才会识别到 WireGuard —— mysandbox.ps1 restart'
+    }
   }
 
   'start'   { Start-Mysandbox }
@@ -318,6 +479,17 @@ switch ($Action) {
     $pids = Get-ListenerPids -P $Port
     if ($pids.Count -gt 0) { Write-Host "监听      : pid $($pids -join ', ') 在 $Port" }
     else { Write-Host "监听      : 无（$Port 空闲）" }
+
+    # WireGuard 放在健康检查之前——它是本地事实，不该因为服务没起来就不显示。
+    $wgHave = Get-WgInstalledVersion
+    if (Test-Path $WgExe) {
+      $wgLabel = if ($wgHave) { $wgHave } else { '已装(版本未知)' }
+      $wgMsi = Get-WgMsi
+      $wgPkg = if ($wgMsi) { [string](Get-WgMsiVersion $wgMsi.FullName) } else { '无包' }
+      Write-Host "隧道依赖  : WireGuard ${wgLabel}  包内 ${wgPkg}"
+    } else {
+      Write-Host "隧道依赖  : 未装——Windows 集群隧道不可用；跑 mysandbox.ps1 wireguard"
+    }
 
     $h = Get-Health -P $Port
     if (-not $h) {
