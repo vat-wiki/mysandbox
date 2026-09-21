@@ -55,17 +55,26 @@ function wgConfigFile(): string {
   return join(WG_DIR, `${WG_INTERFACE}.conf`);
 }
 
-// —— 平台能力探测 ——
-// Linux 靠 wireguard-tools（`wg` + `wg-quick` + sudo）；Windows 未移植：即便装了
-// WireGuard for Windows，也只有 `wg.exe`（在 Program Files 下、不在 PATH）、**没有
-// wg-quick**，隧道拉不起来。这里探测一次并缓存：不加这层的话，Windows 上加入集群会在
-// `ensureWgInit` 里撞 `spawn wg ENOENT` → 前端只看到 500「internal」，根本不知道缺什么
-// （实测：本机 Windows /api/cluster/info 就是这个 500）。
+// —— WireGuard 二进制 / 平台能力 ——
+// Windows 走官方客户端（WireGuard for Windows）：`wg.exe` 在 Program Files 下（**不在
+// PATH**，必须拼绝对路径），而 `wg-quick` **不存在**——隧道由 `wireguard.exe
+// /installtunnelservice <conf>` 注册成一个 Windows 服务来承载（注册要管理员一次，之后
+// 服务自己监视 conf 文件变化并重载，普通用户改配置即可生效）。
+const WG_WIN_DIR = 'C:\\Program Files\\WireGuard';
+function wgBin(): string {
+  if (platform() === 'win32') return join(WG_WIN_DIR, 'wg.exe');
+  return 'wg';
+}
+function wgUiBin(): string {
+  return join(WG_WIN_DIR, 'wireguard.exe');
+}
+
 let wgSupport: boolean | null = null;
 export async function wgSupported(): Promise<boolean> {
   if (wgSupport !== null) return wgSupport;
-  if (platform() !== 'linux') {
-    wgSupport = false;
+  if (platform() === 'win32') {
+    // 官方客户端装了就有 wg.exe；没装就是没装（此时加入集群必然失败，给人话错误）。
+    wgSupport = existsSync(wgBin());
     return wgSupport;
   }
   try {
@@ -79,7 +88,9 @@ export async function wgSupported(): Promise<boolean> {
 
 // 人话错误：集群隧道在这台机器上不可用的原因（给前端 toast 用）。
 export const WG_UNSUPPORTED_MSG =
-  '集群隧道依赖 wireguard-tools（wg / wg-quick），当前平台没有或未移植（仅 Linux 支持）';
+  platform() === 'win32'
+    ? '未安装 WireGuard for Windows（或不在 C:\\Program Files\\WireGuard）。装好后重启 mysandbox 即可加入集群'
+    : '集群隧道依赖 wireguard-tools（wg / wg-quick），当前平台没有或未移植（仅 Linux 支持）';
 
 // sudo 封装：wg-quick 和 wg set 需要 root。install.sh 配置 sudoers NOPASSWD。
 async function sudo(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -88,9 +99,10 @@ async function sudo(cmd: string, args: string[]): Promise<{ stdout: string; stde
 
 // —— 密钥对 ——
 export async function generateKeyPair(): Promise<WgKeyPair> {
-  const { stdout: privateKey } = await execFileAsync('wg', ['genkey'], { timeout: 5_000 });
+  const bin = wgBin();
+  const { stdout: privateKey } = await execFileAsync(bin, ['genkey'], { timeout: 5_000 });
   const { stdout: publicKey } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const proc = execFile('wg', ['pubkey'], { timeout: 5_000 }, (err, stdout) => {
+    const proc = execFile(bin, ['pubkey'], { timeout: 5_000 }, (err, stdout) => {
       if (err) reject(err);
       else resolve({ stdout: String(stdout), stderr: '' });
     });
@@ -143,19 +155,50 @@ export function renderWgConfig(state: WgState): string {
   return lines.join('\n');
 }
 
-// 写 wg-quick 配置到标准位置（/etc/wireguard/<iface>.conf）+ 本地副本。
+// 写配置：Linux 额外复制到 /etc/wireguard（wg-quick 从那儿读，需要 root）；
+// Windows 就用用户目录这份——隧道服务是照**安装时给的这个路径**监视文件变化并重载的，
+// 所以放用户目录才能做到「首次安装要管理员，之后改 peer 不用」。
 export async function writeWgConfig(state: WgState): Promise<void> {
   const conf = renderWgConfig(state);
   await mkdir(WG_DIR, { recursive: true, mode: 0o700 });
   await writeFile(wgConfigFile(), conf, { mode: 0o600 });
   await chmod(wgConfigFile(), 0o600);
+  if (platform() === 'win32') return;
   // wg-quick 从 /etc/wireguard/ 读配置——需要 root 复制过去。
   await sudo('cp', [wgConfigFile(), `/etc/wireguard/${WG_INTERFACE}.conf`]);
   await sudo('chmod', ['600', `/etc/wireguard/${WG_INTERFACE}.conf`]);
 }
 
 // —— 隧道启停 ——
+// Windows：用官方客户端的隧道服务。注册（`wireguard.exe /installtunnelservice <conf>`）需要
+// 管理员——这是**一次性**的：服务起来后自己监视 conf 文件，之后增删改 peer 只要改写文件，
+// 服务自动重载（隧道不会断别的 peer）。所以这里先写配置再尝试注册；注册失败时若接口已经
+// 在跑（说明之前注册过），就当成功——配置变更已经生效；否则把「需要管理员跑一条命令」
+// 这句人话抛出去，别让前端只看到 internal error。
+async function wgUpWindows(): Promise<void> {
+  const conf = wgConfigFile();
+  try {
+    await execFileAsync(wgUiBin(), ['/installtunnelservice', conf], { timeout: 30_000 });
+    log.info({ interface: WG_INTERFACE, conf }, 'wireguard: tunnel service installed');
+    return;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // 已注册过：服务在，配置变更会自己生效。
+    const st = await wgStatusRaw();
+    if (st.up) {
+      log.debug({ interface: WG_INTERFACE }, 'wireguard: tunnel service already running, config reloaded');
+      return;
+    }
+    throw new Error(
+      `隧道服务注册失败（需要管理员一次）：请以管理员身份执行 ` +
+      `"${wgUiBin()}" /installtunnelservice "${conf}"（` +
+      `之后改 peer 会自动生效）。原始错误：${msg.slice(0, 160)}`,
+    );
+  }
+}
+
 export async function wgUp(): Promise<void> {
+  if (platform() === 'win32') return wgUpWindows();
   try {
     await sudo('wg-quick', ['up', WG_INTERFACE]);
     log.info({ interface: WG_INTERFACE }, 'wireguard: tunnel up');
@@ -170,6 +213,15 @@ export async function wgUp(): Promise<void> {
 }
 
 export async function wgDown(): Promise<void> {
+  if (platform() === 'win32') {
+    try {
+      await execFileAsync(wgUiBin(), ['/uninstalltunnelservice', WG_INTERFACE], { timeout: 30_000 });
+      log.info({ interface: WG_INTERFACE }, 'wireguard: tunnel service removed');
+    } catch (e) {
+      log.warn({ interface: WG_INTERFACE, err: String(e) }, 'wireguard: uninstall tunnel service failed');
+    }
+    return;
+  }
   try {
     await sudo('wg-quick', ['down', WG_INTERFACE]);
     log.info({ interface: WG_INTERFACE }, 'wireguard: tunnel down');
@@ -183,18 +235,23 @@ export async function wgDown(): Promise<void> {
 }
 
 // 隧道状态（wg show 的解析太简单了，直接看接口在不在 + wg show handshake）。
-export async function wgStatus(): Promise<{ up: boolean; peers: number; handshakePeers: number }> {
-  // 平台不支持（Windows / 没装 wireguard-tools）：别去 spawn 一个必然不存在的 wg，
-  // 否则每拍状态轮询都产生一次 ENOENT（/api/cluster/status 的 tunnel 段就是这条）。
-  if (!(await wgSupported())) return { up: false, peers: 0, handshakePeers: 0 };
+// 不给外部直接用的裸查询：wgUp 的 Windows 分支要在「还没判支持」时也问一次接口在不在。
+async function wgStatusRaw(): Promise<{ up: boolean; peers: number; handshakePeers: number }> {
   try {
-    const { stdout } = await execFileAsync('wg', ['show', WG_INTERFACE], { timeout: 5_000 });
+    const { stdout } = await execFileAsync(wgBin(), ['show', WG_INTERFACE], { timeout: 5_000 });
     const peerCount = (stdout.match(/^peer:/gm) ?? []).length;
     const handshakeCount = (stdout.match(/latest handshake:/g) ?? []).length;
     return { up: true, peers: peerCount, handshakePeers: handshakeCount };
   } catch {
     return { up: false, peers: 0, handshakePeers: 0 };
   }
+}
+
+export async function wgStatus(): Promise<{ up: boolean; peers: number; handshakePeers: number }> {
+  // 平台不支持（没装 wireguard-tools / 没装 WireGuard for Windows）：别去 spawn 一个必然
+  // 不存在的 wg，否则每拍状态轮询都产生一次 ENOENT（/api/cluster/status 的 tunnel 段就是这条）。
+  if (!(await wgSupported())) return { up: false, peers: 0, handshakePeers: 0 };
+  return wgStatusRaw();
 }
 
 // —— 初始化：首启生成 keypair + 分配 overlay 子网 ——

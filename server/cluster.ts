@@ -1,5 +1,5 @@
 // 集群管理：peer 加入/退出、gossip 发现、心跳、状态维护。
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, copyFile, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, hostname as osHostname } from 'node:os';
@@ -134,25 +134,46 @@ export async function joinCluster(cfg: Config, peerUrl: string, peerToken: strin
       { machineId: info.machineId, name: info.name, containerSubnet: info.containerSubnet, serviceSubnet: info.serviceSubnet, overlaySubnet: info.overlayIp ? info.overlayIp.split('.').slice(0, 3).join('.') + '.0/24' : '' },
     ],
   });
+  // 分配结果是权威的：之后一切（对外自报、冲突检查）都以**分配到的段**为准；
+  // 本机 config.yaml 若还停在旧网段，自动把分配结果写回去（备份原文件）——
+  // 不写的话「统一分配」只是账面数字，新建容器仍会从旧池里拿记账 IP。
+  let effectiveContainer = mySubnet;
+  let effectiveService = serviceSubnetOf(cfg);
   if (alloc) {
     const mine = lookupEntry(alloc, wgState.machineId);
     if (mine) {
+      effectiveContainer = mine.containerSubnet;
+      effectiveService = mine.serviceSubnet || effectiveService;
       // 表里的 overlay 段就是本机的：机内 IP 恒为 <段>.1。
       wgState.overlaySubnet = mine.overlaySubnet;
       wgState.overlayIp = `${mine.overlaySubnet.replace(/\.0\/24$/, '')}.1`;
       await saveWgState(wgState);
-      log.info({ overlay: mine.overlaySubnet, container: mine.containerSubnet, service: mine.serviceSubnet }, 'cluster: ip allocated');
+      log.info({ overlay: mine.overlaySubnet, container: effectiveContainer, service: effectiveService }, 'cluster: ip allocated');
       const bad = mismatchOf(mine, mySubnet, serviceSubnetOf(cfg));
       if (bad.container || bad.service) {
-        // 分配是权威的，但本机 config 还没跟上——不改用户配置，只把话说明白。
-        log.warn(
-          { allocated: mine, actual: { container: mySubnet, service: serviceSubnetOf(cfg) } },
-          'cluster: 已分配的网段与本机 config.yaml 不一致，需要改 ipPool 才能生效',
-        );
+        const written = await writeAllocToConfig(mine);
+        if (written) {
+          log.warn(
+            { from: { container: mySubnet, service: serviceSubnetOf(cfg) }, to: mine },
+            'cluster: 已把分配到的网段写进 config.yaml（原文件已备份）——重启 mysandbox 后对新建容器生效',
+          );
+        } else {
+          log.warn(
+            { allocated: mine, actual: { container: mySubnet, service: serviceSubnetOf(cfg) } },
+            'cluster: config.yaml 已有手写 ipPool/services 段，未自动改写——请手动对齐分配结果',
+          );
+        }
       }
     }
   }
-  const myServiceSubnet = serviceSubnetOf(cfg);
+  // 与对方的容器网段冲突检查：现在比较的是**分配后的段**。正常情况下裁决节点保证不撞；
+  // 撞了说明分配表有脏数据（例如对方自报的段和表里不一致），如实报错。
+  if (info.containerSubnet === effectiveContainer) {
+    throw new Error(
+      `容器网段冲突：本机（按分配）${effectiveContainer} 与对方相同。` +
+      `分配表可能过期——在设置里刷新或让裁决节点重新分配。`,
+    );
+  }
 
   // overlay 段的冲突检测**已移除**：原先是本机自己算一个没撞的段（各算各的，两台默认
   // 配置的新机器必然都算出 10.99.0.x，然后互相覆盖）。现在 overlay 与容器/服务段一样由
@@ -182,8 +203,10 @@ export async function joinCluster(cfg: Config, peerUrl: string, peerToken: strin
     machineId: wgState.machineId,
     name: cluster.name,
     overlayIp: wgState.overlayIp,
-    containerSubnet: mySubnet,
-    serviceSubnet: myServiceSubnet,
+    // 对外自报**分配到的段**（不是 config 里可能过时的旧段）——对方建隧道时的
+    // AllowedIPs 全靠这个，报旧段 = 对方把发往我们容器的包路由到错误网段。
+    containerSubnet: effectiveContainer,
+    serviceSubnet: effectiveService,
     publicKey: wgState.keyPair.publicKey,
     endpoint: `${await detectPublicIp()}:51820`,
   };
@@ -262,6 +285,18 @@ export async function allocSnapshot(cfg: Config): Promise<AllocTable> {
   const myId = await getOrCreateMachineId();
   const items: AllocEntry[] = [];
   const seen = new Set<string>();
+  // **本机自己先登记**（用现有网段）——不登记的话，降级分配/后续发号会把本机正在用的
+  // 段又发给别的节点（实测：本机 10.99.0.0/24 没在表里，新节点也分到 10.99.0.0/24）。
+  const wgSelf = await loadWgState();
+  items.push({
+    machineId: myId,
+    name: cluster?.name ?? hostname(),
+    overlaySubnet: wgSelf?.overlaySubnet ?? '10.99.0.0/24',
+    containerSubnet: cfg.ipPool.from.split('.').slice(0, 3).join('.') + '.0/24',
+    serviceSubnet: serviceSubnetOf(cfg),
+    updatedAt: new Date().toISOString(),
+  });
+  seen.add(myId);
   // 已知 peer 的现有网段先落进表里（老节点没有表，凭它们自报的网段登记）。
   for (const p of cluster?.peers ?? []) {
     if (!p.machineId || seen.has(p.machineId)) continue;
@@ -401,6 +436,43 @@ export async function syncAlloc(cfg: Config): Promise<void> {
     }
   }
   if (mine) await saveAllocTable(mine);
+}
+
+// 把分配结果写回 ~/.mysandbox/config.yaml（文本级追加，保留原注释与顺序；先备份）。
+// 只在**没有**手写 ipPool/services 段时追加——有的话说明用户自己管过网段，绝不覆盖，
+// 返回 false 让调用方走「提示手动改」的分支。
+async function writeAllocToConfig(entry: AllocEntry): Promise<boolean> {
+  const cfgPath = join(homedir(), '.mysandbox', 'config.yaml');
+  let text: string;
+  try {
+    text = await readFile(cfgPath, 'utf8');
+  } catch {
+    return false;
+  }
+  if (/^\s*ipPool:/m.test(text) || /^\s*services:/m.test(text)) return false;
+  const subnet = (s: string) => s.split('.').slice(0, 3).join('.');
+  const container = subnet(entry.containerSubnet);
+  const service = subnet(entry.serviceSubnet || entry.containerSubnet);
+  const block = [
+    '',
+    '# —— 集群统一分配（clusterAlloc，由裁决节点发放，网段勿手改）——',
+    `ipPool:`,
+    `  from: ${container}.20`,
+    `  to: ${container}.240`,
+    `services:`,
+    `  ipPool:`,
+    `    from: ${service}.200`,
+    `    to: ${service}.240`,
+    '',
+  ].join('\n');
+  try {
+    await copyFile(cfgPath, `${cfgPath}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    await appendFile(cfgPath, block, 'utf8');
+    return true;
+  } catch (e) {
+    log.warn({ err: String(e) }, 'cluster: config.yaml 写入失败');
+    return false;
+  }
 }
 
 export async function heartbeat(cfg: Config): Promise<void> {
