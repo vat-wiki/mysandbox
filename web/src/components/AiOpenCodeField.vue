@@ -115,17 +115,48 @@ const piCtxRows = (e: AiOpenCodeEntry): { wire: GatewayWire; models: string[] }[
 const ctxOf = (e: AiOpenCodeEntry, wire: GatewayWire, m: string): number | undefined =>
   e.wires.find((x) => x.wire === wire)?.contextWindows?.[m]
 
-// 更新一个模型的窗口值：空/非法输入 = 删键（不写，pi 用内置默认）。保留同协议其它
-// 键（models / 其它模型的窗口）；映射空了整键不落。
+// 展示格式化（紧凑且可精确还原）：整百万（可带小数）→ M（1M/1.5M）、整千 → k
+// （128k）、其余（131072 这类二进制对齐值）原样 token。显示串经 parseCtx 解析必得
+// 原值——杜绝「显示取整、回存漂移」。
+const fmtCtx = (n: number): string => {
+  if (n >= 1_000_000 && n % 1000 === 0) {
+    const mm = n / 1_000_000
+    return `${Number.isInteger(mm) ? mm : Number(mm.toFixed(3))}M`
+  }
+  if (n >= 1000 && n % 1000 === 0) return `${n / 1000}k`
+  return String(n)
+}
+
+// 输入解析：数字 + 可选 k/M 后缀（大小写不限：1M=1000000、128k=128000）；裸数字只收
+// 整数 token（兼容旧输入与 131072 这类非整千值，小数裸值歧义太大不收）。格式对但
+// 越界（1..10M token）同样拒收。
+const parseCtx = (raw: unknown): number | undefined => {
+  const m = /^(\d+(?:\.\d+)?)([KM]?)$/.exec(String(raw ?? '').trim().toUpperCase())
+  if (!m || (m[2] === '' && m[1].includes('.'))) return undefined
+  const n = Math.round(Number(m[1]) * (m[2] === 'K' ? 1000 : m[2] === 'M' ? 1_000_000 : 1))
+  return Number.isInteger(n) && n >= 1 && n <= 10_000_000 ? n : undefined
+}
+
+// 输入框显示串：存了值就格式化（1000000 → 1M），没存 = 空。
+const ctxDisp = (e: AiOpenCodeEntry, wire: GatewayWire, m: string): string => {
+  const n = ctxOf(e, wire, m)
+  return n === undefined ? '' : fmtCtx(n)
+}
+
+// 更新一个模型的窗口值。语义：留空 = 删键（pi 回内置默认 128000）；合法输入 = 落值
+// （打字中途的合法前缀如 "1" 也先落，受控框不回写打断输入）；垃圾输入 = 不动
+// （不清键——否则 "1.5M" 打到一半就被清空打不下去），失焦由 snapCtx 兜底纠偏。保留
+// 同协议其它键（models / 其它模型的窗口）；映射空了整键不落。
 function setCtx(i: number, wire: GatewayWire, m: string, raw: unknown) {
   const e = props.entries[i]
-  const num = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim())
+  const text = String(raw ?? '').trim()
   updateEntry(i, {
     wires: e.wires.map((x) => {
       if (x.wire !== wire) return x
       const map: Record<string, number> = { ...(x.contextWindows ?? {}) }
-      if (Number.isInteger(num) && num >= 1 && num <= 10_000_000) map[m] = num
-      else delete map[m]
+      const n = text ? parseCtx(text) : undefined
+      if (!text) delete map[m]
+      else if (n !== undefined) map[m] = n
       return {
         wire: x.wire,
         ...(x.models?.length ? { models: [...x.models] } : {}),
@@ -133,6 +164,13 @@ function setCtx(i: number, wire: GatewayWire, m: string, raw: unknown) {
       }
     }),
   })
+}
+
+// 失焦纠偏：把框里残留的垃圾/未完成输入回写成该字段存储值的规范显示（受控值没变时
+// Vue 不会主动重写 DOM，用户敲的脏文本会一直挂着）。
+function snapCtx(ev: FocusEvent, expected: string) {
+  const el = ev.target as HTMLInputElement
+  if (el.value !== expected) el.value = expected
 }
 
 // 「添加模型」下拉：每行独立开合（key = provider|wire，同一时刻只记一个打开的行），
@@ -246,12 +284,13 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
         </div>
       </div>
 
-      <!-- pi 专属：逐模型上下文窗口（落各模型条目的 contextWindow，token 数；留空 =
-           pi 内置默认 128000）。按启用协议分组，行 = 生效模型清单（与落盘 models 集一致）。 -->
+      <!-- pi 专属：逐模型上下文窗口（落各模型条目的 contextWindow，token；输入支持
+           k/M 后缀、显示紧凑格式，见 fmtCtx/parseCtx；留空 = pi 内置默认 128000）。
+           按启用协议分组，行 = 生效模型清单（与落盘 models 集一致）。 -->
       <div v-if="tool === 'pi' && piCtxRows(e).length" class="space-y-2 border-t pt-2">
         <div class="flex items-baseline justify-between gap-2">
-          <span class="text-[11px] font-medium text-muted-foreground">上下文窗口（token）</span>
-          <span class="text-[10px] text-muted-foreground/70">留空 = pi 默认 128000</span>
+          <span class="text-[11px] font-medium text-muted-foreground">上下文窗口</span>
+          <span class="text-[10px] text-muted-foreground/70">支持 k / M，留空 = pi 默认 128k</span>
         </div>
         <div v-for="row in piCtxRows(e)" :key="row.wire" class="space-y-1">
           <span class="font-mono text-[10px] text-muted-foreground/80">{{ e.provider }}-{{ WIRE_SUFFIX[row.wire] }}</span>
@@ -259,14 +298,12 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
             <label v-for="m in row.models" :key="m" class="flex min-w-0 items-center gap-2">
               <span class="min-w-0 flex-1 truncate font-mono text-[11px]" :title="m">{{ m }}</span>
               <Input
-                type="number"
-                min="1"
-                max="10000000"
-                step="1"
-                placeholder="128000"
+                type="text"
+                placeholder="128k / 1M"
                 class="h-7 w-24 shrink-0 text-xs"
-                :model-value="ctxOf(e, row.wire, m) ?? ''"
+                :model-value="ctxDisp(e, row.wire, m)"
                 @update:model-value="(v) => setCtx(i, row.wire, m, v)"
+                @blur="(ev: FocusEvent) => snapCtx(ev, ctxDisp(e, row.wire, m))"
               />
             </label>
           </div>
