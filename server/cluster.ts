@@ -13,6 +13,7 @@ import {
 } from './wireguard.js';
 import {
   loadAllocTable, saveAllocTable, electCoordinator, allocateIn, lookupEntry, mergeTables, mismatchOf,
+  dropConflictingEntry, ensureEntries,
   type AllocTable, type AllocEntry,
 } from './clusterAlloc.js';
 
@@ -216,7 +217,9 @@ export async function joinCluster(cfg: Config, peerUrl: string, peerToken: strin
     id: info.machineId,
     name: peer.name,
     publicKey: info.publicKey,
-    endpoint: `${await detectPublicIp()}:51820`,
+    // 对方的 endpoint 是**对方的**地址（peerUrl 的 host），不是本机 IP——
+    // 之前这里复制粘贴成 detectPublicIp()（本机），endpoint 指到自己，永远握不上手。
+    endpoint: `${new URL(peerUrl).hostname}:51820`,
     overlayIp: info.overlayIp,
     allowedIps: [info.overlayIp.split('.').slice(0, 3).join('.') + '.0/24', info.containerSubnet, info.serviceSubnet],
     addedAt: now,
@@ -344,7 +347,11 @@ export async function handleAllocate(
     await saveAllocTable(mergeTables(table, issued) ?? issued);
     return issued;
   }
-  const res = allocateIn(table, machineId, name);
+  const res = (() => {
+    // 申请者条目若与表里其它节点撞段（旧时代遗留），摘掉重拿——裁决节点要保证发出去的号不撞。
+    const cleaned = dropConflictingEntry(table, machineId);
+    return allocateIn(cleaned, machineId, name);
+  })();
   if (res.changed) await saveAllocTable(res.table);
   return res.table;
 }
@@ -365,17 +372,22 @@ async function requestAllocation(
     version: 1,
     coordinator,
     updatedAt: new Date().toISOString(),
-    items: ctx.other
-      .filter((o) => o.machineId && o.containerSubnet)
-      .map((o) => ({
-        machineId: o.machineId,
-        name: o.name,
-        overlaySubnet: o.overlaySubnet || '10.99.0.0/24',
-        containerSubnet: o.containerSubnet,
-        serviceSubnet: o.serviceSubnet,
-        updatedAt: new Date().toISOString(),
-      })),
+    items: [],
   };
+  // 对方（及已知 peer）的段先补登记进表——表是旧数据或缺条目时，后面的分配才会避开它们。
+  table = ensureEntries(
+    table,
+    ctx.other.map((o) => ({
+      machineId: o.machineId,
+      name: o.name,
+      overlaySubnet: o.overlaySubnet || '10.99.0.0/24',
+      containerSubnet: o.containerSubnet,
+      serviceSubnet: o.serviceSubnet,
+      updatedAt: new Date().toISOString(),
+    })),
+  );
+  // 本机条目若与已知段撞车（「各算各的」时代的遗留），摘掉重新拿号。
+  table = dropConflictingEntry(table, myMachineId);
   table = { ...table, coordinator };
 
   if (coordinator === myMachineId) {
@@ -438,10 +450,13 @@ export async function syncAlloc(cfg: Config): Promise<void> {
   if (mine) await saveAllocTable(mine);
 }
 
-// 把分配结果写回 ~/.mysandbox/config.yaml（文本级追加，保留原注释与顺序；先备份）。
-// 只在**没有**手写 ipPool/services 段时追加——有的话说明用户自己管过网段，绝不覆盖，
-// 返回 false 让调用方走「提示手动改」的分支。
+// 把分配结果写回 ~/.mysandbox/config.yaml（文本级追加/更新，先备份）。
+// 三种情况：
+//   - 文件里**没有** ipPool/services 段 → 追加分配块；
+//   - 有 ipPool/services 段但带着**我们的标记**（上次自动写的）→ 原地更新为最新分配；
+//   - 有 ipPool/services 段且没有标记（用户手写的）→ 绝不覆盖，返回 false 走「提示手动改」。
 async function writeAllocToConfig(entry: AllocEntry): Promise<boolean> {
+  const MARKER = '# —— 集群统一分配（clusterAlloc';
   const cfgPath = join(homedir(), '.mysandbox', 'config.yaml');
   let text: string;
   try {
@@ -449,13 +464,17 @@ async function writeAllocToConfig(entry: AllocEntry): Promise<boolean> {
   } catch {
     return false;
   }
-  if (/^\s*ipPool:/m.test(text) || /^\s*services:/m.test(text)) return false;
+  const markerIdx = text.indexOf(MARKER);
+  if (markerIdx < 0 && (/^\s*ipPool:/m.test(text) || /^\s*services:/m.test(text))) return false;
+  if (markerIdx >= 0) {
+    // 截掉上次写的旧块（它固定在文件尾），重新追加——避免「写回的是上一轮的旧段」。
+    text = `${text.slice(0, markerIdx).replace(/\n+$/, '\n')}\n`;
+  }
   const subnet = (s: string) => s.split('.').slice(0, 3).join('.');
   const container = subnet(entry.containerSubnet);
   const service = subnet(entry.serviceSubnet || entry.containerSubnet);
   const block = [
-    '',
-    '# —— 集群统一分配（clusterAlloc，由裁决节点发放，网段勿手改）——',
+    `${MARKER}，由裁决节点发放，网段勿手改）——`,
     `ipPool:`,
     `  from: ${container}.20`,
     `  to: ${container}.240`,
@@ -466,8 +485,13 @@ async function writeAllocToConfig(entry: AllocEntry): Promise<boolean> {
     '',
   ].join('\n');
   try {
-    await copyFile(cfgPath, `${cfgPath}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-    await appendFile(cfgPath, block, 'utf8');
+    if (markerIdx < 0) {
+      await copyFile(cfgPath, `${cfgPath}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+      await appendFile(cfgPath, `\n${block}\n`, 'utf8');
+    } else {
+      await copyFile(cfgPath, `${cfgPath}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+      await writeFile(cfgPath, `${text}${block}\n`, 'utf8');
+    }
     return true;
   } catch (e) {
     log.warn({ err: String(e) }, 'cluster: config.yaml 写入失败');
@@ -653,9 +677,17 @@ async function detectPublicIp(): Promise<string> {
   const { networkInterfaces } = await import('node:os');
   const ifaces = networkInterfaces();
   for (const [name, addrs] of Object.entries(ifaces)) {
-    if (!addrs || name.startsWith('lo') || name.startsWith('wg') || name.startsWith('docker')) continue;
+    const lower = name.toLowerCase();
+    // 虚拟/overlay 接口一律跳过。Windows 上 WireGuard 隧道适配器名是隧道名
+    // （mysandbox-wg0，不带 wg 前缀）——之前就因为它被选中，endpoint 写成了
+    // 10.99.0.1（自己的 overlay 地址），对方根本连不进来。
+    if (
+      !addrs || lower.startsWith('lo') || lower.startsWith('wg') || lower.startsWith('docker') ||
+      lower.includes('wireguard') || lower.startsWith('mysandbox-wg')
+    ) continue;
     for (const addr of addrs) {
-      if (addr.family === 'IPv4' && !addr.internal) return addr.address;
+      // 10.99.* 是 overlay 池，兜底再挡一层（接口名五花八门时仍不会被误选）。
+      if (addr.family === 'IPv4' && !addr.internal && !addr.address.startsWith('10.99.')) return addr.address;
     }
   }
   return '127.0.0.1';

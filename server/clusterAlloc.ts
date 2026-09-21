@@ -120,6 +120,41 @@ export function allocateIn(t: AllocTable, machineId: string, name: string): { ta
   return { table: { ...t, version: t.version + 1, updatedAt: now, items }, entry, changed: true };
 }
 
+// 撞段自愈：该 machineId 的条目若与表里其它条目撞了任一段，就把它从表里摘掉
+// （随后 allocateIn 会重新拿号）。场景：早期「各算各的」时代留下的条目本来就和对方
+// 撞车（实测本机 10.88.10.0/24 == leon），幂等分配会原样返回旧号、永远解不了冲突。
+export function dropConflictingEntry(table: AllocTable, machineId: string): AllocTable {
+  const mine = table.items.find((i) => i.machineId === machineId);
+  if (!mine) return table;
+  const clash = table.items.some(
+    (o) =>
+      o.machineId !== machineId &&
+      (o.containerSubnet === mine.containerSubnet ||
+        (o.serviceSubnet && o.serviceSubnet === mine.serviceSubnet) ||
+        o.overlaySubnet === mine.overlaySubnet),
+  );
+  if (!clash) return table;
+  return {
+    ...table,
+    version: table.version + 1,
+    items: table.items.filter((i) => i.machineId !== machineId),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+// 把「已知某台机器在用哪些段」补登记进表（缺才补，不动版本号）——纯登记不是分配。
+export function ensureEntries(table: AllocTable, entries: AllocEntry[]): AllocTable {
+  let changed = false;
+  const items = [...table.items];
+  for (const e of entries) {
+    if (!e.machineId || !e.containerSubnet) continue;
+    if (items.some((i) => i.machineId === e.machineId)) continue;
+    items.push(e);
+    changed = true;
+  }
+  return changed ? { ...table, items, updatedAt: new Date().toISOString() } : table;
+}
+
 // 合并两份表：版本号大的整体胜出（那是裁决节点签发的新结果）；同版本按条并集，
 // 同一 machineId 取 updatedAt 新的那条（两端各自补了对方的未知条目）。
 export function mergeTables(a: AllocTable | null, b: AllocTable | null): AllocTable | null {
