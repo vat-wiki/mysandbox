@@ -253,7 +253,10 @@ switch ($Action) {
       -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
       -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
       -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Hidden
-    $principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
+    # RunLevel Highest：集群隧道线（WireGuard Windows）没有免提权的配置更新通道——
+    # wg set / 隧道服务重装 / Data\Configurations 写入全要管理员。任务以最高权限运行后
+    # 这些操作不再需要每次 UAC。token 本就等价宿主任意命令能力，提权增量可控。
+    $principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Highest
 
     # Register-ScheduledTask 的失败是**非终止错误**：不加 -ErrorAction Stop 的话，
     # 脚本会带着一句错误继续往下打印「已注册」——骗自己。这里两道保险：显式 Stop + 事后复核。

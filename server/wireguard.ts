@@ -61,12 +61,10 @@ function wgConfigFile(): string {
 // /installtunnelservice <conf>` 注册成一个 Windows 服务来承载（注册要管理员一次，之后
 // 服务自己监视 conf 文件变化并重载，普通用户改配置即可生效）。
 const WG_WIN_DIR = 'C:\\Program Files\\WireGuard';
+// 官方客户端没有 wg-quick，隧道走 `wireguard.exe /installtunnelservice`（见 wgUp 注释）。
 function wgBin(): string {
   if (platform() === 'win32') return join(WG_WIN_DIR, 'wg.exe');
   return 'wg';
-}
-function wgUiBin(): string {
-  return join(WG_WIN_DIR, 'wireguard.exe');
 }
 
 let wgSupport: boolean | null = null;
@@ -155,9 +153,8 @@ export function renderWgConfig(state: WgState): string {
   return lines.join('\n');
 }
 
-// 写配置：Linux 额外复制到 /etc/wireguard（wg-quick 从那儿读，需要 root）；
-// Windows 就用用户目录这份——隧道服务是照**安装时给的这个路径**监视文件变化并重载的，
-// 所以放用户目录才能做到「首次安装要管理员，之后改 peer 不用」。
+// 写配置：Linux 额外复制到 /etc/wireguard（wg-quick 从那儿读，需要 root）。
+// Windows：conf 放用户目录（mysandbox 进程在计划任务里以最高权限跑， wg/隧道操作都免提权）。
 export async function writeWgConfig(state: WgState): Promise<void> {
   const conf = renderWgConfig(state);
   await mkdir(WG_DIR, { recursive: true, mode: 0o700 });
@@ -170,35 +167,17 @@ export async function writeWgConfig(state: WgState): Promise<void> {
 }
 
 // —— 隧道启停 ——
-// Windows：用官方客户端的隧道服务。注册（`wireguard.exe /installtunnelservice <conf>`）需要
-// 管理员——这是**一次性**的：服务起来后自己监视 conf 文件，之后增删改 peer 只要改写文件，
-// 服务自动重载（隧道不会断别的 peer）。所以这里先写配置再尝试注册；注册失败时若接口已经
-// 在跑（说明之前注册过），就当成功——配置变更已经生效；否则把「需要管理员跑一条命令」
-// 这句人话抛出去，别让前端只看到 internal error。
-async function wgUpWindows(): Promise<void> {
-  const conf = wgConfigFile();
-  try {
-    await execFileAsync(wgUiBin(), ['/installtunnelservice', conf], { timeout: 30_000 });
-    log.info({ interface: WG_INTERFACE, conf }, 'wireguard: tunnel service installed');
-    return;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // 已注册过：服务在，配置变更会自己生效。
-    const st = await wgStatusRaw();
-    if (st.up) {
-      log.debug({ interface: WG_INTERFACE }, 'wireguard: tunnel service already running, config reloaded');
-      return;
-    }
-    throw new Error(
-      `隧道服务注册失败（需要管理员一次）：请以管理员身份执行 ` +
-      `"${wgUiBin()}" /installtunnelservice "${conf}"（` +
-      `之后改 peer 会自动生效）。原始错误：${msg.slice(0, 160)}`,
-    );
-  }
-}
-
+// Windows：`wireguard.exe /installtunnelservice <conf>` 对同名隧道是「卸旧装新」的幂等
+// 更新——每次 peer 变化重跑一遍即完成重载。它要管理员，而 mysandbox 的计划任务以
+// RunLevel Highest 运行（见 scripts/win/mysandbox.ps1），因此进程内直接成功、无 UAC。
+// ⚠️ 不能指望 manager 服务监视配置目录：实测它只会把 conf 收编成 .dpapi 入库，
+// 装隧道只发生在 GUI IPC 请求或 manager 重启时——别在「写文件等自动生效」上浪费时间。
 export async function wgUp(): Promise<void> {
-  if (platform() === 'win32') return wgUpWindows();
+  if (platform() === 'win32') {
+    await execFileAsync(join(WG_WIN_DIR, 'wireguard.exe'), ['/installtunnelservice', wgConfigFile()], { timeout: 30_000 });
+    log.info({ interface: WG_INTERFACE }, 'wireguard: tunnel service installed/updated');
+    return;
+  }
   try {
     await sudo('wg-quick', ['up', WG_INTERFACE]);
     log.info({ interface: WG_INTERFACE }, 'wireguard: tunnel up');
@@ -215,7 +194,7 @@ export async function wgUp(): Promise<void> {
 export async function wgDown(): Promise<void> {
   if (platform() === 'win32') {
     try {
-      await execFileAsync(wgUiBin(), ['/uninstalltunnelservice', WG_INTERFACE], { timeout: 30_000 });
+      await execFileAsync(join(WG_WIN_DIR, 'wireguard.exe'), ['/uninstalltunnelservice', WG_INTERFACE], { timeout: 30_000 });
       log.info({ interface: WG_INTERFACE }, 'wireguard: tunnel service removed');
     } catch (e) {
       log.warn({ interface: WG_INTERFACE, err: String(e) }, 'wireguard: uninstall tunnel service failed');
@@ -242,7 +221,15 @@ async function wgStatusRaw(): Promise<{ up: boolean; peers: number; handshakePee
     const peerCount = (stdout.match(/^peer:/gm) ?? []).length;
     const handshakeCount = (stdout.match(/latest handshake:/g) ?? []).length;
     return { up: true, peers: peerCount, handshakePeers: handshakeCount };
-  } catch {
+  } catch (e) {
+    // Windows：隧道接口归 SYSTEM，普通用户的 `wg show` 拿到的是 **Permission denied**——
+    // 这恰恰证明接口活着（不存在会报 file not found）。peer 数从本地 state 补，
+    // handshake 计数拿不到（要管理员），显示为 0 但隧道是真在跑的。
+    const err = e as { stderr?: string };
+    if (platform() === 'win32' && /permission denied/i.test(err.stderr ?? '')) {
+      const st = await loadWgState();
+      return { up: true, peers: st?.peers.length ?? 0, handshakePeers: 0 };
+    }
     return { up: false, peers: 0, handshakePeers: 0 };
   }
 }
