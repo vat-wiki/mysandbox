@@ -513,8 +513,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:default-model="(v) => (ocDefaultModel = v)"
             />
             <!-- OpenCode 自身配置（opencode.json 顶层，user scope）：与 Codex 同卡片
-                 网格；权限 auto = permission:'allow' + ~/.local/bin/opencode wrapper 注入
-                 --auto（TUI 徽标随之显示）；主模型优先于绑定
+                 网格；权限 auto = permission:'allow'（等价 --auto）；主模型优先于绑定
                  setDefault 的自动推导；small_model 给了才写 -->
             <div class="rounded-md border bg-muted/20 p-3 shadow-xs">
               <div class="flex items-baseline justify-between gap-2">
@@ -528,8 +527,10 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
                     <Checkbox :model-value="ocAuto" @update:model-value="(v) => (ocAuto = !!v)" />
                     默认 auto（permission: 'allow'，等价 --auto）
                   </label>
+                  <!-- opencode 的 auto 徽标是 TUI 运行时开关（--auto / Ctrl+P 命令面板），
+                       不读配置也不持久化——配置生效与否看行为（不弹审批），别看徽标 -->
                   <p class="text-[10px] leading-relaxed text-muted-foreground">
-                    保存后自动写入 ~/.local/bin/opencode wrapper，启动时注入 --auto（TUI 显示 auto 徽标）
+                    免审批即刻生效，但 TUI 的 auto 徽标是运行时开关（Ctrl+P → Enable auto-approve），不随配置显示
                   </p>
                 </div>
                 <div class="space-y-1.5">

@@ -34,7 +34,7 @@
 // `# >>> <pid> >>>` … `# <<< <pid> <<<` 标记块整块替换（旧版 pid 恒为 myapikey，
 // 形状一致 → 存量块天然兼容，无需落盘迁移）。变体 key = <pid>-<wire 后缀>。
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -996,25 +996,6 @@ async function configOpencode(
     tc?.model && (defaultModel || setDefault) ? '（绑定默认模型被主模型覆盖）' : '',
   ].filter(Boolean);
   await writeJsonObject(path, obj);
-
-  // opencode 的 auto 徽标跟 TUI 运行时 --auto 开关绑定，permission:'allow' 只管权限
-  // 规则、不触发徽标。这里写一个 wrapper 到 ~/.local/bin/opencode（PATH 优先于
-  // /usr/local/bin），启动时自动注入 --auto；显式关时摘掉 wrapper。
-  const wrapperPath = join(base, '.local', 'bin', 'opencode');
-  if (scope === 'user' && tc?.permissionAuto !== false) {
-    await writeText(wrapperPath, [
-      '#!/bin/sh',
-      '# mysandbox-managed: opencode auto-approve wrapper（permission auto 同步注入 --auto）',
-      'for p in /usr/local/bin/opencode /usr/bin/opencode "$HOME/.opencode/bin/opencode"; do',
-      '  [ -x "$p" ] && exec "$p" --auto "$@"',
-      'done',
-      '',
-    ].join('\n'));
-    await chmod(wrapperPath, 0o755);
-  } else {
-    await rm(wrapperPath, { force: true });
-  }
-
   notes.push(
     `opencode: 写 ${relTo(base, path)}（${
       variants.map((v) => `${v.provider.id}:${wireLabel(v.wire)}×${(v.models?.length ? v.models : wireModels(v.provider, v.wire)).length}模型`).join('、') || '无变体'
