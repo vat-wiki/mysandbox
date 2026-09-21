@@ -86,6 +86,10 @@ export function wireModels(p: Pick<AiProvider, 'models'>, wire: GatewayWire): st
 export interface AiOpenCodeWireBinding {
   wire: GatewayWire;
   models?: string[];
+  // pi 专用（opencode 复用本形状但不消费）：逐模型上下文窗口（token），key = 模型
+  // id——落 .pi/agent/models.json 各模型条目的 contextWindow（pi 内置默认 128000）。
+  // 校验层对两工具同检（形状 + 模型在库），opencode 落盘侧忽略该键。
+  contextWindows?: Record<string, number>;
 }
 export interface AiOpenCodeEntry {
   provider: string;

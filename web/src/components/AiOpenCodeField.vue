@@ -84,13 +84,55 @@ function toggleWire(i: number, wire: GatewayWire, on: boolean) {
 // 勾/去一个模型。存档语义：空集归 undefined（= 该协议全部模型）。全集不折叠——
 // 折叠回 undefined 后勾选态（models?.includes 派生）原地消失，勾最后一颗打不上、
 // 单模型清单永远勾不上（表现为「有些模型无法选中」）；显式全集与 undefined 落盘
-// 解析等价，只是存法不归一。
+// 解析等价，只是存法不归一。pi：被移除的模型同步清掉上下文窗口键（存档不残留指向
+// 未勾选模型的值）。
 function toggleModel(i: number, wire: GatewayWire, m: string, on: boolean) {
   const e = props.entries[i]
   const cur = e.wires.find((x) => x.wire === wire)?.models ?? []
   const next = on ? [...cur, m] : cur.filter((x) => x !== m)
   const models = next.length ? next : undefined
-  updateEntry(i, { wires: e.wires.map((x) => (x.wire === wire ? { wire, models } : x)) })
+  updateEntry(i, {
+    wires: e.wires.map((x) => {
+      if (x.wire !== wire) return x
+      const cw = { ...(x.contextWindows ?? {}) }
+      if (!on) delete cw[m]
+      return { wire, models, ...(Object.keys(cw).length ? { contextWindows: cw } : {}) }
+    }),
+  })
+}
+
+// —— pi 专属：逐模型上下文窗口（contextWindow，token）——
+// 行集 = 每个启用协议的生效模型清单（勾了取勾选的，没勾 = 库内全部——与落盘
+// models 集一致）；输入留空 = 不写该模型的 contextWindow（pi 内置默认 128000）。
+const piModelsOf = (e: AiOpenCodeEntry, wire: GatewayWire): string[] => {
+  const selected = e.wires.find((x) => x.wire === wire)?.models
+  return selected?.length ? selected : wireModelsOf(e.provider, wire)
+}
+const piCtxRows = (e: AiOpenCodeEntry): { wire: GatewayWire; models: string[] }[] =>
+  WIRES.filter((w) => e.wires.some((x) => x.wire === w))
+    .map((w) => ({ wire: w, models: piModelsOf(e, w) }))
+    .filter((r) => r.models.length)
+const ctxOf = (e: AiOpenCodeEntry, wire: GatewayWire, m: string): number | undefined =>
+  e.wires.find((x) => x.wire === wire)?.contextWindows?.[m]
+
+// 更新一个模型的窗口值：空/非法输入 = 删键（不写，pi 用内置默认）。保留同协议其它
+// 键（models / 其它模型的窗口）；映射空了整键不落。
+function setCtx(i: number, wire: GatewayWire, m: string, raw: unknown) {
+  const e = props.entries[i]
+  const num = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim())
+  updateEntry(i, {
+    wires: e.wires.map((x) => {
+      if (x.wire !== wire) return x
+      const map: Record<string, number> = { ...(x.contextWindows ?? {}) }
+      if (Number.isInteger(num) && num >= 1 && num <= 10_000_000) map[m] = num
+      else delete map[m]
+      return {
+        wire: x.wire,
+        ...(x.models?.length ? { models: [...x.models] } : {}),
+        ...(Object.keys(map).length ? { contextWindows: map } : {}),
+      }
+    }),
+  })
 }
 
 // 「添加模型」下拉：每行独立开合（key = provider|wire，同一时刻只记一个打开的行），
@@ -201,6 +243,33 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
             <span v-if="!e.wires.find((x) => x.wire === w)?.models?.length" class="text-[11px] text-muted-foreground">未选 = 全部 {{ wireModelsOf(e.provider, w).length }} 个模型</span>
           </template>
           <span v-else class="text-[11px] text-muted-foreground">库内该协议没有清单，落盘不挂模型（到「模型供应商」编辑该行补齐）</span>
+        </div>
+      </div>
+
+      <!-- pi 专属：逐模型上下文窗口（落各模型条目的 contextWindow，token 数；留空 =
+           pi 内置默认 128000）。按启用协议分组，行 = 生效模型清单（与落盘 models 集一致）。 -->
+      <div v-if="tool === 'pi' && piCtxRows(e).length" class="space-y-2 border-t pt-2">
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="text-[11px] font-medium text-muted-foreground">上下文窗口（token）</span>
+          <span class="text-[10px] text-muted-foreground/70">留空 = pi 默认 128000</span>
+        </div>
+        <div v-for="row in piCtxRows(e)" :key="row.wire" class="space-y-1">
+          <span class="font-mono text-[10px] text-muted-foreground/80">{{ e.provider }}-{{ WIRE_SUFFIX[row.wire] }}</span>
+          <div class="grid gap-1.5 sm:grid-cols-2">
+            <label v-for="m in row.models" :key="m" class="flex min-w-0 items-center gap-2">
+              <span class="min-w-0 flex-1 truncate font-mono text-[11px]" :title="m">{{ m }}</span>
+              <Input
+                type="number"
+                min="1"
+                max="10000000"
+                step="1"
+                placeholder="128000"
+                class="h-7 w-24 shrink-0 text-xs"
+                :model-value="ctxOf(e, row.wire, m) ?? ''"
+                @update:model-value="(v) => setCtx(i, row.wire, m, v)"
+              />
+            </label>
+          </div>
         </div>
       </div>
     </div>

@@ -28,7 +28,8 @@
 //                                          .zshrc export 的块在写入时顺手回收）
 // - opencode user: .config/opencode/opencode.json   合并 provider.<变体>*（key 明文内联）
 //            project: <dir>/opencode.json
-// - pi       .pi/agent/models.json         合并 providers.<变体>*（项目级无此形状，不支持）
+// - pi       .pi/agent/models.json         合并 providers.<变体>*（含逐模型
+//                                          contextWindow；项目级无此形状，不支持）
 //
 // 幂等靠两类锚点：JSON 只深改本方案的键（保留用户其余配置）；TOML/.env 用
 // `# >>> <pid> >>>` … `# <<< <pid> <<<` 标记块整块替换（旧版 pid 恒为 myapikey，
@@ -152,7 +153,7 @@ export interface AiApplyPlan {
     defaultModel?: string;
   };
   pi?: {
-    variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[] }[];
+    variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[]; contextWindows?: Record<string, number> }[];
     setDefault?: boolean;
   };
 }
@@ -199,7 +200,13 @@ export function buildPlan(
       const variants = slot.entries.flatMap((e) => {
         const p = resolve(e.provider);
         if (!p) return [];
-        return e.wires.map((w) => ({ provider: p, wire: w.wire, models: w.models }));
+        return e.wires.map((w) => ({
+          provider: p,
+          wire: w.wire,
+          models: w.models,
+          // pi 专属：逐模型上下文窗口（configPi 落各模型条目的 contextWindow）。
+          ...(w.contextWindows ? { contextWindows: w.contextWindows } : {}),
+        }));
       });
       plan.pi = { variants, setDefault: slot.setDefault };
     }
@@ -209,6 +216,30 @@ export function buildPlan(
 }
 
 // 绑定校验（routes 转 400）：引用存在、协议合法、端点侧匹配。返回错误文案或 null。
+// pi 专属的逐模型上下文窗口（contextWindows，opencode 同形状但落盘不消费）也在这里
+// 校验——两工具同检，乱传早报 400 不进存储。
+export function validateContextWindows(
+  tool: 'opencode' | 'pi',
+  wire: GatewayWire,
+  cw: unknown,
+  library: string[],
+): string | null {
+  if (cw === undefined) return null;
+  if (!cw || typeof cw !== 'object' || Array.isArray(cw)) {
+    return `${tool} 协议 ${wire} 的 contextWindows 必须是对象（模型 id → 上下文窗口 token 数）`;
+  }
+  for (const [m, n] of Object.entries(cw as Record<string, unknown>)) {
+    if (!m.trim()) return `${tool} 协议 ${wire} 的 contextWindows 含空模型 id`;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 10_000_000) {
+      return `${tool} 协议 ${wire} 模型 ${m} 的上下文窗口必须是 1 到 10000000 的整数`;
+    }
+    // 成员按库内清单判（不按勾选集）——勾选集缩小后残留的键无害（落盘只写生效
+    // 模型的那份），照单拒收反而把「取消勾选」变成保存不过的假错误。
+    if (!library.includes(m)) return `${tool} 协议 ${wire} 的 contextWindows 引用了库里没有的模型：${m}`;
+  }
+  return null;
+}
+
 export function validateBinding(binding: unknown, lib: Record<string, AiProvider>): string | null {
   if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return 'binding 必须是对象';
   const b = binding as AiBinding;
@@ -258,6 +289,8 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
               }
             }
           }
+          const invalidOcCw = validateContextWindows('opencode', w.wire, w.contextWindows, wireModels(p, w.wire));
+          if (invalidOcCw) return invalidOcCw;
         }
       }
       if (slot.defaultModel !== undefined && typeof slot.defaultModel !== 'string') return 'opencode.defaultModel 必须是字符串';
@@ -296,6 +329,8 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
             }
           }
         }
+        const invalidPiCw = validateContextWindows('pi', w.wire, w.contextWindows, wireModels(p, w.wire));
+        if (invalidPiCw) return invalidPiCw;
       }
     }
     if (slot.setDefault !== undefined && typeof slot.setDefault !== 'boolean') return 'pi.setDefault 必须是布尔';
@@ -1009,7 +1044,7 @@ async function configOpencode(
 // 变体形状与 opencode 同（provider × wire，models 缺省 = 该 provider 该协议全部模型）。
 async function configPi(
   base: string,
-  variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[] }[],
+  variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[]; contextWindows?: Record<string, number> }[],
   managedIds: string[],
   notes: string[],
 ): Promise<void> {
@@ -1017,12 +1052,19 @@ async function configPi(
   const path = join(base, '.pi', 'agent', 'models.json');
   const obj = await readJsonObject(path);
   const keep = new Set<string>();
+  let nCtx = 0;
   for (const v of variants) {
     const key = `${v.provider.id}-${WIRE_SUFFIX[v.wire]}`;
     keep.add(key);
     // 各协议变体挂各自协议的清单（旧版全变体共享一份，responses/anthropic 变体
     // 会挂上 chat 才有的模型——按协议区分后自然修正）；绑定勾了模型就只落勾选的。
+    // 逐模型上下文窗口（binding 的 contextWindows）落在对应模型条目的 contextWindow
+    // 上（pi 内置默认 128000）；存储侧已校验，这里兜一层正整数过滤防旧档/手改脏值。
     const wm = v.models?.length ? v.models : wireModels(v.provider, v.wire);
+    const ctx = (id: string): number | undefined => {
+      const n = v.contextWindows?.[id];
+      return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 10_000_000 ? n : undefined;
+    };
     obj.providers = {
       ...((obj.providers as object) ?? {}),
       [key]: {
@@ -1035,16 +1077,24 @@ async function configPi(
               ? 'openai-responses'
               : 'openai-completions',
         apiKey: v.provider.apiKey,
-        ...(wm.length ? { models: wm.map((id) => ({ id, name: id })) } : {}),
+        ...(wm.length
+          ? {
+              models: wm.map((id) => {
+                const c = ctx(id);
+                return { id, name: id, ...(c ? { contextWindow: c } : {}) };
+              }),
+            }
+          : {}),
       },
     };
+    nCtx += wm.filter((id) => ctx(id) !== undefined).length;
   }
   pruneVariantsIn(obj, managedVariantKeys(managedIds), keep);
   await writeJsonObject(path, obj);
   notes.push(
     `pi: 写 ${relTo(base, path)}（${
       variants.map((v) => `${v.provider.id}:${wireLabel(v.wire)}×${(v.models?.length ? v.models : wireModels(v.provider, v.wire)).length}模型`).join('、') || '无变体'
-    }）`,
+    }${nCtx ? `，${nCtx} 个模型设了上下文窗口` : ''}）`,
   );
 }
 

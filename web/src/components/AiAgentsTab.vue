@@ -82,7 +82,8 @@ const ocDefaultModel = ref('')
 const ocAuto = ref(true)
 const ocModel = ref('')
 const ocSmallModel = ref('')
-// Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型），无默认模型。
+// Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型 + pi 专属
+// 逐模型上下文窗口 contextWindows），无默认模型。
 const piEntries = ref<AiOpenCodeEntry[]>([])
 // Codex 自身配置（config.toml，user scope）：审批/推理/权限等基础项 + 折叠的高级项，给了才写、
 // 清空保存即落盘回收（后端差集回收，与 claude 顶级键同口径）。EMPTY = 「不写」选项
@@ -227,11 +228,18 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       await loadView(false)
     } else {
       const stored = view.value?.binding ?? {}
-      // entries 落盘形状：models 空集不写（= 该协议全部模型）。
+      // entries 落盘形状：models 空集不写（= 该协议全部模型）；contextWindows 空
+      // 映射不写（pi 专属逐模型上下文窗口，opencode 条目不会有该键）。
       const entriesOut = (entries: AiOpenCodeEntry[]) =>
         entries.map((e) => ({
           provider: e.provider,
-          wires: e.wires.map((w) => ({ wire: w.wire, ...(w.models?.length ? { models: [...w.models] } : {}) })),
+          wires: e.wires.map((w) => ({
+            wire: w.wire,
+            ...(w.models?.length ? { models: [...w.models] } : {}),
+            ...(w.contextWindows && Object.keys(w.contextWindows).length
+              ? { contextWindows: { ...w.contextWindows } }
+              : {}),
+          })),
         }))
       const b: AiBinding =
         tool === 'codex'

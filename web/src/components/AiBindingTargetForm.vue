@@ -51,7 +51,8 @@ const codex = ref('')
 const codexModel = ref('')
 const ocEntries = ref<AiOpenCodeEntry[]>([])
 const ocDefaultModel = ref('')
-// Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型），无默认模型。
+// Pi 绑定与 opencode 同 entries 形状（每 provider 独立协议、每协议独立模型 + pi 专属
+// 逐模型上下文窗口 contextWindows），无默认模型。
 const piEntries = ref<AiOpenCodeEntry[]>([])
 
 const providers = computed(() => view.value?.providers ?? [])
@@ -133,7 +134,14 @@ const bindingOut = computed<AiBinding>(() => ({
         pi: {
           entries: piEntries.value.map((e) => ({
             provider: e.provider,
-            wires: e.wires.map((w) => ({ wire: w.wire, ...(w.models?.length ? { models: [...w.models] } : {}) })),
+            wires: e.wires.map((w) => ({
+              wire: w.wire,
+              ...(w.models?.length ? { models: [...w.models] } : {}),
+              // pi 专属逐模型上下文窗口：空映射不落（丢键 = 保存后清零）。
+              ...(w.contextWindows && Object.keys(w.contextWindows).length
+                ? { contextWindows: { ...w.contextWindows } }
+                : {}),
+            })),
           })),
         },
       }
