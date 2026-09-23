@@ -617,19 +617,22 @@ async function checkExternal() {
   }
 }
 
-// 外部内容原地换入：直接操作 Monaco model（wrapper 对 value prop 的 setValue 不保视图，
-// 这里 saveViewState/restoreViewState 保住滚动与光标）。setValue 触发的 update:value 会把
-// content 同步到位；Monaco 未挂载（md/svg 预览态）或值未变时走 content 直赋兜底。
+// :options 稳定引用：computed 缓存对象，只在 editing 变化时换新。内联字面量每次渲染发
+// 新对象，wrapper 对 options 做 deep watch → 反复 updateOptions 同步重算，纯属浪费。
+const editorOptions = computed(() => ({ readOnly: !editing.value }))
+
+// 外部内容换入：**只更新 v-model，编辑器交给 wrapper 的 flush 时序**——CodeEditor 的
+// value watcher 在组件更新 flush 中做 editor.setValue。实测矩阵：
+// - 事件栈内同步编辑（setValue+restoreState / pushEditOperations 最小差量）→ 必冻；
+// - nextTick 里 pushEditOperations / setValue+setPosition → 也冻（恢复态下秒冻）；
+// - flush 中 wrapper setValue（即本形态，R2 轮验证）→ 高频改写下全程存活。
+// 共同的必冻因子是「在 v-model 落定之前/之外的栈里碰 model」；wrapper 的 watcher 跑在
+// Vue flush 内、v-model 已同步，是实测唯一安全的编辑时点。
+// 代价：setValue 全量换文本，光标跳到文件尾（restoreViewState 的强制同步渲染正是冻结
+// 同类，不碰）；Monaco 对整个 buffer 的替换走快速路径，性能无虞。
 function applyExternal(text: string, mt: number, size: number) {
   savedContent.value = text // 先落 savedContent：content 随后的更新不再被判脏、不触发自动保存
-  const ed = editorRef.value
-  const model = ed?.getModel()
-  if (ed && model && model.getValue() !== text) {
-    const viewState = ed.saveViewState()
-    model.setValue(text)
-    ed.restoreViewState(viewState)
-  }
-  content.value = text
+  content.value = text // v-model 先行；编辑器由 wrapper 的 flush watcher 跟进
   mtime.value = mt
   setPollBase(mt, size)
 }
@@ -799,7 +802,7 @@ function fmtSize(n: number): string {
             <CodeEditor
               v-model="content"
               :language="language"
-              :options="{ readOnly: !editing }"
+              :options="editorOptions"
               class="min-h-0 flex-1"
               @mount="onEditorMount"
               @save="() => save()"
