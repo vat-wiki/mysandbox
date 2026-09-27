@@ -146,7 +146,8 @@ function connectWs() {
     // 常驻 tab（v-show 非激活）也在收流，登记对所有可见组生效；历史回填（文本帧）不算。
     // prime 窗口内的帧只点亮光晕、不进提醒资格（attach 重绘/初始 prompt 是打开自带画面）。
     noteTermOutput(props.termId)
-    term?.write(new Uint8Array(ev.data as ArrayBuffer))
+    const bytes = new Uint8Array(ev.data as ArrayBuffer)
+    term?.write(scrollTransform?.transform(bytes) ?? bytes)
   }
   // 非正常关闭（非 1000/1001）视为意外断线，置 lost 徽标；点「重连」条或刷新恢复。
   ws.onclose = (ev) => {
@@ -210,6 +211,7 @@ let resizeObs: ResizeObserver | null = null
 let rafId = 0
 let webglAddon: WebglAddon | null = null
 let linkProv: { dispose(): void } | null = null
+let scrollTransform: CodexScrollbackTransform | null = null
 // 断线状态（终端上方覆盖条用）：'ok' | 'lost'。TCP 半开（后端挂死/NAT 超时）时 onclose 不会触发，
 // 靠心跳探测置 lost。tmux 会话在后端无限期保留（真 tmux 语义），重连即恢复。
 const connState = ref<'ok' | 'lost'>('ok')
@@ -220,9 +222,101 @@ let backfilled = false
 
 // 内置 Cascadia Code Variable 优先（woff2 打包，跨端一致）；彩色 emoji 走系统字体兜底。
 const FONT_FAMILY =
-  '"Cascadia Code Variable", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace, ' +
-  '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"'
+  '"Cascadia Code Variable", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, ' +
+  '"Noto Sans Mono CJK SC", "Noto Sans Mono CJK JP", "Microsoft YaHei Mono", "PingFang SC", ' +
+  'monospace, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"'
 
+// Codex 0.149 的内联 TUI 用「顶部区域滚动」推历史行；xterm.js 对区域滚动会把离开屏幕
+// 顶部的行直接删掉，而 iTerm2/kitty 会放进 scrollback，因此网页里看到的是历史缺行/错位。
+// Codex 发送时外层带 DEC 2026 同步输出，这里只在该块内做下游兼容：把 DECSTBM + SU 改成
+// 整屏换行，再交给 Codex 自己的重绘。变换必须在字节流进入 xterm 前完成；在 CSI handler
+// 里嵌套 write 会追加到当前解析队列之后，破坏 Codex 依赖的序列顺序。
+class CodexScrollbackTransform {
+  private pending: number[] = []
+  private state: 'ground' | 'escape' | 'csi' = 'ground'
+  private csi: number[] = []
+  private synchronized = false
+  private regionBottom = 0
+
+  constructor(private readonly getRows: () => number) {}
+
+  private static param(bytes: number[], fallback: number): number {
+    let text = ''
+    for (const byte of bytes) {
+      if (byte >= 0x30 && byte <= 0x39) text += String.fromCharCode(byte)
+      else break
+    }
+    const value = Number(text)
+    return Number.isFinite(value) && value > 0 ? value : fallback
+  }
+
+  private static text(bytes: number[]): string {
+    return bytes.map((byte) => String.fromCharCode(byte)).join('')
+  }
+
+  transform(input: Uint8Array): Uint8Array {
+    const bytes = [...this.pending, ...input]
+    this.pending = []
+    const out: number[] = []
+    for (let index = 0; index < bytes.length; index += 1) {
+      const byte = bytes[index]!
+      if (this.state === 'ground') {
+        if (byte === 0x1b) this.state = 'escape'
+        out.push(byte)
+        continue
+      }
+      if (this.state === 'escape') {
+        if (byte === 0x5b) {
+          this.state = 'csi'
+          this.csi = []
+        } else {
+          this.state = 'ground'
+          out.push(byte)
+        }
+        continue
+      }
+      if (byte >= 0x20 && byte <= 0x3f) {
+        this.csi.push(byte)
+        continue
+      }
+      if (byte >= 0x40 && byte <= 0x7e) {
+        const final = String.fromCharCode(byte)
+        if (final === 'h' || final === 'l') {
+          if (CodexScrollbackTransform.text(this.csi).includes('2026')) this.synchronized = final === 'h'
+        } else if (final === 'r') {
+          const separator = this.csi.indexOf(0x3b)
+          const top = CodexScrollbackTransform.param(this.csi, 1)
+          const bottom = separator >= 0 ? CodexScrollbackTransform.param(this.csi.slice(separator + 1), 0) : 0
+          this.regionBottom = this.synchronized && top === 1 && bottom > 1 && bottom < this.getRows() ? bottom : 0
+        } else if (final === 'S' && this.synchronized && this.regionBottom > 1) {
+          const count = CodexScrollbackTransform.param(this.csi, 1)
+          const bottom = Math.min(this.regionBottom, this.getRows())
+          if (count > 0 && bottom < this.getRows()) {
+            out.push(0x1b, 0x5b, 0x72)
+            out.push(0x1b, 0x5b, ...`${this.getRows()};1H`.split('').map((char) => char.charCodeAt(0)))
+            for (let line = 0; line < count; line += 1) out.push(0x0d, 0x0a)
+            out.push(0x1b, 0x5b, 0x48)
+            this.state = 'ground'
+            continue
+          }
+        }
+        out.push(0x1b, 0x5b, ...this.csi, byte)
+        this.csi = []
+        this.state = 'ground'
+        continue
+      }
+      out.push(0x1b, 0x5b, ...this.csi, byte)
+      this.csi = []
+      this.state = 'ground'
+    }
+    if (this.state === 'csi' && this.csi.length > 4096) {
+      out.push(0x1b, 0x5b, ...this.csi)
+      this.csi = []
+      this.state = 'ground'
+    }
+    return Uint8Array.from(out)
+  }
+}
 // 字号随容器宽度自适应：窄屏不溢出、大屏不显小。用户显式调过（触屏工具条 A±）则
 // 记忆优先（clamp 10–18），跨 pane/刷新保持。
 const FONT_SIZE_KEY = 'mysandbox:term-font-size'
@@ -546,6 +640,7 @@ onMounted(async () => {
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon())
   term.open(el.value)
+  scrollTransform = new CodexScrollbackTransform(() => term?.rows ?? 24)
   // OSC 0/2（窗口标题）：shell 钩子（scripts/zshrc / 宿主 ~/.zshrc 的 preexec/precmd）
   // 与 TUI 应用（CC/opencode）发的标题，经 tmux set-titles on（session 级选项）转发到
   // 这里——ContainerList 拿去更新 tab 标签/popout 窗口标题。plain shell 降级（无 tmux）
@@ -713,7 +808,12 @@ onMounted(async () => {
   if (!isCoarse && !fractionalDpr) {
     try {
       const webgl = new WebglAddon()
-      webgl.onContextLoss(() => webgl.dispose())
+      webgl.onContextLoss(() => {
+        webglAddon = null
+        webgl.dispose()
+        term?.refresh(0, term.rows - 1)
+        refit()
+      })
       term.loadAddon(webgl)
       webglAddon = webgl // 持引用：卸载时先 dispose addon，避免 term.dispose 内部清理 renderer 时访问已释放资源
     } catch {
