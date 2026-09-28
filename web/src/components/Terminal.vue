@@ -226,16 +226,18 @@ const FONT_FAMILY =
   '"Noto Sans Mono CJK SC", "Noto Sans Mono CJK JP", "Microsoft YaHei Mono", "PingFang SC", ' +
   'monospace, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"'
 
-// Codex 0.149 的内联 TUI 用「顶部区域滚动」推历史行；xterm.js 对区域滚动会把离开屏幕
+// TUI 的内联滚动常用「顶部区域滚动」推历史行；xterm.js 对区域滚动会把离开屏幕
 // 顶部的行直接删掉，而 iTerm2/kitty 会放进 scrollback，因此网页里看到的是历史缺行/错位。
-// Codex 发送时外层带 DEC 2026 同步输出，这里只在该块内做下游兼容：把 DECSTBM + SU 改成
-// 整屏换行，再交给 Codex 自己的重绘。变换必须在字节流进入 xterm 前完成；在 CSI handler
-// 里嵌套 write 会追加到当前解析队列之后，破坏 Codex 依赖的序列顺序。
+// 应用发送时外层带 DEC 2026 同步输出，这里只在该块内做下游兼容：把 DECSTBM + SU 改成
+// 整屏换行，再交给应用自己的重绘；结束后恢复原滚动区与光标，防止通用 TUI 从错误位置落笔。
+// 变换必须在字节流进入 xterm 前完成；在 CSI handler 里嵌套 write 会追加到当前解析队列
+// 之后，破坏应用依赖的序列顺序。
 class CodexScrollbackTransform {
   private pending: number[] = []
   private state: 'ground' | 'escape' | 'csi' = 'ground'
   private csi: number[] = []
   private synchronized = false
+  private regionTop = 0
   private regionBottom = 0
 
   constructor(private readonly getRows: () => number) {}
@@ -283,20 +285,32 @@ class CodexScrollbackTransform {
         const final = String.fromCharCode(byte)
         if (final === 'h' || final === 'l') {
           if (CodexScrollbackTransform.text(this.csi).includes('2026')) this.synchronized = final === 'h'
+          if (final === 'l') {
+            this.regionTop = 0
+            this.regionBottom = 0
+          }
         } else if (final === 'r') {
           const separator = this.csi.indexOf(0x3b)
           const top = CodexScrollbackTransform.param(this.csi, 1)
           const bottom = separator >= 0 ? CodexScrollbackTransform.param(this.csi.slice(separator + 1), 0) : 0
-          this.regionBottom = this.synchronized && top === 1 && bottom > 1 && bottom < this.getRows() ? bottom : 0
+          const active = this.synchronized && top === 1 && bottom > 1 && bottom < this.getRows()
+          this.regionTop = active ? top : 0
+          this.regionBottom = active ? bottom : 0
         } else if (final === 'S' && this.synchronized && this.regionBottom > 1) {
           const count = CodexScrollbackTransform.param(this.csi, 1)
+          const top = this.regionTop
           const bottom = Math.min(this.regionBottom, this.getRows())
-          if (count > 0 && bottom < this.getRows()) {
+          if (count > 0 && top === 1 && bottom < this.getRows()) {
+            // xterm.js 的 CSI S 会直接删掉滚动区顶部行。整屏 CRLF 能把它推进
+            // scrollback，但必须保留原光标和原滚动区，否则应用重绘会从错误位置落笔。
+            out.push(0x1b, 0x37)
             out.push(0x1b, 0x5b, 0x72)
             out.push(0x1b, 0x5b, ...`${this.getRows()};1H`.split('').map((char) => char.charCodeAt(0)))
             for (let line = 0; line < count; line += 1) out.push(0x0d, 0x0a)
-            out.push(0x1b, 0x5b, 0x48)
+            out.push(0x1b, 0x5b, ...`${top};${bottom}r`.split('').map((char) => char.charCodeAt(0)))
+            out.push(0x1b, 0x38)
             this.state = 'ground'
+            this.csi = []
             continue
           }
         }
