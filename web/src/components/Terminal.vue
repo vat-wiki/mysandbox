@@ -1140,7 +1140,7 @@ onBeforeUnmount(() => {
   height: 1.5rem;
   padding: 0 0.25rem 0 0.375rem;
   border-radius: 0;
-  border-bottom: 1px solid #ffffff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.38);
   background: transparent;
   transition: border-color 140ms ease;
 }
