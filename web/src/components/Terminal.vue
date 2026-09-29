@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { toast } from 'vue-sonner'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -268,6 +268,11 @@ let search: SearchAddon | null = null
 const connState = ref<'ok' | 'lost'>('ok')
 const searchVisible = ref(false)
 const searchQuery = ref('')
+const searchInputWidth = computed(() => {
+  const text = searchQuery.value || '搜索终端…'
+  const units = [...text].reduce((width, char) => width + ((char.codePointAt(0) ?? 0) > 0xff ? 2 : 1), 0)
+  return `${Math.max(8, units + 1)}ch`
+})
 const searchResultIndex = ref(-1)
 const searchResultCount = ref(0)
 const searchCaseSensitive = ref(false)
@@ -1000,6 +1005,7 @@ onBeforeUnmount(() => {
           ref="searchInput"
           v-model="searchQuery"
           class="search-input"
+          :style="{ width: searchInputWidth }"
           placeholder="搜索终端…"
           spellcheck="false"
           @input="runSearch('next')"
@@ -1112,9 +1118,11 @@ onBeforeUnmount(() => {
   top: 0.5rem;
   right: 0.5rem;
   z-index: 30;
-  width: min(19rem, calc(100% - 1rem));
+  width: fit-content;
+  max-width: min(19rem, calc(100% - 1rem));
+  min-width: min(12rem, calc(100% - 1rem));
   display: grid;
-  grid-template-columns: minmax(4rem, 1fr) auto auto auto;
+  grid-template-columns: auto auto auto auto;
   align-items: center;
   gap: 0.25rem;
   padding: 0.25rem;
@@ -1141,7 +1149,7 @@ onBeforeUnmount(() => {
 }
 .search-input {
   min-width: 0;
-  flex: 1;
+  max-width: 100%;
   height: 100%;
   border: 0;
   outline: none;
