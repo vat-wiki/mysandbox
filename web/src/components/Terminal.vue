@@ -1007,9 +1007,20 @@ onBeforeUnmount(() => {
           @keydown.esc.stop.prevent="closeSearch"
         />
       </div>
+      <div class="search-filters">
+        <button type="button" class="search-toggle" :class="{ 'search-on': searchCaseSensitive }" title="区分大小写" :aria-pressed="searchCaseSensitive" @click="searchCaseSensitive = !searchCaseSensitive; runSearch('next')">
+          <CaseSensitive class="size-3.5" />
+        </button>
+        <button type="button" class="search-toggle" :class="{ 'search-on': searchWholeWord }" title="全字匹配" :aria-pressed="searchWholeWord" @click="searchWholeWord = !searchWholeWord; runSearch('next')">
+          <WholeWord class="size-3.5" />
+        </button>
+        <button type="button" class="search-toggle" :class="{ 'search-on': searchRegex }" title="正则匹配" :aria-pressed="searchRegex" @click="searchRegex = !searchRegex; runSearch('next')">
+          <Regex class="size-3.5" />
+        </button>
+      </div>
       <div class="search-meta">
         <span
-          class="min-w-8 shrink-0 text-center text-[10px] font-medium tabular-nums"
+          class="search-count shrink-0"
           :class="searchResultCount || searchQuery === '' ? 'text-zinc-500' : 'text-amber-400'"
         >
           {{ searchResultCount ? `${searchResultIndex + 1}/${searchResultCount}` : '无匹配' }}
@@ -1022,17 +1033,6 @@ onBeforeUnmount(() => {
         </button>
         <button type="button" class="search-btn" title="关闭（Esc）" @click="closeSearch">
           <X class="size-3.5" />
-        </button>
-      </div>
-      <div class="search-filters">
-        <button type="button" class="search-toggle" :class="{ 'search-on': searchCaseSensitive }" title="区分大小写" :aria-pressed="searchCaseSensitive" @click="searchCaseSensitive = !searchCaseSensitive; runSearch('next')">
-          <CaseSensitive class="size-3.5" />
-        </button>
-        <button type="button" class="search-toggle" :class="{ 'search-on': searchWholeWord }" title="全字匹配" :aria-pressed="searchWholeWord" @click="searchWholeWord = !searchWholeWord; runSearch('next')">
-          <WholeWord class="size-3.5" />
-        </button>
-        <button type="button" class="search-toggle" :class="{ 'search-on': searchRegex }" title="正则匹配" :aria-pressed="searchRegex" @click="searchRegex = !searchRegex; runSearch('next')">
-          <Regex class="size-3.5" />
         </button>
       </div>
     </div>
@@ -1106,19 +1106,20 @@ onBeforeUnmount(() => {
   border-color: #f59e0b;
   color: #fbbf24;
 }
-/* 终端搜索：紧凑的两段式控件。渐变和内高光让浮层在纯黑终端上有清晰的边界层次。 */
+/* 终端搜索：单行控件。渐变和内高光让浮层在纯黑终端上有清晰的边界层次。 */
 .search-shell {
   position: absolute;
   top: 0.5rem;
   right: 0.5rem;
   z-index: 30;
-  width: min(15.75rem, calc(100% - 1rem));
+  width: min(21.5rem, calc(100% - 1rem));
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(4rem, 1fr) auto auto auto;
+  align-items: center;
   gap: 0.375rem;
   padding: 0.375rem;
   border: 1px solid rgba(63, 63, 70, 0.65);
-  border-radius: 0.75rem;
+  border-radius: 0;
   background: linear-gradient(180deg, rgba(24, 24, 27, 0.96), rgba(9, 9, 11, 0.96));
   box-shadow: 0 16px 36px -18px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(18px) saturate(1.1);
@@ -1131,7 +1132,7 @@ onBeforeUnmount(() => {
   height: 1.75rem;
   padding: 0 0.375rem 0 0.5rem;
   border: 1px solid #27272a;
-  border-radius: 0.5rem;
+  border-radius: 0;
   background: rgba(9, 9, 11, 0.72);
   transition: border-color 140ms ease, background-color 140ms ease;
 }
@@ -1159,6 +1160,12 @@ onBeforeUnmount(() => {
   gap: 0.125rem;
   height: 1.75rem;
 }
+.search-count {
+  min-width: 2.25rem;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 500;
+}
 .search-btn {
   display: flex;
   align-items: center;
@@ -1166,7 +1173,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   width: 1.5rem;
   height: 1.5rem;
-  border-radius: 0.375rem;
+  border-radius: 0.25rem;
   color: #a1a1aa;
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -1175,22 +1182,20 @@ onBeforeUnmount(() => {
   color: #e4e4e7;
 }
 .search-filters {
-  grid-column: 1 / -1;
   display: inline-flex;
-  width: 100%;
+  flex-shrink: 0;
   gap: 0.1875rem;
   padding: 0.1875rem;
-  border-radius: 0.5rem;
+  border-radius: 0;
   background: rgba(9, 9, 11, 0.72);
 }
 .search-toggle {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex: 1;
   width: 1.5rem;
   height: 1.375rem;
-  border-radius: 0.375rem;
+  border-radius: 0.25rem;
   color: #71717a;
   transition: background-color 120ms ease, color 120ms ease;
 }
