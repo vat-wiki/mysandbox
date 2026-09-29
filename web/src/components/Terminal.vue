@@ -1132,12 +1132,12 @@ onBeforeUnmount(() => {
   height: 1.5rem;
   padding: 0 0.25rem 0 0.375rem;
   border-radius: 0;
-  background: rgba(9, 9, 11, 0.72);
-  transition: background-color 140ms ease;
+  border-bottom: 1px solid #3f3f46;
+  background: transparent;
+  transition: border-color 140ms ease;
 }
 .search-field:focus-within {
-  background: rgba(24, 24, 27, 0.95);
-  background: rgba(24, 24, 27, 0.9);
+  border-bottom-color: #f59e0b;
 }
 .search-input {
   min-width: 0;
