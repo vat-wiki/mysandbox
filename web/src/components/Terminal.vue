@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { toast } from 'vue-sonner'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
@@ -94,6 +95,55 @@ function screenHash(): string | undefined {
   const lines: string[] = []
   for (let y = from; y < buf.length; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? '')
   return lines.join('\n')
+}
+
+// 搜索选项固定开装饰：xterm 的全部高亮和结果统计只有在 decorations 启用时才工作。
+// incremental 让输入过程中的命中延续选区，避免每敲一个字符都从头跳一遍。
+function searchOptions() {
+  return {
+    caseSensitive: searchCaseSensitive.value,
+    regex: searchRegex.value,
+    wholeWord: searchWholeWord.value,
+    incremental: true,
+    decorations: {
+      matchBackground: '#3f3f46',
+      matchBorder: '#52525b',
+      matchOverviewRuler: '#71717a',
+      activeMatchBackground: '#b45309',
+      activeMatchBorder: '#fbbf24',
+      activeMatchColorOverviewRuler: '#fbbf24',
+    },
+  }
+}
+
+function runSearch(direction: 'next' | 'previous') {
+  if (!search || !searchQuery.value) {
+    searchResultIndex.value = -1
+    searchResultCount.value = 0
+    search?.clearDecorations()
+    return
+  }
+  const query = searchQuery.value
+  if (direction === 'next') search.findNext(query, searchOptions())
+  else search.findPrevious(query, searchOptions())
+}
+
+function openSearch() {
+  searchVisible.value = true
+  void nextTick(() => {
+    searchInput.value?.focus()
+    searchInput.value?.select()
+    runSearch('next')
+  })
+}
+
+function closeSearch() {
+  searchVisible.value = false
+  searchQuery.value = ''
+  searchResultIndex.value = -1
+  searchResultCount.value = 0
+  search?.clearDecorations()
+  term?.focus()
 }
 // 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）与首连共用。
 // termId 不变 -> 后端 attach 回同一 tmux 会话（无限期保留，直到显式 ✕ 或 shell 退出）。
@@ -211,9 +261,18 @@ let resizeObs: ResizeObserver | null = null
 let rafId = 0
 let webglAddon: WebglAddon | null = null
 let linkProv: { dispose(): void } | null = null
+let search: SearchAddon | null = null
 // 断线状态（终端上方覆盖条用）：'ok' | 'lost'。TCP 半开（后端挂死/NAT 超时）时 onclose 不会触发，
 // 靠心跳探测置 lost。tmux 会话在后端无限期保留（真 tmux 语义），重连即恢复。
 const connState = ref<'ok' | 'lost'>('ok')
+const searchVisible = ref(false)
+const searchQuery = ref('')
+const searchResultIndex = ref(-1)
+const searchResultCount = ref(0)
+const searchCaseSensitive = ref(false)
+const searchRegex = ref(false)
+const searchWholeWord = ref(false)
+const searchInput = ref<HTMLInputElement | null>(null)
 let hbTimer: ReturnType<typeof setInterval> | null = null
 // tmux 历史回填只做一次（组件首连）：reconnect 时 term 实例还在、scrollback 已有内容，
 // 再回填会重复整段历史。断线期间产生的输出留在 tmux 历史里滚不到（可接受的缺口）。
@@ -589,6 +648,12 @@ onMounted(async () => {
   })
   fit = new FitAddon()
   term.loadAddon(fit)
+  search = new SearchAddon({ highlightLimit: 1000 })
+  search.onDidChangeResults(({ resultIndex, resultCount }) => {
+    searchResultIndex.value = resultIndex
+    searchResultCount.value = resultCount
+  })
+  term.loadAddon(search)
   term.loadAddon(new WebLinksAddon())
   term.open(el.value)
   registerScrollRegionHandler()
@@ -714,6 +779,16 @@ onMounted(async () => {
   //   - Ctrl+C：有选区时复制并清选区、吞掉；无选区时透传发 ^C=SIGINT（必须 return true）。
   //   其余按键一律透传，不影响 vim/less 等正常输入。
   term.attachCustomKeyEventHandler((e) => {
+    if (e.type === 'keydown' && e.code === 'KeyF' && e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault()
+      openSearch()
+      return false
+    }
+    if (e.type === 'keydown' && e.key === 'Escape' && searchVisible.value) {
+      e.preventDefault()
+      closeSearch()
+      return false
+    }
     if (!(e.ctrlKey && !e.altKey && !e.metaKey)) return true
     if (e.shiftKey && e.code === 'KeyC') {
       if (e.type === 'keydown' && term!.hasSelection()) void copyText(term!.getSelection())
@@ -893,12 +968,18 @@ onBeforeUnmount(() => {
   }
   webglAddon = null
   try {
+    search?.clearDecorations()
+  } catch {
+    /* 搜索插件已随终端清理则忽略 */
+  }
+  try {
     term?.dispose()
   } catch {
     /* noop */
   }
   term = null
   fit = null
+  search = null
 })
 </script>
 
@@ -909,6 +990,29 @@ onBeforeUnmount(() => {
        手机软键盘弹起时 paddingBottom 撑出键盘高度（kbH），内层 ResizeObserver 自动 refit。 -->
   <div class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbH > 0 ? { paddingBottom: kbH + 'px' } : undefined">
     <div ref="el" class="min-h-0 flex-1 overflow-hidden" @contextmenu.prevent="onContextMenu" />
+    <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
+         浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
+    <div v-if="searchVisible" class="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900/95 p-1 shadow-lg shadow-black/40">
+      <input
+        ref="searchInput"
+        v-model="searchQuery"
+        class="h-8 w-48 rounded border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-100 outline-none focus:border-amber-500"
+        placeholder="搜索终端…"
+        spellcheck="false"
+        @input="runSearch('next')"
+        @keydown.enter.prevent="runSearch($event.shiftKey ? 'previous' : 'next')"
+        @keydown.esc.stop.prevent="closeSearch"
+      />
+      <span class="min-w-16 px-1 text-center text-[11px] tabular-nums text-zinc-500">
+        {{ searchResultCount ? `${searchResultIndex + 1}/${searchResultCount}` : '无匹配' }}
+      </span>
+      <button type="button" class="tb h-8 min-w-8" title="上一个匹配（Shift+Enter）" @click="runSearch('previous')">↑</button>
+      <button type="button" class="tb h-8 min-w-8" title="下一个匹配（Enter）" @click="runSearch('next')">↓</button>
+      <button type="button" class="tb h-8 min-w-8" :class="searchCaseSensitive ? 'tb-on' : ''" title="区分大小写" @click="searchCaseSensitive = !searchCaseSensitive; runSearch('next')">Aa</button>
+      <button type="button" class="tb h-8 min-w-8" :class="searchWholeWord ? 'tb-on' : ''" title="全字匹配" @click="searchWholeWord = !searchWholeWord; runSearch('next')">W</button>
+      <button type="button" class="tb h-8 min-w-8" :class="searchRegex ? 'tb-on' : ''" title="正则匹配" @click="searchRegex = !searchRegex; runSearch('next')">.*</button>
+      <button type="button" class="tb h-8 min-w-8" title="关闭（Esc）" @click="closeSearch">✕</button>
+    </div>
     <!-- 触屏工具条（手机 only）：复制/粘贴/Esc/Tab/方向/Ctrl 粘滞/字号。
          桌面（≥768px 或鼠标环境）不渲染——右键与键盘快捷键已覆盖。 -->
     <div v-if="isPhone" class="flex shrink-0 items-center gap-1 overflow-x-auto scroll-thin border-t border-zinc-800 pt-1 md:hidden">
