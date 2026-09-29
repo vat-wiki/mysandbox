@@ -4,6 +4,7 @@ import { toast } from 'vue-sonner'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
+import { CaseSensitive, ChevronDown, ChevronUp, Regex, Search, WholeWord, X } from 'lucide-vue-next'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
@@ -992,26 +993,79 @@ onBeforeUnmount(() => {
     <div ref="el" class="min-h-0 flex-1 overflow-hidden" @contextmenu.prevent="onContextMenu" />
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
          浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
-    <div v-if="searchVisible" class="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900/95 p-1 shadow-lg shadow-black/40">
-      <input
-        ref="searchInput"
-        v-model="searchQuery"
-        class="h-8 w-48 rounded border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-100 outline-none focus:border-amber-500"
-        placeholder="搜索终端…"
-        spellcheck="false"
-        @input="runSearch('next')"
-        @keydown.enter.prevent="runSearch($event.shiftKey ? 'previous' : 'next')"
-        @keydown.esc.stop.prevent="closeSearch"
-      />
-      <span class="min-w-16 px-1 text-center text-[11px] tabular-nums text-zinc-500">
-        {{ searchResultCount ? `${searchResultIndex + 1}/${searchResultCount}` : '无匹配' }}
-      </span>
-      <button type="button" class="tb h-8 min-w-8" title="上一个匹配（Shift+Enter）" @click="runSearch('previous')">↑</button>
-      <button type="button" class="tb h-8 min-w-8" title="下一个匹配（Enter）" @click="runSearch('next')">↓</button>
-      <button type="button" class="tb h-8 min-w-8" :class="searchCaseSensitive ? 'tb-on' : ''" title="区分大小写" @click="searchCaseSensitive = !searchCaseSensitive; runSearch('next')">Aa</button>
-      <button type="button" class="tb h-8 min-w-8" :class="searchWholeWord ? 'tb-on' : ''" title="全字匹配" @click="searchWholeWord = !searchWholeWord; runSearch('next')">W</button>
-      <button type="button" class="tb h-8 min-w-8" :class="searchRegex ? 'tb-on' : ''" title="正则匹配" @click="searchRegex = !searchRegex; runSearch('next')">.*</button>
-      <button type="button" class="tb h-8 min-w-8" title="关闭（Esc）" @click="closeSearch">✕</button>
+    <div v-if="searchVisible" class="absolute right-2.5 top-2.5 z-30 w-[min(23rem,calc(100%-1.25rem))] overflow-hidden rounded-xl border border-zinc-700/70 bg-zinc-900/90 shadow-2xl shadow-black/50 backdrop-blur-xl">
+      <div class="flex items-center gap-2 border-b border-zinc-800/80 px-2.5 py-2">
+        <Search class="size-3.5 shrink-0 text-zinc-500" />
+        <input
+          ref="searchInput"
+          v-model="searchQuery"
+          class="h-7 min-w-0 flex-1 bg-transparent font-mono text-[13px] text-zinc-100 placeholder:text-zinc-600 focus:outline-none"
+          placeholder="搜索终端…"
+          spellcheck="false"
+          @input="runSearch('next')"
+          @keydown.enter.prevent="runSearch($event.shiftKey ? 'previous' : 'next')"
+          @keydown.esc.stop.prevent="closeSearch"
+        />
+        <button
+          v-if="searchQuery"
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+          title="清空搜索"
+          @click="searchQuery = ''; runSearch('next')"
+        >
+          <X class="size-3.5" />
+        </button>
+        <span
+          class="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium tabular-nums"
+          :class="searchResultCount ? 'bg-zinc-800 text-zinc-300' : 'bg-amber-950/70 text-amber-400'"
+        >
+          {{ searchResultCount ? `${searchResultIndex + 1}/${searchResultCount}` : '无匹配' }}
+        </span>
+        <button type="button" class="nav-btn" title="上一个匹配（Shift+Enter）" @click="runSearch('previous')">
+          <ChevronUp class="size-3.5" />
+        </button>
+        <button type="button" class="nav-btn" title="下一个匹配（Enter）" @click="runSearch('next')">
+          <ChevronDown class="size-3.5" />
+        </button>
+        <button type="button" class="nav-btn border-r border-zinc-800/80" title="关闭（Esc）" @click="closeSearch">
+          <X class="size-3.5" />
+        </button>
+      </div>
+      <div class="flex items-center gap-1 px-2.5 py-2">
+        <button
+          type="button"
+          class="filter-btn"
+          :class="searchCaseSensitive ? 'filter-on' : ''"
+          title="区分大小写"
+          :aria-pressed="searchCaseSensitive"
+          @click="searchCaseSensitive = !searchCaseSensitive; runSearch('next')"
+        >
+          <CaseSensitive class="size-3.5" />
+          <span>大小写</span>
+        </button>
+        <button
+          type="button"
+          class="filter-btn"
+          :class="searchWholeWord ? 'filter-on' : ''"
+          title="全字匹配"
+          :aria-pressed="searchWholeWord"
+          @click="searchWholeWord = !searchWholeWord; runSearch('next')"
+        >
+          <WholeWord class="size-3.5" />
+          <span>全字</span>
+        </button>
+        <button
+          type="button"
+          class="filter-btn"
+          :class="searchRegex ? 'filter-on' : ''"
+          title="正则匹配"
+          :aria-pressed="searchRegex"
+          @click="searchRegex = !searchRegex; runSearch('next')"
+        >
+          <Regex class="size-3.5" />
+          <span>正则</span>
+        </button>
+      </div>
     </div>
     <!-- 触屏工具条（手机 only）：复制/粘贴/Esc/Tab/方向/Ctrl 粘滞/字号。
          桌面（≥768px 或鼠标环境）不渲染——右键与键盘快捷键已覆盖。 -->
@@ -1081,6 +1135,42 @@ onBeforeUnmount(() => {
 }
 .tb-on {
   border-color: #f59e0b;
+  color: #fbbf24;
+}
+/* 终端搜索控件：浮层内的小按钮，选中态与整体 amber 强调色一致。 */
+.nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.375rem;
+  color: #a1a1aa;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.nav-btn:hover {
+  background-color: #27272a;
+  color: #e4e4e7;
+}
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 1.625rem;
+  padding: 0 0.5rem;
+  border-radius: 0.5rem;
+  background-color: #18181b;
+  color: #a1a1aa;
+  font-size: 11px;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.filter-btn:hover {
+  background-color: #27272a;
+  color: #e4e4e7;
+}
+.filter-on {
+  background-color: #451a03;
   color: #fbbf24;
 }
 /* 路径链接 tooltip：动态创建挂在 term.element 内，Vue scoped 样式够不着，用全局类名。 */
