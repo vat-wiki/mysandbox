@@ -3480,7 +3480,12 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                非激活面板用 invisible（visibility:hidden）而不是 v-show（display:none）——
                monaco 的 automaticLayout 在容器塌成 0×0 时对带标记（json 校验 squiggle 等
                glyph margin 装饰）的编辑器做 layout 会死循环（实测整页冻结）。visibility
-               隐藏保留布局盒，尺寸恒定，彻底绕开 0 尺寸 layout。 -->
+               隐藏保留布局盒，尺寸恒定，彻底绕开 0 尺寸 layout。
+               ⚠️ visibility:hidden 可被子元素的显式 visibility:visible 穿透（CSS 规则：
+               hidden 祖先下的 visible 子树照样绘制）——monaco diff 编辑器恰好在左右两个
+               editor 容器上写内联 visibility:visible，导致非激活的 diff pane 照样绘制、
+               且按 DOM 顺序盖住前面的 pane（实测：多个 git 对比 tab 间切换，高亮动内容
+               不动）。所以激活 pane 必须挂 z-10，恒压在所有兄弟 pane（含穿透绘制）之上。 -->
           <!-- AI 工具工作区：与文件编辑器同区切换（AI tab 激活 = 主区给它）。全尺寸
                页面——技能库/provider/工具分配/下发结果这些管理面板体量的内容在这里舒展。 -->
           <div v-show="mainView === 'ai'" class="absolute inset-0">
@@ -3496,7 +3501,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               :key="tabId(t)"
               :ref="(el) => setPaneRef(t, el)"
               class="absolute inset-0"
-              :class="i === activeEditorIdx ? '' : 'invisible'"
+              :class="i === activeEditorIdx ? 'z-10' : 'invisible'"
               :container-id="t.containerId"
               :container-name="t.containerName"
               :path="t.path"
