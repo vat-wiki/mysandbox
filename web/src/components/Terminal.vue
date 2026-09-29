@@ -1009,13 +1009,13 @@ onBeforeUnmount(() => {
       </div>
       <div class="search-filters">
         <button type="button" class="search-toggle" :class="{ 'search-on': searchCaseSensitive }" title="区分大小写" :aria-pressed="searchCaseSensitive" @click="searchCaseSensitive = !searchCaseSensitive; runSearch('next')">
-          <CaseSensitive class="size-3.5" />
+          <CaseSensitive class="size-3" />
         </button>
         <button type="button" class="search-toggle" :class="{ 'search-on': searchWholeWord }" title="全字匹配" :aria-pressed="searchWholeWord" @click="searchWholeWord = !searchWholeWord; runSearch('next')">
-          <WholeWord class="size-3.5" />
+          <WholeWord class="size-3" />
         </button>
         <button type="button" class="search-toggle" :class="{ 'search-on': searchRegex }" title="正则匹配" :aria-pressed="searchRegex" @click="searchRegex = !searchRegex; runSearch('next')">
-          <Regex class="size-3.5" />
+          <Regex class="size-3" />
         </button>
       </div>
       <div class="search-meta">
@@ -1026,13 +1026,13 @@ onBeforeUnmount(() => {
           {{ searchResultCount ? `${searchResultIndex + 1}/${searchResultCount}` : '无匹配' }}
         </span>
         <button type="button" class="search-btn" title="上一个匹配（Shift+Enter）" @click="runSearch('previous')">
-          <ChevronUp class="size-3.5" />
+          <ChevronUp class="size-3" />
         </button>
         <button type="button" class="search-btn" title="下一个匹配（Enter）" @click="runSearch('next')">
-          <ChevronDown class="size-3.5" />
+          <ChevronDown class="size-3" />
         </button>
         <button type="button" class="search-btn" title="关闭（Esc）" @click="closeSearch">
-          <X class="size-3.5" />
+          <X class="size-3" />
         </button>
       </div>
     </div>
@@ -1112,12 +1112,12 @@ onBeforeUnmount(() => {
   top: 0.5rem;
   right: 0.5rem;
   z-index: 30;
-  width: min(21.5rem, calc(100% - 1rem));
+  width: min(19rem, calc(100% - 1rem));
   display: grid;
   grid-template-columns: minmax(4rem, 1fr) auto auto auto;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem;
+  gap: 0.25rem;
+  padding: 0.25rem;
   border: 1px solid rgba(63, 63, 70, 0.65);
   border-radius: 0;
   background: linear-gradient(180deg, rgba(24, 24, 27, 0.96), rgba(9, 9, 11, 0.96));
@@ -1128,16 +1128,15 @@ onBeforeUnmount(() => {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 0.375rem;
-  height: 1.75rem;
-  padding: 0 0.375rem 0 0.5rem;
-  border: 1px solid #27272a;
+  gap: 0.25rem;
+  height: 1.5rem;
+  padding: 0 0.25rem 0 0.375rem;
   border-radius: 0;
   background: rgba(9, 9, 11, 0.72);
-  transition: border-color 140ms ease, background-color 140ms ease;
+  transition: background-color 140ms ease;
 }
 .search-field:focus-within {
-  border-color: rgba(245, 158, 11, 0.6);
+  background: rgba(24, 24, 27, 0.95);
   background: rgba(24, 24, 27, 0.9);
 }
 .search-input {
@@ -1149,7 +1148,7 @@ onBeforeUnmount(() => {
   background: transparent;
   color: #f4f4f5;
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 12px;
+  font-size: 11px;
 }
 .search-input::placeholder {
   color: #52525b;
@@ -1158,12 +1157,12 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 0.125rem;
-  height: 1.75rem;
+  height: 1.5rem;
 }
 .search-count {
-  min-width: 2.25rem;
+  min-width: 2rem;
   text-align: center;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 500;
 }
 .search-btn {
@@ -1171,9 +1170,9 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: 0.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.1875rem;
   color: #a1a1aa;
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -1184,8 +1183,8 @@ onBeforeUnmount(() => {
 .search-filters {
   display: inline-flex;
   flex-shrink: 0;
-  gap: 0.1875rem;
-  padding: 0.1875rem;
+  gap: 0.125rem;
+  padding: 0.125rem;
   border-radius: 0;
   background: rgba(9, 9, 11, 0.72);
 }
@@ -1193,9 +1192,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 1.5rem;
-  height: 1.375rem;
-  border-radius: 0.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.1875rem;
   color: #71717a;
   transition: background-color 120ms ease, color 120ms ease;
 }
