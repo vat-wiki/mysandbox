@@ -214,6 +214,14 @@ function onMermaidWheel(event: WheelEvent) {
 function zoomMermaidViewer(delta: number) {
   mermaidViewerScale.value = clampMermaidZoom(mermaidViewerScale.value + delta)
 }
+
+// 全屏层里 Ctrl + 滚轮跟内嵌图保持同一手势；普通滚轮仍交给全屏滚动容器。
+function onMermaidViewerWheel(event: WheelEvent) {
+  if (!event.ctrlKey) return
+  event.preventDefault()
+  zoomMermaidViewer(event.deltaY < 0 ? 0.2 : -0.2)
+}
+
 function resolveMdImgPath(dir: string, src: string): string {
   const raw = src.startsWith('/') ? src : dir + src
   const parts: string[] = []
@@ -941,8 +949,8 @@ function fmtSize(n: number): string {
                 </Button>
               </div>
             </div>
-            <div class="scroll-thin min-h-0 flex-1 overflow-auto p-6">
-              <div class="mx-auto flex min-h-full w-fit items-center">
+            <div class="scroll-thin min-h-0 flex-1 overflow-auto p-6" @wheel="onMermaidViewerWheel">
+              <div class="mx-auto flex min-h-full w-full items-center justify-center">
                 <img
                   :src="mermaidViewerUrl"
                   alt="Mermaid 图表全屏预览"
@@ -1090,7 +1098,7 @@ function fmtSize(n: number): string {
 }
 .md-body :deep(pre.mermaid) {
   display: flex;
-  justify-content: center;
+  justify-content: safe center;
   background: transparent;
   padding: 1em 0.5em;
 }
@@ -1127,6 +1135,7 @@ function fmtSize(n: number): string {
   background: var(--color-accent);
 }
 .md-body :deep(pre.mermaid svg) {
+  flex: 0 0 auto;
   width: calc(100% * var(--mermaid-zoom, 1));
   height: auto;
   max-width: none;
