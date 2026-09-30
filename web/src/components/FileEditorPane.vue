@@ -152,7 +152,7 @@ function zoomMermaidView(view: HTMLElement, delta: number) {
 }
 
 // 工具条不进 Markdown HTML（v-html 内容每次会被 DOMPurify 重洗），
-// 渲染挂载后用 DOM 注入；点击逻辑统一委托给 md-body，避免每图重复绑事件。
+// 渲染挂载后用 DOM 注入，并直接绑到每个按钮上，避免受 v-html 更新影响。
 function attachMermaidControls(root: HTMLElement) {
   for (const view of Array.from(root.querySelectorAll<HTMLElement>('.mermaid-view'))) {
     if (view.querySelector(':scope > .mermaid-toolbar')) continue
@@ -169,6 +169,11 @@ function attachMermaidControls(root: HTMLElement) {
       button.dataset.mermaidAction = action
       button.textContent = text
       button.title = title
+      button.addEventListener('click', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onMermaidAction(event)
+      })
       toolbar.append(button)
     }
     view.prepend(toolbar)
@@ -877,7 +882,6 @@ function fmtSize(n: number): string {
             ref="mdBody"
             class="md-body scroll-thin min-h-0 flex-1 overflow-auto px-8 py-5"
             v-html="mdHtml"
-            @click="onMermaidAction"
             @wheel.capture="onMermaidWheel"
           />
           <template v-else>
@@ -1116,6 +1120,7 @@ function fmtSize(n: number): string {
   color: var(--color-foreground);
   font-size: 12px;
   line-height: 1;
+  cursor: pointer;
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
 }
 .md-body :deep(.mermaid-toolbar button:hover) {
