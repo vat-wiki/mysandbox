@@ -139,7 +139,7 @@ function clearMdBlobs() {
 }
 
 function clampMermaidZoom(value: number): number {
-  return Math.min(8, Math.max(0.5, Math.round(value * 100) / 100))
+  return Math.max(0.5, Math.round(value * 100) / 100)
 }
 
 function setMermaidZoom(view: HTMLElement, value: number) {
@@ -156,6 +156,7 @@ function zoomMermaidView(view: HTMLElement, delta: number) {
 function attachMermaidControls(root: HTMLElement) {
   for (const view of Array.from(root.querySelectorAll<HTMLElement>('.mermaid-view'))) {
     if (view.querySelector(':scope > .mermaid-toolbar')) continue
+    view.addEventListener('pointerdown', onMermaidPointerDown)
     const toolbar = document.createElement('div')
     toolbar.className = 'mermaid-toolbar'
     for (const [action, text, title] of [
@@ -202,13 +203,41 @@ function onMermaidAction(event: MouseEvent) {
   else if (action === 'fullscreen') openMermaidViewer(view)
 }
 
-// Ctrl + 滚轮直接缩放内嵌图；普通滚轮仍交给 Markdown 文档滚动。
+// 滚轮直接缩放内嵌图；拖拽把缩放后的溢出交回 Markdown 滚动容器。
 function onMermaidWheel(event: WheelEvent) {
-  if (!event.ctrlKey) return
   const view = (event.target as HTMLElement).closest<HTMLElement>('.mermaid-view')
   if (!view) return
   event.preventDefault()
   zoomMermaidView(view, event.deltaY < 0 ? 0.2 : -0.2)
+}
+
+// 只拖图表，不劫持 Markdown 其他区域；工具条按钮仍走 click。
+function onMermaidPointerDown(event: PointerEvent) {
+  const view = event.currentTarget as HTMLElement
+  const container = mdBody.value
+  if (event.button !== 0 || !container) return
+  if ((event.target as HTMLElement).closest('.mermaid-toolbar')) return
+  event.preventDefault()
+  view.setPointerCapture(event.pointerId)
+  const startX = event.clientX
+  const startY = event.clientY
+  const startLeft = container.scrollLeft
+  const startTop = container.scrollTop
+  view.style.cursor = 'grabbing'
+
+  const onMove = (moveEvent: PointerEvent) => {
+    container.scrollLeft = startLeft - (moveEvent.clientX - startX)
+    container.scrollTop = startTop - (moveEvent.clientY - startY)
+  }
+  const onStop = () => {
+    view.style.cursor = ''
+    view.removeEventListener('pointermove', onMove)
+    view.removeEventListener('pointerup', onStop)
+    view.removeEventListener('pointercancel', onStop)
+  }
+  view.addEventListener('pointermove', onMove)
+  view.addEventListener('pointerup', onStop)
+  view.addEventListener('pointercancel', onStop)
 }
 
 function zoomMermaidViewer(delta: number) {
@@ -217,9 +246,36 @@ function zoomMermaidViewer(delta: number) {
 
 // 全屏层里 Ctrl + 滚轮跟内嵌图保持同一手势；普通滚轮仍交给全屏滚动容器。
 function onMermaidViewerWheel(event: WheelEvent) {
-  if (!event.ctrlKey) return
   event.preventDefault()
   zoomMermaidViewer(event.deltaY < 0 ? 0.2 : -0.2)
+}
+
+// 全屏层拖拽平移；指针捕获保证移出图片后仍跟手。
+function onMermaidViewerPointerDown(event: PointerEvent) {
+  const stage = event.currentTarget as HTMLElement
+  if (event.button !== 0) return
+  if ((event.target as HTMLElement).closest('button')) return
+  event.preventDefault()
+  stage.setPointerCapture(event.pointerId)
+  const startX = event.clientX
+  const startY = event.clientY
+  const startLeft = stage.scrollLeft
+  const startTop = stage.scrollTop
+  stage.style.cursor = 'grabbing'
+
+  const onMove = (moveEvent: PointerEvent) => {
+    stage.scrollLeft = startLeft - (moveEvent.clientX - startX)
+    stage.scrollTop = startTop - (moveEvent.clientY - startY)
+  }
+  const onStop = () => {
+    stage.style.cursor = ''
+    stage.removeEventListener('pointermove', onMove)
+    stage.removeEventListener('pointerup', onStop)
+    stage.removeEventListener('pointercancel', onStop)
+  }
+  stage.addEventListener('pointermove', onMove)
+  stage.addEventListener('pointerup', onStop)
+  stage.addEventListener('pointercancel', onStop)
 }
 
 function resolveMdImgPath(dir: string, src: string): string {
@@ -950,7 +1006,10 @@ function fmtSize(n: number): string {
               </div>
             </div>
             <div class="scroll-thin min-h-0 flex-1 overflow-auto p-6" @wheel="onMermaidViewerWheel">
-              <div class="mx-auto flex min-h-full w-full items-center justify-center">
+              <div
+                class="mx-auto flex min-h-full w-full cursor-grab items-center justify-center active:cursor-grabbing"
+                @pointerdown="onMermaidViewerPointerDown"
+              >
                 <img
                   :src="mermaidViewerUrl"
                   alt="Mermaid 图表全屏预览"
@@ -1136,6 +1195,8 @@ function fmtSize(n: number): string {
 }
 .md-body :deep(pre.mermaid svg) {
   flex: 0 0 auto;
+  cursor: grab;
+  touch-action: none;
   width: calc(100% * var(--mermaid-zoom, 1));
   height: auto;
   max-width: none;
