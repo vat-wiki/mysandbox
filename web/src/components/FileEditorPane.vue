@@ -33,7 +33,7 @@ import {
   type FileView,
   type GitDiffView,
 } from '@/lib/api'
-import { Music, Pencil, Eye } from 'lucide-vue-next'
+import { Music, Pencil, Eye, X } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
@@ -113,13 +113,14 @@ const svgUrl = computed(() => {
 // 相对路径的 <img> 换成 fetchFileBlob 的 objectURL：相对段相对 md 所在目录、`/` 开头
 // 按容器路径原样，`..` 逐段归一化；同图只取一次流。
 marked.setOptions({ gfm: true, breaks: true })
-// mermaid 代码块 → pre.mermaid 占位（hydrateMdMermaid 懒加载渲染成 SVG）；其余语言
-// return false 落回 marked 默认渲染。源码做 HTML 转义进 text，pre/class 都在 DOMPurify 白名单内
+// mermaid 代码块 → wrapper + pre.mermaid 占位（hydrateMdMermaid 懒加载渲染成 SVG）；
+// wrapper 承载缩放工具与缩放变量；其余语言 return false 落回 marked 默认渲染。
+// 源码做 HTML 转义进 text，pre/class 都在 DOMPurify 白名单内
 marked.use({
   renderer: {
     code({ text, lang }) {
       if ((lang ?? '').trim().toLowerCase() !== 'mermaid') return false
-      return `<pre class="mermaid">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`
+      return `<div class="mermaid-view"><pre class="mermaid">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></div>`
     },
   },
 })
@@ -128,11 +129,85 @@ const mdHtml = computed(() => {
   return DOMPurify.sanitize(marked.parse(content.value, { async: false }))
 })
 const mdBody = ref<HTMLElement | null>(null)
+const mermaidViewerUrl = ref('')
+const mermaidViewerScale = ref(1)
 let mdBlobUrls: string[] = []
 let mdImgSeq = 0
 function clearMdBlobs() {
   for (const u of mdBlobUrls) URL.revokeObjectURL(u)
   mdBlobUrls = []
+}
+
+function clampMermaidZoom(value: number): number {
+  return Math.min(3, Math.max(0.5, Math.round(value * 100) / 100))
+}
+
+function setMermaidZoom(view: HTMLElement, value: number) {
+  view.style.setProperty('--mermaid-zoom', clampMermaidZoom(value).toString())
+}
+
+function zoomMermaidView(view: HTMLElement, delta: number) {
+  const current = Number(view.style.getPropertyValue('--mermaid-zoom') || 1)
+  setMermaidZoom(view, current + delta)
+}
+
+// 工具条不进 Markdown HTML（v-html 内容每次会被 DOMPurify 重洗），
+// 渲染挂载后用 DOM 注入；点击逻辑统一委托给 md-body，避免每图重复绑事件。
+function attachMermaidControls(root: HTMLElement) {
+  for (const view of Array.from(root.querySelectorAll<HTMLElement>('.mermaid-view'))) {
+    if (view.querySelector(':scope > .mermaid-toolbar')) continue
+    const toolbar = document.createElement('div')
+    toolbar.className = 'mermaid-toolbar'
+    for (const [action, text, title] of [
+      ['out', '−', '缩小'],
+      ['in', '+', '放大'],
+      ['fullscreen', '⛶', '全屏查看'],
+      ['reset', '↺', '恢复大小'],
+    ] as const) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.dataset.mermaidAction = action
+      button.textContent = text
+      button.title = title
+      toolbar.append(button)
+    }
+    view.prepend(toolbar)
+  }
+}
+
+function openMermaidViewer(view: HTMLElement) {
+  const svg = view.querySelector<SVGSVGElement>('svg')
+  if (!svg) return
+  const source = new XMLSerializer().serializeToString(svg)
+  mermaidViewerUrl.value = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`
+  mermaidViewerScale.value = 1
+}
+
+function onMermaidAction(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  const button = target.closest<HTMLElement>('[data-mermaid-action]')
+  const view = target.closest<HTMLElement>('.mermaid-view')
+  if (!view) return
+  if (!button) return
+  event.preventDefault()
+  const action = button.dataset.mermaidAction
+  if (action === 'in') zoomMermaidView(view, 0.2)
+  else if (action === 'out') zoomMermaidView(view, -0.2)
+  else if (action === 'reset') setMermaidZoom(view, 1)
+  else if (action === 'fullscreen') openMermaidViewer(view)
+}
+
+// Ctrl + 滚轮直接缩放内嵌图；普通滚轮仍交给 Markdown 文档滚动。
+function onMermaidWheel(event: WheelEvent) {
+  if (!event.ctrlKey) return
+  const view = (event.target as HTMLElement).closest<HTMLElement>('.mermaid-view')
+  if (!view) return
+  event.preventDefault()
+  zoomMermaidView(view, event.deltaY < 0 ? 0.2 : -0.2)
+}
+
+function zoomMermaidViewer(delta: number) {
+  mermaidViewerScale.value = clampMermaidZoom(mermaidViewerScale.value + delta)
 }
 function resolveMdImgPath(dir: string, src: string): string {
   const raw = src.startsWith('/') ? src : dir + src
@@ -180,8 +255,13 @@ async function hydrateMdMermaid() {
   if (!root) return
   const nodes = Array.from(root.querySelectorAll<HTMLElement>('pre.mermaid:not([data-processed])'))
   if (!nodes.length) return
+  attachMermaidControls(root)
   const seq = ++mdMmdSeq
   await hydrateMermaid(nodes, () => seq !== mdMmdSeq)
+  for (const view of Array.from(root.querySelectorAll<HTMLElement>('.mermaid-view'))) {
+    const svg = view.querySelector<SVGSVGElement>('svg')
+    if (svg) svg.style.maxWidth = 'none'
+  }
 }
 watch(
   mdHtml,
@@ -195,6 +275,7 @@ onBeforeUnmount(() => {
   if (autosaveTimer) clearTimeout(autosaveTimer)
   clearPreview()
   clearMdBlobs()
+  mermaidViewerUrl.value = ''
 })
 
 const dirty = computed(() => content.value !== savedContent.value)
@@ -796,6 +877,8 @@ function fmtSize(n: number): string {
             ref="mdBody"
             class="md-body scroll-thin min-h-0 flex-1 overflow-auto px-8 py-5"
             v-html="mdHtml"
+            @click="onMermaidAction"
+            @wheel.capture="onMermaidWheel"
           />
           <template v-else>
             <p v-if="err" class="px-5 py-2 text-xs text-destructive">{{ err }}</p>
@@ -830,6 +913,41 @@ function fmtSize(n: number): string {
           >
             <Eye class="size-4" />
           </Button>
+          <!-- Mermaid 全屏查看器：复制当前已渲染 SVG 为 data URL，避免内嵌 SVG 的
+               id 与文档其他图表冲突；缩放用百分比宽度，溢出由外层滚动容器承担 -->
+          <div
+            v-if="mermaidViewerUrl"
+            class="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-sm"
+            @click.self="mermaidViewerUrl = ''"
+          >
+            <div class="flex items-center justify-between gap-3 border-b px-4 py-2">
+              <div class="text-sm text-muted-foreground">Mermaid 预览 · {{ Math.round(mermaidViewerScale * 100) }}%</div>
+              <div class="flex items-center gap-1">
+                <Button variant="ghost" size="icon" title="缩小" @click="zoomMermaidViewer(-0.2)">
+                  −
+                </Button>
+                <Button variant="ghost" size="icon" title="放大" @click="zoomMermaidViewer(0.2)">
+                  +
+                </Button>
+                <Button variant="ghost" size="icon" title="恢复大小" @click="mermaidViewerScale = 1">
+                  ↺
+                </Button>
+                <Button variant="ghost" size="icon" title="关闭" @click="mermaidViewerUrl = ''">
+                  <X class="size-4" />
+                </Button>
+              </div>
+            </div>
+            <div class="scroll-thin min-h-0 flex-1 overflow-auto p-6">
+              <div class="mx-auto flex min-h-full w-fit items-center">
+                <img
+                  :src="mermaidViewerUrl"
+                  alt="Mermaid 图表全屏预览"
+                  class="max-w-none rounded bg-background shadow-lg"
+                  :style="{ width: `${mermaidViewerScale * 100}%` }"
+                >
+              </div>
+            </div>
+          </div>
         </div>
       </template>
     </div>
@@ -963,15 +1081,50 @@ function fmtSize(n: number): string {
 }
 /* mermaid 占位块：渲染成功后原地换成 SVG（居中铺放），剥掉代码块的 muted 底；
    解析失败保留源码便于就地改，红框示意 */
+.md-body :deep(.mermaid-view) {
+  position: relative;
+}
 .md-body :deep(pre.mermaid) {
   display: flex;
   justify-content: center;
   background: transparent;
   padding: 1em 0.5em;
 }
+.md-body :deep(.mermaid-toolbar) {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 1;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.md-body :deep(.mermaid-view:hover .mermaid-toolbar),
+.md-body :deep(.mermaid-view:focus-within .mermaid-toolbar) {
+  opacity: 1;
+}
+.md-body :deep(.mermaid-toolbar button) {
+  display: inline-flex;
+  height: 1.75rem;
+  width: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+.md-body :deep(.mermaid-toolbar button:hover) {
+  background: var(--color-accent);
+}
 .md-body :deep(pre.mermaid svg) {
-  max-width: 100%;
+  width: calc(100% * var(--mermaid-zoom, 1));
   height: auto;
+  max-width: none;
 }
 .md-body :deep(pre.mermaid.mermaid-bad) {
   justify-content: flex-start;
