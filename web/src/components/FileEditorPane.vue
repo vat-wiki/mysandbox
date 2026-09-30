@@ -139,7 +139,7 @@ function clearMdBlobs() {
 }
 
 function clampMermaidZoom(value: number): number {
-  return Math.min(3, Math.max(0.5, Math.round(value * 100) / 100))
+  return Math.min(8, Math.max(0.5, Math.round(value * 100) / 100))
 }
 
 function setMermaidZoom(view: HTMLElement, value: number) {
