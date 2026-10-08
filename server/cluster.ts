@@ -696,14 +696,21 @@ async function detectPublicIp(): Promise<string> {
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 export function startHeartbeat(cfg: Config): void {
   if (heartbeatTimer) return;
-  // 启动清理：peers 为空但隧道还在跑（上次退出没 down 干净），拆掉。
-  loadWgState().then((state) => {
-    if (state && state.peers.length === 0) {
+  // 启动追平：peers 为空但隧道还在跑（上次退出没 down 干净）就拆掉；有 peers 则按
+  // 落盘状态重建隧道。失败不阻断控制台启动，日志里保留原因供排查。
+  loadWgState().then(async (state) => {
+    if (!state) return;
+    if (state.peers.length === 0) {
       import('./wireguard.js').then(({ wgStatus, wgDown }) =>
         wgStatus().then((s) => { if (s.up) return wgDown(); }),
       ).catch(() => {});
+      return;
     }
-  }).catch(() => {});
+    if (!(await wgSupported())) return;
+    return rebuildTunnel(state);
+  }).catch((e) => {
+    log.warn({ err: String(e) }, 'wireguard: 启动重建隧道失败');
+  });
   heartbeatTimer = setInterval(() => { heartbeat(cfg).catch(() => {}); }, 30_000);
   heartbeatTimer.unref();
 }
