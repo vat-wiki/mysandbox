@@ -22,6 +22,7 @@ import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
 import { startServicesEventSync } from './services.js';
 import { ensureComposeRoot } from './serviceCompose.js';
 import { startDockerApiBridge } from './dockerApi.js';
+import { startAndroidAdbBridge } from './androidBridge.js';
 import { getVersion } from './version.js';
 
 interface Args {
@@ -261,6 +262,8 @@ async function main(): Promise<void> {
   // 宿主 docker API 桥（dockerApi.enabled）：容器内 docker CLI → 宿主 dockerd 的
   // TCP 透传（server/dockerApi.ts，绑网关 IP:2375，失败非致命）。
   startDockerApiBridge(config);
+  // 安卓 ADB 桥（android.enabled）：容器内 adb → 宿主 ADB server 的 TCP 透传。
+  startAndroidAdbBridge(config);
   // peer API（peer.enabled）：容器间命令互通的转发枢纽（server/peer.ts，绑网关
   // IP:peer.port，失败非致命）——容器内 `mysandbox exec <目标> -- 命令` 打到这里。
   startPeerApi(config);

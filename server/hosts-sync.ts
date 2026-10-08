@@ -16,6 +16,7 @@ import { listComposeDirServices } from './serviceCompose.js';
 import { relayContainerState } from './events.js';
 import { adoptedContainerNames, getAllServiceMeta } from './state.js';
 import { DOCKER_API_HOSTNAME } from './dockerApi.js';
+import { ANDROID_ADB_HOSTNAME } from './androidBridge.js';
 import { gatewayOf } from './network.js';
 import { peerServiceEndpoints } from './cluster.js';
 import { log } from './logger.js';
@@ -31,6 +32,8 @@ async function currentSvcLines(cfg: Config): Promise<string[]> {
   // 与 docker 服务行同走一个 services 尾块——同一套读-改-写/事件追平/启动补刷，块被剥
   // 一起剥。域名固定不随 ipPool 变：改池子只动这一行，容器内 DOCKER_HOST 永不重配。
   if (cfg.dockerApi.enabled) endpoints.push({ name: DOCKER_API_HOSTNAME, ip: gatewayOf(cfg) });
+  // ADB 桥：host.android.internal → 网关 IP，容器内 adb 客户端直连宿主 ADB server。
+  if (cfg.android.enabled) endpoints.push({ name: ANDROID_ADB_HOSTNAME, ip: gatewayOf(cfg) });
   if (cfg.services.enabled) {
     // 服务事实源三源并集：label 集 ∪ adopted meta（收编无 label；栈按成员容器名展开）
     // ∪ compose 目录注册表（agent 自放文件的服务容器同样无我们的 label，靠 project 命中）。

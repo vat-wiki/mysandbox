@@ -113,6 +113,16 @@ dockerApi:
   enabled: false
   socket: /var/run/docker.sock
 
+# 安卓 ADB 桥（server/androidBridge.ts）——容器内 adb 客户端远连宿主 ADB server，宿主
+# server 继续独占 USB；容器不接管 USB，也不另起 ADB server。开启后 mysandbox 进程内
+# 代理网关 IP:5037 → 宿主 127.0.0.1:5037，hosts 自动加 host.android.internal，shell/exec
+# 自动注入 ADB_SERVER_SOCKET；模板预装 adb 客户端，存量容器需 sudo apt install adb。
+# ⚠️ 安全：ADB server 可 shell/安装/读写设备。端口只对自管网段可达；默认关，明确要才开。
+android:
+  enabled: false
+  host: 127.0.0.1
+  port: 5037
+
 # peer API（server/peer.ts）——容器间命令互通的转发枢纽：在系统容器里
 # `mysandbox exec <目标> -- 命令` 可在宿主 / 其他系统容器 / 应用容器上执行命令
 # （宿主代为 lxc-attach / docker exec），目标: host | c:<容器名> | s:<服务名>，

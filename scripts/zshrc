@@ -33,6 +33,13 @@ if command -v docker >/dev/null 2>&1 && getent hosts host.docker.internal >/dev/
   export DOCKER_HOST=tcp://host.docker.internal:2375
 fi
 
+# —— 安卓 ADB 桥：宿主 ADB server 独占 USB，容器客户端远连它 ——
+# mysandbox android 开启时，hosts-sync 写入 host.android.internal（= 网关 IP），宿主进程
+# 内代理 5037 → 宿主 ADB server。条目存在才导出；adb 客户端不在时不动环境。
+if command -v adb >/dev/null 2>&1 && getent hosts host.android.internal >/dev/null 2>&1; then
+  export ADB_SERVER_SOCKET=tcp:host.android.internal:5037
+fi
+
 # —— 动态终端标题：执行中 = 命令行、空闲 = 用户@主机:路径（OSC 2）——
 # web 终端 tab 标签依赖它：tmux 侧 set-titles on（terminal.ts/hostTerminal.ts 每次
 # attach 设置）把 pane title 转发给前端 xterm 的 onTitleChange。omz 自带的 termsupport

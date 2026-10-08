@@ -125,7 +125,7 @@ sed -i "s|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g; s
 apt-get update
 apt-get install -y --no-install-recommends \
   zsh git openssh-client ca-certificates jq curl less vim-tiny xz-utils tzdata tmux \
-  zsh-autosuggestions zsh-syntax-highlighting \
+  zsh-autosuggestions zsh-syntax-highlighting adb \
   python3 make g++ sudo bsdutils locales \
   xvfb x11vnc xfce4 xfce4-terminal dbus-x11 \
   fontconfig fonts-noto-cjk
@@ -306,6 +306,7 @@ chk "node"                'command -v node'
 chk "claude"              '[ -x /home/dev/.local/bin/claude ]'
 chk "gh"                  'command -v gh'
 chk "docker cli"          'command -v docker'
+chk "adb cli"             'command -v adb'
 chk "sudo 免密"           '[ -f /etc/sudoers.d/dev ]'
 chk "skel zshrc"          '[ -f /etc/skel-home/.zshrc ]'
 chk "oh-my-zsh"           '[ -f /usr/share/oh-my-zsh/oh-my-zsh.sh ]'

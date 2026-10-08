@@ -31,6 +31,7 @@ import { getAllMeta } from '../state.js';
 import { log } from '../logger.js';
 import { notFound, conflict, badRequest } from '../errors.js';
 import { DOCKER_API_HOSTNAME, DOCKER_API_PORT } from '../dockerApi.js';
+import { ANDROID_ADB_HOSTNAME, ANDROID_ADB_PORT } from '../androidBridge.js';
 import type {
   Engine,
   EngineEvent,
@@ -599,6 +600,10 @@ function execArgv(cfg: Config, opts: ExecOpts): string[] {
     // 由 hosts-sync 写进容器 /etc/hosts；Windows 上 Docker Desktop 另有自答，互不冲突。
     ...(cfg.dockerApi.enabled
       ? [`DOCKER_HOST=tcp://${DOCKER_API_HOSTNAME}:${DOCKER_API_PORT}`]
+      : []),
+    // ADB 桥：同 lxc.ts attachArgs；host.android.internal 由 hosts-sync 维护。
+    ...(cfg.android.enabled
+      ? [`ADB_SERVER_SOCKET=tcp:${ANDROID_ADB_HOSTNAME}:${ANDROID_ADB_PORT}`]
       : []),
     ...(opts.Env ?? []),
   ];

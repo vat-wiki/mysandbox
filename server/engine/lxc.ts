@@ -37,6 +37,7 @@ import { log } from '../logger.js';
 import { notFound, conflict, badRequest } from '../errors.js';
 import { gatewayOf, allocate } from '../network.js';
 import { DOCKER_API_HOSTNAME, DOCKER_API_PORT } from '../dockerApi.js';
+import { ANDROID_ADB_HOSTNAME, ANDROID_ADB_PORT } from '../androidBridge.js';
 import {
   templateStatus,
   templateSize,
@@ -673,6 +674,10 @@ function attachArgs(cfg: Config, name: string, opts: ExecOpts): string[] {
     // tmux 老 server 起的 shell 吃不到这里的 env，scripts/zshrc 里有同款条件导出兜底。
     ...(cfg.dockerApi.enabled
       ? [`DOCKER_HOST=tcp://${DOCKER_API_HOSTNAME}:${DOCKER_API_PORT}`]
+      : []),
+    // ADB 桥：容器内 adb 客户端统一远连宿主 ADB server；host.android.internal 由 hosts-sync 维护。
+    ...(cfg.android.enabled
+      ? [`ADB_SERVER_SOCKET=tcp:${ANDROID_ADB_HOSTNAME}:${ANDROID_ADB_PORT}`]
       : []),
     ...(opts.Env ?? []),
   ];

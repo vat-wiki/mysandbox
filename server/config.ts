@@ -163,6 +163,16 @@ export const ConfigSchema = z.object({
       socket: z.string().default('/var/run/docker.sock'),
     })
     .default({ enabled: false, socket: '/var/run/docker.sock' }),
+  // 安卓 ADB 桥（server/androidBridge.ts）：容器内 ADB 客户端直连宿主 ADB server，
+  // 宿主 ADB server 继续独占 USB；容器不接管 USB，也不另起 ADB server。
+  android: z
+    .object({
+      enabled: z.boolean().default(false),
+      // 宿主 ADB server 地址；网桥监听始终绑网关 IP 的 ADB 约定端口 5037。
+      host: z.string().default('127.0.0.1'),
+      port: z.number().int().default(5037),
+    })
+    .default({ enabled: false, host: '127.0.0.1', port: 5037 }),
   // Web 代理（server/proxy.ts）：面板外经 mysandbox 访问容器/服务的 HTTP(+WS) 端口。
   proxy: z
     .object({
@@ -298,6 +308,7 @@ export async function loadConfig(): Promise<LoadResult> {
       terminal: parsed.terminal,
       firewall: parsed.firewall,
       dockerApi: parsed.dockerApi,
+      android: parsed.android,
       proxy: parsed.proxy,
       peer: parsed.peer,
       skills: parsed.skills,
