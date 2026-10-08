@@ -37,14 +37,13 @@ function findWebDist(): string | null {
 }
 
 export async function buildServer(cfg: Config) {
-  // 自签名 TLS（listen.tls）：本地 CA + 泛域名叶子，持久化 + 惰性重签（见 tls.ts）。
+  // listen.tls 现在描述 HTTPS 门面（server/facade.ts），控制台本体恒为 HTTP。
   const tls = cfg.listen.tls ? await ensureTlsMaterial(cfg) : null;
   // rewriteUrl：vhost 门面的入口（HTTP 与 WS upgrade 都经 fastify.routing，都吃到改写）。
   // 必须在 Fastify() 构造时传入——它包在路由分发最外层（fastify.js wrapRouting）。
   const app = Fastify({
     logger: loggerOptions,
     rewriteUrl: makeRewriteUrl(cfg),
-    ...(tls ? { https: { key: tls.key, cert: tls.cert } } : {}),
   });
   await app.register(websocket);
 

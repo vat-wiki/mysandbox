@@ -369,7 +369,6 @@ if [ -f "$CFG" ]; then
   grep -E '^[[:space:]]*tls:' "$CFG" | head -n1 | grep -q true && LISTEN_TLS=1
 fi
 SCHEME=http; CURL_OPTS=()
-[ "$LISTEN_TLS" = 1 ] && { SCHEME=https; CURL_OPTS=(-k); }
 
 log "探活 $SCHEME://$LISTEN_HOST:$LISTEN_PORT/api/health"
 HEALTH=""
@@ -386,8 +385,8 @@ done
 # ---------- 端口免带门面（443 socket 激活）----------
 # 443 是特权端口而 mysandbox 是无特权 user service（user unit 拿不到 CAP_NET_BIND_SERVICE，
 # 实测 exit 218）。socket unit 由 root systemd 持被动监听 fd（空闲零进程），
-# systemd-socket-proxyd 字节级透传到 mysandbox listen（TLS 由 mysandbox 终结，本体零改动）。
-# 透传目标复用上面的 LISTEN_HOST/LISTEN_PORT（host auto 已按 _auto_host 解析）。
+# Node HTTPS 门面终结 TLS 后回源到 mysandbox HTTP 本体（见 server/facade.ts）。
+# 回源目标复用上面的 LISTEN_HOST/LISTEN_PORT（host auto 已按 _auto_host 解析）。
 # 外部网段访问 443 走 config firewall.allow（自管网段 blanket 天然覆盖）。
 if [ -f "$SELF_DIR/mysandbox-console.socket" ]; then
   log "8.5/8 端口免带门面（443 → $LISTEN_HOST:$LISTEN_PORT）"
@@ -398,7 +397,8 @@ if [ -f "$SELF_DIR/mysandbox-console.socket" ]; then
       -e "s|__MSB_BRIDGE__|$BRIDGE|g" \
       -e "s|__MSB_SUBNET__|$SUBNET|g" \
       -e "s|__MSB_GW__|$GW|g" \
-      -e "s|__MSB_CONSOLE_TARGET__|${LISTEN_HOST}:${LISTEN_PORT}|g" \
+      -e "s|__MSB_CONSOLE_HOST__|${LISTEN_HOST}|g" \
+      -e "s|__MSB_CONSOLE_PORT__|${LISTEN_PORT}|g" \
       "$SELF_DIR/mysandbox-console.service" > "$UNIT_DIR/mysandbox-console.service"
   systemctl daemon-reload
   systemctl enable mysandbox-console.socket >/dev/null

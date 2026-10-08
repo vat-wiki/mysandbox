@@ -274,15 +274,14 @@ async function main(): Promise<void> {
   process.stdout.write(
     `>> mysandbox ${getVersion()}  ${engine.name} ${d.version ?? '?'}${d.apiVersion ? ` (api ${d.apiVersion})` : ''}\n`,
   );
-  const scheme = config.listen.tls ? 'https' : 'http';
-  process.stdout.write(`>> web UI:  ${scheme}://${config.listen.host}:${config.listen.port}\n`);
+  process.stdout.write(`>> web UI:  http://${config.listen.host}:${config.listen.port}\n`);
   // 域名口径（代理门面用）与 IP 口径平级——IP 导航不做重定向，端口点击跟随控制台
   // 访问口径（IP 口径直连目标 IP，见 web/src/lib/proxy.ts），这里把两个入口都列出来。
   if (config.proxy.vhost !== 'off') {
     const bases = await proxyBases(config);
     if (bases[0]) {
-      const defPort = config.listen.tls ? 443 : 80;
-      const portPart = config.listen.port === defPort ? '' : `:${config.listen.port}`;
+      const scheme = config.listen.tls ? 'https' : 'http';
+      const portPart = config.listen.tls ? '' : (config.listen.port === 80 ? '' : `:${config.listen.port}`);
       process.stdout.write(`>> web UI(域名): ${scheme}://${bases[0].base}${portPart}\n`);
     }
   }
