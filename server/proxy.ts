@@ -45,6 +45,7 @@
 // - 转发上游前剥掉 cookie 与 x-sandbox-token（token 不出面板，不喂给被代理应用）。
 // - SameSite=Strict：控制台内 window.open（同站）与地址栏直贴都带 cookie；从其他
 //   站点点链接会 401 → 引导页给控制台链接，接受。
+import { timingSafeEqual } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { connect as netConnect } from 'node:net';
@@ -59,7 +60,14 @@ import { containerIpamIp, listServiceContainers } from './docker.js';
 import { adoptedServiceNames, getAllServiceMeta } from './state.js';
 import { log } from './logger.js';
 import { badRequest, notFound } from './errors.js';
-import { COOKIE_NAME, tokenValid } from './auth.js';
+import { COOKIE_NAME, proxySessionToken, tokenValid } from './auth.js';
+
+// 代理专用固定账号：只用于换取 /proxy 会话 cookie，不能访问 /api、/ws 或控制台。
+// 第一版先内置；后续要分用户/审计/轮换时，应挪进 sidecar 或 config，并保持 0600。
+const PROXY_ACCOUNT = {
+  username: 'wangwen',
+  password: '18062123947',
+} as const;
 
 // 代理 URL 解析的预过滤（白名单 map 才是权威，这里只挡明显不是目标名的串）：
 // 比 services.ts 创建侧的 NAME_RE 宽——`_` 放行（compose 收编容器名惯例）、长度放宽
@@ -423,24 +431,53 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
     reply.header('vary', 'Origin');
   }
 
-  function sessionToken(req: FastifyRequest): string | undefined {
+  function safeEqual(a: string, b: string): boolean {
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    return ab.length === bb.length && timingSafeEqual(ab, bb);
+  }
+
+  function sessionCredentials(req: FastifyRequest): {
+    token?: string;
+    username?: string;
+    password?: string;
+  } {
     const header = req.headers['x-sandbox-token'];
-    const body = req.body as { token?: unknown } | undefined;
-    if (typeof header === 'string') return header;
-    return typeof body?.token === 'string' ? body.token : undefined;
+    const body = req.body as {
+      token?: unknown;
+      username?: unknown;
+      password?: unknown;
+    } | undefined;
+    return {
+      token: typeof header === 'string' ? header : typeof body?.token === 'string' ? body.token : undefined,
+      username: typeof body?.username === 'string' ? body.username.trim() : undefined,
+      password: typeof body?.password === 'string' ? body.password : undefined,
+    };
+  }
+
+  function sessionValid(req: FastifyRequest, cfg: Config): boolean {
+    const credentials = sessionCredentials(req);
+    if (credentials.token) return tokenValid(credentials.token, cfg);
+    return safeEqual(credentials.username ?? '', PROXY_ACCOUNT.username)
+      && safeEqual(credentials.password ?? '', PROXY_ACCOUNT.password);
   }
 
   app.post('/api/auth/session', async (req, reply) => {
-    const token = sessionToken(req);
     allowSessionOrigin(req, reply, bases);
-    if (!tokenValid(token, cfg)) {
+    if (!sessionValid(req, cfg)) {
       return reply.code(401).send({
         error: { code: 'unauthorized', message: 'invalid or missing token' },
       });
     }
+    const session = proxySessionToken(cfg);
+    if (!session) {
+      return reply.code(500).send({
+        error: { code: 'internal', message: 'server token is not configured' },
+      });
+    }
     const attrs = `Path=/; HttpOnly; SameSite=Strict; Max-Age=${60 * 60 * 24 * 365}`;
-    const cookies = new Set<string>([`${COOKIE_NAME}=${cfg.token}; ${attrs}`]);
-    for (const b of bases) cookies.add(`${COOKIE_NAME}=${cfg.token}; Domain=${b.base}; ${attrs}`);
+    const cookies = new Set<string>([`${COOKIE_NAME}=${session}; ${attrs}`]);
+    for (const b of bases) cookies.add(`${COOKIE_NAME}=${session}; Domain=${b.base}; ${attrs}`);
     reply.header('set-cookie', [...cookies]);
     return { ok: true };
   });
@@ -671,8 +708,10 @@ body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:c
 .card{width:min(460px,calc(100vw - 32px));padding:36px 40px;border:1px solid #27272a;border-radius:14px;background:#131316}
 h1{font-size:17px;font-weight:600;margin:0 0 10px}
 p{margin:6px 0;color:#d4d4d8}
-.row{display:flex;gap:8px;margin-top:18px}
-input{flex:1;min-width:0;padding:8px 10px;border:1px solid #3f3f46;border-radius:8px;background:#09090b;color:#e4e4e7;font:inherit}
+.stack{margin-top:16px;display:flex;flex-direction:column;gap:12px}
+.field{display:flex;flex-direction:column;gap:6px}
+label{font-size:13px;color:#a1a1aa}
+input{width:100%;padding:8px 10px;border:1px solid #3f3f46;border-radius:8px;background:#09090b;color:#e4e4e7;font:inherit}
 input:focus{outline:2px solid #60a5fa;outline-offset:1px;border-color:transparent}
 button{padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
 button:disabled{opacity:.65;cursor:not-allowed}
@@ -681,9 +720,20 @@ button:disabled{opacity:.65;cursor:not-allowed}
 a{color:#93c5fd}
 </style></head><body><div class="card">
 <h1>登录 mysandbox 代理</h1>
-<p>粘贴控制台 token。校验通过后只生成 HttpOnly 代理会话 cookie，并自动返回当前页面。</p>
-<form id="sb-login" class="row">
-  <input id="sb-token" type="password" autocomplete="current-password" placeholder="粘贴 token" required>
+<p>使用账号密码或控制台 token。校验通过后只生成 HttpOnly 代理会话 cookie，并自动返回当前页面。</p>
+<form id="sb-login" class="stack">
+  <div class="field">
+    <label for="sb-user">账号</label>
+    <input id="sb-user" autocomplete="username" placeholder="账号">
+  </div>
+  <div class="field">
+    <label for="sb-pass">密码</label>
+    <input id="sb-pass" type="password" autocomplete="current-password" placeholder="密码">
+  </div>
+  <div class="field">
+    <label for="sb-token">Token（可选）</label>
+    <input id="sb-token" type="password" autocomplete="off" placeholder="有控制台 token 时可跳过账号密码">
+  </div>
   <button id="sb-submit" type="submit">登录</button>
 </form>
 <p id="sb-error" class="error" role="alert" hidden></p>
@@ -695,13 +745,21 @@ a{color:#93c5fd}
   var o = a.dataset.origin === '/' ? '' : a.dataset.origin;
   a.href = o + '/?proxyBack=' + encodeURIComponent(location.href);
   var form = document.getElementById('sb-login');
+  var user = document.getElementById('sb-user');
+  var pass = document.getElementById('sb-pass');
   var input = document.getElementById('sb-token');
   var button = document.getElementById('sb-submit');
   var error = document.getElementById('sb-error');
   form.addEventListener('submit', function (event) {
     event.preventDefault();
     var token = input.value.trim();
-    if (!token) return;
+    var username = user.value.trim();
+    var password = pass.value;
+    if (!token && (!username || !password)) {
+      error.textContent = '请输入账号和密码，或粘贴 token';
+      error.hidden = false;
+      return;
+    }
     button.disabled = true;
     button.textContent = '验证中…';
     error.hidden = true;
@@ -709,7 +767,7 @@ a{color:#93c5fd}
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: token })
+      body: JSON.stringify(token ? { token: token } : { username: username, password: password })
     }).then(function (res) {
       if (res.ok) { location.reload(); return; }
       return res.json().catch(function () { return null; });

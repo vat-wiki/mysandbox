@@ -3,19 +3,36 @@
 // POST /api/auth/session 种下的会话 cookie（Path=/，但仅在 /proxy 门面被承认，
 // 见 server/proxy.ts）。
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Config } from './config.js';
 
 // cookie 名。代理转上游前会剥掉（token 不出面板，不喂给被代理应用）。
 export const COOKIE_NAME = 'mysandbox_token';
 
-export function tokenValid(provided: string | undefined, cfg: Config): boolean {
+// 代理会话 cookie 的值是主 token 的 HMAC 派生值：账号密码登录者从 devtools 里也只
+// 能看到代理凭据，不能拿它作为 X-Sandbox-Token 打 /api。
+const PROXY_SESSION_CONTEXT = 'mysandbox:proxy-session';
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+export function proxySessionToken(cfg: Config): string {
+  if (!cfg.token) return '';
+  return createHmac('sha256', cfg.token).update(PROXY_SESSION_CONTEXT).digest('base64url');
+}
+
+export function tokenValid(
+  provided: string | undefined,
+  cfg: Config,
+  allowCookie = false,
+): boolean {
   const expected = cfg.token;
   if (!expected || !provided) return false;
-  const a = Buffer.from(expected);
-  const b = Buffer.from(provided);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  if (safeEqual(expected, provided)) return true;
+  return allowCookie && safeEqual(provided, proxySessionToken(cfg));
 }
 
 export function extractToken(req: FastifyRequest, allowCookie = false): string | undefined {
@@ -51,7 +68,7 @@ export async function requireToken(
   cfg: Config,
   allowCookie = false,
 ): Promise<void> {
-  if (!tokenValid(extractToken(req, allowCookie), cfg)) {
+  if (!tokenValid(extractToken(req, allowCookie), cfg, allowCookie)) {
     await reply.code(401).send({
       error: { code: 'unauthorized', message: 'invalid or missing token' },
     });
@@ -60,5 +77,5 @@ export async function requireToken(
 
 // 布尔版：index.ts 的 hook 对 /proxy 浏览器导航要先判再回 HTML 引导页（而非 JSON 401）。
 export function tokenOk(req: FastifyRequest, cfg: Config, allowCookie = false): boolean {
-  return tokenValid(extractToken(req, allowCookie), cfg);
+  return tokenValid(extractToken(req, allowCookie), cfg, allowCookie);
 }

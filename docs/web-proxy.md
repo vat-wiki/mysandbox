@@ -66,11 +66,12 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
   extractToken 的 allowCookie），`/api/*`、`/ws/*` 维持 header/query-only——被代理
   页面里的 JS 拿着 cookie 打不进控制台 API，爆炸半径不因 Path=/ 而扩。
 - SameSite=Strict：控制台内 window.open（同站）与地址栏直贴都带 cookie；从其他应用
-  点链接会 401 → HTML 登录页（`proxyUnauthorizedHtml`）。页面可直接粘贴控制台
-  token：fetch 到 `/api/auth/session`（基域 origin）校验后种 cookie，再 reload 当前
-  代理页。该端点是唯一绕过全局 token hook 的 `/api` 路径，由路由自己校验 token；
-  CORS 只放行代理基域下的 same-site origin。控制台链接保留兜底，链接带 `?proxyBack=`
-  回跳参数——App 种完 cookie 校验目标 host 在基域名内后自动送回（防开放重定向）。
+  点链接会 401 → HTML 登录页（`proxyUnauthorizedHtml`）。页面可直接输入代理专用
+  账号密码，或粘贴控制台 token：fetch 到 `/api/auth/session`（基域 origin）校验后
+  种 cookie，再 reload 当前代理页。该端点是唯一绕过全局 token hook 的 `/api` 路径，
+  由路由自己校验凭证；CORS 只放行代理基域下的 same-site origin。控制台链接保留
+  兜底，链接带 `?proxyBack=` 回跳参数——App 种完 cookie 校验目标 host 在基域名内后
+  自动送回（防开放重定向）。
 - 未授权的浏览器导航（GET + Accept html）回 HTML 引导页而非 JSON；其余回 JSON 401。
 
 ## 两种访问口径（IP 直连 ⇄ 域名代理）
