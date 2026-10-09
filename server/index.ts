@@ -63,6 +63,8 @@ export async function buildServer(cfg: Config) {
   app.addHook('onRequest', async (req, reply) => {
     const u = req.url;
     if (u.startsWith('/api/health')) return;
+    // session 自带 token 校验；vhost 401 内页要跨源调用它完成直接登录。
+    if (u === '/api/auth/session' && (req.method === 'POST' || req.method === 'OPTIONS')) return;
     const isProxy = u.startsWith('/proxy/');
     if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
       if (isProxy && req.method === 'GET' && !tokenOk(req, cfg, true)) {

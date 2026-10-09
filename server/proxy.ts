@@ -59,7 +59,7 @@ import { containerIpamIp, listServiceContainers } from './docker.js';
 import { adoptedServiceNames, getAllServiceMeta } from './state.js';
 import { log } from './logger.js';
 import { badRequest, notFound } from './errors.js';
-import { COOKIE_NAME } from './auth.js';
+import { COOKIE_NAME, tokenValid } from './auth.js';
 
 // 代理 URL 解析的预过滤（白名单 map 才是权威，这里只挡明显不是目标名的串）：
 // 比 services.ts 创建侧的 NAME_RE 宽——`_` 放行（compose 收编容器名惯例）、长度放宽
@@ -404,12 +404,52 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   // /api、/ws 维持 header/query-only（见 auth.ts extractToken 的 allowCookie）。
   // 每个候选基域各发一份 Domain cookie（浏览器拒收 domain-match 不成立的那份）：
   // 本机走 mysandbox.test，远程设备经 tailscale 域名开控制台也能种上。
-  app.post('/api/auth/session', async (_req, reply) => {
+  // session 是唯一的免 hook token 端点：token 有效性在路由内自己校验，错误只回 401。
+  // 401 内页在代理 vhost 上直接登录时是跨源（但 same-site）fetch，需要有限 CORS。
+  function allowSessionOrigin(req: FastifyRequest, reply: FastifyReply, bases: ProxyBase[]): void {
+    const origin = req.headers.origin;
+    if (typeof origin !== 'string') return;
+    try {
+      const u = new URL(origin);
+      const allowed = (u.protocol === 'http:' || u.protocol === 'https:') && bases.some(
+        (b) => u.hostname === b.base || u.hostname.endsWith(`.${b.base}`),
+      );
+      if (!allowed) return;
+    } catch {
+      return;
+    }
+    reply.header('access-control-allow-origin', origin);
+    reply.header('access-control-allow-credentials', 'true');
+    reply.header('vary', 'Origin');
+  }
+
+  function sessionToken(req: FastifyRequest): string | undefined {
+    const header = req.headers['x-sandbox-token'];
+    const body = req.body as { token?: unknown } | undefined;
+    if (typeof header === 'string') return header;
+    return typeof body?.token === 'string' ? body.token : undefined;
+  }
+
+  app.post('/api/auth/session', async (req, reply) => {
+    const token = sessionToken(req);
+    allowSessionOrigin(req, reply, bases);
+    if (!tokenValid(token, cfg)) {
+      return reply.code(401).send({
+        error: { code: 'unauthorized', message: 'invalid or missing token' },
+      });
+    }
     const attrs = `Path=/; HttpOnly; SameSite=Strict; Max-Age=${60 * 60 * 24 * 365}`;
     const cookies = new Set<string>([`${COOKIE_NAME}=${cfg.token}; ${attrs}`]);
     for (const b of bases) cookies.add(`${COOKIE_NAME}=${cfg.token}; Domain=${b.base}; ${attrs}`);
     reply.header('set-cookie', [...cookies]);
     return { ok: true };
+  });
+
+  app.options('/api/auth/session', async (req, reply) => {
+    allowSessionOrigin(req, reply, bases);
+    reply.header('access-control-allow-methods', 'POST');
+    reply.header('access-control-allow-headers', 'content-type, x-sandbox-token');
+    return reply.code(204).send();
   });
 
   // —— vhost 信息（前端拼代理 URL 与探测择优用；次选候选给远程设备）——
@@ -624,25 +664,64 @@ export function consoleOrigin(cfg: Config, primary: string | null): string {
 export function proxyUnauthorizedHtml(origin: string): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>mysandbox 代理 — 未授权</title>
+<title>mysandbox 代理 — 登录</title>
 <style>
 :root{color-scheme:dark}
 body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#09090b;color:#e4e4e7;font:15px/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-.card{max-width:580px;margin:16px;padding:36px 40px;border:1px solid #27272a;border-radius:14px;background:#131316}
+.card{width:min(460px,calc(100vw - 32px));padding:36px 40px;border:1px solid #27272a;border-radius:14px;background:#131316}
 h1{font-size:17px;font-weight:600;margin:0 0 10px}
 p{margin:6px 0;color:#d4d4d8}
+.row{display:flex;gap:8px;margin-top:18px}
+input{flex:1;min-width:0;padding:8px 10px;border:1px solid #3f3f46;border-radius:8px;background:#09090b;color:#e4e4e7;font:inherit}
+input:focus{outline:2px solid #60a5fa;outline-offset:1px;border-color:transparent}
+button{padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
+button:disabled{opacity:.65;cursor:not-allowed}
+.error{margin-top:10px;color:#f87171}
+.hint{margin-top:18px;font-size:13px;color:#a1a1aa}
 a{color:#93c5fd}
 </style></head><body><div class="card">
-<h1>需要先在控制台登录</h1>
-<p>代理入口与控制台共用同一 token。打开控制台完成 token 校验后，这里会自动带上会话 cookie（SameSite=Strict：从其他应用里点进来的链接不带 cookie，属于预期行为）。</p>
-<p><a id="sb-console-link" data-origin="${esc(origin)}" href="${esc(origin)}">打开 mysandbox 控制台 →</a></p>
+<h1>登录 mysandbox 代理</h1>
+<p>粘贴控制台 token。校验通过后只生成 HttpOnly 代理会话 cookie，并自动返回当前页面。</p>
+<form id="sb-login" class="row">
+  <input id="sb-token" type="password" autocomplete="current-password" placeholder="粘贴 token" required>
+  <button id="sb-submit" type="submit">登录</button>
+</form>
+<p id="sb-error" class="error" role="alert" hidden></p>
+<p class="hint">遇到问题？<a id="sb-console-link" data-origin="${esc(origin)}" href="${esc(origin)}">打开 mysandbox 控制台 →</a></p>
 <script>
-// 控制台链接带上回跳：App 种完会话 cookie（Domain=<基域名>）后自动送回本页，
-// 免掉「先开控制台、再回来点端口」的两步。
+// 控制台链接仍作兜底；正常流程在本页校验 token、种 cookie 后 reload。
 (function () {
   var a = document.getElementById('sb-console-link');
   var o = a.dataset.origin === '/' ? '' : a.dataset.origin;
   a.href = o + '/?proxyBack=' + encodeURIComponent(location.href);
+  var form = document.getElementById('sb-login');
+  var input = document.getElementById('sb-token');
+  var button = document.getElementById('sb-submit');
+  var error = document.getElementById('sb-error');
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    var token = input.value.trim();
+    if (!token) return;
+    button.disabled = true;
+    button.textContent = '验证中…';
+    error.hidden = true;
+    fetch(o + '/api/auth/session', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: token })
+    }).then(function (res) {
+      if (res.ok) { location.reload(); return; }
+      return res.json().catch(function () { return null; });
+    }).then(function (body) {
+      throw new Error((body && body.error && body.error.message) || 'token 无效或控制台不可达');
+    }).catch(function (err) {
+      error.textContent = err.message || '登录失败，请重试';
+      error.hidden = false;
+      button.disabled = false;
+      button.textContent = '登录';
+    });
+  });
 })();
 </script>
 </div></body></html>`;
