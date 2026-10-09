@@ -708,7 +708,7 @@ body{margin:0;min-height:100vh;min-height:100svh;box-sizing:border-box;display:f
 label{font-size:13px;color:#a1a1aa}
 input{width:100%;padding:10px 12px;border:1px solid #3f3f46;border-radius:8px;background:#09090b;color:#e4e4e7;font:inherit;font-size:16px}
 input:focus{outline:2px solid #60a5fa;outline-offset:1px;border-color:transparent}
-button{width:100%;padding:10px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
+button{align-self:center;min-width:88px;padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
 button:disabled{opacity:.65;cursor:not-allowed}
 .error{color:#f87171}
 </style></head><body><div class="card">
