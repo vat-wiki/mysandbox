@@ -701,6 +701,7 @@ export function proxyUnauthorizedHtml(origin: string): string {
 <title>登录</title>
 <style>
 :root{color-scheme:dark}
+*{box-sizing:border-box}
 body{margin:0;min-height:100vh;min-height:100svh;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:clamp(16px,4vw,24px);background:#09090b;color:#e4e4e7;font:clamp(15px,4vw,16px)/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 .card{width:min(100%,360px);box-sizing:border-box;padding:clamp(20px,5vw,32px);border:1px solid #27272a;border-radius:14px;background:#131316}
 .stack{display:flex;flex-direction:column;gap:12px}
