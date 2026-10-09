@@ -612,13 +612,11 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
 }
 
 // 控制台入口 origin（/proxy 401 引导页的「打开控制台」链接用，index.ts 传入）：
-// 基域名口径 + scheme/端口随 listen.tls。primary 为 null（off/全败）时退相对路径。
+// listen.tls=true 表示 443 HTTPS 门面生效，本体端口只作为内部回源地址，
+// 因此公网跳转不得带本体端口。primary 为 null（off/全败）时退相对路径。
 export function consoleOrigin(cfg: Config, primary: string | null): string {
   if (!primary) return '/';
-  const scheme = cfg.listen.tls ? 'https' : 'http';
-  const defaultPort = cfg.listen.tls ? 443 : 80;
-  const portPart = cfg.listen.port === defaultPort ? '' : `:${cfg.listen.port}`;
-  return `${scheme}://${primary}${portPart}`;
+  return `${cfg.listen.tls ? 'https' : 'http'}://${primary}`;
 }
 
 // 401 内页：vhost 门面下未带 cookie 的导航——JSON 一行人看不懂，给控制台链接引导登录。

@@ -1,13 +1,10 @@
 // CLI 子命令 mysandbox open <path> [--container <name>]：在浏览器打开容器文件/目录。
 // 本仓库首个 CLI -> HTTP 调用（Node 20 全局 fetch，token 来自 loadConfig 与服务共享）。
-// listen.tls 开启时走 https，自签名证书用本地 CA（server/tls.ts 生成的 ca.crt）校验。
-// CLI 全程只走 HTTP + 读配置，不碰 LXC——服务没起就明确报错。
-import { realpath, readFile } from 'node:fs/promises';
+// listen.tls 只表示 HTTPS 门面；CLI 恒连 HTTP 本体端口，不碰 LXC——服务没起就明确报错。
+import { realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join, posix } from 'node:path';
-import { Agent } from 'undici';
 import type { Config } from './config.js';
-import { STATE_DIR } from './config.js';
 import { getEngine } from './engine/index.js';
 import { getAllMeta } from './state.js';
 
@@ -59,24 +56,11 @@ interface ContainerSummary {
   adopted: boolean;
 }
 
-// 带 token 的 API 请求。非 2xx 解析 {error:{code,message}} 抛给调用方（错误结构是本服务定义的）。
-// tls 开启时带本地 CA dispatcher（自签名链校验；CA 文件由服务端启动时生成）。
-let caDispatcher: Agent | undefined;
-async function tlsInit(cfg: Config): Promise<RequestInit> {
-  if (!cfg.listen.tls) return {};
-  if (!caDispatcher) {
-    const ca = await readFile(join(STATE_DIR, 'tls', 'ca.crt'), 'utf8').catch(() => '');
-    caDispatcher = new Agent(ca ? { connect: { ca } } : {});
-  }
-  return { dispatcher: caDispatcher } as RequestInit;
-}
-
 async function api<T>(cfg: Config, path: string): Promise<T> {
   const base = baseUrl(cfg);
   const res = await fetch(base + path, {
     headers: { 'x-sandbox-token': cfg.token || '' },
     signal: AbortSignal.timeout(8000),
-    ...(await tlsInit(cfg)),
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
@@ -85,10 +69,11 @@ async function api<T>(cfg: Config, path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-// 浏览器可用的 base：监听 0.0.0.0 时浏览器访问 127.0.0.1。
+// 浏览器可用的 base：恒连 HTTP 本体；listen.tls 只作用于 HTTPS 门面。
+// 监听 0.0.0.0 时浏览器访问 127.0.0.1。
 function baseUrl(cfg: Config): string {
   const host = cfg.listen.host === '0.0.0.0' || cfg.listen.host === '::' ? '127.0.0.1' : cfg.listen.host;
-  return `${cfg.listen.tls ? 'https' : 'http'}://${host}:${cfg.listen.port}`;
+  return `http://${host}:${cfg.listen.port}`;
 }
 
 // 浏览器打开用的控制台 URL：IP:端口 口径——任何设备可解析（域名口径要基域名 DNS），
@@ -171,9 +156,8 @@ export async function runOpenCommand(argv: string[], cfg: Config): Promise<void>
   // 1. 服务探测（/api/health 免鉴权）。
   try {
     const res = await fetch(baseUrl(cfg) + '/api/health', {
-    signal: AbortSignal.timeout(2000),
-    ...(await tlsInit(cfg)),
-  });
+      signal: AbortSignal.timeout(2000),
+    });
     if (!res.ok) throw new Error(`health ${res.status}`);
   } catch {
     fail(`mysandbox 服务未运行（${baseUrl(cfg)}）——请先启动 \`mysandbox\``);
@@ -212,7 +196,6 @@ export async function runOpenCommand(argv: string[], cfg: Config): Promise<void>
       {
         headers: { 'x-sandbox-token': cfg.token || '' },
         signal: AbortSignal.timeout(8000),
-        ...(await tlsInit(cfg)),
       },
     );
     if (res.ok) {

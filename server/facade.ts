@@ -109,7 +109,10 @@ async function main(): Promise<void> {
   });
   log.info({ target: `${targetHost}:${targetPort}`, socketActivated: fd !== null }, 'https facade ready');
 
-  const shutdown = () => server.close(() => process.exit(0));
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+    server.closeAllConnections();
+  };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 }
