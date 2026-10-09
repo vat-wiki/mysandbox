@@ -12,7 +12,7 @@ import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type { Config } from './config.js';
 import { STATE_DIR } from './config.js';
-import { proxyBases } from './proxy.js';
+import { defaultRouteIp, ipToSslip, proxyBases } from './proxy.js';
 import { log } from './logger.js';
 
 const pexec = promisify(execFile);
@@ -28,11 +28,18 @@ export interface TlsMaterial {
 
 // SAN 集合：代理基域名（及其泛域名）+ 全部非 internal IPv4 + localhost/环回。
 // proxyBases 含 mysandbox.test / sslip 基 / tailscale 基——IP 变了 SAN 跟着重签。
+// 自定义 vhost 后仍保留默认路由 sslip，避免老入口在证书重签后突然不受信任。
 async function tlsSans(cfg: Config): Promise<string[]> {
   const set = new Set<string>(['localhost', '127.0.0.1']);
   for (const b of await proxyBases(cfg)) {
     set.add(b.base);
     set.add(`*.${b.base}`);
+  }
+  const compatIp = cfg.proxy.ip !== 'auto' ? cfg.proxy.ip : await defaultRouteIp();
+  if (compatIp) {
+    const compatBase = ipToSslip(compatIp);
+    set.add(compatBase);
+    set.add(`*.${compatBase}`);
   }
   for (const list of Object.values(networkInterfaces())) {
     for (const a of list ?? []) {

@@ -146,7 +146,7 @@ export interface ProxyBase {
 const LOCAL_BASE = 'mysandbox.test';
 
 // 默认路由接口的 IPv4（镜像 cli.ts resolveAutoHost 的读法；拿不到返回 null）。
-async function defaultRouteIp(): Promise<string | null> {
+export async function defaultRouteIp(): Promise<string | null> {
   let ifname: string | undefined;
   try {
     for (const line of (await readFile('/proc/net/route', 'utf8')).split('\n').slice(1)) {
@@ -165,7 +165,7 @@ async function defaultRouteIp(): Promise<string | null> {
   return pick(ifname) ?? Object.keys(ifaces).map(pick).find(Boolean) ?? null;
 }
 
-function ipToSslip(ip: string): string {
+export function ipToSslip(ip: string): string {
   return `${ip.replaceAll('.', '-')}.sslip.io`;
 }
 
