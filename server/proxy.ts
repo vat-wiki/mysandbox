@@ -438,26 +438,23 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   }
 
   function sessionCredentials(req: FastifyRequest): {
-    token?: string;
     username?: string;
     password?: string;
   } {
-    const header = req.headers['x-sandbox-token'];
     const body = req.body as {
-      token?: unknown;
       username?: unknown;
       password?: unknown;
     } | undefined;
     return {
-      token: typeof header === 'string' ? header : typeof body?.token === 'string' ? body.token : undefined,
       username: typeof body?.username === 'string' ? body.username.trim() : undefined,
       password: typeof body?.password === 'string' ? body.password : undefined,
     };
   }
 
   function sessionValid(req: FastifyRequest, cfg: Config): boolean {
+    const header = req.headers['x-sandbox-token'];
+    if (typeof header === 'string' && tokenValid(header, cfg)) return true;
     const credentials = sessionCredentials(req);
-    if (credentials.token) return tokenValid(credentials.token, cfg);
     return safeEqual(credentials.username ?? '', PROXY_ACCOUNT.username)
       && safeEqual(credentials.password ?? '', PROXY_ACCOUNT.password);
   }
@@ -701,27 +698,21 @@ export function consoleOrigin(cfg: Config, primary: string | null): string {
 export function proxyUnauthorizedHtml(origin: string): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>mysandbox 代理 — 登录</title>
+<title>登录</title>
 <style>
 :root{color-scheme:dark}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#09090b;color:#e4e4e7;font:15px/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-.card{width:min(460px,calc(100vw - 32px));padding:36px 40px;border:1px solid #27272a;border-radius:14px;background:#131316}
-h1{font-size:17px;font-weight:600;margin:0 0 10px}
-p{margin:6px 0;color:#d4d4d8}
-.stack{margin-top:16px;display:flex;flex-direction:column;gap:12px}
+body{margin:0;min-height:100vh;min-height:100svh;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:clamp(16px,4vw,24px);background:#09090b;color:#e4e4e7;font:clamp(15px,4vw,16px)/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.card{width:min(100%,360px);box-sizing:border-box;padding:clamp(20px,5vw,32px);border:1px solid #27272a;border-radius:14px;background:#131316}
+.stack{display:flex;flex-direction:column;gap:12px}
 .field{display:flex;flex-direction:column;gap:6px}
 label{font-size:13px;color:#a1a1aa}
-input{width:100%;padding:8px 10px;border:1px solid #3f3f46;border-radius:8px;background:#09090b;color:#e4e4e7;font:inherit}
+input{width:100%;padding:10px 12px;border:1px solid #3f3f46;border-radius:8px;background:#09090b;color:#e4e4e7;font:inherit;font-size:16px}
 input:focus{outline:2px solid #60a5fa;outline-offset:1px;border-color:transparent}
-button{padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
+button{width:100%;padding:10px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
 button:disabled{opacity:.65;cursor:not-allowed}
-.error{margin-top:10px;color:#f87171}
-.hint{margin-top:18px;font-size:13px;color:#a1a1aa}
-a{color:#93c5fd}
+.error{color:#f87171}
 </style></head><body><div class="card">
-<h1>登录 mysandbox 代理</h1>
-<p>使用账号密码或控制台 token。校验通过后只生成 HttpOnly 代理会话 cookie，并自动返回当前页面。</p>
-<form id="sb-login" class="stack">
+<form id="sb-login" class="stack" data-origin="${esc(origin)}">
   <div class="field">
     <label for="sb-user">账号</label>
     <input id="sb-user" autocomplete="username" placeholder="账号">
@@ -730,33 +721,23 @@ a{color:#93c5fd}
     <label for="sb-pass">密码</label>
     <input id="sb-pass" type="password" autocomplete="current-password" placeholder="密码">
   </div>
-  <div class="field">
-    <label for="sb-token">Token（可选）</label>
-    <input id="sb-token" type="password" autocomplete="off" placeholder="有控制台 token 时可跳过账号密码">
-  </div>
   <button id="sb-submit" type="submit">登录</button>
+  <p id="sb-error" class="error" role="alert" hidden></p>
 </form>
-<p id="sb-error" class="error" role="alert" hidden></p>
-<p class="hint">遇到问题？<a id="sb-console-link" data-origin="${esc(origin)}" href="${esc(origin)}">打开 mysandbox 控制台 →</a></p>
 <script>
-// 控制台链接仍作兜底；正常流程在本页校验 token、种 cookie 后 reload。
 (function () {
-  var a = document.getElementById('sb-console-link');
-  var o = a.dataset.origin === '/' ? '' : a.dataset.origin;
-  a.href = o + '/?proxyBack=' + encodeURIComponent(location.href);
   var form = document.getElementById('sb-login');
+  var o = form.dataset.origin === '/' ? '' : form.dataset.origin;
   var user = document.getElementById('sb-user');
   var pass = document.getElementById('sb-pass');
-  var input = document.getElementById('sb-token');
   var button = document.getElementById('sb-submit');
   var error = document.getElementById('sb-error');
   form.addEventListener('submit', function (event) {
     event.preventDefault();
-    var token = input.value.trim();
     var username = user.value.trim();
     var password = pass.value;
-    if (!token && (!username || !password)) {
-      error.textContent = '请输入账号和密码，或粘贴 token';
+    if (!username || !password) {
+      error.textContent = '请输入账号和密码';
       error.hidden = false;
       return;
     }
@@ -767,12 +748,12 @@ a{color:#93c5fd}
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(token ? { token: token } : { username: username, password: password })
+      body: JSON.stringify({ username: username, password: password })
     }).then(function (res) {
       if (res.ok) { location.reload(); return; }
       return res.json().catch(function () { return null; });
     }).then(function (body) {
-      throw new Error((body && body.error && body.error.message) || 'token 无效或控制台不可达');
+      throw new Error((body && body.error && body.error.message) || '账号密码错误或控制台不可达');
     }).catch(function (err) {
       error.textContent = err.message || '登录失败，请重试';
       error.hidden = false;
