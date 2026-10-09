@@ -69,9 +69,7 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
   点链接会 401 → HTML 登录页（`proxyUnauthorizedHtml`）。页面只暴露代理专用
   账号密码：fetch 到 `/api/auth/session`（基域 origin）校验后种 cookie，再 reload
   当前代理页。控制台 token 不在代理登录页展示；该端点是唯一绕过全局 token hook 的
-  `/api` 路径，由路由自己校验凭证；CORS 只放行代理基域下的 same-site origin。控制台链接保留
-  兜底，链接带 `?proxyBack=` 回跳参数——App 种完 cookie 校验目标 host 在基域名内后
-  自动送回（防开放重定向）。
+  `/api` 路径，由路由自己校验凭证；CORS 只放行代理基域下的 same-site origin。
 - 未授权的浏览器导航（GET + Accept html）回 HTML 引导页而非 JSON；其余回 JSON 401。
 
 ## 两种访问口径（IP 直连 ⇄ 域名代理）
