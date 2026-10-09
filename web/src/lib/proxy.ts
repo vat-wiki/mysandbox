@@ -2,12 +2,9 @@
 // 按**当前控制台的访问口径**决定端口点击的目标，两种口径平级、服务端不做互转：
 // - 直连口径：控制台经 IP/localhost 打开 → 端口点击直连容器/服务 IP:端口（不经代理、
 //   无 cookie 依赖）——代理上线前的原始形式，宿主本机 / tailscale 子网路由下可达。
-// - 代理口径：控制台经基域名打开 → 对候选基域名逐个探测择优，serviceUrl() 拼 vhost
-//   URL；全部候选不可达时降级 subpath（同源 /proxy/... 永远可用）。
-//
-// 为什么要探测：auto 模式的首选 mysandbox.test 需要宿主侧 DNS 应答（mihomo hosts /
-// dnsmasq），并非每台机器都配了——解析失败/端口不通的候选直接跳过，别让端口点击落到
-// 打不开的域名上。探测请求本身免鉴权（health），no-cors 下任何 HTTP 应答都算走通。
+// - 代理口径：控制台经域名打开 → 直接用当前域名作基域拼 vhost URL。能打开控制台
+//   就说明该域名可达，不再额外探测泛解析——sslip 自带通配、自有域按用户配置保证
+//   通配；服务端 rewriteUrl 只解析目标名，不限制必须来自 config 里的候选基域。
 import { ref } from 'vue'
 import type { ProxyConfigInfo } from './api'
 import { getProxyConfig } from './api'
@@ -22,13 +19,13 @@ export function originIpish(): boolean {
   return h === 'localhost' || h.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(h)
 }
 
-// 装载代理配置并按口径定型。返回最终生效的门面（vhost = 探测命中某候选；subpath =
-// 直连口径不需要/代理关/全败）。App 用它驱动登录后的装载时序。
+// 装载代理配置并按口径定型。返回最终生效的门面（vhost = 当前域名；subpath =
+// 直连口径或代理关闭）。App 用它驱动登录后的装载时序。
 export async function loadProxyConfig(): Promise<'vhost' | 'subpath'> {
   if (loaded) return info.value.mode
   loaded = true
   if (originIpish()) {
-    // 直连口径：端口点击不走代理，基域名信息用不上——跳过探测。
+    // 直连口径：端口点击不走代理，基域名信息用不上。
     info.value = { mode: 'subpath', bases: [], primary: null }
     return 'subpath'
   }
@@ -39,36 +36,15 @@ export async function loadProxyConfig(): Promise<'vhost' | 'subpath'> {
     return 'subpath' // 服务不可用：维持 subpath 兜底
   }
   if (cfg.mode === 'vhost') {
-    for (const b of cfg.bases) {
-      if (await probeBase(b.base)) {
-        info.value = { mode: 'vhost', bases: cfg.bases, primary: b.base }
-        return 'vhost'
-      }
-    }
+    const base = location.hostname.toLowerCase()
+    info.value = { mode: 'vhost', bases: [{ base, kind: 'custom' }], primary: base }
+    return 'vhost'
   }
   info.value = { mode: 'subpath', bases: cfg.bases, primary: null }
   return 'subpath'
 }
 
-// 探测基域名在当前浏览器能否走通：DNS 可解析 + 控制台端口可达。
-// no-cors 拿不到响应体也不需要——opaque 应答即证明链路通；DNS 失败/拒连/证书不受信
-// （CA 未导入时 https 自签名的正常现象）都会 reject，逐个候选试到能用的为止。
-// 首标签 msbprobe 无连字符数字，不会误入代理路由（直落控制台的 /api/health）。
-async function probeBase(base: string): Promise<boolean> {
-  const portPart = location.port ? `:${location.port}` : ''
-  try {
-    await fetch(`${location.protocol}//msbprobe.${base}${portPart}/api/health`, {
-      mode: 'no-cors',
-      cache: 'no-store',
-      signal: AbortSignal.timeout(2500),
-    })
-    return true
-  } catch {
-    return false
-  }
-}
-
-// 探测命中的基域名（直连口径/subpath 模式为 null）——proxyBack 回跳校验用。
+// 当前生效基域（直连口径/subpath 模式为 null）——proxyBack 回跳校验用。
 export function proxyPrimary(): string | null {
   return info.value.mode === 'vhost' ? info.value.primary : null
 }
