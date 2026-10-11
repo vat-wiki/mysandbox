@@ -424,13 +424,12 @@ function onContextMenu() {
 }
 
 // —— 手机触屏工具条（重度终端使用的核心补充）——
-// 触屏没有右键/Ctrl 组合，复制粘贴/Esc/方向键/Ctrl 粘滞全走这条工具条（模板里 md:hidden）。
+// 触屏没有右键/Ctrl 组合，复制粘贴/Esc/方向键/Ctrl+C 中断全走这条工具条（模板里 md:hidden）。
 // 粘贴优先走 navigator.clipboard.readText；iOS Safari 常态性拒绝读取（需用户手势且默认不授权），
 // 拒绝时自动弹兜底输入框——用户在 textarea 里系统级长按粘贴，确认后走同一条 stdin 通道发送。
 const pasteFallback = ref(false)
 const pasteText = ref('')
 const fallbackTa = ref<HTMLTextAreaElement | null>(null)
-const ctrlSticky = ref(false)
 async function toolPaste() {
   if (navigator.clipboard) {
     try {
@@ -477,26 +476,8 @@ const termHasSel = ref(false)
 function syncSel() {
   termHasSel.value = !!term?.hasSelection()
 }
-// 粘滞 Ctrl：点亮后下一个字母键以 Ctrl 组合发送（'c' -> \x03），发完自动熄灭。
-// 组合入口有两个：工具条按键走 toolKey（Esc/Tab/方向键——字母组合在此只是兜底），
-// 软键盘字母走 onData（工具条没有字母键，手机上 Ctrl+C 等组合的唯一路径）。
-function sendCtrlCombo(data: string): string | null {
-  if (!ctrlSticky.value) return null
-  // 只有单个字母才组合（实体键盘的 Ctrl 组合到达 onData 时已是控制字符，不受影响）。
-  if (data.length === 1 && data.toLowerCase() >= 'a' && data.toLowerCase() <= 'z') {
-    ctrlSticky.value = false
-    return String.fromCharCode(data.toLowerCase().charCodeAt(0) - 96)
-  }
-  return null
-}
-function toolKey(ch: string, ctrl = false) {
-  const combo = sendCtrlCombo(ch)
-  if (combo !== null) {
-    sendRaw(combo)
-    return
-  }
+function toolKey(ch: string) {
   sendRaw(ch)
-  if (ctrlSticky.value) ctrlSticky.value = false
 }
 // 直发 stdin（与 onData 同通道）：工具条按键/粘贴共用。
 function sendRaw(s: string) {
@@ -894,9 +875,7 @@ onMounted(async () => {
     // 250ms 后查基本必中）。粘贴多行也含 \r，多抛几次无妨（跟随端去重）。
     if (data.includes('\r')) emit('enter')
     if (ws && ws.readyState === WebSocket.OPEN) {
-      // 粘滞 Ctrl 消费：软键盘字母在此组合成控制字符（手机发 Ctrl+C 的唯一路径）。
-      const combo = sendCtrlCombo(data)
-      ws.send(new TextEncoder().encode(combo ?? data))
+      ws.send(new TextEncoder().encode(data))
     }
   })
   term.onResize(({ cols, rows }) => {
@@ -1047,7 +1026,7 @@ onBeforeUnmount(() => {
     <div v-if="isPhone" class="flex shrink-0 items-center gap-1 overflow-x-auto scroll-thin border-t border-zinc-800 pt-1 md:hidden">
       <button type="button" class="tb" title="粘贴剪贴板内容" @click="toolPaste">粘贴</button>
       <button type="button" class="tb" :disabled="!termHasSel" title="复制选中内容" @click="toolCopy">复制</button>
-      <button type="button" class="tb" :class="ctrlSticky ? 'tb-on' : ''" title="粘滞 Ctrl：点亮后下一个字母键以 Ctrl 组合发送" @click="ctrlSticky = !ctrlSticky">Ctrl</button>
+      <button type="button" class="tb" title="发送 Ctrl+C（中断当前命令）" @click="toolKey('\x03')">Ctrl+C</button>
       <button type="button" class="tb" title="发送 Esc" @click="toolKey('\x1b')">Esc</button>
       <button type="button" class="tb" title="发送 Tab" @click="toolKey('\t')">Tab</button>
       <button type="button" class="tb" title="上方向键" @click="toolKey('\x1b[A')">↑</button>
@@ -1088,8 +1067,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style>
-/* 触屏工具条按钮：紧凑但命中区 ≥40px（高度 h-9），等宽字排布稳定。
-   tb-on 为激活态（粘滞 Ctrl 点亮 / 发送按钮）。 */
+/* 触屏工具条按钮：紧凑但命中区 ≥40px（高度 h-9），等宽字排布稳定。 */
 .tb {
   height: 2.25rem;
   min-width: 2.75rem;
