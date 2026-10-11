@@ -3289,7 +3289,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 v-for="(g, idx) in groups"
                 :key="g.id"
                 :value="String(idx)"
-                class="max-md:py-2.5 max-md:text-sm"
+                class="group/item max-md:py-2.5 max-md:text-sm"
                 @click="onTabClick(idx)"
               >
                 <span
@@ -3303,6 +3303,15 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   {{ groupLabel(g) }}
                   <span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span>
                 </span>
+                <!-- 关闭动作与切换动作分离：点击 ✕ 不落选中态，直接杀掉该终端组。 -->
+                <button
+                  type="button"
+                  class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  title="关闭终端"
+                  @click.stop.prevent="closeGroupById(g.id)"
+                >
+                  <X class="size-3.5" />
+                </button>
               </DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
