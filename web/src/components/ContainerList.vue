@@ -65,7 +65,12 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -3237,10 +3242,10 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           title="打开侧栏（容器列表）"
           @click="drawerOpen = true"
         >
-          <MoreHorizontal class="size-3.5 max-md:size-5" />
+          <PanelLeftOpen class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="relative flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          class="relative hidden shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
           title="所有终端（本机全部活跃会话，含其他窗口 / 浏览器打开的）"
           @click="showSessions = true"
         >
@@ -3251,16 +3256,64 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             class="absolute right-1 top-1 inline-flex h-1.5 w-1.5 rounded-full bg-amber-400 ring-1 ring-background"
           />
         </button>
+        <!-- 手机命令行切换：横向页签改为下拉，保留身份色 / busy 状态 / 多 pane 数。
+             选中页签以外的终端动作收进右侧「更多」，顶部不再横向占满。 -->
+        <DropdownMenu v-if="!props.popout">
+          <DropdownMenuTrigger as-child>
+            <button
+              class="flex min-w-0 flex-1 items-center gap-2 border-r border-border/60 px-3 text-left text-xs max-md:flex max-md:px-3 max-md:text-sm md:hidden"
+              :disabled="!groups.length"
+              :class="groups.length ? 'text-foreground hover:bg-accent/50' : 'text-muted-foreground'"
+              title="切换终端"
+            >
+              <span
+                v-if="activeGroup"
+                class="relative inline-flex size-2 shrink-0 rounded-full max-md:size-2.5"
+                :style="{ backgroundColor: tabDotColor(activeGroup) }"
+              />
+              <span class="min-w-0 flex-1 truncate">
+                {{ activeGroup ? groupLabel(activeGroup) : '暂无终端' }}
+                <span v-if="activeGroup && leafCount(activeGroup.root) > 1" class="text-muted-foreground/60">
+                  ·{{ leafCount(activeGroup.root) }}
+                </span>
+              </span>
+              <ChevronDown class="size-3.5 shrink-0 max-md:size-4 text-muted-foreground" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" class="max-md:w-[min(84vw,20rem)]">
+            <DropdownMenuRadioGroup :model-value="String(activeIdx)">
+              <DropdownMenuRadioItem
+                v-for="(g, idx) in groups"
+                :key="g.id"
+                :value="String(idx)"
+                class="max-md:py-2.5 max-md:text-sm"
+                @click="onTabClick(idx)"
+              >
+                <span
+                  class="relative inline-flex size-2 shrink-0 rounded-full"
+                  :style="{
+                    backgroundColor: tabDotColor(g),
+                    boxShadow: busyGroupIds.has(g.id) ? `0 0 0 3px ${tabDotColor(g)}33` : undefined,
+                  }"
+                />
+                <span class="min-w-0 flex-1 truncate">
+                  {{ groupLabel(g) }}
+                  <span v-if="leafCount(g.root) > 1" class="text-muted-foreground/60">·{{ leafCount(g.root) }}</span>
+                </span>
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <!-- AI 工具入口：环境级全局面板（技能中心/模型供应商/智能体配置），与「所有终端」
              同为常驻全局钮——不挂任何分区（从容器分区头挪出，全局功能不借容器菜单位）。 -->
         <button
-          class="flex shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs max-md:px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          class="hidden shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
           title="AI 工具（技能 / 模型接入）"
           @click="openAi()"
         >
           <Bot class="size-3.5 max-md:size-5" />
         </button>
-        <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin">
+        <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin max-md:hidden">
         <ContextMenu v-for="(g, idx) in groups" :key="g.id">
           <ContextMenuTrigger as-child>
             <div
@@ -3353,7 +3406,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </div>
         <!-- 网络：active group 容器的 IP / 监听端口 / 映射端口收进下拉（原独立信息条）。
              宿主组没有网络信息，禁用置灰。popout 独立窗口同样有此入口。 -->
-        <DropdownMenu v-if="activeGroup?.kind !== 'host' && activeGroup?.kind !== 'ssh'">
+        <DropdownMenu v-if="activeGroup?.kind !== 'host' && activeGroup?.kind !== 'ssh'" class="max-md:hidden">
           <DropdownMenuTrigger as-child>
             <button
               class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
@@ -3454,19 +3507,127 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </DropdownMenu>
         <button
           v-else
-          class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5 pointer-events-none opacity-30"
+          class="hidden items-center self-stretch border-l border-border/60 px-3 text-xs pointer-events-none opacity-30 md:flex"
           title="本机 / SSH 终端无网络信息"
         >
           <Network class="size-3.5 max-md:size-5" />
         </button>
         <button
-          class="flex items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
+          class="hidden items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs md:flex"
           :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
           :title="showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
           @click="showFiles = !showFiles"
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
         </button>
+        <!-- 手机全局动作：会话 / AI / 文件 / 网络与当前终端管理收进一个入口，
+             顶栏只保留「导航 + 终端切换 + 更多」。桌面仍用独立图标，少一跳。 -->
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <button
+              class="flex items-center self-stretch border-l border-border/60 px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:flex md:hidden"
+              title="更多工具与动作"
+            >
+              <MoreHorizontal class="size-5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" class="max-md:w-56">
+            <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="showSessions = true">
+              <TerminalIcon class="size-4" />
+              所有终端
+            </DropdownMenuItem>
+            <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="openAi()">
+              <Bot class="size-4" />
+              AI 工具
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              class="max-md:py-2.5 max-md:text-sm"
+              :class="showFiles ? 'bg-accent text-accent-foreground' : ''"
+              @click="showFiles = !showFiles"
+            >
+              <FolderOpen class="size-4" />
+              {{ showFiles ? '关闭文件面板' : '打开文件面板' }}
+            </DropdownMenuItem>
+            <template v-if="activeGroup">
+              <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger class="max-md:py-2.5 max-md:text-sm">
+                  <Network class="size-4" />
+                  网络信息
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent class="max-md:w-60">
+                  <template v-if="activeContainer && activeContainer.state === 'running'">
+                    <DropdownMenuItem v-if="activeContainer.ip" class="font-mono text-xs" @click="copyIp">
+                      <Network class="size-3.5" />
+                      {{ copiedIp === activeContainer.ip ? '已复制' : activeContainer.ip }}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      v-for="p in webPorts"
+                      :key="'mobile-web-' + p"
+                      class="font-mono text-xs"
+                      @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
+                    >
+                      <Globe class="size-3.5 !text-emerald-500" />
+                      {{ p }} · 网页
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      v-for="p in otherListenPorts"
+                      :key="'mobile-other-' + p"
+                      class="font-mono text-xs"
+                      @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
+                    >
+                      <span class="size-3.5 text-center text-xs text-muted-foreground">:</span>
+                      {{ p }}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      v-for="m in mappedPorts"
+                      :key="'mobile-mapped-' + m.pub"
+                      class="font-mono text-xs"
+                      @click="openUrl(`http://127.0.0.1:${m.pub}`)"
+                    >
+                      <ArrowRightLeft class="size-3.5" />
+                      {{ m.pub }} → {{ m.priv }}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      v-if="!activeContainer.ip && !webPorts.length && !otherListenPorts.length && !mappedPorts.length"
+                      class="text-xs text-muted-foreground"
+                      disabled
+                    >
+                      暂无网络信息
+                    </DropdownMenuItem>
+                  </template>
+                  <DropdownMenuItem v-else class="text-xs text-muted-foreground" disabled>
+                    容器未运行
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger class="max-md:py-2.5 max-md:text-sm">
+                  <TerminalIcon class="size-4" />
+                  当前终端
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent class="max-md:w-52">
+                  <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="openNewGroup(activeGroup)">
+                    新开一组终端
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    v-if="activeGroup.kind === 'host' || activeGroup.kind === 'ssh' || containerRunning(activeGroup.containerId)"
+                    class="max-md:py-2.5 max-md:text-sm"
+                    @click="openPopout(activeGroup.kind === 'host' ? HOST_ID : activeGroup.containerId)"
+                  >
+                    在独立窗口打开
+                  </DropdownMenuItem>
+                  <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="hideGroupById(activeGroup.id)">
+                    隐藏
+                  </DropdownMenuItem>
+                  <DropdownMenuItem variant="destructive" class="max-md:py-2.5 max-md:text-sm" @click="closeGroupById(activeGroup.id)">
+                    关闭
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </template>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <!-- 工作区：同区切换——文件 tab 栏激活时主区给编辑器，终端 tab 栏激活时给终端。
