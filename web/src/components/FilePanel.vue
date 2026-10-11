@@ -1326,7 +1326,7 @@ function fmtSize(n: number): string {
          上一级用彩色 FolderUp：裸 chevron 语义太泛（收起/回顶?），文件夹+上箭头无歧义；
          蓝色与列表里文件夹图标同色系（目录动作的语言）。行内图标一律裸按钮（与搜索行同款，
          无 Button 外壳的 6px 盒子），两行字形垂直完全对齐。 -->
-    <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
+    <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 max-md:h-11">
       <button
         v-if="path && path !== '/'"
         class="shrink-0 rounded text-muted-foreground hover:text-foreground"
@@ -1455,7 +1455,7 @@ function fmtSize(n: number): string {
                 :data-path="row.path"
                 :data-drop-dir="row.entry.type === 'dir' ? row.path : null"
                 draggable="true"
-                class="flex cursor-pointer items-center gap-2 py-1.5 pr-2.5"
+                class="flex cursor-pointer items-center gap-2 py-1.5 pr-2.5 max-md:py-2.5"
                 :class="[
                   selected.has(row.path) ? 'bg-accent hover:bg-accent/70' : 'hover:bg-accent/50',
                   dragOverDir === row.path ? 'bg-primary/15 ring-1 ring-inset ring-primary/50' : '',

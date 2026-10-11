@@ -1359,6 +1359,9 @@ async function locateContainerPath(
 // = 对比形态）共用。写成函数而非模板内联箭头——对象类型字面量在模板表达式里编不过。
 function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string }; editing?: boolean }) {
   if (activeGroup.value) openFile(fileTargetId(activeGroup.value), activeGroup.value.name, p, o)
+  // 手机文件面板是全屏覆盖层：选中文件后立即交还给编辑器，不再要求用户手动关面板。
+  // 回入口是底部文件标签栏的「文件」钮，浏览上下文由 FilePanel 自身保留。
+  if (isPhone.value) showFiles.value = false
 }
 
 // 容器内 mysandbox 命令（web 终端 OSC 7677）：kind 未知 -> listFiles 探测（200=目录 /
@@ -3715,6 +3718,17 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            多 tab 收缩同终端 tab（浏览器式，桌面收缩/手机滚动）；右键菜单承载
            tab 管理（关闭系）+ 形态动作（编辑⇄预览/下载/普通打开）+ 复制路径。 -->
       <div v-if="editorTabs.length || aiOpen" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
+        <!-- 手机回入口：文件浏览层选中文件后自动收起，这里提供固定的返回通道；
+             显示面板时再点一次即关闭。桌面仍是右侧常驻列，不需要这个切换钮。 -->
+        <button
+          class="flex shrink-0 items-center gap-1.5 border-r border-border/60 px-3 py-1.5 text-xs max-md:flex max-md:py-2.5 max-md:text-sm md:hidden"
+          :class="showFiles ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50'"
+          title="打开 / 关闭文件面板"
+          @click="showFiles = !showFiles"
+        >
+          <FolderOpen class="size-4" />
+          <span>文件</span>
+        </button>
         <!-- AI 工具 tab（单例，恒在文件 tab 最左，v-if=aiOpen——有文件 tab 时栏仍渲染，
              不挂条件的话 X 关不掉它：aiOpen 已清但页签照画，用户怎么点都"关不掉"）：
              Bot 钮打开的页面在这里落位，与文件 tab 平级互切；X 关闭整个 AI 工作区。 -->
