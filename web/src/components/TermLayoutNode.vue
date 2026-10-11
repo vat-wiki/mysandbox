@@ -143,7 +143,10 @@ if (leaf.value) {
     <!-- pane 头部：标题「容器名 #序号」+ 动态标题（跑命令/CC 任务/空闲路径，OSC 链路）
          或会话 cwd（tmux 活跃 pane 当前目录，5s 轮询）。
          termId 是内部标识对人无意义，hover 才可见。 -->
-    <div class="flex items-center gap-2 border-b border-border bg-muted/20 px-2 py-1 text-[10px]">
+    <div
+      class="flex items-center gap-2 border-b border-border bg-muted/20 px-2 py-1 text-[10px]"
+      :class="total > 1 ? '' : 'max-md:hidden'"
+    >
       <span
         class="h-1.5 w-1.5 shrink-0 rounded-full"
         :style="{ backgroundColor: group.kind === 'host' ? '#f59e0b' : containerColor(group.containerId) }"
@@ -162,8 +165,9 @@ if (leaf.value) {
         {{ paneTitle || (cwd ? '· ' + cwd : '· …') }}
       </span>
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
-        <!-- 左右分屏在手机隐藏（max-md:）：竖屏宽度放不下并排 pane；上下分屏保留。
-             触屏下按钮命中区放大（pointer-coarse:p-2）。 -->
+        <!-- 手机禁用分屏：竖屏宽度放不下横排，堆叠又过度压缩终端；
+             单 pane 连头部一起隐藏，终端空间最大化。桌面创建的多 pane
+             恢复到手机时保留关闭入口，但不再继续新增分屏。 -->
         <button
           class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground max-md:hidden pointer-coarse:p-2"
           :title="splitTitle('row')"
@@ -173,7 +177,7 @@ if (leaf.value) {
           <SquareSplitHorizontal class="size-3.5 pointer-coarse:size-4.5" />
         </button>
         <button
-          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground pointer-coarse:p-2"
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground max-md:hidden pointer-coarse:p-2"
           :title="splitTitle('col')"
           :disabled="full"
           @click="doSplit('col')"
