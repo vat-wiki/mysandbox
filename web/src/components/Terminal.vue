@@ -479,6 +479,15 @@ function syncSel() {
 function toolKey(ch: string) {
   sendRaw(ch)
 }
+// 工具条只滚本地 xterm scrollback，不向 PTY 发 PageUp/PageDown：
+// 这样翻历史时不会影响正在运行的 TUI/交互程序，也不会被识别成按键。
+function toolScroll(pages: number) {
+  term?.scrollPages(pages)
+}
+function toolScrollEnd(top: boolean) {
+  if (top) term?.scrollToTop()
+  else term?.scrollToBottom()
+}
 // 直发 stdin（与 onData 同通道）：工具条按键/粘贴共用。
 function sendRaw(s: string) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(s))
@@ -1029,6 +1038,10 @@ onBeforeUnmount(() => {
       <button type="button" class="tb" title="发送 Ctrl+C（中断当前命令）" @click="toolKey('\x03')">Ctrl+C</button>
       <button type="button" class="tb" title="发送 Esc" @click="toolKey('\x1b')">Esc</button>
       <button type="button" class="tb" title="发送 Tab" @click="toolKey('\t')">Tab</button>
+      <button type="button" class="tb" title="上翻一页（只滚本地回滚区）" @click="toolScroll(-1)">上页</button>
+      <button type="button" class="tb" title="下翻一页（只滚本地回滚区）" @click="toolScroll(1)">下页</button>
+      <button type="button" class="tb" title="滚到历史顶部" @click="toolScrollEnd(true)">顶</button>
+      <button type="button" class="tb" title="滚回最新输出" @click="toolScrollEnd(false)">底</button>
       <button type="button" class="tb" title="上方向键" @click="toolKey('\x1b[A')">↑</button>
       <button type="button" class="tb" title="下方向键" @click="toolKey('\x1b[B')">↓</button>
       <button type="button" class="tb" title="左方向键" @click="toolKey('\x1b[D')">←</button>
