@@ -52,6 +52,16 @@ const applying = ref(false)
 const host = ref('')
 const picked = ref<Set<string>>(new Set())
 
+// 首次打开优先回填落点里一致的实际配置；值有冲突时退回约定建议，避免替用户选边。
+function initialHostFor(v: TestlensView): string {
+  const values = v.targets
+    .filter((t) => !t.error)
+    .flatMap((t) => [t.agentBrowser, t.testlensJson])
+    .filter((value): value is string => Boolean(value))
+  if (values.length && values.every((value) => value === values[0])) return values[0]
+  return v.suggestedHost || DEFAULT_HOST
+}
+
 // 目标期望值：本机把约定服务名换算 localhost（与后端 install 同规则，仅用于状态展示）。
 function expectedFor(t: TestlensView['targets'][number]): string {
   if (t.id !== HOST_ID) return host.value
@@ -90,7 +100,7 @@ async function load() {
   try {
     const v = await getTestlensView()
     view.value = v
-    if (!host.value) host.value = v.suggestedHost || DEFAULT_HOST
+    if (!host.value) host.value = initialHostFor(v)
     // 默认全选（重拉 view 后保持用户已勾的子集，只补新目标）。
     for (const t of v.targets) picked.value.add(t.id)
   } catch (e) {
