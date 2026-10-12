@@ -2538,15 +2538,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <img src="/docker.svg" alt="" class="size-4" />
           </button>
           <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部；
-               设置入口与展开态收起行右侧那枚互为镜像（同一位置，肌肉记忆一致） -->
-          <button
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            title="设置"
-            @click="showSettings = true"
-          >
-            <Settings class="size-4" />
-          </button>
+               设置已收敛到顶栏右上角，不再重复占侧栏底部位。 -->
           <button
             type="button"
             class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
@@ -3119,7 +3111,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
-           与收缩态 rail 底部的展开键互为镜像；设置入口钉在它右边（全局配置集中地）。 -->
+           与收缩态 rail 底部的展开键互为镜像；设置入口由顶栏统一承载。 -->
       <div class="flex shrink-0 items-stretch border-t border-border">
         <button
           type="button"
@@ -3129,14 +3121,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <PanelLeftClose class="size-3.5 shrink-0" />
           <span class="min-w-0 truncate text-xs">收起侧栏</span>
-        </button>
-        <button
-          type="button"
-          class="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="设置"
-          @click="showSettings = true"
-        >
-          <Settings class="size-3.5" />
         </button>
       </div>
       </template>
@@ -3949,7 +3933,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- 设置（侧栏底部入口）：全局性配置目录页——AI 行跳主区工作区页签（openAi 先行、
+  <!-- 设置（顶栏右上角入口）：全局性配置目录页——AI 行跳主区工作区页签（openAi 先行、
        弹框随后关），TestLens 等轻量分区弹框内就地操作 -->
   <SettingsDialog
     v-if="showSettings"
