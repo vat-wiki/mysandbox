@@ -3532,7 +3532,16 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
         </button>
-        <!-- 手机全局动作：会话 / AI / 文件 / 网络与当前终端管理收进一个入口，
+        <!-- 设置：右上角常驻全局入口，与侧栏底部入口同开一个弹框；桌面独立图标，
+             手机并入右侧「更多」。 -->
+        <button
+          class="hidden items-center self-stretch border-l border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
+          title="设置"
+          @click="showSettings = true"
+        >
+          <Settings class="size-3.5" />
+        </button>
+        <!-- 手机全局动作：会话 / AI / 文件 / 设置 / 网络与当前终端管理收进一个入口，
              顶栏只保留「导航 + 终端切换 + 更多」。桌面仍用独立图标，少一跳。 -->
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
@@ -3551,6 +3560,10 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="openAi()">
               <Bot class="size-4" />
               AI 工具
+            </DropdownMenuItem>
+            <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="showSettings = true">
+              <Settings class="size-4" />
+              设置
             </DropdownMenuItem>
             <DropdownMenuItem
               class="max-md:py-2.5 max-md:text-sm"
