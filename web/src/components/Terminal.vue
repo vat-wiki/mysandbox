@@ -592,6 +592,10 @@ type ScrollRegionInputHandler = {
   _eraseAttrData?: () => unknown
 }
 
+type TerminalViewportHost = {
+  _core?: { viewport?: { syncScrollArea?: (immediate?: boolean) => void } }
+}
+
 function registerScrollRegionHandler() {
   const currentTerm = term
   if (!currentTerm) return
@@ -620,6 +624,11 @@ function registerScrollRegionHandler() {
       bufferService.scroll(eraseAttrData())
     }
     markRangeDirty?.(0, currentTerm.rows - 1)
+    // BufferService.scroll 已发 scroll 事件，但移动端 DOM 渲染器在软键盘/visualViewport
+    // 变化期间可能拿到过期几何。这里幂等强制重算滚动区，并对 DOM 渲染器补一次全量重绘。
+    const viewport = (currentTerm as TerminalViewportHost)._core?.viewport
+    viewport?.syncScrollArea?.(true)
+    if (!webglAddon) currentTerm.refresh(0, currentTerm.rows - 1)
     return true
   })
 }
