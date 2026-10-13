@@ -770,6 +770,49 @@ async function configCodex(
   const envBlock = [a.begin, `${envKeyFor(p.id)}=${shq(p.apiKey)}`, a.end].join('\n');
   toml = replaceAnchored(toml, tomlBlock, p.id);
   env = replaceAnchored(env, envBlock, p.id);
+
+  // Codex 只认识内置模型 slug；第三方网关模型（如 opencode-coding）会退回 fallback
+  // metadata。按 provider 的 responses 模型清单生成一份本地 catalog，至少补上 slug、
+  // 可选上下文窗口和 reasoning 元数据，避免 TUI 每次启动都告警。
+  const catalogModels = [...new Set([...wireModels(p, 'openai-responses'), ...(model ? [model.trim()] : [])])]
+    .filter((id) => !isBuiltinCodexSlug(id));
+  let wroteCatalog = false;
+  if (catalogModels.length) {
+    const catalogPath = join(base, '.codex', 'model-catalog.json');
+    const catalog = {
+      models: catalogModels.map((id) => ({
+        slug: id,
+        display_name: id,
+        description: id,
+        ...(tc?.contextWindow !== undefined && id === model?.trim() ? { context_window: tc.contextWindow } : {}),
+        default_reasoning_level: tc?.reasoningEffort || 'medium',
+        default_reasoning_summary: tc?.reasoningSummary || 'none',
+        supported_reasoning_levels: [
+          { description: 'Lighter reasoning', effort: 'low' },
+          { description: 'Balanced reasoning', effort: 'medium' },
+          { description: 'Deep reasoning', effort: 'high' },
+        ],
+        input_modalities: ['text'],
+        supports_parallel_tool_calls: true,
+        apply_patch_tool_type: 'freeform',
+        shell_type: 'shell_command',
+        supported_in_api: true,
+        visibility: 'list',
+        priority: 1000,
+        support_verbosity: true,
+        truncation_policy: { limit: 10000, mode: 'tokens' },
+        experimental_supported_tools: [],
+        model_messages: {
+          instructions_template: 'You are Codex, a coding agent collaborating in the user\u0027s workspace.',
+        },
+      })),
+    };
+    await writeJsonObject(catalogPath, catalog);
+    toml = tomlSetTopLevel(toml, 'model_catalog_json', 'model_catalog_json = "model-catalog.json"');
+    wroteCatalog = true;
+  } else {
+    toml = tomlRemoveTopLevel(toml, 'model_catalog_json');
+  }
   for (const pid of managedIds) {
     if (pid === p.id) continue;
     toml = removeAnchored(toml, pid);
@@ -838,8 +881,14 @@ async function configCodex(
     tc?.historyPersistence ? `history = ${tc.historyPersistence.trim()}` : '',
   ].filter(Boolean).join('，');
   notes.push(
-    `codex: 写 ${relTo(base, tomlPath)} + ${relTo(base, envPath)}（${p.id}${model ? `，model = ${model.trim()}` : ''}${tcExtra ? `，${tcExtra}` : ''}）${zsh !== zshOrig ? ` + 回收 ${relTo(base, zshPath)} 遗留块` : ''}`,
+    `codex: 写 ${relTo(base, tomlPath)} + ${relTo(base, envPath)}${wroteCatalog ? ' + model-catalog.json' : ''}（${p.id}${model ? `，model = ${model.trim()}` : ''}${tcExtra ? `，${tcExtra}` : ''}）${zsh !== zshOrig ? ` + 回收 ${relTo(base, zshPath)} 遗留块` : ''}`,
   );
+}
+
+// 内置 slug 不写本地 catalog：model_catalog_json 会替换内置清单，硬编码这些模型
+// 反而会丢掉官方完整 instructions 与行为元数据。
+function isBuiltinCodexSlug(slug: string): boolean {
+  return slug === 'codex-auto-review' || slug.startsWith('gpt-');
 }
 
 // 去 // 行注释与 /* */ 块注释（串内的不管——jsonc 用户配置罕见字符串含 //，
