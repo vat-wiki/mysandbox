@@ -426,10 +426,19 @@ export const normalizePiBinding = (t: unknown): AiPiBinding | undefined => {
   const slot = normalizeOpenCodeBinding(t)
   return slot ? { entries: slot.entries, setDefault: slot.setDefault } : undefined
 }
+export interface AiCodexModelMetadata {
+  displayName?: string
+  description?: string
+  inputModalities?: string[]
+  supportsParallelToolCalls?: boolean
+  truncationLimit?: number
+  baseInstructions?: string
+  supportedReasoningLevels?: string[]
+}
 export interface AiBinding {
   claude?: { provider: string }
   // codex 单槽 + 默认模型必填（不写顶层 model = codex 落回内置 gpt-5.x，网关没有）。
-  codex?: { provider: string; model?: string }
+  codex?: { provider: string; model?: string; metadata?: AiCodexModelMetadata }
   opencode?: AiOpenCodeBinding
   pi?: AiPiBinding
 }

@@ -19,6 +19,7 @@ import {
   Unauthorized,
   type AiView,
   type AiBinding,
+  type AiCodexModelMetadata,
   type AiOpenCodeEntry,
   type BatchResult,
 } from '@/lib/api'
@@ -26,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Select,
   SelectContent,
@@ -98,6 +100,15 @@ const cdContextWindow = ref('')
 const cdAutoCompactTokenLimit = ref('')
 const cdReasoningSummary = ref('')
 const cdHistoryPersistence = ref('')
+// Codex 模型元数据（跟随绑定槽的 provider/model）：只暴露 catalog 里常用的差异项，
+// 其余必填字段由后端写入器补默认值。`EMPTY` 用于三态布尔下拉。
+const cdMetaDisplayName = ref('')
+const cdMetaDescription = ref('')
+const cdMetaInputModalities = ref<string[]>([])
+const cdMetaParallelToolCalls = ref(EMPTY)
+const cdMetaTruncationLimit = ref('')
+const cdMetaBaseInstructions = ref('')
+const cdMetaReasoningLevels = ref<string[]>([])
 
 const providers = computed(() => view.value?.providers ?? [])
 const noProviders = computed(() => !providers.value.length)
@@ -118,10 +129,61 @@ function fillFrom(b: AiBinding | null | undefined) {
   claude.value = b?.claude?.provider ?? ''
   codex.value = b?.codex?.provider ?? ''
   codexModel.value = b?.codex?.model ?? ''
+  const meta = b?.codex?.metadata
+  cdMetaDisplayName.value = meta?.displayName ?? ''
+  cdMetaDescription.value = meta?.description ?? ''
+  cdMetaInputModalities.value = meta?.inputModalities ?? []
+  cdMetaParallelToolCalls.value = meta?.supportsParallelToolCalls === undefined ? EMPTY : meta.supportsParallelToolCalls ? 'true' : 'false'
+  cdMetaTruncationLimit.value = meta?.truncationLimit === undefined ? '' : String(meta.truncationLimit)
+  cdMetaBaseInstructions.value = meta?.baseInstructions ?? ''
+  cdMetaReasoningLevels.value = meta?.supportedReasoningLevels ?? []
   const ocSlot = normalizeOpenCodeBinding(b?.opencode)
   ocEntries.value = ocSlot?.entries ?? []
   ocDefaultModel.value = ocSlot?.defaultModel ?? ''
   piEntries.value = normalizePiBinding(b?.pi)?.entries ?? []
+}
+
+function clearCodexMetadata() {
+  cdMetaDisplayName.value = ''
+  cdMetaDescription.value = ''
+  cdMetaInputModalities.value = []
+  cdMetaParallelToolCalls.value = EMPTY
+  cdMetaTruncationLimit.value = ''
+  cdMetaBaseInstructions.value = ''
+  cdMetaReasoningLevels.value = []
+}
+
+function setCodexModel(value: string) {
+  if (value !== codexModel.value) clearCodexMetadata()
+  codexModel.value = value
+}
+
+function codexMetadataOut(): AiCodexModelMetadata | undefined {
+  const displayName = cdMetaDisplayName.value.trim()
+  const description = cdMetaDescription.value.trim()
+  const inputModalities = ['text', 'image'].filter((v) => cdMetaInputModalities.value.includes(v))
+  const supportsParallelToolCalls = cdMetaParallelToolCalls.value === EMPTY ? undefined : cdMetaParallelToolCalls.value === 'true'
+  const truncationLimit = cdMetaTruncationLimit.value.trim() ? Number(cdMetaTruncationLimit.value) : undefined
+  const baseInstructions = cdMetaBaseInstructions.value.trim()
+  const supportedReasoningLevels = ['minimal', 'low', 'medium', 'high', 'xhigh'].filter((v) => cdMetaReasoningLevels.value.includes(v))
+  if (
+    !displayName &&
+    !description &&
+    !inputModalities.length &&
+    supportsParallelToolCalls === undefined &&
+    truncationLimit === undefined &&
+    !baseInstructions &&
+    !supportedReasoningLevels.length
+  ) return undefined
+  return {
+    ...(displayName ? { displayName } : {}),
+    ...(description ? { description } : {}),
+    ...(inputModalities.length ? { inputModalities } : {}),
+    ...(supportsParallelToolCalls !== undefined ? { supportsParallelToolCalls } : {}),
+    ...(truncationLimit !== undefined ? { truncationLimit } : {}),
+    ...(baseInstructions ? { baseInstructions } : {}),
+    ...(supportedReasoningLevels.length ? { supportedReasoningLevels } : {}),
+  }
 }
 
 onMounted(() => loadView(true))
@@ -193,6 +255,11 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       err.value = 'Codex：先填默认模型（不写 model = codex 用内置 gpt-5.x，网关没有这些模型）'
       return
     }
+    const meta = codexMetadataOut()
+    if (meta?.truncationLimit !== undefined && (!Number.isInteger(meta.truncationLimit) || meta.truncationLimit < 1 || meta.truncationLimit > 10_000_000)) {
+      err.value = 'Codex 模型元数据：截断阈值必须是 1 到 10000000 的整数'
+      return
+    }
   } else if (tool === 'opencode') {
     if (!ocEntries.value.length) {
       err.value = 'OpenCode：先选至少一个模型供应商（不选 = 不碰该工具的落盘配置）'
@@ -241,9 +308,10 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               : {}),
           })),
         }))
+      const codexMeta = tool === 'codex' ? codexMetadataOut() : undefined
       const b: AiBinding =
         tool === 'codex'
-          ? { ...stored, codex: { provider: codex.value, model: codexModel.value.trim() } }
+          ? { ...stored, codex: { provider: codex.value, model: codexModel.value.trim(), ...(codexMeta ? { metadata: codexMeta } : {}) } }
           : tool === 'opencode'
             ? {
                 ...stored,
@@ -382,8 +450,75 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               :provider-id="codex"
               :model="codexModel"
               @update:provider-id="(v) => (codex = v)"
-              @update:model="(v) => (codexModel = v)"
+              @update:model="setCodexModel"
             />
+            <details class="group rounded-md border bg-muted/20 p-3 shadow-xs">
+              <summary class="flex cursor-pointer items-center justify-between text-xs font-medium transition-colors">
+                模型元数据
+                <span class="text-[10px] text-muted-foreground/70 group-open:hidden">展开</span>
+                <span class="hidden text-[10px] text-muted-foreground/70 group-open:inline">收起</span>
+              </summary>
+              <div class="mt-3 space-y-3 border-t pt-3">
+                <p class="text-[11px] leading-relaxed text-muted-foreground">
+                  写入 .codex/model-catalog.json；上下文窗口、推理力度、输出详略和推理摘要用下方 Codex 自身配置。
+                </p>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="space-y-1.5">
+                    <Label for="ai-cd-meta-name" class="text-[11px] text-muted-foreground">显示名</Label>
+                    <Input id="ai-cd-meta-name" v-model="cdMetaDisplayName" placeholder="默认用模型 ID" />
+                  </div>
+                  <div class="space-y-1.5">
+                    <Label for="ai-cd-meta-description" class="text-[11px] text-muted-foreground">描述</Label>
+                    <Input id="ai-cd-meta-description" v-model="cdMetaDescription" placeholder="默认用模型 ID" />
+                  </div>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="space-y-2">
+                    <Label class="text-[11px] text-muted-foreground">输入模态</Label>
+                    <div class="flex items-center gap-4">
+                      <label class="flex items-center gap-1.5 text-xs">
+                        <Checkbox :model-value="cdMetaInputModalities.includes('text')" @update:model-value="(v) => (cdMetaInputModalities = v ? [...cdMetaInputModalities, 'text'] : cdMetaInputModalities.filter((x) => x !== 'text'))" />
+                        文本
+                      </label>
+                      <label class="flex items-center gap-1.5 text-xs">
+                        <Checkbox :model-value="cdMetaInputModalities.includes('image')" @update:model-value="(v) => (cdMetaInputModalities = v ? [...cdMetaInputModalities, 'image'] : cdMetaInputModalities.filter((x) => x !== 'image'))" />
+                        图片
+                      </label>
+                    </div>
+                  </div>
+                  <div class="space-y-1.5">
+                    <Label class="text-[11px] text-muted-foreground">并行工具调用</Label>
+                    <Select :model-value="cdMetaParallelToolCalls" @update:model-value="(v) => (cdMetaParallelToolCalls = v as string)">
+                      <SelectTrigger size="sm" class="w-full"><SelectValue placeholder="默认允许" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem :value="EMPTY">默认允许</SelectItem>
+                        <SelectItem value="true">允许</SelectItem>
+                        <SelectItem value="false">禁止</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div class="space-y-1.5">
+                    <Label for="ai-cd-meta-truncation" class="text-[11px] text-muted-foreground">截断阈值（tokens）</Label>
+                    <Input id="ai-cd-meta-truncation" v-model="cdMetaTruncationLimit" type="number" min="1" max="10000000" step="1" placeholder="默认 10000" />
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-[11px] text-muted-foreground">支持推理档位</Label>
+                    <div class="flex flex-wrap gap-x-3 gap-y-2">
+                      <label v-for="level in ['minimal', 'low', 'medium', 'high', 'xhigh']" :key="level" class="flex items-center gap-1.5 text-xs">
+                        <Checkbox :model-value="cdMetaReasoningLevels.includes(level)" @update:model-value="(v) => (cdMetaReasoningLevels = v ? [...cdMetaReasoningLevels, level] : cdMetaReasoningLevels.filter((x) => x !== level))" />
+                        {{ level }}
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="space-y-1.5">
+                  <Label for="ai-cd-meta-instructions" class="text-[11px] text-muted-foreground">自定义系统提示</Label>
+                  <Textarea id="ai-cd-meta-instructions" v-model="cdMetaBaseInstructions" rows="5" placeholder="留空使用 Codex 的最小默认提示" />
+                </div>
+              </div>
+            </details>
             <!-- Codex 自身配置：三个可选键等宽排布；给了才写、清空不碰已有值（回收不猜） -->
             <div class="rounded-md border bg-muted/20 p-3 shadow-xs">
               <div class="flex items-baseline justify-between gap-2">

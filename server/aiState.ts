@@ -109,6 +109,18 @@ export interface AiPiBinding {
   setDefault?: boolean;
 }
 
+// Codex 模型元数据（跟随 Codex 绑定槽的 provider/model）：只补本地
+// model-catalog.json 里用户关心的差异项；未填的字段由写入器给安全默认值。
+export interface AiCodexModelMetadata {
+  displayName?: string;
+  description?: string;
+  inputModalities?: string[]; // 目前 catalog 侧使用 text/image
+  supportsParallelToolCalls?: boolean;
+  truncationLimit?: number; // tokens
+  baseInstructions?: string;
+  supportedReasoningLevels?: string[]; // minimal/low/medium/high/xhigh
+}
+
 // 绑定（智能体配置的声明层）：工具 → 用哪些 provider。单槽工具绑一个；多槽工具
 // 绑 N 个共存，setDefault 取 providers[0]。providers 空数组 = 显式清空该工具的
 // 全部受管条目。缺某工具键 = 不碰该工具的落盘配置。
@@ -117,7 +129,7 @@ export interface AiBinding {
   // codex 单槽：model 必填（不写顶层 model = codex 落回内置 gpt-5.x slug，第三方
   // 网关没有这些模型，请求必 404）。旧形状的 setDefault 读到即弃（单槽恒写
   // model_provider，勾不勾没有语义差——勾选框是 opencode 多槽时代的遗留概念）。
-  codex?: { provider: string; model?: string };
+  codex?: { provider: string; model?: string; metadata?: AiCodexModelMetadata };
   opencode?: AiOpenCodeBinding;
   pi?: AiPiBinding;
 }

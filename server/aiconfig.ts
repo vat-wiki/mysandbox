@@ -71,6 +71,7 @@ import {
   type AiOpenCodeToolConfig,
   type AiOpenCodeBinding,
   type AiPiBinding,
+  type AiCodexModelMetadata,
   type GatewayWire,
   wireModels,
 } from './aiState.js';
@@ -146,7 +147,7 @@ export interface ResolvedProvider {
 // opencode/pi 是 provider × wire 变体列表（models 缺省 = 该 provider 该协议全部模型）。
 export interface AiApplyPlan {
   claude?: ResolvedProvider;
-  codex?: { provider: ResolvedProvider; model?: string };
+  codex?: { provider: ResolvedProvider; model?: string; metadata?: AiCodexModelMetadata };
   opencode?: {
     variants: { provider: ResolvedProvider; wire: GatewayWire; models?: string[] }[];
     setDefault?: boolean;
@@ -180,7 +181,7 @@ export function buildPlan(
   }
   if (binding.codex) {
     const p = resolve(binding.codex.provider);
-    if (p) plan.codex = { provider: p, model: binding.codex.model };
+    if (p) plan.codex = { provider: p, model: binding.codex.model, ...(binding.codex.metadata ? { metadata: binding.codex.metadata } : {}) };
   }
   for (const tool of ['opencode', 'pi'] as const) {
     const t = binding[tool];
@@ -240,6 +241,40 @@ export function validateContextWindows(
   return null;
 }
 
+// Codex 绑定槽上的模型元数据。catalog 字段很多，这里只开放用户会关心的差异项；
+// 非法值宁可 400，也不要写出让 Codex 启动失败的本地 catalog。
+function validateCodexModelMetadata(meta: unknown): string | null {
+  if (meta === undefined) return null;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return 'codex.metadata 必须是对象';
+  const m = meta as AiCodexModelMetadata;
+  for (const [name, value] of [['displayName', m.displayName], ['description', m.description]] as const) {
+    if (value !== undefined && (typeof value !== 'string' || !value.trim())) return `codex.metadata.${name} 必须是非空字符串`;
+  }
+  if (m.inputModalities !== undefined) {
+    if (!Array.isArray(m.inputModalities) || !m.inputModalities.length) return 'codex.metadata.inputModalities 必须是非空数组';
+    if (m.inputModalities.some((v) => !['text', 'image'].includes(v))) {
+      return 'codex.metadata.inputModalities 只支持 text/image';
+    }
+  }
+  if (m.supportsParallelToolCalls !== undefined && typeof m.supportsParallelToolCalls !== 'boolean') {
+    return 'codex.metadata.supportsParallelToolCalls 必须是布尔';
+  }
+  if (m.truncationLimit !== undefined && (!Number.isInteger(m.truncationLimit) || m.truncationLimit < 1 || m.truncationLimit > 10_000_000)) {
+    return 'codex.metadata.truncationLimit 必须是 1 到 10000000 的整数';
+  }
+  if (m.baseInstructions !== undefined && (typeof m.baseInstructions !== 'string' || !m.baseInstructions.trim())) {
+    return 'codex.metadata.baseInstructions 必须是非空字符串';
+  }
+  if (m.supportedReasoningLevels !== undefined) {
+    if (!Array.isArray(m.supportedReasoningLevels) || !m.supportedReasoningLevels.length) return 'codex.metadata.supportedReasoningLevels 必须是非空数组';
+    const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+    if (m.supportedReasoningLevels.some((v) => !efforts.includes(v))) {
+      return `codex.metadata.supportedReasoningLevels 非法（合法值 ${efforts.join('/')}）`;
+    }
+  }
+  return null;
+}
+
 export function validateBinding(binding: unknown, lib: Record<string, AiProvider>): string | null {
   if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return 'binding 必须是对象';
   const b = binding as AiBinding;
@@ -264,6 +299,8 @@ export function validateBinding(binding: unknown, lib: Record<string, AiProvider
     if (b.codex.model === undefined || typeof b.codex.model !== 'string' || !b.codex.model.trim()) {
       return 'codex.model 必填（codex 没有顶层 model 会用内置 gpt-5.x，网关没有这些模型）';
     }
+    const invalidMeta = validateCodexModelMetadata(b.codex.metadata);
+    if (invalidMeta) return invalidMeta;
   }
   for (const tool of ['opencode', 'pi'] as const) {
     const t = b[tool];
@@ -746,6 +783,7 @@ async function configCodex(
   p: ResolvedProvider,
   model: string | undefined,
   tc: AiCodexToolConfig | undefined,
+  catalogMeta: AiCodexModelMetadata | undefined,
   removeKeys: string[],
   managedIds: string[],
   notes: string[],
@@ -779,33 +817,47 @@ async function configCodex(
   let wroteCatalog = false;
   if (catalogModels.length) {
     const catalogPath = join(base, '.codex', 'model-catalog.json');
+    const selectedModel = model?.trim();
+    const supportedLevels = catalogMeta?.supportedReasoningLevels?.length
+      ? catalogMeta.supportedReasoningLevels
+      : ['low', 'medium', 'high'];
+    const defaultLevel = tc?.reasoningEffort && supportedLevels.includes(tc.reasoningEffort)
+      ? tc.reasoningEffort
+      : catalogMeta?.supportedReasoningLevels?.length
+        ? catalogMeta.supportedReasoningLevels[0]
+        : tc?.reasoningEffort || 'medium';
     const catalog = {
-      models: catalogModels.map((id) => ({
-        slug: id,
-        display_name: id,
-        description: id,
-        ...(tc?.contextWindow !== undefined && id === model?.trim() ? { context_window: tc.contextWindow } : {}),
-        default_reasoning_level: tc?.reasoningEffort || 'medium',
-        default_reasoning_summary: tc?.reasoningSummary || 'none',
-        supported_reasoning_levels: [
-          { description: 'Lighter reasoning', effort: 'low' },
-          { description: 'Balanced reasoning', effort: 'medium' },
-          { description: 'Deep reasoning', effort: 'high' },
-        ],
-        input_modalities: ['text'],
-        supports_parallel_tool_calls: true,
-        apply_patch_tool_type: 'freeform',
-        shell_type: 'shell_command',
-        supported_in_api: true,
-        visibility: 'list',
-        priority: 1000,
-        support_verbosity: true,
-        truncation_policy: { limit: 10000, mode: 'tokens' },
-        experimental_supported_tools: [],
-        model_messages: {
-          instructions_template: 'You are Codex, a coding agent collaborating in the user\u0027s workspace.',
-        },
-      })),
+      models: catalogModels.map((id) => {
+        const selected = id === selectedModel;
+        return {
+          slug: id,
+          display_name: selected && catalogMeta?.displayName ? catalogMeta.displayName : id,
+          description: selected && catalogMeta?.description ? catalogMeta.description : id,
+          ...(tc?.contextWindow !== undefined && selected ? { context_window: tc.contextWindow } : {}),
+          default_reasoning_level: defaultLevel,
+          default_reasoning_summary: tc?.reasoningSummary || 'none',
+          supported_reasoning_levels: supportedLevels.map((effort) => ({
+            description: effort === 'minimal' ? 'Minimal reasoning' : effort === 'low' ? 'Lighter reasoning' : effort === 'medium' ? 'Balanced reasoning' : effort === 'high' ? 'Deep reasoning' : 'Deepest reasoning',
+            effort,
+          })),
+          input_modalities: selected && catalogMeta?.inputModalities?.length ? catalogMeta.inputModalities : ['text'],
+          supports_parallel_tool_calls: selected && catalogMeta?.supportsParallelToolCalls !== undefined ? catalogMeta.supportsParallelToolCalls : true,
+          apply_patch_tool_type: 'freeform',
+          shell_type: 'shell_command',
+          supported_in_api: true,
+          visibility: 'list',
+          priority: 1000,
+          support_verbosity: true,
+          ...(tc?.verbosity ? { default_verbosity: tc.verbosity } : {}),
+          truncation_policy: { limit: selected && catalogMeta?.truncationLimit !== undefined ? catalogMeta.truncationLimit : 10000, mode: 'tokens' },
+          experimental_supported_tools: [],
+          model_messages: {
+            instructions_template: selected && catalogMeta?.baseInstructions
+              ? catalogMeta.baseInstructions
+              : 'You are Codex, a coding agent collaborating in the user\u0027s workspace.',
+          },
+        };
+      }),
     };
     await writeJsonObject(catalogPath, catalog);
     toml = tomlSetTopLevel(toml, 'model_catalog_json', 'model_catalog_json = "model-catalog.json"');
@@ -1177,7 +1229,7 @@ async function applyPlanToHome(
   }
   if (plan.codex && scope === 'user') {
     try {
-      await configCodex(base, plan.codex.provider, plan.codex.model, toolCfg.codex, removedCodexKeys, managedIds, notes);
+      await configCodex(base, plan.codex.provider, plan.codex.model, toolCfg.codex, plan.codex.metadata, removedCodexKeys, managedIds, notes);
     } catch (e) {
       failed.push('codex');
       notes.push(`codex: 失败 — ${errMsg(e)}`);
