@@ -105,7 +105,7 @@ export function sshSessionName(termId: string): string {
 
 // 会话/服务端 tmux 设置链（\; 串成一次 ssh 往返；argv 里的引号由远端 shell 剥离，
 // 语义与 hostTerminal 逐项对齐——逐项依据见那边注释）：
-//   - history-limit 在 new-session 之前（首个会话即 5 万行）；
+//   - history-limit / alternate-screen 在 new-session 之前（首个会话即 5 万行，且 pane 内 TUI 不进 alt screen）；
 //   - -e 注入色深需 tmux ≥3.2，老远端整链失败时由调用方退回无 -e 版本重试；
 //   - set-titles-string 的 #T 必须单引号包裹：裸 # 在远端 shell 里开头即注释，
 //     会把后面的参数全部吞掉。
@@ -113,6 +113,7 @@ function createChain(session: string, cols: number, rows: number, cwd: string, w
   return tmuxArgs([
     'start-server', '\\;',
     'set', '-g', 'history-limit', '50000', '\\;',
+    'set', '-g', 'alternate-screen', 'off', '\\;',
     'new-session', '-d',
     ...(withEnv ? ['-e', 'COLORTERM=truecolor', '-e', 'CLAUDE_CODE_TMUX_TRUECOLOR=1'] : []),
     '-s', session, '-x', String(cols), '-y', String(rows),

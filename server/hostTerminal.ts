@@ -194,7 +194,17 @@ async function ensureTmuxSession(
   const alive = await hostTmux(['has-session', '-t', `=${session}`]);
   if (alive.ok) return true; // 会话已在，直接 attach 路径（调用方语义）
   const hasServer = (await hostTmux(['list-sessions', '-F', '#{session_name}'])).ok;
+  // `alternate-screen off` 管的是 pane 内程序能否进入 alt screen；terminal-overrides 的
+  // smcup@ 只管 tmux 客户端（web xterm）。Codex/claude 这类 TUI 进入 pane alt screen 后
+  // 会清掉当前屏且历史不可回放，必须在 new-session 前关掉，避免首屏竞态。
   const argv = [
+    'start-server',
+    ';',
+    'set-option',
+    '-g',
+    'alternate-screen',
+    'off',
+    ';',
     'new-session',
     '-d',
     '-e',
