@@ -51,6 +51,7 @@ import {
   SUSTAIN_MS,
 } from '@/lib/terminalActivity'
 import { setFaviconBusy } from '@/lib/faviconStatus'
+import { fireQuietNotify } from '@/lib/browserNotify'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
@@ -1560,6 +1561,20 @@ function restoreHidden(g: TermGroup) {
   activeIdx.value = groups.value.indexOf(g)
 }
 
+// 浏览器通知点击的落点：聚焦窗口并切到该组——隐藏组先恢复（主区同步切回终端视图，
+// 与 onTabClick 同语义），可见组直接激活。
+function activateGroupById(gId: string) {
+  window.focus()
+  const hidden = hiddenGroups.value.find((x) => x.id === gId)
+  if (hidden) {
+    restoreHidden(hidden)
+    mainView.value = 'terminal'
+    return
+  }
+  const idx = groups.value.findIndex((x) => x.id === gId)
+  if (idx >= 0) onTabClick(idx)
+}
+
 // 会话对话框：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
 const showSessions = ref(false)
 // 设置弹框（侧栏底部「设置」入口，展开行与 rail 各一枚）
@@ -2291,7 +2306,22 @@ async function refreshActivity() {
     }
     if (worstMs > 0) nextAttention.set(g.id, worstMs)
   }
+  const prevAttention = quietAttention.value
   quietAttention.value = nextAttention
+  // 浏览器通知（站外延伸，lib/browserNotify）：只对「新挂标」的组发——状态制重算
+  // 每拍整体替换，diff 出本轮新进的才发，不重发；页面在前台时 lib 内部拦下（tab
+  // 身份点就是即时信号）。点击 = 聚焦窗口并切到该组。开关在设置弹框（授权需用户
+  // 手势，per 组的「无输出时提醒」开关只管琥珀标，这里吃全局开关）。
+  if (nextAttention.size) {
+    for (const [gId] of nextAttention) {
+      if (prevAttention.has(gId)) continue
+      const g = groups.value.find((x) => x.id === gId) ?? hiddenGroups.value.find((x) => x.id === gId)
+      if (!g) continue
+      fireQuietNotify(`终端无输出：${groupLabel(g)}`, attentionTitle(gId), `msb-quiet-${gId}`, () =>
+        activateGroupById(gId),
+      )
+    }
+  }
   // 修剪已不存在的叶子登记（组关了 / 开关关了）：两张表同步清，防无界增长
   const alive = new Set<string>()
   for (const g of [...groups.value, ...hiddenGroups.value]) {

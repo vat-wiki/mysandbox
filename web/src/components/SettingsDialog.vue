@@ -11,7 +11,7 @@
 // 天然优先于 home 种子，不被这里破坏。
 import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { Bot, ChevronLeft, ChevronRight, Globe, Loader2, Network } from 'lucide-vue-next'
+import { Bell, Bot, ChevronLeft, ChevronRight, Globe, Loader2, Network } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -32,6 +32,14 @@ import {
 } from '@/lib/api'
 import InfoHint from '@/components/InfoHint.vue'
 import ClusterPanel from '@/components/ClusterPanel.vue'
+import {
+  notifyAvailable,
+  notifyPermission,
+  quietNotifyEnabled,
+  requestNotifyPermission,
+  setQuietNotifyEnabled,
+  type NotifyPermission,
+} from '@/lib/browserNotify'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -44,7 +52,42 @@ const DEFAULT_HOST = 'http://testlens:10004'
 
 // 两层导航：'list' 目录页 / 'testlens' TestLens 详情。将来加分区 = 加一个 section 值
 // + 一条入口行。
-const section = ref<'list' | 'testlens' | 'cluster'>('list')
+const section = ref<'list' | 'testlens' | 'cluster' | 'notify'>('list')
+
+// —— 浏览器通知（「无输出提醒」的站外延伸，lib/browserNotify）——
+// 弹框每次打开都重建：开关/权限状态从浏览器现场回填，不存本地副本。
+// 授权必须用户手势触发——点开开关那一刻申请；被拒则开关弹回并提示去站点设置恢复
+// （浏览器拒绝后 JS 再也拿不到 requestPermission 的弹窗，只能用户手动解禁）。
+const notifySupported = notifyAvailable()
+const notifyPerm = ref<NotifyPermission>(notifyPermission())
+const notifyOn = ref(quietNotifyEnabled())
+
+async function toggleNotify(v: boolean) {
+  if (!v) {
+    setQuietNotifyEnabled(false)
+    notifyOn.value = false
+    return
+  }
+  if (notifySupported && notifyPerm.value === 'default') {
+    notifyPerm.value = await requestNotifyPermission()
+  }
+  if (notifySupported && notifyPerm.value !== 'granted') {
+    toast.warning('浏览器通知权限被拒绝', {
+      description: '请在浏览器地址栏的站点设置里把「通知」改回允许，再回来开启。',
+    })
+    notifyOn.value = false
+    return
+  }
+  setQuietNotifyEnabled(true)
+  notifyOn.value = true
+}
+
+// 目录页入口行的状态摘要。
+const notifySummary = computed(() => {
+  if (!notifySupported) return '浏览器不支持'
+  if (notifyPerm.value === 'denied') return '权限被拒绝'
+  return notifyOn.value ? '已开启' : '关闭'
+})
 
 const view = ref<TestlensView | null>(null)
 const loading = ref(false)
@@ -154,10 +197,10 @@ onMounted(load)
           <ChevronLeft class="size-4" />
         </button>
         <DialogTitle class="text-lg font-semibold">
-          {{ section === 'list' ? '设置' : section === 'cluster' ? '集群' : 'TestLens' }}
+          {{ section === 'list' ? '设置' : section === 'cluster' ? '集群' : section === 'notify' ? '浏览器通知' : 'TestLens' }}
         </DialogTitle>
         <DialogDescription class="sr-only">
-          {{ section === 'list' ? '全局性配置的入口目录' : section === 'cluster' ? '跨机组网与资源互通' : 'TestLens 配置批量下发' }}
+          {{ section === 'list' ? '全局性配置的入口目录' : section === 'cluster' ? '跨机组网与资源互通' : section === 'notify' ? '无输出提醒的系统通知出口' : 'TestLens 配置批量下发' }}
         </DialogDescription>
       </div>
 
@@ -204,6 +247,21 @@ onMounted(load)
               跨机组网 · 容器互通 · 模板与技能分发
             </span>
           </span>
+          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
+        </button>
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
+          @click="section = 'notify'"
+        >
+          <Bell class="size-4 shrink-0 text-muted-foreground" />
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-medium">浏览器通知</span>
+            <span class="block truncate text-xs text-muted-foreground">
+              终端无输出时发系统通知——切走也能收到「agent 干完了」
+            </span>
+          </span>
+          <span class="shrink-0 text-xs text-muted-foreground">{{ notifySummary }}</span>
           <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
         </button>
       </div>
@@ -276,6 +334,33 @@ onMounted(load)
       <!-- 集群分区 -->
       <div v-else-if="section === 'cluster'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <ClusterPanel @unauthorized="emit('unauthorized')" />
+      </div>
+
+      <!-- 浏览器通知详情层 -->
+      <div v-else-if="section === 'notify'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <section class="space-y-4">
+          <p class="text-xs leading-relaxed text-muted-foreground">
+            终端在你看不见的地方安静下来（agent 干完活 / 等你输入）时发一条系统通知，点击直达对应终端。
+            只在页面不在前台时发；回到本页自动收掉还挂着的通知。每组可用 tab 右键「无输出时提醒」单独关闭。
+          </p>
+          <label class="flex cursor-pointer items-center gap-2.5 rounded-md px-1 py-1 hover:bg-accent/50">
+            <Checkbox
+              :model-value="notifyOn"
+              :disabled="!notifySupported"
+              @update:model-value="(v) => toggleNotify(v === true)"
+            />
+            <span class="text-sm">无输出时发浏览器通知</span>
+          </label>
+          <p v-if="!notifySupported" class="text-xs text-amber-500">
+            当前浏览器不支持通知（需要 https / localhost 访问），开关不可用——琥珀标不受影响。
+          </p>
+          <p v-else-if="notifyPerm === 'denied'" class="text-xs text-amber-500">
+            通知权限已被拒绝：请在浏览器地址栏的站点设置里把「通知」改回允许，再回来开启。
+          </p>
+          <p v-else-if="notifyPerm === 'default' && !notifyOn" class="text-xs text-muted-foreground">
+            开启时会向浏览器申请通知权限。
+          </p>
+        </section>
       </div>
     </DialogContent>
   </Dialog>
