@@ -1183,8 +1183,10 @@ function fmtSize(n: number): string {
     @drop="onPanelDrop"
   >
     <!-- 头：容器名 + pane 选择 + 关闭 -->
+    <!-- Folder 图标给 1px 光学下移：lucide 图形在 viewBox 内整体偏上（形状中心 y=13/24 ≈ 0.6px），
+         小写西文名字的光学质量又偏 x-height 带下方 ~1px——盒模型虽已居中，视觉上图标翘高 ~1.5px -->
     <div class="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
-      <Folder class="size-3.5 shrink-0 text-muted-foreground" />
+      <Folder class="relative top-px size-3.5 shrink-0 text-muted-foreground" />
       <span class="min-w-0 truncate font-mono text-xs font-medium" :title="containerName">{{
         containerName
       }}</span>
