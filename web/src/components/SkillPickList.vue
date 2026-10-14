@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 库技能多选列表（过滤 + 勾选行）——AiSpotDialog（文件面板就地装）与 SkillsHubTab
+// 库技能多选列表（过滤 + 勾选行）——SkillsHubTab 的安装弹框用
 // （技能中心全局安装弹框）共用一份：行形状（勾选框 + 名称 + 快照徽标 + 描述）、
 // 过滤、加载/空态都在这里；装到哪、范围语义归调用方（picked 状态与提交也归调用方）。
 import { ref, computed } from 'vue'

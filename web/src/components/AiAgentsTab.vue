@@ -6,7 +6,8 @@
 // 该工具的绑定，与已存绑定合并后整体提交（后端 AiBinding 整体替换语义 + 四层追平
 // 链路不动，其余工具原样带上 = 落盘配置不碰）；应用目标 = 本机 + 受管容器（同权）。
 // 容器的临时任务走 AiOverrideDialog（AiBindingTargetForm）。本页 = 全局配置——项目级
-// 规则不在这里展示/管理，落点与增删都在文件面板「AI 配置」就地完成（AiSpotDialog）。
+// 规则的 UI 入口已删（原文件面板 ✨ AiSpotDialog，用得少被移除）；存量规则仍由后端
+// start 事件补发链路生效，API（/api/ai/projects/*）保留供 agent 调用。
 // 工具自身配置（toolConfig）是全局一份，不进绑定四层。
 import { ref, computed, onMounted } from 'vue'
 import {

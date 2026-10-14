@@ -40,7 +40,6 @@ import {
 import NameDialog from '@/components/NameDialog.vue'
 import { onSandboxEvent, setWatchDirs, type SandboxEvent } from '@/lib/events'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import AiSpotDialog from '@/components/AiSpotDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
 import {
   Folder,
@@ -61,7 +60,6 @@ import {
   ClipboardPaste,
   Copy,
   BookPlus,
-  Sparkles,
   MoreHorizontal,
   Pencil,
   FolderInput,
@@ -111,15 +109,6 @@ function targetId(): string {
 }
 // 宿主面板（HOST_ID 哨兵）：路径本来就是宿主路径，弹框里不重复展示容器路径行。
 const isHost = computed(() => targetId() === HOST_ID)
-
-// —— AI 配置（pull 入口，✨ 按钮）：单弹框 Tabs 合并「模型绑定」与「技能」两块 pull
-// 配置（AiSpotDialog，表单在窄面板条里展不开，走居中弹窗）。落点 = 当前目录（假定人在
-// 项目根）：模型绑定写进当前目录本身，技能装进当前目录下的 .claude/skills / .agents/skills
-// （子目录在弹框里选）。容器与宿主（本机）都可用；home 内与否的细分判定在弹框里按 tab 做。——
-const showAiCfg = ref(false)
-const canAiCfg = computed(
-  () => !targetId().startsWith('s:') && !!path.value && (isHost.value || path.value.startsWith('/home/dev')),
-)
 
 // —— 添加为技能（pull 反向：就地收进库）——把一个含 SKILL.md 的目录直接收进技能库
 // （拷一份静态快照，与来源解耦；此后任何目标都能「安装技能」拉它，更新在技能中心）。
@@ -1254,21 +1243,6 @@ function fmtSize(n: number): string {
       >
         <BookPlus class="size-3.5" />
       </Button>
-      <!-- AI 配置（pull 入口）：单弹框 Tabs——模型绑定（项目级 provider + 规则）与技能
-           （库 → 当前目录下 .claude/skills 或 .agents/skills，弹框里选子目录）。
-           容器与宿主都可用（服务组没有规则模型），home 外不出现。 -->
-      <Button
-        v-if="canAiCfg || showAiCfg"
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :class="showAiCfg ? 'bg-accent text-foreground' : ''"
-        :disabled="!canAiCfg"
-        title="AI 配置（模型绑定 / 技能）"
-        @click="showAiCfg = !showAiCfg"
-      >
-        <Sparkles class="size-3.5" />
-      </Button>
       <Button
         variant="ghost"
         size="icon-xs"
@@ -1642,17 +1616,6 @@ function fmtSize(n: number): string {
       :busy="opBusy"
       @confirm="confirmDelete"
       @close="delTarget = null"
-    />
-    <!-- AI 配置（✨ 按钮）：居中弹窗 Tabs 合并模型绑定与技能安装，表单不塞面板窄条。
-         spot = 当前目录（模型绑定落点 = 它本身；技能落点 = 它 + 子目录，弹框内选）。 -->
-    <AiSpotDialog
-      v-if="showAiCfg && path"
-      :container-id="targetId()"
-      :container-name="containerName"
-      :spot="path"
-      @done="refresh()"
-      @close="showAiCfg = false"
-      @unauthorized="emit('close')"
     />
   </div>
 </template>
