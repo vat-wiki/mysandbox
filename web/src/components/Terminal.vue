@@ -98,6 +98,51 @@ function screenHash(): string | undefined {
   return lines.join('\n')
 }
 
+// 剥 ANSI 序列（CSI + OSC）：delta 锚点匹配要用纯文本与 buffer 行（translateToString
+// 本身已剥序列）对齐，写入时才用原始行（带色）。
+const ANSI_SEQ = /\x1b\[[0-9;:?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g
+
+// 重连增量回填：后端在 resume=1 时发 history-delta（最近 2000 物理行、含当前屏、带
+// SGR）。前端拿 buffer 尾部（= 断线瞬间的最后一屏，必然也是 delta 内容里的一段）做
+// 锚点，在 delta 里定位后只写入其后的部分——断线窗口期内错过的输出原位补齐、零重复。
+// 找不到锚点（窗口期输出超 -2000 行 / 重连间列宽变化 reflow / 纯空屏无区分度）就静默
+// 放弃，等同旧行为（只靠 attach 重绘恢复当前屏）。capture 用物理行（无 -J）正是为了
+// 与 buffer 逐行对应；跨列宽的 reflow 会自然导致匹配失败，无需特判。
+function applyHistoryDelta(text: string): void {
+  const t = term
+  if (!t) return
+  const lines = text.split('\n')
+  const buf = t.buffer.active
+  // 锚点 = buffer 最后几行。我们自己写进 buffer 的横幅（>> 已断开 / >> 连接 / >> socket
+  // 错误）不在 tmux 历史里，滤掉再取；全空锚点（清屏后的空画面）没有区分度，直接放弃。
+  const ANCHOR = 6
+  const raw: string[] = []
+  for (let y = Math.max(0, buf.length - (ANCHOR + 4)); y < buf.length; y++) {
+    raw.push(buf.getLine(y)?.translateToString(true) ?? '')
+  }
+  const anchor = raw.filter((l) => !l.startsWith('>> ')).slice(-ANCHOR)
+  if (anchor.length < ANCHOR || anchor.every((l) => l === '')) return
+  const plain = lines.map((l) => l.replace(ANSI_SEQ, '').replace(/\s+$/, ''))
+  for (let i = 0; i + ANCHOR <= plain.length; i++) {
+    let hit = true
+    for (let j = 0; j < ANCHOR; j++) {
+      if (plain[i + j] !== anchor[j]) {
+        hit = false
+        break
+      }
+    }
+    if (!hit) continue
+    // 锚点之后 = 断线窗口输出；delta 比一屏长时末尾还挂着重连时的当前屏（capture 默认
+    // 到可见屏底），这 rows 行不写——交给 attach 重绘画进视口，否则滚动区出现整屏重复。
+    const restCount = lines.length - (i + ANCHOR)
+    const rest = restCount > t.rows ? lines.slice(i + ANCHOR, lines.length - t.rows) : lines.slice(i + ANCHOR)
+    // 前缀复位 SGR：-e 行可能以未闭合的属性态结束，别带进后续输出流。结尾不加 CRLF：
+    // 光标停在哪由 attach 重绘的绝对定位接管。
+    if (rest.length) t.write(`\x1b[0m${rest.join('\r\n')}`)
+    return
+  }
+}
+
 // 搜索选项固定开装饰：xterm 的全部高亮和结果统计只有在 decorations 启用时才工作。
 // incremental 让输入过程中的命中延续选区，避免每敲一个字符都从头跳一遍。
 function searchOptions() {
@@ -164,7 +209,10 @@ function connectWs() {
     (props.ssh ? '' : `&shell=${encodeURIComponent(shell)}`) +
     `&cols=${term ? term.cols : 80}&rows=${term ? term.rows : 24}` +
     `&termId=${encodeURIComponent(props.termId)}` +
-    (props.fromTermId ? `&from=${encodeURIComponent(props.fromTermId)}` : '')
+    (props.fromTermId ? `&from=${encodeURIComponent(props.fromTermId)}` : '') +
+    // 重连（本组件已回填过一次）告诉后端走增量分支：history-delta 只补断线窗口的输出，
+    // 而不是把整个历史重写一遍（scrollback 里已有内容，全量回填会整体重复）。
+    (backfilled ? '&resume=1' : '')
   ws = new WebSocket(url)
   ws.binaryType = 'arraybuffer'
 
@@ -183,6 +231,9 @@ function connectWs() {
           // N 行历史 + rows 个 CRLF = N+rows-1 个换行：恰好全部推进 scrollback、零空行
           // 缝隙、光标落底行（数学上精确成立，与 N 无关）；重绘的绝对定位画在空视口上。
           term?.write(m.text.split('\n').join('\r\n') + '\r\n'.repeat(term?.rows ?? 24))
+        } else if (m.type === 'history-delta' && m.text) {
+          // 重连增量：补断线窗口期内错过的输出（锚点去重，见 applyHistoryDelta）。
+          applyHistoryDelta(m.text)
         } else if (m.type === 'title' && typeof m.text === 'string') {
           // 重连/刷新后的标题恢复：pane title 留在 tmux 里不会随 attach 重发（历史回填
           // 只有可见文本），服务端 attach 前读 #T 补发此帧（terminal.ts / hostTerminal.ts）。

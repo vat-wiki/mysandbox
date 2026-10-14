@@ -570,15 +570,26 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       // term.write 进 scrollback；帧先于 attach 流发出（同 socket 保序），重绘落在空视口上。
       // 会话不存在（首连）capture 失败 -> 跳过。旧名会话顺带 rename（attach 脚本同款迁移，
       // 否则 capture 找不到旧名、旧会话永远回填不到）。
+      // -e：回填带 SGR 序列（颜色/粗体等属性），刷新后历史不再失色——capture-pane -e 导出的
+      // 就是 tmux buffer 的权威渲染态，无信息损失，前端 xterm 直接消化。
       // ⚠️ target 必须是 "=$1:"（带冒号）：tmux 3.4 实测 capture-pane 的 target 按 window 解析，
       // 纯会话名（=name，无冒号）会被当 window 名匹配 -> "can't find pane" 静默失败（has-session
       // 是 session target 所以没事）。带冒号 = 精确会话 + 默认窗口，稳。
+      // resume=1（前端重连）走 history-delta 增量分支：不带 -J（物理行，才能与前端 buffer 逐行
+      // 匹配）、不带 -E（含当前屏——断线瞬间的画面正是前端 buffer 尾部的锚点）、只取 -2000 行
+      // （断线窗口通常远小于此；窗口期内输出超 2000 行时锚点匹配不到，前端静默跳过 = 旧行为）。
+      // 首连仍走全量 -J（join 折行，回填逻辑行）+ -E -1（不含当前屏，配合前端 rows 个 CRLF
+      // 把历史精确推进 scrollback 的数学）。两种 frame 前端分别处理，见 Terminal.vue。
+      const resume = q.resume === '1';
+      const capCmd = resume
+        ? 'tmux capture-pane -p -e -t "=$1:" -S -2000 2>/dev/null'
+        : 'tmux capture-pane -p -e -J -t "=$1:" -S -10000 -E -1 2>/dev/null';
       if (useTmux) {
         try {
           const r = await execRun(cfg, id, {
             Cmd: [
               'sh', '-c',
-              'if tmux has-session -t "=$2" 2>/dev/null; then tmux rename-session -t "=$2" "$1"; fi; tmux capture-pane -p -J -t "=$1:" -S -10000 -E -1 2>/dev/null',
+              `if tmux has-session -t "=$2" 2>/dev/null; then tmux rename-session -t "=$2" "$1"; fi; ${capCmd}`,
               'sh', session, oldSession,
             ],
             User: '1000:1000',
@@ -586,7 +597,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
           });
           const text = r.stdout.trim();
           if (text) {
-            socket.send(JSON.stringify({ type: 'history', text }));
+            socket.send(JSON.stringify({ type: resume ? 'history-delta' : 'history', text }));
           }
         } catch {
           /* 会话不在（首连）：无历史可回填 */

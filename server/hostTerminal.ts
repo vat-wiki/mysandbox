@@ -666,16 +666,22 @@ async function windowsPane(
         // tmux attach 只重绘当前屏不回放历史：重连/刷新后 xterm scrollback 从空开始。
         // attach 前 capture 历史（-E -1 不含当前屏）作 {type:'history'} 控制帧先发，
         // 前端 term.write 进 scrollback（容器侧 terminal.ts 同款）。
+        // -e 带色回填 / resume=1 走 history-delta 增量（物理行、含当前屏、只取 -2000），
+        // 详版取舍见 terminal.ts 同名注释——两侧逻辑刻意保持同形。
         try {
+          const delta = q.resume === '1';
           const cap = await hostTmux([
             // target 必须带冒号（"=会话名:"）：tmux 3.4 实测 capture-pane 的 target 按 window
             // 解析，纯会话名会被当 window 名匹配 -> "can't find pane" 静默失败（has-session
             // 是 session target 所以没事）。带冒号 = 精确会话 + 默认窗口。
-            'capture-pane', '-p', '-J', '-t', `=${session}:`, '-S', '-10000', '-E', '-1',
+            'capture-pane',
+            '-p',
+            '-e',
+            ...(delta ? ['-t', `=${session}:`, '-S', '-2000'] : ['-J', '-t', `=${session}:`, '-S', '-10000', '-E', '-1']),
           ]);
           const text = cap.stdout.trim();
           if (cap.ok && text) {
-            socket.send(JSON.stringify({ type: 'history', text }));
+            socket.send(JSON.stringify({ type: delta ? 'history-delta' : 'history', text }));
           }
         } catch {
           /* 会话未建好等：无历史可回填 */

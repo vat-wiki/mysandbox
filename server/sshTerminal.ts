@@ -326,16 +326,25 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       }
 
       // 历史回填（attach 前 capture，控制帧先发；与 hostTerminal 同款，前端写 scrollback）。
-      // 会话刚经 -A 兜底创建时无历史可回，失败静默。
+      // -e 带色 / resume=1 走 history-delta 增量（物理行、含当前屏、只取 -2000），取舍见
+      // terminal.ts 同名注释。会话刚经 -A 兜底创建时无历史可回，失败静默。
       try {
+        const delta = q.resume === '1';
         const cap = await sshRun(
           target,
-          tmuxArgs(['capture-pane', '-p', '-J', '-t', shq(`${session}:`), '-S', '-10000', '-E', '-1']),
+          tmuxArgs([
+            'capture-pane',
+            '-p',
+            '-e',
+            ...(delta
+              ? ['-t', shq(`${session}:`), '-S', '-2000']
+              : ['-J', '-t', shq(`${session}:`), '-S', '-10000', '-E', '-1']),
+          ]),
           15_000,
         );
         const text = cap.stdout.trim();
         if (cap.ok && text) {
-          socket.send(JSON.stringify({ type: 'history', text }));
+          socket.send(JSON.stringify({ type: delta ? 'history-delta' : 'history', text }));
         }
       } catch {
         /* 无历史可回填 */
