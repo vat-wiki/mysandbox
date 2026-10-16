@@ -1043,7 +1043,13 @@ onBeforeUnmount(() => {
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
        手机软键盘弹起时 paddingBottom 撑出键盘高度（kbH），内层 ResizeObserver 自动 refit。 -->
   <div class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbH > 0 ? { paddingBottom: kbH + 'px' } : undefined">
-    <div ref="el" class="min-h-0 flex-1 overflow-hidden" @contextmenu.prevent="onContextMenu" />
+    <!-- touch-none（touch-action: none）：触屏滚终端的唯一正解。xterm 的 touchmove 处理是 JS 驱动
+         viewport.scrollTop，但只在回滚区边界才 preventDefault——滚动途中浏览器的原生平移同时在跑，
+         而触点不在 .xterm-viewport 滚动层内，原生滚动链直接落到 document：上翻历史（手指下划）时
+         document 顶部 overscroll 触发下拉刷新、手势被浏览器抢走。touch-action: none 让终端区域的手势
+         完全交给 JS（xterm 自滚），浏览器不再启动原生平移/下拉刷新/双指缩放。中间层挂 overscroll-none
+         挡不住这个——touch 侧的原生滚动链跳过 overflow:hidden 的祖先直达 document。 -->
+    <div ref="el" class="min-h-0 flex-1 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
          浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
     <div class="search-shell" v-if="searchVisible">
