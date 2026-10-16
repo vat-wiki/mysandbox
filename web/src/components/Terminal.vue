@@ -565,6 +565,86 @@ function setupViewportWatch() {
   }
 }
 
+// —— 触屏滚动接管（touch 设备）——
+// xterm 内建在 bindMouse 里注册的 touchstart/touchmove 滚 viewport 真机上不可靠：touchmove
+// 非被动但滚动途中不 preventDefault，浏览器手势判定抢走手势后直接 touchcancel，终端纹丝
+// 不动（桌面 wheel 同一注册点，所以桌面无感）。这里 capture 阶段自管：preventDefault 在手
+// 保证 touchmove 必达，直接驱动 .xterm-viewport.scrollTop（与 xterm 内部手法一致但事件可控），
+// stopPropagation 防 xterm 内部 handler 双重滚动。touchstart/touchend 不截获——点按聚焦、
+// 长按等原生行为保持。顺带补惯性滑动（xterm 内建无 momentum，长历史 1:1 跟手翻不动）。
+// 只动本地 scrollback、不向 PTY 发字节：alternate screen（全屏 TUI）没有 scrollback，
+// scrollTop 顶死自然 no-op，不会干扰 TUI。
+let touchCleanup: (() => void) | null = null
+let momentumRaf = 0
+function stopMomentum() {
+  if (momentumRaf) cancelAnimationFrame(momentumRaf)
+  momentumRaf = 0
+}
+function setupTouchScroll() {
+  const root = el.value
+  if (!root) return
+  let tracking = false
+  let lastY = 0
+  let lastT = 0
+  let vel = 0 // px/ms，指数平滑后的瞬时速度
+  const viewportOf = (): HTMLElement | null =>
+    (term?.element?.querySelector('.xterm-viewport') as HTMLElement | null) ?? null
+  const onStart = (e: TouchEvent) => {
+    stopMomentum()
+    tracking = e.touches.length === 1
+    if (!tracking) return
+    lastY = e.touches[0].clientY
+    lastT = e.timeStamp
+    vel = 0
+  }
+  const onMove = (e: TouchEvent) => {
+    if (!tracking || e.touches.length !== 1) {
+      tracking = false // 多指（双指残留）丢弃，防跳变
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    const y = e.touches[0].clientY
+    const dy = lastY - y
+    const dt = Math.max(1, e.timeStamp - lastT)
+    lastY = y
+    lastT = e.timeStamp
+    if (dy === 0) return
+    const vp = viewportOf()
+    if (!vp) return
+    vp.scrollTop += dy
+    vel = vel * 0.8 + (dy / dt) * 0.2
+  }
+  const onEnd = () => {
+    if (!tracking) return
+    tracking = false
+    // 惯性 glide：按毫秒速度外推，每秒衰减到 0.2%，轻拂自然减速
+    const vp = viewportOf()
+    if (!vp || Math.abs(vel) < 0.15) return
+    let last = performance.now()
+    const step = (now: number) => {
+      const dt = now - last
+      last = now
+      vp.scrollTop += vel * dt
+      vel *= Math.pow(0.002, dt / 1000)
+      if (Math.abs(vel) > 0.05) momentumRaf = requestAnimationFrame(step)
+      else momentumRaf = 0
+    }
+    momentumRaf = requestAnimationFrame(step)
+  }
+  root.addEventListener('touchstart', onStart, { capture: true, passive: true })
+  root.addEventListener('touchmove', onMove, { capture: true, passive: false })
+  root.addEventListener('touchend', onEnd, { capture: true })
+  root.addEventListener('touchcancel', onEnd, { capture: true })
+  touchCleanup = () => {
+    stopMomentum()
+    root.removeEventListener('touchstart', onStart, { capture: true })
+    root.removeEventListener('touchmove', onMove, { capture: true })
+    root.removeEventListener('touchend', onEnd, { capture: true })
+    root.removeEventListener('touchcancel', onEnd, { capture: true })
+  }
+}
+
 // 滚轮/滚动条：交给 xterm.js 原生处理（与 VSCode 集成终端一致）--tmux 不再开 mouse 劫持，
 // 终端流不带鼠标追踪序列，xterm 默认即把滚轮滚 scrollback 并保留右侧滚动条。无需手写 wheel 接管，
 // 手写反而会 preventDefault 掉原生滚动、破坏滚动条。
@@ -968,6 +1048,8 @@ onMounted(async () => {
 
   // 软键盘自适应仅手机启用（桌面 visualViewport 变化无意义，少挂监听）。
   if (isPhone.value) setupViewportWatch()
+  // 触屏滚动接管：所有 touch 设备（含平板/触屏本）都挂，鼠标环境零成本（listener 不会被触发）。
+  if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) setupTouchScroll()
 })
 
 // 路径链接 tooltip：挂在 term.element 内的动态 DOM（带 xterm-hover class——xterm 的
@@ -997,6 +1079,7 @@ function hideLinkTip() {
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
   if (hbTimer) clearInterval(hbTimer)
+  touchCleanup?.()
   vvCleanup?.()
   resizeObs?.disconnect()
   el.value?.removeEventListener('focusin', onFocusIn)
