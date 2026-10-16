@@ -310,6 +310,21 @@ const ctSummary = computed(() => {
   return `${run} 运行中 · ${items.value.length - run} 已停止`
 })
 
+// —— 收起态 hover 子列表 ——
+// rail 只保留三个分组入口：悬停展开对应对象列表，点击仍进终端/管理面板。
+// 悬停与浮层之间不留缝，移入浮层不闪退；选中列表项后主动关闭，避免遮住主区。
+type RailSection = 'ct' | 'svc' | 'term'
+const railHover = ref<RailSection | null>(null)
+function railSectionEnter(kind: RailSection) {
+  railHover.value = kind
+}
+function railSectionLeave() {
+  railHover.value = null
+}
+function closeRailSection() {
+  railHover.value = null
+}
+
 // —— 卡片拖拽排序（系统容器/应用容器/SSH 主机，桌面 only）——
 // 顺序存各浏览器 localStorage（tab 布局同款约定）：拖拽是查看偏好，不值得进 sidecar。
 // 列表 = 按序数组排（未知项按服务端相对序垫底），拖 over 时原地移动 + dragend 落盘。
@@ -492,6 +507,7 @@ const drawerOpen = ref(false)
 // loadBool 为 function 声明（提升），此处可安全前置调用。
 const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
 watch(collapsed, (v) => {
+  railHover.value = null
   try {
     localStorage.setItem('mysandbox:sidebar-collapsed', v ? '1' : '0')
   } catch {
@@ -2402,13 +2418,10 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       v-if="!props.popout"
       ref="asideRef"
       class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:overflow-hidden md:transition-[width] md:duration-200"
-      :class="[drawerOpen ? '' : 'max-md:-translate-x-full', railMode ? 'md:w-12' : 'md:w-64 md:[&>*]:w-64']"
+      :class="[drawerOpen ? '' : 'max-md:-translate-x-full', railMode ? 'md:w-12 md:overflow-visible' : 'md:w-64 md:[&>*]:w-64']"
     >
-      <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：只留导航骨架——
-            logo（点击展开，收缩后品牌仍在） / ＋ 新建 / 容器首字图标列（容器色淡染，
-            title 带全名·状态·IP，右键 = 展开态卡片同款菜单）/ 底部环境区（配置菜单 ·
-            宿主 · 服务 · 展开键）。列表异常给一枚提示点，点击展开并重试。
-            悬停不自动展开，只保留点击展开。 -->
+      <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：分组导航 + hover 子列表。
+            rail 保持极窄，具体对象列表浮到主区一侧；手机抽屉仍走完整列表形态。 -->
       <template v-if="railMode">
         <div class="flex h-10 shrink-0 items-center justify-center border-b border-border">
           <button
@@ -2420,17 +2433,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <img src="/logo.svg" alt="" class="size-5" />
           </button>
         </div>
-        <div class="flex shrink-0 items-center justify-center border-b border-border py-1.5">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            :disabled="baseReady === false"
-            :title="baseReady === false ? `${baseLabel}未就绪，无法新建` : '新建容器'"
-            @click="showCreate = true"
-          >
-            <Plus />
-          </Button>
-        </div>
         <button
           v-if="err || connLost"
           type="button"
@@ -2440,133 +2442,166 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <span class="block size-2 rounded-full" :class="err ? 'bg-destructive' : 'bg-amber-500 animate-pulse'" />
         </button>
-        <div class="scroll-thin flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-2">
-          <ContextMenu v-for="c in items" :key="c.id">
-            <ContextMenuTrigger as-child>
-              <button
-                type="button"
-                class="flex size-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-medium transition-colors"
-                :class="[
-                  activeGroup?.containerId === c.id ? 'ring-1 ring-border' : 'hover:bg-accent/40',
-                  c.state !== 'running' ? 'opacity-40' : '',
-                ]"
-                :style="{
-                  backgroundColor: containerColorA(c.id, activeGroup?.containerId === c.id ? 0.22 : 0.1),
-                  color: containerColor(c.id),
-                }"
-                :title="`${c.displayName || c.name} · ${stateLabel(c.state)}${c.ip ? ` · ${c.ip}` : ''}`"
-                @click="openTerm(c)"
-              >
-                {{ (c.displayName || c.name).trim().slice(0, 1).toUpperCase() }}
-              </button>
-            </ContextMenuTrigger>
-            <!-- 右键菜单与展开态卡片完全同款（改动请两处同步）：收起后没有卡片可右键，
-                 这里的菜单是管理动作唯一入口。rail 仅桌面渲染，无需长按合成。 -->
-            <ContextMenuContent>
-              <template v-if="!c.managed && !c.adopted">
-                <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
-              </template>
-              <template v-else>
-                <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
-                <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
-                <ContextMenuItem
-                  v-if="c.state === 'running'"
-                  @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
-                  >桌面</ContextMenuItem
+        <div class="flex min-h-0 flex-1 flex-col items-center gap-1 py-2">
+          <div class="relative w-full" @mouseenter="railSectionEnter('ct')" @mouseleave="railSectionLeave()">
+            <button
+              type="button"
+              class="flex size-8 w-full items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
+              :class="railHover === 'ct' ? 'bg-accent/40' : ''"
+              title="系统容器 · 悬停查看列表"
+              @click="collapsed = false"
+            >
+              <img src="/lxc.svg" alt="" class="size-4" />
+            </button>
+            <div
+              v-if="railHover === 'ct'"
+              class="absolute left-full top-0 z-50 ml-1 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl"
+            >
+              <div class="mb-1 flex items-center gap-2 px-1">
+                <span class="min-w-0 flex-1 text-xs font-medium text-muted-foreground">系统容器</span>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  :disabled="baseReady === false"
+                  :title="baseReady === false ? `${baseLabel}未就绪，无法新建` : '新建容器'"
+                  @click="((showCreate = true), closeRailSection())"
                 >
-                <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
-                <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
-                <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
-                <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
-              </template>
-              <!-- 监听端口（三级菜单）：与展开态卡片同构——端口列表 → 每个端口的
-                   打开方式（域名口径：代理打开 / IP 直连；IP 口径单层直点）。 -->
-              <template v-if="c.state === 'running' && cardPortRows(c.id).length">
-                <ContextMenuSeparator />
-                <ContextMenuSub>
-                  <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
-                  <ContextMenuSubContent class="w-40">
-                    <template v-for="r in cardPortRows(c.id)" :key="r.kind + r.port">
-                      <ContextMenuItem
-                        v-if="r.kind === 'map'"
-                        :title="portRowTitle(c, r)"
-                        @click="openUrl(`http://127.0.0.1:${r.port}`)"
-                      >
-                        <ArrowRightLeft class="size-3 shrink-0" />
-                        <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }} → {{ r.priv }}</span>
-                        <span class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
-                      </ContextMenuItem>
-                      <ContextMenuSub v-else-if="directOpenExtra">
-                        <ContextMenuSubTrigger>
-                          <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                          <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
-                          <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
-                        </ContextMenuSubTrigger>
-                        <ContextMenuSubContent class="w-36">
-                          <ContextMenuItem
-                            :title="`代理打开 ${serviceUrl('c', c.name, r.port, c.ip)}`"
-                            @click="openUrl(serviceUrl('c', c.name, r.port, c.ip))"
-                            >代理打开</ContextMenuItem
-                          >
-                          <ContextMenuItem
-                            v-if="directPortUrl(c, r.port)"
-                            :title="`IP 直连 ${directPortUrl(c, r.port)}`"
-                            @click="openUrl(directPortUrl(c, r.port))"
-                            >IP 直连</ContextMenuItem
-                          >
-                        </ContextMenuSubContent>
-                      </ContextMenuSub>
-                      <ContextMenuItem v-else :title="portRowTitle(c, r)" @click="openUrl(portRowTarget(c, r))">
-                        <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                        <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
-                        <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
-                      </ContextMenuItem>
+                  <Plus />
+                </Button>
+              </div>
+              <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
+                <ContextMenu v-for="c in orderedItems" :key="c.id">
+                  <ContextMenuTrigger as-child>
+                    <button
+                      type="button"
+                      class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
+                      :class="activeGroup?.containerId === c.id ? 'bg-accent' : ''"
+                      :title="`${c.displayName || c.name} · ${stateLabel(c.state)}${c.ip ? ` · ${c.ip}` : ''}`"
+                      @click="((openTerm(c)), closeRailSection())"
+                    >
+                      <span
+                        class="absolute inset-y-1.5 left-0 w-[3px] rounded-full"
+                        :class="c.state === 'running' ? '' : 'bg-muted-foreground/30'"
+                        :style="c.state === 'running' ? { backgroundColor: containerColor(c.id) } : undefined"
+                      />
+                      <span class="min-w-0 flex-1 truncate text-[13px]" :class="c.state === 'running' ? '' : 'opacity-60'">
+                        {{ c.displayName || c.name }}
+                      </span>
+                      <span class="shrink-0 text-[10px] text-muted-foreground">{{ stateLabel(c.state) }}</span>
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent @close-auto-focus="closeRailSection">
+                    <template v-if="!c.managed && !c.adopted">
+                      <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
                     </template>
-                  </ContextMenuSubContent>
-                </ContextMenuSub>
-              </template>
-            </ContextMenuContent>
-          </ContextMenu>
-          <Container v-if="!items.length && !loading" class="size-4 text-muted-foreground/40" />
+                    <template v-else>
+                      <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
+                      <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
+                      <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
+                      <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
+                      <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
+                    </template>
+                  </ContextMenuContent>
+                </ContextMenu>
+                <p v-if="!items.length" class="px-2 py-3 text-[11px] text-muted-foreground">
+                  {{ loading ? '加载中…' : '暂无系统容器' }}
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="relative w-full" @mouseenter="railSectionEnter('svc')" @mouseleave="railSectionLeave()">
+            <button
+              type="button"
+              class="flex size-8 w-full items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
+              :class="railHover === 'svc' ? 'bg-accent/40' : ''"
+              :title="`应用容器 · 悬停查看列表（${svcSummary}）`"
+              @click="collapsed = false"
+            >
+              <img src="/docker.svg" alt="" class="size-4" />
+            </button>
+            <div
+              v-if="railHover === 'svc'"
+              class="absolute left-full top-0 z-50 ml-1 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl"
+            >
+              <div class="mb-1 flex items-center gap-2 px-1">
+                <span class="min-w-0 flex-1 text-xs font-medium text-muted-foreground">应用容器</span>
+                <Button variant="ghost" size="icon-xs" title="打开服务管理" @click="((emit('open-services')), closeRailSection())">
+                  <MoreHorizontal />
+                </Button>
+              </div>
+              <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
+                <p v-if="svcReachable === false" class="px-2 py-3 text-[11px] text-muted-foreground">运行时不可达</p>
+                <button
+                  v-for="s in orderedSvc"
+                  :key="s.name"
+                  type="button"
+                  class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
+                  :class="activeGroup?.containerId === s.name ? 'bg-accent' : ''"
+                  :title="`${s.displayName || s.name} · ${stateLabel(s.state)}${s.ip ? ` · ${s.ip}` : ''}`"
+                  @click="((openServiceTerm(s)), closeRailSection())"
+                >
+                  <span
+                    class="absolute inset-y-1.5 left-0 w-[3px] rounded-full"
+                    :class="s.running ? '' : 'bg-muted-foreground/30'"
+                    :style="s.running ? { backgroundColor: containerColor(s.name) } : undefined"
+                  />
+                  <span class="min-w-0 flex-1 truncate text-[13px]" :class="s.running ? '' : 'opacity-60'">
+                    {{ s.displayName || s.name }}
+                  </span>
+                  <span class="shrink-0 text-[10px] text-muted-foreground">{{ stateLabel(s.state) }}</span>
+                </button>
+                <p v-if="svcReachable !== false && !svcItems.length" class="px-2 py-3 text-[11px] text-muted-foreground">暂无应用容器</p>
+              </div>
+            </div>
+          </div>
+          <div class="relative w-full" @mouseenter="railSectionEnter('term')" @mouseleave="railSectionLeave()">
+            <button
+              type="button"
+              class="flex size-8 w-full items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
+              :class="railHover === 'term' ? 'bg-accent/40' : ''"
+              title="终端 · 悬停查看列表"
+              @click="collapsed = false"
+            >
+              <TerminalIcon class="size-4" />
+            </button>
+            <div
+              v-if="railHover === 'term'"
+              class="absolute left-full top-0 z-50 ml-1 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl"
+            >
+              <div class="mb-1 flex items-center gap-2 px-1">
+                <span class="min-w-0 flex-1 text-xs font-medium text-muted-foreground">终端</span>
+                <Button variant="ghost" size="icon-xs" title="添加 SSH 主机 / 管理已有目标" @click="((showSshTargets = true), closeRailSection())">
+                  <Plus />
+                </Button>
+              </div>
+              <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
+                <button
+                  type="button"
+                  class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
+                  :class="activeGroup?.kind === 'host' ? 'bg-accent' : ''"
+                  @click="((openHostTerm()), closeRailSection())"
+                >
+                  <span class="absolute inset-y-1.5 left-0 w-[3px] rounded-full bg-amber-500" />
+                  <span class="min-w-0 flex-1 truncate text-[13px]">本机</span>
+                </button>
+                <button
+                  v-for="t in orderedSsh"
+                  :key="t.name"
+                  type="button"
+                  class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
+                  :class="activeGroup?.containerId === sshGroupId(t.name) ? 'bg-accent' : ''"
+                  :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
+                  @click="((openSshTerm(t)), closeRailSection())"
+                >
+                  <span class="absolute inset-y-1.5 left-0 w-[3px] rounded-full" :style="{ backgroundColor: containerColor(t.name) }" />
+                  <span class="min-w-0 flex-1 truncate text-[13px]">{{ t.name }}</span>
+                </button>
+                <p v-if="!sshTargets.length" class="px-2 py-3 text-[11px] text-muted-foreground">暂无 SSH 主机，点 ＋ 添加</p>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="flex shrink-0 flex-col items-center gap-0.5 border-t border-border py-1.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button variant="ghost" size="icon-xs" title="容器环境配置">
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="start">
-              <DropdownMenuItem @click="emit('open-base')">
-                <Settings2 /> {{ baseLabel }}管理
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                :disabled="!selectableItems.length"
-                :title="selectableItems.length ? '' : '没有受管理的容器'"
-                @click="showBatch = true"
-              >
-                <ListChecks /> 批量配置
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <button
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
-            :class="activeGroup?.kind === 'host' ? 'bg-accent/50' : ''"
-            title="本机终端"
-            @click="openHostTerm()"
-          >
-            <Monitor class="size-4 text-amber-500" />
-          </button>
-          <button
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
-            :title="`应用容器（${svcSummary}）——点击管理`"
-            @click="emit('open-services')"
-          >
-            <img src="/docker.svg" alt="" class="size-4" />
-          </button>
           <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部；
                设置已收敛到顶栏右上角，不再重复占侧栏底部位。 -->
           <button
