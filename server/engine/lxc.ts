@@ -747,7 +747,9 @@ async function execFeed(
 function runAttach(cfg: Config, name: string, opts: ExecOpts, input: Buffer | null): Promise<ExecResult> {
   return new Promise((resolve) => {
     const args = attachArgs(cfg, name, opts);
-    const child = spawn(args[0], args.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+    // detached：子进程独立进程组，超时才能整组收割（lxc-attach 会 fork attach helper，
+    // 只杀主进程的话 helper 拽着 stdio 写端不放，见下面 timer 注释）。
+    const child = spawn(args[0], args.slice(1), { stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -756,6 +758,12 @@ function runAttach(cfg: Config, name: string, opts: ExecOpts, input: Buffer | nu
       ? setTimeout(() => {
           timedOut = true;
           try { child.kill('SIGKILL'); } catch { /* noop */ }
+          // 组杀 + 主动收场：lxc-attach fork 出的 helper（及容器内侧共享 stdio 的进程）
+          // 会让 stdout 写端一直开着，'close' 永远不来——实测 agent-update 挂死 24min、
+          // 3s 超时的 sleep 实验同样复现。超时必须不等流关闭直接 resolve；容器内侧的
+          // 孤儿进程杀不到（不同命名空间），由脚本自身的幂等性兜底（重跑无害）。
+          try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* 已死/无组 */ }
+          finish(-1);
         }, opts.timeoutMs)
       : null;
     const finish = (exitCode: number) => {

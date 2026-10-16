@@ -530,6 +530,9 @@ export const clearAiTargetOverride = (target: string) =>
   api(`/api/ai/targets/${encodeURIComponent(target)}`, { method: 'DELETE' }) as Promise<{
     overrides: Record<string, AiBinding>
   }>
+// Agent 工具页签：一键更新全部 agent CLI（宿主 + 受管容器，npm 全局包拉 @latest）。
+// 逐目标 npm 10min 硬顶 + 并发 4，后端最坏 ~20min 才收齐——超时放宽到 30min 兜底。
+export const updateAgentTools = () => postJson('/api/ai/agent-update', {}, 1_800_000) as Promise<BatchResult>
 // 项目级规则：就地安装（文件面板「AI 配置」，写 <项目>/.claude/settings.json 与
 // <项目>/opencode.json 并落规则）。删除走 DELETE /api/ai/projects/:id（无 UI 入口，
 // agent/脚本可调，孤儿条目自动回收）。

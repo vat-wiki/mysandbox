@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 下发结果视图（受控）：BatchResult 表格 + 「返回编辑」按钮。绑定保存与工具自身配置
-// 保存共用——从 AiBindingTab 抽出，展示逻辑原样。
+// 保存共用——从 AiBindingTab 抽出，展示逻辑原样。title 可换头部文案（一键更新等复用）。
 import {
   Table,
   TableBody,
@@ -13,14 +13,14 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-vue-next'
 import type { BatchResult } from '@/lib/api'
 
-defineProps<{ result: BatchResult }>()
+defineProps<{ result: BatchResult; title?: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
 </script>
 
 <template>
   <div class="space-y-4">
     <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-      <h3 class="text-sm font-medium">下发结果</h3>
+      <h3 class="text-sm font-medium">{{ title ?? '下发结果' }}</h3>
       <span class="text-sm text-emerald-500">成功 {{ result.ok }}</span>
       <span class="text-sm text-destructive">失败 {{ result.failed }}</span>
       <span class="text-sm text-muted-foreground">共 {{ result.total }}</span>

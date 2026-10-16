@@ -28,7 +28,7 @@ import { beginSse } from './sse.js';
 import { registerEventsRoute } from './events.js';
 import { declareFileWatches } from './fileWatch.js';
 import { ipPoolView } from './network.js';
-import { batchGit, batchSsh, batchClaudeRun, batchExec, type BatchResult } from './batch.js';
+import { batchGit, batchSsh, batchClaudeRun, batchExec, batchAgentUpdate, hostAgentUpdate, type BatchResult } from './batch.js';
 import {
   applyAiBindingToTargets,
   setTargetOverride,
@@ -753,6 +753,22 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       throw badRequest("mode 只认 'merge'（合并写入）或 'replace'（替换整个文件）");
     }
     return setClaudePageConfig(cfg, binding, tc, ids, mode);
+  });
+
+  // —— Agent CLI 一键更新（AI 工具页签）：宿主 + 全部受管容器（含模板）npm 全局包拉
+  // @latest。npm 是唯一可靠通道（原生安装器在本网络区域不可达，见模板脚本 claude 段）。
+  // 容器侧按工具探测存在才更新（收编容器工具集不齐不凭空装）；停机容器经 runBatch 报
+  // not running 明示——要更新先启动。同步跑完回 BatchResult（单个 npm 10min 硬顶），
+  // 复用前端 BatchResult 结果表。宿主不进容器批（allTargets 的 HOST_TARGET 哨兵要滤掉，
+  // 宿主走 hostAgentUpdate 的 npm 直跑——execRun 对它只会报 invalid container name）。
+  app.post('/api/ai/agent-update', async (): Promise<BatchResult> => {
+    const ids = (await allTargets(cfg)).filter((id) => id !== HOST_TARGET);
+    const [result, host] = await Promise.all([batchAgentUpdate(cfg, ids), hostAgentUpdate()]);
+    result.items.unshift(host);
+    result.total += 1;
+    if (host.ok) result.ok += 1;
+    else result.failed += 1;
+    return result;
   });
 
   // 目标覆盖（key = 容器名）：保存 + 立即应用到这台。存在即生效

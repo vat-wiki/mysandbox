@@ -14,6 +14,7 @@ import {
   getAiView,
   saveAiBinding,
   saveAiClaudePage,
+  updateAgentTools,
   normalizeOpenCodeBinding,
   normalizePiBinding,
   openCodeVariants,
@@ -37,7 +38,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Bot } from 'lucide-vue-next'
+import { Bot, RefreshCw } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
 import AiOpenCodeField from './AiOpenCodeField.vue'
@@ -73,6 +74,29 @@ const view = ref<AiView | null>(null)
 const busy = ref(false)
 const err = ref('')
 const result = ref<BatchResult | null>(null)
+
+// —— 一键更新：对本机 + 全部受管系统容器跑 npm 全局更新（agent CLI 全员 @latest）——
+// 与保存/下发互不相干，独立的 busy/结果态；结果复用 BatchResult 表格。
+const askUpdate = ref(false)
+const updating = ref(false)
+const updateResult = ref<BatchResult | null>(null)
+
+async function runAgentUpdate() {
+  askUpdate.value = false
+  updating.value = true
+  err.value = ''
+  try {
+    updateResult.value = await updateAgentTools()
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('unauthorized')
+      return
+    }
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    updating.value = false
+  }
+}
 
 // —— 绑定表单：每工具一段；没选模型供应商 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
@@ -370,8 +394,13 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
 <template>
   <!-- 板块外框与技能中心/模型供应商同款（rounded-md border + muted 头部条）——三页签统一板块语言 -->
   <div class="flex flex-col gap-3">
+    <!-- 更新结果态（优先于下发结果展示；同为 BatchResult 表格，复用同款视图） -->
+    <template v-if="updateResult">
+      <AiBindingResult :result="updateResult" title="更新结果" @back="updateResult = null" />
+    </template>
+
     <!-- 结果态：表单区整体切走（返回编辑保留表单内容，重推是常态） -->
-    <template v-if="result">
+    <template v-else-if="result">
       <AiBindingResult :result="result" @back="result = null" />
     </template>
 
@@ -404,6 +433,17 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               {{ t.label }}
             </button>
           </div>
+          <!-- 一键更新：与本页配置/保存无关的独立动作，放头部右侧 -->
+          <Button
+            variant="outline"
+            size="sm"
+            class="ml-auto"
+            :disabled="busy || updating"
+            @click="askUpdate = true"
+          >
+            <RefreshCw class="size-3.5" :class="updating ? 'animate-spin' : ''" />
+            {{ updating ? '更新中…' : '一键更新' }}
+          </Button>
         </div>
 
         <div class="p-3">
@@ -734,6 +774,16 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
         :busy="busy"
         @confirm="askReplace = false; submitTool('claude', 'replace')"
         @close="askReplace = false"
+      />
+
+      <!-- 一键更新的确认步：npm 全局更新不可逆程度低，但要挑明「停机容器标失败」与耗时 -->
+      <ConfirmDialog
+        v-if="askUpdate"
+        title="更新全部 Agent 工具？"
+        description="对本机与全部受管系统容器执行 npm 全局更新（Claude Code / Codex / OpenCode / Pi / OpenClaw → 最新版）。容器需在运行，停机的会标为失败（先启动再更新）；整体耗时可能数分钟。"
+        confirm-text="开始更新"
+        @confirm="runAgentUpdate"
+        @close="askUpdate = false"
       />
     </template>
   </div>
