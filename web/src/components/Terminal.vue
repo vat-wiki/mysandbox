@@ -798,6 +798,10 @@ onMounted(async () => {
     fontFamily: FONT_FAMILY,
     fontSize: computeFontSize(),
     cursorBlink: true,
+    // 行间平滑动画（ms）：viewport.scrollLines 用 rAF 插值 scrollTop——触摸滚动的整行步进
+    // 有了视觉过渡（见 setupTouchScroll 注释），桌面滚轮也一并变平滑。150ms 取 VSCode
+    // terminal.integrated.smoothScrolling 的同款手感档位。
+    smoothScrollDuration: 150,
     scrollback: 10000, // 回滚行数，与 VSCode 集成终端默认一致（xterm 默认仅 1000）
     theme: { background: '#000000' },
   })
