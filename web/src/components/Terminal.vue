@@ -569,11 +569,15 @@ function setupViewportWatch() {
 // xterm 内建在 bindMouse 里注册的 touchstart/touchmove 滚 viewport 真机上不可靠：touchmove
 // 非被动但滚动途中不 preventDefault，浏览器手势判定抢走手势后直接 touchcancel，终端纹丝
 // 不动（桌面 wheel 同一注册点，所以桌面无感）。这里 capture 阶段自管：preventDefault 在手
-// 保证 touchmove 必达，直接驱动 .xterm-viewport.scrollTop（与 xterm 内部手法一致但事件可控），
-// stopPropagation 防 xterm 内部 handler 双重滚动。touchstart/touchend 不截获——点按聚焦、
-// 长按等原生行为保持。顺带补惯性滑动（xterm 内建无 momentum，长历史 1:1 跟手翻不动）。
-// 只动本地 scrollback、不向 PTY 发字节：alternate screen（全屏 TUI）没有 scrollback，
-// scrollTop 顶死自然 no-op，不会干扰 TUI。
+// 保证 touchmove 必达，stopPropagation 防 xterm 内部 handler 双重滚动。touchstart/touchend
+// 不截获——点按聚焦、长按等原生行为保持。顺带补惯性滑动（xterm 内建无 momentum，长历史
+// 1:1 跟手翻不动）。只动本地 scrollback、不向 PTY 发字节：alternate screen（全屏 TUI）没有
+// scrollback，ybase 恒 0 自然 no-op，不会干扰 TUI。
+//
+// ⚠️ 必须走 term.scrollLines()（整行）而不是直改 .xterm-viewport.scrollTop（像素）：xterm 的
+// 权威滚动状态是 ydisp（整行坐标），viewport 每次渲染刷新都把 scrollTop 重置回 ydisp × 行高——
+// 像素直改会被吃掉、凑满一行才跳一格（实测一卡一卡）。滚轮同理是按行滚动，这里把触摸位移
+// 像素累积、凑整行调 scrollLines，与滚轮同路径、无对齐打架。
 let touchCleanup: (() => void) | null = null
 let momentumRaf = 0
 function stopMomentum() {
@@ -587,8 +591,25 @@ function setupTouchScroll() {
   let lastY = 0
   let lastT = 0
   let vel = 0 // px/ms，指数平滑后的瞬时速度
-  const viewportOf = (): HTMLElement | null =>
-    (term?.element?.querySelector('.xterm-viewport') as HTMLElement | null) ?? null
+  let accPx = 0 // 未凑满整行的像素余量
+  const rowHeightOf = (): number => {
+    // viewport._currentRowHeight 是 xterm 内部行高（与 scrollTop 同一坐标系）；
+    // 内部形状拿不到时用 rows DOM 实测兜底。
+    const core = term as unknown as { _core?: { viewport?: { _currentRowHeight?: number } } }
+    const h = core?._core?.viewport?._currentRowHeight
+    if (h && h > 0) return h
+    const rowsEl = term?.element?.querySelector('.xterm-rows') as HTMLElement | null
+    return rowsEl && term ? rowsEl.getBoundingClientRect().height / term.rows : 20
+  }
+  // 像素 → 整行：余量留在 accPx，凑满一行才调 scrollLines（亚行位移不丢，下次继续凑）
+  const scrollByPx = (px: number) => {
+    accPx += px
+    const rows = Math.trunc(accPx / rowHeightOf())
+    if (rows !== 0 && term) {
+      term.scrollLines(rows)
+      accPx -= rows * rowHeightOf()
+    }
+  }
   const onStart = (e: TouchEvent) => {
     stopMomentum()
     tracking = e.touches.length === 1
@@ -596,6 +617,7 @@ function setupTouchScroll() {
     lastY = e.touches[0].clientY
     lastT = e.timeStamp
     vel = 0
+    accPx = 0
   }
   const onMove = (e: TouchEvent) => {
     if (!tracking || e.touches.length !== 1) {
@@ -610,22 +632,19 @@ function setupTouchScroll() {
     lastY = y
     lastT = e.timeStamp
     if (dy === 0) return
-    const vp = viewportOf()
-    if (!vp) return
-    vp.scrollTop += dy
+    scrollByPx(dy)
     vel = vel * 0.8 + (dy / dt) * 0.2
   }
   const onEnd = () => {
     if (!tracking) return
     tracking = false
     // 惯性 glide：按毫秒速度外推，每秒衰减到 0.2%，轻拂自然减速
-    const vp = viewportOf()
-    if (!vp || Math.abs(vel) < 0.15) return
+    if (Math.abs(vel) < 0.15) return
     let last = performance.now()
     const step = (now: number) => {
       const dt = now - last
       last = now
-      vp.scrollTop += vel * dt
+      scrollByPx(vel * dt)
       vel *= Math.pow(0.002, dt / 1000)
       if (Math.abs(vel) > 0.05) momentumRaf = requestAnimationFrame(step)
       else momentumRaf = 0
