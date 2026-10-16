@@ -638,15 +638,15 @@ function setupTouchScroll() {
   const onEnd = () => {
     if (!tracking) return
     tracking = false
-    // 惯性 glide：按毫秒速度外推，每秒衰减到 0.2%，轻拂自然减速
-    if (Math.abs(vel) < 0.15) return
+    // 惯性 glide：按毫秒速度外推，指数衰减 τ≈0.3s（每秒剩 3%）——自然减速不急刹
+    if (Math.abs(vel) < 0.1) return
     let last = performance.now()
     const step = (now: number) => {
       const dt = now - last
       last = now
       scrollByPx(vel * dt)
-      vel *= Math.pow(0.002, dt / 1000)
-      if (Math.abs(vel) > 0.05) momentumRaf = requestAnimationFrame(step)
+      vel *= Math.pow(0.03, dt / 1000)
+      if (Math.abs(vel) > 0.02) momentumRaf = requestAnimationFrame(step)
       else momentumRaf = 0
     }
     momentumRaf = requestAnimationFrame(step)
@@ -798,10 +798,9 @@ onMounted(async () => {
     fontFamily: FONT_FAMILY,
     fontSize: computeFontSize(),
     cursorBlink: true,
-    // 行间平滑动画（ms）：viewport.scrollLines 用 rAF 插值 scrollTop——触摸滚动的整行步进
-    // 有了视觉过渡（见 setupTouchScroll 注释），桌面滚轮也一并变平滑。150ms 取 VSCode
-    // terminal.integrated.smoothScrolling 的同款手感档位。
-    smoothScrollDuration: 150,
+    // ⚠️ 不开 smoothScrollDuration：它的动画每次 scrollLines 都从当前显示位置重置进度重跑
+    // （origin = viewportElement.scrollTop），触摸连发调用下位置逐步落后手指、停手才补跳
+    // ——快滑呈「一小块一小块」。行步进的平滑交给 setupTouchScroll 自己的惯性 glide。
     scrollback: 10000, // 回滚行数，与 VSCode 集成终端默认一致（xterm 默认仅 1000）
     theme: { background: '#000000' },
   })
