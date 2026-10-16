@@ -18,6 +18,7 @@ import { getEngine } from './engine/index.js';
 import { getAllMeta } from './state.js';
 import { log } from './logger.js';
 import { peerSeedInfo, type PeerSeedInfo } from './peer.js';
+import { AGENT_NOTIFY_SCRIPT } from './agentNotify.js';
 
 // 容器内路径（= 宿主侧 home 目录 + 此相对路径）。
 export const CONTAINER_CLI_PATH = '/home/dev/.local/bin/mysandbox';
@@ -188,6 +189,8 @@ function writeIfChanged(target: string, content: string, mode: number): void {
 
 // 幂等种子（内容变就覆盖，与「缺才写」的老语义不同——peer exec 依赖自更新把新脚本/
 // 新 peer.json 刷进存量容器）。失败记日志不抛——种子失败不阻塞建容器/启动。
+// agent-notify.mjs 同场种子（agent 精准提醒的回调内核，server/agentNotify.ts）——
+// 容器侧 agent-notify 每次启动 sweep 都会再写一遍（幂等），这里捎带保证建容器即有。
 export function seedContainerCli(home: string, peer?: PeerSeedInfo): void {
   const bin = join(home, '.local/bin');
   const conf = join(home, '.config/mysandbox');
@@ -196,6 +199,7 @@ export function seedContainerCli(home: string, peer?: PeerSeedInfo): void {
     writeIfChanged(join(bin, 'mysandbox'), CONTAINER_CLI_SCRIPT, 0o755);
     mkdirSync(conf, { recursive: true, mode: 0o700 });
     writeIfChanged(join(conf, 'peer-exec.mjs'), PEER_EXEC_SCRIPT, 0o755);
+    writeIfChanged(join(conf, 'agent-notify.mjs'), AGENT_NOTIFY_SCRIPT, 0o755);
     if (peer) writeIfChanged(join(conf, 'peer.json'), JSON.stringify(peer), 0o600);
   } catch (e) {
     log.warn({ home, err: String(e) }, 'container cli seed failed');
@@ -213,9 +217,10 @@ export async function sweepContainerCli(cfg: Config): Promise<void> {
     return; // state.json 读不了就算了，不影响起服务
   }
   const engine = getEngine(cfg);
-  const peer = peerSeedInfo(cfg);
   for (const name of names) {
     const home = engine.hostHomePath(cfg, name);
-    if (home && existsSync(home)) seedContainerCli(home, peer);
+    // self = 容器名烙进 peer.json：agent notify 回调上报时服务端据此权威反解容器
+    // （agentNotify.recordAgentNotify），免 remoteAddress/hostname 的反查歧义。
+    if (home && existsSync(home)) seedContainerCli(home, peerSeedInfo(cfg, name));
   }
 }

@@ -129,11 +129,15 @@ export const ConfigSchema = z.object({
   }),
   // 终端输出活动监测（「无输出提醒」）：输出安静超过 quietSeconds 秒且前端判定
   // 没人看着时弹提醒（agent 干完活/等输入场景）。扫描与判定见 server/activity.ts。
+  // agentNotify：agent 精准提醒（server/agentNotify.ts）——往各 home 落 claude/codex/
+  // opencode/pi 的 hook/插件配置，回合完成/等权限经 peer API 精准上报；收到过信号的
+  // 会话退出通用启发式。关掉后 sweep 不再写配置，存量 hook 随 /notify 不记录自然失活。
   terminal: z
     .object({
       quietSeconds: z.number().int().default(15),
+      agentNotify: z.boolean().default(true),
     })
-    .default({ quietSeconds: 15 }),
+    .default({ quietSeconds: 15, agentNotify: true }),
   // 宿主防火墙（ufw）追加放行（外部网段特例：热点访问 console 等；port 缺省 = 全端口）。
   // 核心放行（自管网段全端口 blanket + LXC 桥 route）由 firewall.ts 从 ipPool/services
   // 推导，不经这里；应用在 mysandbox-firewall.service。

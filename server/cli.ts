@@ -14,6 +14,7 @@ import { runSkillsCommand, runSkillsListCommand, runSkillsUpdateCommand, startSk
 import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { startHeartbeat } from './cluster.js';
 import { applyAiAll, startAiConfigEvents } from './aiconfig.js';
+import { sweepAgentNotify, startAgentNotifyEvents } from './agentNotify.js';
 import { proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
 import { guardStdio } from './pty.js';
@@ -250,8 +251,13 @@ async function main(): Promise<void> {
   startSkillSyncEvents(config);
   // AI 配置声明式追平：启动 sweep 一次（绑定（覆盖 ?? 全局）→ 全部受管容器，rootfs
   // 直写；本机不进 sweep），容器 start 事件补发闭环停机期间的变化（绑定 + 项目规则）。
-  void applyAiAll(config);
+  // agent 提醒配置 sweep 串在其后：两边都读-改-写同一批 home 下的 TOML/JSON，并发会
+  // 互相覆盖（实测 aiconfig 把 agentNotify 刚写的 codex notify 行冲掉），必须定序。
+  void applyAiAll(config).then(() => sweepAgentNotify(config));
   startAiConfigEvents(config);
+  // 容器 start 事件补发（agentNotify 自己的订阅 debounce 4s 错开 ai-config 的 2s——
+  // 同一批文件的读写定序，见 agentNotify.ts）。
+  startAgentNotifyEvents(config);
   // 全局 hosts 启动补刷（幂等，hash 跳过；不阻塞 listen）+ events 自动重刷（容器重启追平）。
   void sweepHosts(config);
   startHostsEventSync(config);

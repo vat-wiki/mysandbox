@@ -84,8 +84,13 @@ ui:
 # 终端输出活动监测（tab 右键「无输出时提醒」）：服务端每 5s 扫 tmux 会话尾部输出，
 # 输出安静超过 quietSeconds 秒且前端判定没人看着该 tab 时弹提醒——agent 干完活/等
 # 输入场景。安静阈值过小会在人读输出时误报，一般不用调。
+# agentNotify：agent 精准提醒——往各 home（宿主 + 全部受管容器 + 模板）落 agent CLI 的
+# 回调配置（claude hooks / codex notify / opencode、pi 插件），回合完成/等权限时经
+# peer API 精准上报，收到过信号的会话退出上面的通用启发式（误报根治）。peer.enabled=false
+# 时整体无效。
 terminal:
   quietSeconds: 15
+  agentNotify: true
 
 # 宿主防火墙（ufw）——三方互通（宿主 ↔ LXC ↔ docker 服务）的放行自管。
 # 核心规则由 server/firewall.ts 按 config 推导：自管网段（LXC ipPool / services ipPool）

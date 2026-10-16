@@ -395,6 +395,13 @@ async function readText(path: string): Promise<string | null> {
 }
 
 async function writeText(path: string, content: string): Promise<void> {
+  // 内容没变不落盘——sweep 每次启动都跑，无条件重写会让所有目标文件的 mtime 每次
+  // 重启都翻新（还会扩大与 agentNotify 等并发写同一文件的竞态窗口）。
+  try {
+    if ((await readFile(path, 'utf8')) === content) return;
+  } catch {
+    // 不存在：落到下面的 writeFile。
+  }
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content);
 }

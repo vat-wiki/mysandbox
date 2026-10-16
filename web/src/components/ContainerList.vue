@@ -35,6 +35,7 @@ import {
   type ServiceView,
   type TermSessionView,
   type TermActivityView,
+  type AgentWaitingView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
 import { onSandboxEvent } from '@/lib/events'
@@ -2170,13 +2171,28 @@ function svcDirectPortUrl(s: ServiceView, port: number): string {
 // 看，切回组即消——tmux bell 的专业形态。
 // 隐藏组收不到流，用服务端 quiet + 反推的输出时刻对齐 leftAt（留扫描周期余量；无活动段
 // 数据，门槛照旧）。开关 per 组（tab 右键「无输出时提醒」），随组进 localStorage。
+// agent 精准信号（server/agentNotify.ts，经 peer /notify 上报）在启发式之上：agentWaiting
+// 命中的叶子直接挂标（四门槛全跳——hook 报的事件本身就是「干完活/等输入」的权威答案），
+// 文案带 agent 名与 message；收到过 agent 信号的会话（items[].agent）整体退出启发式——
+// agent 会话「有输出但没在干活」正是四门槛误报主源，精准接管后不再叠加双信号。
 const WATCHING = Number.POSITIVE_INFINITY
 const leftAtByTerm = new Map<string, number>()
 // 无输出提醒标（tab 身份点右上角琥珀点，tmux bell 形态）：groupId -> 最长安静时长
 // （tooltip 用）。状态制——每拍轮询整体重算替换，不打断视线（原 toast 形态废弃：
 // 弹窗抢焦点毁思绪，专业终端的 bell 就是「标在那儿等你看」）。
 const quietAttention = ref<Map<string, number>>(new Map())
+// agent 精准提醒的文案信息（agent/事件/message）：组内任一叶子被 agentWaiting 命中时
+// 记下，attentionTitle 与浏览器通知用它出针对性文案；与 quietAttention 同步整体重算。
+const agentAttentionInfo = ref<Map<string, { agent: string; event: string; message?: string }>>(new Map())
 function attentionTitle(gId: string): string {
+  const info = agentAttentionInfo.value.get(gId)
+  if (info) {
+    // message 有则用它（claude Notification 的「Claude needs your permission…」这类），
+    // 截 80 字防通知爆炸；没有就给通用文案。
+    const base = info.message ? `${info.agent} 在等你` : `${info.agent} 可能已完成或在等你输入`
+    const msg = info.message ? `：${info.message.slice(0, 80)}` : ''
+    return base + msg
+  }
   const ms = quietAttention.value.get(gId) ?? 0
   return `已 ${Math.max(1, Math.round(ms / 1000))}s 无输出，可能已完成或在等你输入`
 }
@@ -2187,6 +2203,7 @@ function markWatch(g: TermGroup) {
   if (quietAttention.value.delete(g.id)) {
     for (const t of leafIds(g.root)) resetTermRun(t)
   }
+  agentAttentionInfo.value.delete(g.id)
 }
 function markLeft(g: TermGroup) {
   const now = Date.now()
@@ -2277,27 +2294,54 @@ async function refreshActivity() {
   if (!groups.value.length && !hiddenGroups.value.length) return
   let threshold = 15
   let rows: TermActivityView[]
+  let agentWaiting: AgentWaitingView[] = []
   try {
     const r = await listTermActivity()
     threshold = r.threshold > 0 ? r.threshold : 15
     rows = r.items
+    agentWaiting = r.agentWaiting ?? []
   } catch (e) {
     if (e instanceof Unauthorized) emit('unauthorized')
     return // 轮询失败静默（服务重启窗口期常见），下拍再试
   }
   const rowByKey = new Map(rows.map((r) => [termSessionKey(r.kind, r.containerId, r.termId), r]))
+  // agent 精准等待事件（agent hook/插件经 peer /notify 上报，agentNotify.ts）：key
+  // 对齐 termSessionKey，隐藏组/可见组统一吃——服务端信号不依赖前端流，隐藏组反而
+  // 比启发式的 quietSeconds 反推更准。
+  const waitingByKey = new Map(
+    agentWaiting.map((w) => [termSessionKey(w.kind, w.containerId, w.termId), w]),
+  )
   // 「停了」的确认窗：服务端阈值（15s）只是下限，实际 ≥1min 静默才算收尾（思考停顿不闪标）。
   const quietGate = Math.max(threshold * 1000, QUIET_CONFIRM_MS)
   // 状态制（非跳变制）：每拍整体重算「哪组该挂提醒标」。正看着的组 WATCHING 不命中；
   // 切回即 markWatch 清标，之后重新快照基线、内容没变就不再资格。
   const nextAttention = new Map<string, number>()
+  const nextAgentInfo = new Map<string, { agent: string; event: string; message?: string }>()
   for (const g of [...groups.value, ...hiddenGroups.value]) {
     if (g.quietNotify === false) continue
     const visible = groups.value.includes(g)
     let worstMs = 0
+    let info: { agent: string; event: string; message?: string } | null = null
     for (const t of leafIds(g.root)) {
       const key = activityKeyOf(g, t)
       const leftAt = leftAtByTerm.get(t) ?? WATCHING
+      // 精准信号优先：agent hook 上报的等待事件，离开后才到的才打扰。事件时刻用
+      // 「客户端 now − agoSeconds」换算回客户端时钟（agoSeconds 由服务端在其自身钟上
+      // 算好下发，换算只剩网络延迟误差）——不用服务端绝对时刻，NTP 偏差免疫。6s 余量
+      // 再兜 hook→POST→轮询的落地延迟。看着时到达的事件用户亲眼所见不标——markLeft
+      // 会把 leftAt 更新到更晚，天然不再命中（自带消费语义，无需已读表）。
+      const w = waitingByKey.get(key)
+      if (w && leftAt !== WATCHING && Date.now() - w.agoSeconds * 1000 > leftAt + 6000) {
+        const ms = w.agoSeconds * 1000
+        if (ms > worstMs) {
+          worstMs = ms
+          info = { agent: w.agent, event: w.event, message: w.message }
+        }
+        continue
+      }
+      // 收到过 agent 信号的会话整体退出启发式（精准信号接管：没 waiting = 在干活或
+      // 已消费）——agent 会话「有输出但没在干活」正是启发式误报主源，不叠加双信号。
+      if (rowByKey.get(key)?.agent) continue
       let quiet = false
       let quietMs = 0
       if (visible) {
@@ -2320,10 +2364,14 @@ async function refreshActivity() {
       }
       if (quiet) worstMs = Math.max(worstMs, quietMs)
     }
-    if (worstMs > 0) nextAttention.set(g.id, worstMs)
+    if (worstMs > 0) {
+      nextAttention.set(g.id, worstMs)
+      if (info) nextAgentInfo.set(g.id, info)
+    }
   }
   const prevAttention = quietAttention.value
   quietAttention.value = nextAttention
+  agentAttentionInfo.value = nextAgentInfo
   // 浏览器通知（站外延伸，lib/browserNotify）：只对「新挂标」的组发——状态制重算
   // 每拍整体替换，diff 出本轮新进的才发，不重发；页面在前台时 lib 内部拦下（tab
   // 身份点就是即时信号）。点击 = 聚焦窗口并切到该组。开关在设置弹框（授权需用户
@@ -2333,8 +2381,11 @@ async function refreshActivity() {
       if (prevAttention.has(gId)) continue
       const g = groups.value.find((x) => x.id === gId) ?? hiddenGroups.value.find((x) => x.id === gId)
       if (!g) continue
-      fireQuietNotify(`终端无输出：${groupLabel(g)}`, attentionTitle(gId), `msb-quiet-${gId}`, () =>
-        activateGroupById(gId),
+      fireQuietNotify(
+        agentAttentionInfo.value.has(gId) ? `终端提醒：${groupLabel(g)}` : `终端无输出：${groupLabel(g)}`,
+        attentionTitle(gId),
+        `msb-quiet-${gId}`,
+        () => activateGroupById(gId),
       )
     }
   }

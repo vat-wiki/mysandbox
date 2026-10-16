@@ -23,6 +23,7 @@ import { seedContainerCli } from './container-cli.js';
 import { peerSeedInfo } from './peer.js';
 import { syncContainerSkills } from './skillSync.js';
 import { applyAiToContainer } from './aiconfig.js';
+import { applyAgentNotifyToContainer } from './agentNotify.js';
 import { log } from './logger.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
@@ -92,8 +93,9 @@ export async function createContainer(
   );
 
   // home 在 rootfs 内，克隆完才存在 —— 种子必须 在 create 之后。
+  // peer.json 带 self（容器名）：agent notify 回调上报时服务端权威反解。
   const home = engine.hostHomePath(cfg, name);
-  if (home && existsSync(home)) seedContainerCli(home, peerSeedInfo(cfg));
+  if (home && existsSync(home)) seedContainerCli(home, peerSeedInfo(cfg, name));
 
   if (input.hosts === 'host') {
     const base = await readHostHosts();
@@ -126,10 +128,12 @@ export async function createContainer(
   });
 
   log.info({ name, ip, engine: engine.name, network: cfg.network }, 'container created');
-  // skills 分发 + AI 配置凭据：新容器补发当前期望状态（宿主直写 rootfs，容器在不在
-  // 跑都行；尽力而为不阻塞返回）。声明式配置从此对新容器自动就位。
+  // skills 分发 + AI 配置凭据 + agent 提醒 hook：新容器补发当前期望状态（宿主直写
+  // rootfs，容器在不在跑都行；尽力而为不阻塞返回）。声明式配置从此对新容器自动就位。
+  // agent 提醒串在 AI 配置之后——两边读-改-写同一批 home 文件，并发互相覆盖（cli.ts
+  // 启动 sweep 同款定序）。
   void syncContainerSkills(cfg, name);
-  void applyAiToContainer(cfg, name);
+  void applyAiToContainer(cfg, name).then(() => applyAgentNotifyToContainer(cfg, name));
   return { id, name, ip };
 }
 

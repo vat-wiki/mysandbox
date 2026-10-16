@@ -22,6 +22,7 @@ import { listContainerSessions, killContainerSession, TERMID_RE } from './termin
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
 import { listSshSessions, killSshSession } from './sshTerminal.js';
 import { terminalActivity } from './activity.js';
+import { agentKeyOf, agentSeenOf, agentWaitingView } from './agentNotify.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
 import { beginSse } from './sse.js';
@@ -211,9 +212,15 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   // —— 终端输出活动快照（「无输出提醒」，server/activity.ts 周期扫 tmux）——
   // threshold = 服务端判 quiet 的安静秒数（cfg.terminal.quietSeconds），前端对齐用。
   // 谁在看着由前端自判（可见 tab v-show 常驻，tmux attached ≠ 用户在看）。
+  // items[].agent = 该会话收到过 agent 精准信号（agentNotify.ts）——前端据此整体
+  // 退出启发式；agentWaiting = 待消费的 agent 等待事件（前端精准挂标的依据）。
   app.get('/api/terminal-activity', async () => ({
     threshold: cfg.terminal.quietSeconds,
-    items: terminalActivity(),
+    items: terminalActivity().map((r) => ({
+      ...r,
+      agent: agentSeenOf(agentKeyOf(r.kind, r.containerId ?? '', r.termId)),
+    })),
+    agentWaiting: agentWaitingView(),
   }));
 
   app.get('/api/network/ips', async () => ipPoolView(cfg));

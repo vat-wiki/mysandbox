@@ -13,7 +13,8 @@
 //
 // 安全：
 //   - 独立 peerToken（config 首启生成、0600），**不是主 token**——主 token = 控制台
-//     全量 API；peer 端点只有 targets/exec 两个。诚实说：D1 uid 直通下「exec 进任一
+//     全量 API；peer 端点只有 targets/exec/notify 三个（notify = agent 精准提醒回调，
+//     server/agentNotify.ts）。诚实说：D1 uid 直通下「exec 进任一
 //     容器 ≈ leon 用户」，泄露的边际风险不大，收窄只是保持安全故事干净。
 //   - ufw：自管网段（LXC + services）全端口 blanket（firewall.ts 信任模型）覆盖本端口，
 //     services 网段的应用容器因此也能调 peer API——信任模型下与 LXC 同权。
@@ -33,6 +34,7 @@ import { log } from './logger.js';
 import { listManaged, inspectContainer, execRun } from './engine/index.js';
 import { listServiceContainers } from './docker.js';
 import { adoptedServiceNames, getAllServiceMeta, getServiceMeta } from './state.js';
+import { recordAgentNotify } from './agentNotify.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -214,11 +216,13 @@ export async function listTargets(cfg: Config): Promise<PeerTargets> {
 export interface PeerSeedInfo {
   url: string; // 容器内可达的 peer API 地址（网关 IP = 宿主在桥上的副 IP）
   token: string;
+  self?: string; // 容器名：agent notify 回调上报时服务端权威反解用（agentNotify.ts）
 }
 
-export function peerSeedInfo(cfg: Config): PeerSeedInfo | undefined {
+// self 只在容器种子场景传（宿主侧 peer.json 由 agentNotify sweep 写，无 self）。
+export function peerSeedInfo(cfg: Config, self?: string): PeerSeedInfo | undefined {
   if (!cfg.peer?.enabled || !cfg.peerToken) return undefined;
-  return { url: `http://${gatewayOf(cfg)}:${cfg.peer.port}`, token: cfg.peerToken };
+  return { url: `http://${gatewayOf(cfg)}:${cfg.peer.port}`, token: cfg.peerToken, ...(self ? { self } : {}) };
 }
 
 // —— HTTP 服务（容器侧调用方）——
@@ -288,7 +292,22 @@ async function handle(cfg: Config, req: IncomingMessage, res: ServerResponse): P
     sendJson(res, 200, await execOnTarget(cfg, parsed));
     return;
   }
-  sendJson(res, 404, { error: 'not found（routes: GET /targets, POST /exec）' });
+  if (req.method === 'POST' && path === '/notify') {
+    // agent 精准提醒回调（agentNotify.ts）：hook 侧不关心结果，恒 200——校验/反解
+    // 失败只留服务端 debug 日志。记账不 await（recordAgentNotify 可能扫 listManaged，
+    // 回包不等它，hook 的 2s 超时内拿到响应就退）。
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readBody(req));
+    } catch {
+      sendJson(res, 200, { ok: false });
+      return;
+    }
+    void recordAgentNotify(cfg, parsed);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  sendJson(res, 404, { error: 'not found（routes: GET /targets, POST /exec, POST /notify）' });
 }
 
 // 每次尝试新建一个 server：listen 失败（EADDRNOTAVAIL 等）后复用同一实例再 listen 的

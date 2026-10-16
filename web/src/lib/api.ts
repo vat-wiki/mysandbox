@@ -655,15 +655,33 @@ export const listSshConfigHosts = () =>
 // 后端 TermActivityView（server/activity.ts）：服务端周期扫 tmux 尾部输出，
 // state=quiet 表示出现过输出且已安静超过 threshold 秒。「谁在看着」服务端不知道
 // （可见 tab v-show 常驻，tmux attached ≠ 用户在看），由前端自己关联激活 tab。
+// agent = 该会话收到过 agent 精准信号（server/agentNotify.ts）——前端据此整体退出
+// 启发式，提醒完全由 agentWaiting 驱动。
 export interface TermActivityView {
   kind: 'host' | 'container'
   containerId?: string
   termId: string
   state: 'active' | 'quiet'
   quietSeconds: number
+  agent?: string
+}
+// agent 精准等待事件（agent hook/插件经 peer API 上报）：该会话的 agent 回合完成 /
+// 等权限/等输入。agoSeconds = 距事件发生（服务端时钟上算好），前端换算回本机钟使用。
+export interface AgentWaitingView {
+  kind: 'host' | 'container'
+  containerId?: string
+  termId: string
+  agent: string
+  event: string
+  message?: string
+  agoSeconds: number
 }
 export const listTermActivity = () =>
-  api('/api/terminal-activity') as Promise<{ threshold: number; items: TermActivityView[] }>
+  api('/api/terminal-activity') as Promise<{
+    threshold: number
+    items: TermActivityView[]
+    agentWaiting: AgentWaitingView[]
+  }>
 // —— 基座（模板容器）——
 // 后端 BaseStatus（server/engine/types.ts）。
 export interface BaseStatus {

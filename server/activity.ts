@@ -16,6 +16,10 @@
 // 的 session_attached 在这里 ≠ 用户在看。谁看谁不看由前端拿自己的激活 tab / 文档
 // 可见性 / 离开时刻去关联（见 web lib/terminalActivity.ts 与 ContainerList）。
 //
+// agent 精准信号（server/agentNotify.ts）在本底座之上：扫到的输出变化联动清 waiting
+// （noteOutput）、会话消失联动清登记（forgetSession）；收到过 agent notify 的会话由
+// 前端整体退出这里的启发式，提醒完全由精准信号驱动。
+//
 // 状态不持久化（同 jobs.ts 的取舍）：进程重启即丢，重启窗口内错过一次提醒的代价
 // 远小于维护落盘状态；首轮扫描只建基线，不产生提醒。
 import { execFile } from 'node:child_process';
@@ -24,6 +28,7 @@ import { platform } from 'node:os';
 import type { Config } from './config.js';
 import { listManaged, execRun } from './engine/index.js';
 import { HOST_SOCKET } from './hostTerminal.js';
+import { noteOutput, forgetSession } from './agentNotify.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -149,6 +154,9 @@ function applyScan(key: string, row: ScanRow, now: number): void {
   if (row.hash !== prev.hash || row.size !== prev.size) {
     prev.lastOutputAt = now;
     prev.seenOutput = true;
+    // agent 精准提醒联动：该会话恢复输出 → 清掉过宽限期的 waiting（agentNotify.ts，
+    // 宽限期内不清——hook 在渲染之后才触发，见输出即清会秒杀刚挂上的 waiting）。
+    noteOutput(key, now);
   }
   prev.hash = row.hash;
   prev.size = row.size;
@@ -201,9 +209,13 @@ async function tick(): Promise<void> {
     if (seen.has(key)) continue;
     const [kind, cid] = key.split('|');
     if (kind === 'host') {
-      if (scannedHost) entries.delete(key);
+      if (scannedHost) {
+        entries.delete(key);
+        forgetSession(key); // agent 精准提醒的两张表一并清（agentNotify.ts）
+      }
     } else if (!running.includes(cid)) {
       entries.delete(key);
+      forgetSession(key);
     }
   }
 }
