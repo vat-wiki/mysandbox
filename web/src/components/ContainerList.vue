@@ -65,6 +65,13 @@ import {
   runContainerAction,
   runServiceAction,
 } from '@/components/mobile/mobileActions'
+import MobileTabActions from '@/components/mobile/MobileTabActions.vue'
+import {
+  groupActions,
+  runGroupAction,
+  fileTabActions,
+  runFileTabAction,
+} from '@/components/mobile/tabActions'
 import { extOf, previewKind } from '@/lib/preview'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -1961,6 +1968,51 @@ function runMobileServiceAction(s: ServiceView, action: CardAction) {
     portTarget: svcPortRowTarget,
   })
 }
+
+function mobileGroupActionList(group: TermGroup) {
+  return groupActions(group, containerRunning(group.containerId))
+}
+
+function runMobileGroupAction(group: TermGroup, action: CardAction) {
+  runGroupAction(group, action, {
+    create: openNewGroup,
+    toggleNotify: (target) => {
+      target.quietNotify = target.quietNotify === false
+    },
+    popout: (target) => openPopout(target.kind === 'host' ? HOST_ID : target.containerId),
+    hide: (target) => hideGroupById(target.id),
+    close: (target) => closeGroupById(target.id),
+  })
+}
+
+function mobileFileTabActionList(t: EditorTab, index: number) {
+  const mode = tabMode.value[tabId(t)]
+  return fileTabActions({
+    tab: t,
+    editing: mode?.editing ?? false,
+    preview: mode?.preview ?? false,
+    previewable: !!previewKind(t.path),
+    hasDiff: !!t.diff,
+    isFirst: index === 0,
+    isLast: index === editorTabs.value.length - 1,
+    single: editorTabs.value.length <= 1,
+  })
+}
+
+function runMobileFileTabAction(t: EditorTab, action: CardAction) {
+  runFileTabAction(t, action, {
+    toggleMode: (tab) => {
+      const index = editorTabs.value.findIndex((x) => tabId(x) === tabId(tab))
+      if (index >= 0) tabModeClick(tab, index)
+    },
+    openNormal: onOpenNormal,
+    download: (tab) => void downloadTab(tab),
+    copyPath: (tab) => void copyTabPath(tab),
+    copyHostPath: (tab) => void copyTabHostPath(tab),
+    close: closeFileTab,
+    closeRange: closeFileTabsRange,
+  })
+}
 // 重命名 = 改显示名（meta.displayName）：tab/侧栏/文件面板全用它，随时可改、不动容器真名。
 // 成功后同步已开终端组的名字快照（组内 pane 头、文件面板 label 都读它）。
 const renameTarget = ref<ContainerView | null>(null)
@@ -3424,6 +3476,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
+        <MobileTabActions
+          v-if="!props.popout && isPhone && activeGroup"
+          class="md:hidden"
+          :title="groupLabel(activeGroup)"
+          description="当前终端组"
+          :actions="mobileGroupActionList(activeGroup)"
+          @select="runMobileGroupAction(activeGroup, $event)"
+        />
         <!-- AI 工具入口：环境级全局面板（技能中心/模型供应商/智能体配置），与「所有终端」
              同为常驻全局钮——不挂任何分区（从容器分区头挪出，全局功能不借容器菜单位）。 -->
         <button
@@ -3963,6 +4023,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
+        <MobileTabActions
+          v-if="isPhone && editorTabs.length"
+          class="ml-auto"
+          :title="editorTabs[activeEditorIdx]?.path.slice(editorTabs[activeEditorIdx]?.path.lastIndexOf('/') + 1) || '文件'"
+          :description="editorTabs[activeEditorIdx] ? `${editorTabs[activeEditorIdx].containerName}:${editorTabs[activeEditorIdx].path}` : undefined"
+          :actions="editorTabs[activeEditorIdx] ? mobileFileTabActionList(editorTabs[activeEditorIdx], activeEditorIdx) : []"
+          @select="editorTabs[activeEditorIdx] && runMobileFileTabAction(editorTabs[activeEditorIdx], $event)"
+        />
       </div>
 
       <DesktopDialog

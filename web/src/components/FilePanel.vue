@@ -41,6 +41,8 @@ import NameDialog from '@/components/NameDialog.vue'
 import { onSandboxEvent, setWatchDirs, type SandboxEvent } from '@/lib/events'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
+import MobileTabActions from '@/components/mobile/MobileTabActions.vue'
+import { currentDirActions, runCurrentDirAction } from '@/components/mobile/currentDirActions'
 import {
   Folder,
   FileText,
@@ -926,6 +928,25 @@ function downloadDir() {
   return downloadTo(p, p.slice(p.lastIndexOf('/') + 1) || p, true)
 }
 
+function currentDirActionList() {
+  return currentDirActions(!!clip.value, !!path.value && path.value !== '/')
+}
+
+function runCurrentDirMobileAction(action: Parameters<typeof runCurrentDirAction>[0]) {
+  runCurrentDirAction(action, {
+    paste: () => pasteInto(path.value),
+    download: downloadDir,
+    createFile: () => {
+      ctxTarget.value = null
+      nameDialog.value = { mode: 'newFile' }
+    },
+    createDir: () => {
+      ctxTarget.value = null
+      nameDialog.value = { mode: 'newDir' }
+    },
+  })
+}
+
 // —— 名称搜索：两套语义随浏览模式（渲染分支见 rows）——
 // 下钻：当前目录内相关度排序平铺——命中前排 + 高亮，未命中不过滤、稳定垫后（跳文件优先）。
 // 展开：目录树内过滤、保层级——只留命中条目与其祖先目录，目录名命中则子树照旧。
@@ -1371,6 +1392,14 @@ function fmtSize(n: number): string {
         <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
         <FolderInput v-else class="size-3.5" />
       </button>
+      <MobileTabActions
+        v-if="hasTerminal && path"
+        class="md:hidden"
+        title="当前目录操作"
+        :description="path"
+        :actions="currentDirActionList()"
+        @select="runCurrentDirMobileAction"
+      />
     </div>
 
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
