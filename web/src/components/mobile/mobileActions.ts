@@ -9,6 +9,7 @@ export type ContainerPortRow = { kind: 'web' | 'other' | 'map'; port: number; pr
 export type ServicePortRow = { kind: 'web' | 'other'; port: number }
 
 export interface ContainerActionDeps {
+  openTerminal: (container: ContainerView) => void
   adopt: (container: ContainerView) => void
   start: (container: ContainerView) => void
   power: (container: ContainerView, action: 'stop' | 'restart') => void
@@ -22,6 +23,7 @@ export interface ContainerActionDeps {
 }
 
 export interface ServiceActionDeps {
+  openTerminal: (service: ServiceView) => void
   detail: (service: ServiceView) => void
   rename: (service: ServiceView) => void
   copyConnect: (service: ServiceView) => void
@@ -34,11 +36,12 @@ export interface ServiceActionDeps {
 }
 
 export function containerActions(c: ContainerView, ports: ContainerPortRow[], directOpenExtra: boolean): CardAction[] {
+  const actions: CardAction[] = [{ id: 'open', label: '打开终端', primary: true }]
   if (!c.managed && !c.adopted) {
-    return [{ id: 'adopt', label: '纳入管理' }]
+    actions.push({ id: 'adopt', label: '纳入管理' })
+    return actions
   }
 
-  const actions: CardAction[] = []
   if (c.state === 'running') {
     actions.push({ id: 'stop', label: '停止' }, { id: 'desktop', label: '桌面' }, { id: 'restart', label: '重启' })
   } else {
@@ -64,6 +67,10 @@ export function containerActions(c: ContainerView, ports: ContainerPortRow[], di
 }
 
 export function runContainerAction(c: ContainerView, action: CardAction, deps: ContainerActionDeps): void {
+  if (action.id === 'open') {
+    deps.openTerminal(c)
+    return
+  }
   const match = action.id.match(/^port(?:-direct)?:(\d+)$/)
   if (match) {
     const port = Number(match[1])
@@ -84,7 +91,11 @@ export function runContainerAction(c: ContainerView, action: CardAction, deps: C
 }
 
 export function serviceActions(s: ServiceView, ports: ServicePortRow[], directOpenExtra: boolean): CardAction[] {
-  const actions: CardAction[] = [{ id: 'detail', label: '详情' }, { id: 'rename', label: '重命名' }]
+  const actions: CardAction[] = [
+    { id: 'open', label: '打开终端', primary: true },
+    { id: 'detail', label: '详情' },
+    { id: 'rename', label: '重命名' },
+  ]
   if (s.connect.length) actions.push({ id: 'connect', label: '复制连接命令' })
   if (s.running) {
     for (const row of ports) {
@@ -107,6 +118,10 @@ export function serviceActions(s: ServiceView, ports: ServicePortRow[], directOp
 }
 
 export function runServiceAction(s: ServiceView, action: CardAction, deps: ServiceActionDeps): void {
+  if (action.id === 'open') {
+    deps.openTerminal(s)
+    return
+  }
   const match = action.id.match(/^port(?:-direct)?:(\d+)$/)
   if (match) {
     const port = Number(match[1])

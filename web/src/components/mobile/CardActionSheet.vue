@@ -7,6 +7,7 @@ export interface CardAction {
   label: string
   detail?: string
   destructive?: boolean
+  primary?: boolean
   disabled?: boolean
 }
 
@@ -54,8 +55,14 @@ function select(action: CardAction) {
           v-for="action in actions"
           :key="action.id"
           type="button"
-          class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors hover:bg-accent/60 active:bg-accent disabled:pointer-events-none disabled:opacity-40"
-          :class="action.destructive ? 'text-destructive' : 'text-foreground'"
+          class="flex min-h-14 w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors disabled:pointer-events-none disabled:opacity-40"
+          :class="[
+            action.primary
+              ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:bg-primary/80'
+              : 'hover:bg-accent/60 active:bg-accent',
+            action.destructive && !action.primary ? 'text-destructive' : '',
+            !action.primary && !action.destructive ? 'text-foreground' : '',
+          ]"
           :disabled="action.disabled"
           @click="select(action)"
         >

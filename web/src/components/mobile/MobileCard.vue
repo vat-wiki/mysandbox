@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { MoreVertical } from '@lucide/vue'
 import CardActionSheet, { type CardAction } from './CardActionSheet.vue'
 
 defineProps<{
@@ -16,7 +15,6 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  open: []
   select: [action: CardAction]
   meta: []
 }>()
@@ -30,8 +28,8 @@ const sheetOpen = ref(false)
     :class="active ? 'border-border/60 bg-accent' : 'border-transparent hover:bg-accent/40'"
     role="button"
     tabindex="0"
-    @click="emit('open')"
-    @keydown.enter.prevent="emit('open')"
+    @click="sheetOpen = true"
+    @keydown.enter.prevent="sheetOpen = true"
   >
     <span
       class="absolute left-0 rounded-full transition-all"
@@ -59,15 +57,6 @@ const sheetOpen = ref(false)
         {{ badgeLabel }}
       </span>
     </div>
-    <button
-      type="button"
-      class="absolute top-1 right-1 inline-flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      title="操作"
-      @click.stop="sheetOpen = true"
-      @contextmenu.prevent
-    >
-      <MoreVertical class="size-4" />
-    </button>
     <CardActionSheet
       v-model:open="sheetOpen"
       :title="title"

@@ -1920,6 +1920,7 @@ function onDelete(c: ContainerView) {
 
 function runMobileContainerAction(c: ContainerView, action: CardAction) {
   runContainerAction(c, action, {
+    openTerminal: openTerm,
     adopt: onAdopt,
     start: (container) => void act(container.id, () => startContainer(container.id)),
     power: onPower,
@@ -1939,6 +1940,7 @@ function runMobileContainerAction(c: ContainerView, action: CardAction) {
 
 function runMobileServiceAction(s: ServiceView, action: CardAction) {
   runServiceAction(s, action, {
+    openTerminal: openServiceTerm,
     detail: (service) => emit('open-services', false, service.name),
     rename: (service) => {
       svcRenameTarget.value = service
