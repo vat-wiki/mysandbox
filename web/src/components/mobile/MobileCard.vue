@@ -24,7 +24,7 @@ const sheetOpen = ref(false)
 
 <template>
   <div
-    class="relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
+    class="relative flex cursor-pointer select-none flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-transform touch-manipulation active:scale-[0.99] active:bg-accent/60"
     :class="active ? 'border-border/60 bg-accent' : 'border-transparent hover:bg-accent/40'"
     role="button"
     tabindex="0"
