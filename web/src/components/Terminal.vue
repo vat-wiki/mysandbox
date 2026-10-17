@@ -538,6 +538,9 @@ function toolKey(ch: string) {
 }
 // 工具条滚动只动本地 xterm scrollback，不向 PTY 发 PageUp/PageDown：
 // 这样翻历史时不会影响正在运行的 TUI/交互程序，也不会被识别成按键。
+function toolScroll(pages: number) {
+  term?.scrollPages(pages)
+}
 function toolScrollEnd(top: boolean) {
   if (top) term?.scrollToTop()
   else term?.scrollToBottom()
@@ -546,19 +549,39 @@ function toolScrollEnd(top: boolean) {
 function sendRaw(s: string) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(s))
 }
-// 粘滞 Ctrl 的字符映射：字母 → 0x01–0x1a；符号补 @ [ \ ] ^ _ ? 空格（C-@ 与
-// quoted-insert 等组合的常用面）。不可映射的字符返回 null（原样放行）。
-const CTRL_SYM: Record<string, string> = {
-  '@': '\x00', ' ': '\x00', '[': '\x1b', '\\': '\x1c', ']': '\x1d', '^': '\x1e', '_': '\x1f', '?': '\x7f',
+// Ctrl 复合键面板：点副行 Ctrl 弹出常用组合，点组合即发送并收起——一次交互完成复合键，
+// 比粘滞两段式（点亮→切软键盘按字母）少一步也不用唤键盘。C/V 双语义接管剪贴板：
+// 有选区时 C=复制选中、无选区才发 ^C；V=粘贴（走 toolPaste 的 clipboard/兜底链路）。
+const ctrlOpen = ref(false)
+interface CtrlCombo {
+  k: string
+  ch: string
+  hint: string
+  paste?: boolean
 }
-function ctrlChar(ch: string): string | null {
-  const up = ch.toUpperCase()
-  if (up >= 'A' && up <= 'Z') return String.fromCharCode(up.charCodeAt(0) - 64)
-  return CTRL_SYM[ch] ?? null
+const ctrlCombos: CtrlCombo[] = [
+  { k: 'C', ch: '\x03', hint: '中断当前命令（有选区时改为复制选中）' },
+  { k: 'V', ch: '', hint: '粘贴剪贴板', paste: true },
+  { k: 'L', ch: '\x0c', hint: '清屏' },
+  { k: 'R', ch: '\x12', hint: '反向搜索历史命令' },
+  { k: 'U', ch: '\x15', hint: '删到行首' },
+  { k: 'W', ch: '\x17', hint: '删前一个词' },
+  { k: 'A', ch: '\x01', hint: '光标跳行首' },
+  { k: 'E', ch: '\x05', hint: '光标跳行尾' },
+  { k: 'Z', ch: '\x1a', hint: '挂起当前任务' },
+]
+function ctrlCombo(c: CtrlCombo) {
+  ctrlOpen.value = false
+  if (c.paste) {
+    void toolPaste()
+    return
+  }
+  if (c.k === 'C' && term?.hasSelection()) {
+    void copyText(term.getSelection()).then(() => term?.clearSelection())
+    return
+  }
+  sendRaw(c.ch)
 }
-// 粘滞 Ctrl 状态：点亮后软键盘来的下一个单字符组合成控制码发送（见 onData 内消费点），
-// 发送即熄灭——状态不跨输入残留，与 Termius 等移动终端的粘滞修饰键同语义。
-const stickyCtrl = ref(false)
 // 「⋯」更多面板（字号/滚顶底/快捷短语管理）：默认收起。
 const moreOpen = ref(false)
 
@@ -1118,16 +1141,6 @@ onMounted(async () => {
   connectWs()
 
   term.onData((data) => {
-    // 粘滞 Ctrl 消费点：点亮后软键盘来的下一个单字符映射成控制码发送、随即熄灭；
-    // 不可映射（多字符序列/符号表外）原样放行、同样熄灭——粘滞状态绝不跨输入残留。
-    if (stickyCtrl.value) {
-      stickyCtrl.value = false
-      const m = data.length === 1 ? ctrlChar(data) : null
-      if (m) {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(m))
-        return
-      }
-    }
     // 回车即提交命令：上抛给文件面板做即时的 cwd 跟随检查（cd 提交后壳立即改目录，
     // 250ms 后查基本必中）。粘贴多行也含 \r，多抛几次无妨（跟随端去重）。
     if (data.includes('\r')) emit('enter')
@@ -1292,14 +1305,19 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
-    <!-- 触屏工具条（手机 only，两行 agent 遥控布局）。
+    <!-- 触屏工具条（手机 only，agent 遥控布局）。
          主行 = agent 交互高频键：Esc 中断 / Shift+Tab 切权限模式 / ↑↓ 菜单与历史输入
          （长按连发）/ 回车——不唤起软键盘即可完成全部操作；均分宽度的固定行，不滚动。
-         副行 = ←→ 光标 / 剪贴板 / Tab / 粘滞 Ctrl / Ctrl+C / 快捷短语（可横滚）+ 固定
-         右侧的「⋯」开更多面板（字号 / 滚顶底 / 短语管理）。
-         滑屏滚动的是本地回滚缓冲，方向键是发给程序的输入（agent 菜单/全屏 TUI 唯一导航
-         方式）——两者语义不同，都要保留。桌面（≥768px 或鼠标环境）不渲染。 -->
+         副行 = Ctrl（弹出复合键面板）/ Tab / 翻页 / 快捷短语（可横滚）+ 固定右侧的
+         「⋯」开更多面板（字号 / 滚顶底 / 短语管理）。←→ 光标不设（点输入位置即可）。
+         Ctrl 面板点组合即发送并收起，C/V 双语义接管剪贴板（有选区 C=复制），剪贴板
+         不再单占按钮。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入（agent 菜单/
+         全屏 TUI 唯一导航方式）——两者语义不同。桌面（≥768px 或鼠标环境）不渲染。 -->
     <div v-if="isPhone" class="shrink-0 select-none border-t border-zinc-800 pt-1 md:hidden">
+      <!-- Ctrl 复合键面板：点 Ctrl 弹出、点组合发送并收起。临时行，压在主行上方。 -->
+      <div v-if="ctrlOpen" class="mb-1 flex items-center gap-1 overflow-x-auto scroll-thin rounded-md border border-amber-500/40 bg-amber-500/5 p-1">
+        <button v-for="c in ctrlCombos" :key="c.k" type="button" class="tb" :title="`Ctrl+${c.k}：${c.hint}`" @click="ctrlCombo(c)">{{ c.k }}</button>
+      </div>
       <div class="flex items-center gap-1">
         <button type="button" class="tb tb-esc flex-1" title="发送 Esc（中断 agent / 关闭菜单）" @click="toolKey('\x1b')">Esc</button>
         <button type="button" class="tb flex-1" title="发送 Shift+Tab（切换权限模式）" @click="toolKey('\x1b[Z')">⇥</button>
@@ -1315,17 +1333,14 @@ onBeforeUnmount(() => {
       </div>
       <div class="mt-1 flex items-center gap-1">
         <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-thin">
-          <button type="button" class="tb" title="左方向键（长按连发）" @pointerdown.prevent="keyRepeat('\x1b[D')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent>←</button>
-          <button type="button" class="tb" title="右方向键（长按连发）" @pointerdown.prevent="keyRepeat('\x1b[C')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent>→</button>
-          <button type="button" class="tb" title="粘贴剪贴板内容" @click="toolPaste">粘贴</button>
-          <button type="button" class="tb" :disabled="!termHasSel" title="复制选中内容" @click="toolCopy">复制</button>
-          <button type="button" class="tb" title="发送 Tab（补全 @路径等）" @click="toolKey('\t')">Tab</button>
           <button
-            type="button" class="tb" :class="{ 'tb-on': stickyCtrl }"
-            title="粘滞 Ctrl：点亮后软键盘的下一个字母与 Ctrl 组合发送（如点亮后按 r = Ctrl+R 翻转录）"
-            @click="stickyCtrl = !stickyCtrl"
+            type="button" class="tb" :class="{ 'tb-on': ctrlOpen }" :aria-expanded="ctrlOpen"
+            title="Ctrl 复合键：弹出常用组合（C 中断/复制、V 粘贴、L 清屏、R 搜历史…）"
+            @click="ctrlOpen = !ctrlOpen"
           >Ctrl</button>
-          <button type="button" class="tb" title="发送 Ctrl+C（中断 / 退出）" @click="toolKey('\x03')">^C</button>
+          <button type="button" class="tb" title="发送 Tab（补全 @路径等）" @click="toolKey('\t')">Tab</button>
+          <button type="button" class="tb" title="上翻一页（只滚本地回滚区）" @click="toolScroll(-1)">上页</button>
+          <button type="button" class="tb" title="下翻一页（只滚本地回滚区）" @click="toolScroll(1)">下页</button>
           <button v-for="(s, i) in snippets" :key="i" type="button" class="tb" :title="`发送「${s}」并回车`" @click="sendSnippet(s)">{{ s }}</button>
         </div>
         <button type="button" class="tb" :class="{ 'tb-on': moreOpen }" title="更多：字号 / 滚顶底 / 快捷短语管理" @click="moreOpen = !moreOpen">⋯</button>
