@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // 触屏工具条设置对话框（Terminal.vue 工具条 ⋯ 打开）：独立区域编排按钮——
-// 当前按钮 chip 拖拽调序 / ✕ 移除、候选按键点击追加、快捷短语增删、自定义按键。
+// 当前按钮按工具条分页分区展示（一页 14 键，满页自动溢到下一页），chip 拖拽调序 /
+// ✕ 移除、候选按键点击追加、快捷短语增删、自定义按键。
 // 状态在 lib/termToolbar.ts 模块级单例，改完即时反映到工具条（无需确认按钮）。
 // 输入框添加后主动 blur——移动端不收键盘会一直盖着面板。
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { CircleDot } from 'lucide-vue-next'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
@@ -17,9 +18,19 @@ import {
   encodeKeyDown,
   KEY_POOL,
   TOOLBAR_MAX,
+  TB_PER_PAGE,
+  type ToolBtn,
 } from '@/lib/termToolbar'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
+
+// —— 按工具条分页切分当前按钮：编排视图与工具条实际落位一致 ——
+// data-idx 仍是扁平索引（页号 × 14 + 页内序号），拖拽跨页换位直接复用同一份列表。
+const btnPages = computed<ToolBtn[][]>(() => {
+  const out: ToolBtn[][] = []
+  for (let i = 0; i < toolButtons.value.length; i += TB_PER_PAGE) out.push(toolButtons.value.slice(i, i + TB_PER_PAGE))
+  return out
+})
 
 // —— chip 拖拽调序：全部监听挂 window（不用 setPointerCapture——WebKit 对 touch
 // 指针的捕获有历史怪癖，隐式捕获目标还可能是 chip 内层 span），对各浏览器最钝感。
@@ -150,24 +161,29 @@ onBeforeUnmount(() => {
       </DialogHeader>
 
       <p class="text-xs text-muted-foreground">
-        拖拽 chip 调序，改动即时生效并记忆（存本浏览器）。
+        拖拽 chip 调序，改动即时生效并记忆（存本浏览器）。一页 14 键（2 行 × 7 列），满页自动溢到下一页，工具条上横向轻扫翻页。
       </p>
 
       <div class="max-h-[52vh] overflow-y-auto pr-0.5 scroll-thin">
         <p class="mb-1 text-xs font-semibold text-muted-foreground">当前按钮（{{ toolButtons.length }}/{{ TOOLBAR_MAX }}）</p>
-        <div class="flex flex-wrap items-center gap-1">
-          <span
-            v-for="(b, i) in toolButtons"
-            :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : `s:${b.text}`"
-            class="tsc-chip"
-            :class="{ 'tsc-drag': dragArmed && dragIdx === i }"
-            :data-idx="i"
-            @pointerdown="chipDown(i, $event)"
-          >
-            <span class="max-w-24 truncate">{{ b.t === 'key' ? KEY_POOL[b.id]?.label : b.t === 'custom' ? b.label : b.text }}</span>
-            <button type="button" class="tsc-x" title="移除" @click="rmBtn(i)">✕</button>
-          </span>
+        <div v-for="(pg, pi) in btnPages" :key="pi" class="mb-2">
+          <p class="mb-1 text-[11px] text-zinc-500">第 {{ pi + 1 }} 页（{{ pg.length }}/{{ TB_PER_PAGE }}）</p>
+          <div class="flex flex-wrap items-center gap-1">
+            <span
+              v-for="(b, bi) in pg"
+              :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : `s:${b.text}`"
+              class="tsc-chip"
+              :class="{ 'tsc-drag': dragArmed && dragIdx === pi * TB_PER_PAGE + bi }"
+              :data-idx="pi * TB_PER_PAGE + bi"
+              @pointerdown="chipDown(pi * TB_PER_PAGE + bi, $event)"
+            >
+              <span class="max-w-24 truncate">{{ b.t === 'key' ? KEY_POOL[b.id]?.label : b.t === 'custom' ? b.label : b.text }}</span>
+              <button type="button" class="tsc-x" title="移除" @click="rmBtn(pi * TB_PER_PAGE + bi)">✕</button>
+            </span>
+          </div>
         </div>
+        <!-- ⋯ 设置入口不在编排列表里：恒为最后一项跟在末页（满页时独占新一页） -->
+        <span v-if="btnPages.length" class="tsc-chip cursor-default opacity-60" title="工具条设置入口，恒为最后一项">⋯ 设置</span>
 
         <p class="mb-1 mt-3 text-xs font-semibold text-muted-foreground">候选按键（点击追加到末尾）</p>
         <div class="flex flex-wrap items-center gap-1">

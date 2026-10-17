@@ -54,6 +54,9 @@ export type ToolBtn =
 
 const TOOLBAR_KEY = 'mysandbox:term-toolbar-v2'
 export const TOOLBAR_MAX = 24
+// 一页 = 2 行 × 7 列（对齐 Termux 一行 7 键）。键超出自动溢到下一页，工具条横向轻扫翻页；
+// Terminal.vue 的分页渲染与 ToolbarSettingsDialog 的按页分区共用这个常数。
+export const TB_PER_PAGE = 14
 
 // 预置布局 = Termux 默认 extra-keys 两行（各 7 键）逐位对齐：第一行 ESC / - HOME UP END PGUP，
 // 第二行 TAB CTRL ALT LEFT DOWN RIGHT PGDN（Ctrl/Alt 都是粘滞修饰键，交互见 Terminal.vue）。

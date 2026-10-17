@@ -11,7 +11,7 @@ import '@xterm/xterm/css/xterm.css'
 import { getToken } from '@/lib/api'
 import { noteTermOutput } from '@/lib/terminalActivity'
 import { isPhone } from '@/composables/useDevice'
-import { toolButtons, KEY_POOL, type ToolBtn } from '@/lib/termToolbar'
+import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
 import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
 
 const props = withDefaults(
@@ -652,11 +652,10 @@ function tbDown(b: ToolBtn, ev: PointerEvent) {
   }
 }
 
-// —— 工具条分页（固定 2 行 × 7 列 = 一页 14 键）——
+// —— 工具条分页（固定 2 行 × 7 列，每页键数 TB_PER_PAGE 在 lib/termToolbar.ts）——
 // 两行是整体：键多于 14 个时整个卡片横向轻扫翻页（阈值 48px 且横向位移须大于纵向，
 // 不成手势就不拦截按钮点击），页面滑动有过渡动画；⋯ 设置入口作为列表最后一项参与
 // 分页，不再是常驻末格。页点指示器只在多于 1 页时出现。
-const TB_PER_PAGE = 14
 type TbItem = ToolBtn | { t: 'settings' }
 const toolItems = computed<TbItem[]>(() => [...toolButtons.value, { t: 'settings' }])
 const toolPages = computed<TbItem[][]>(() => {
