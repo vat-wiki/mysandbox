@@ -1254,7 +1254,8 @@ onBeforeUnmount(() => {
        真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
        手机软键盘弹起时 paddingBottom 撑出键盘高度（kbH），内层 ResizeObserver 自动 refit。 -->
-  <div class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbH > 0 ? { paddingBottom: kbH + 'px' } : undefined">
+  <!-- kbH 额外 +8：键盘高度顶到按钮会贴死，留一线呼吸 -->
+  <div class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbH > 0 ? { paddingBottom: kbH + 8 + 'px' } : undefined">
     <!-- touch-none（touch-action: none）：触屏滚终端的唯一正解。xterm 的 touchmove 处理是 JS 驱动
          viewport.scrollTop，但只在回滚区边界才 preventDefault——滚动途中浏览器的原生平移同时在跑，
          而触点不在 .xterm-viewport 滚动层内，原生滚动链直接落到 document：上翻历史（手指下划）时
