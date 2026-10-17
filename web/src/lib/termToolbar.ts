@@ -53,10 +53,11 @@ export type ToolBtn =
 const TOOLBAR_KEY = 'mysandbox:term-toolbar-v2'
 export const TOOLBAR_MAX = 24
 
-// 预置布局参考 Termux 默认 extra-keys 两行的编排（ESC / - HOME UP END PGUP /
-// TAB CTRL ALT LEFT DOWN RIGHT PGDN；ALT 是粘滞键，暂无粘滞基建未收录），
-// 另补两个本场景高频键：⏎（系统键盘藏起时也能确认）与 Shift+Tab（切 agent 权限模式）。
+// 预置布局参考 Termux 默认 extra-keys 两行（各 7 键）：第一行 ESC / - HOME UP END PGUP，
+// 第二行 TAB CTRL ALT LEFT DOWN RIGHT PGDN（ALT 是粘滞键，暂无粘滞基建未收录，行尾补 ⏎），
+// 另补 Shift+Tab（切 agent 权限模式）。前端 7 列 grid，默认布局逐行与 Termux 对齐。
 const DEFAULT_BTNS: ToolBtn[] = [
+  // 第一行（Termux row 1）
   { t: 'key', id: 'esc' },
   { t: 'key', id: 'slash' },
   { t: 'key', id: 'dash' },
@@ -64,6 +65,7 @@ const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'up' },
   { t: 'key', id: 'endk' },
   { t: 'key', id: 'pgup' },
+  // 第二行（Termux row 2，ALT 位空缺，行尾补 ⏎）
   { t: 'key', id: 'tab' },
   { t: 'key', id: 'ctrl' },
   { t: 'key', id: 'left' },
@@ -71,6 +73,7 @@ const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'right' },
   { t: 'key', id: 'pgdn' },
   { t: 'key', id: 'enter' },
+  // 第三行起：本场景补充
   { t: 'key', id: 'stab' },
 ]
 

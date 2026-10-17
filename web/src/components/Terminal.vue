@@ -1320,7 +1320,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <!-- 触屏工具条（手机 only，agent 遥控布局）。
-         按钮全可配置（⋯ 设置弹窗编排，存 lib/termToolbar.ts 模块级状态 + localStorage），5 列 grid 自然换行——
+         按钮全可配置（⋯ 设置弹窗编排，存 lib/termToolbar.ts 模块级状态 + localStorage），7 列 grid 自然换行（对齐 Termux 一行 7 键）——
          「哪个键高频」由使用者编排，代码不硬编码。预置 Termux 风格布局（ESC / - HOME ↑ END 上页 /
          Tab Ctrl ← ↓ → 下页 / ⏎ ⇥）：Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
          Ctrl 复合键面板 / 快捷短语（一键文本+回车）。Ctrl 面板点组合即发送并收起，C/V 双语义
@@ -1331,7 +1331,7 @@ onBeforeUnmount(() => {
       <div v-if="ctrlOpen" class="mb-1 flex items-center gap-1 overflow-x-auto scroll-thin rounded-md border border-amber-500/40 bg-amber-500/5 p-1">
         <button v-for="c in ctrlCombos" :key="c.k" type="button" class="tb" :title="`Ctrl+${c.k}：${c.hint}`" @click="ctrlCombo(c)">{{ c.k }}</button>
       </div>
-      <div class="grid grid-cols-5 gap-1">
+      <div class="grid grid-cols-7 gap-1">
         <template v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : `s:${b.text}:${i}`">
           <button
             v-if="b.t === 'key'"
@@ -1393,8 +1393,8 @@ onBeforeUnmount(() => {
    消双击缩放延迟（主行固定不滚，无横滚冲突）。 */
 .tb {
   height: 2.25rem;
-  min-width: 2.75rem;
-  padding: 0 0.625rem;
+  min-width: 2.5rem;
+  padding: 0 0.5rem;
   flex-shrink: 0;
   border-radius: 0.375rem;
   border: 1px solid #3f3f46;
