@@ -1,7 +1,7 @@
 // 触屏工具条按钮配置（Terminal.vue 渲染按钮，ToolbarSettingsDialog.vue 编排，
 // 两边共用这一份状态）。查看偏好按项目约定只进 localStorage，不进 sidecar。
 // 「哪个键高频」是使用者自己的事，代码不替人猜：两行按钮全部从候选池编排。
-// 预置一套 agent 布局作起点；首次加载迁移旧版快捷短语键（term-quick-snippets）。
+// 预置一套 Termux 风格布局作起点；首次加载迁移旧版快捷短语键（term-quick-snippets）。
 import { ref } from 'vue'
 
 export type PoolAct =
@@ -31,6 +31,8 @@ export const KEY_POOL: Record<string, PoolEntry> = {
   tab: { label: 'Tab', title: '发送 Tab（补全）', act: { kind: 'seq', seq: '\t' } },
   home: { label: 'Home', title: '发送 Home（跳到行首）', act: { kind: 'seq', seq: '\x1b[H' } },
   endk: { label: 'End', title: '发送 End（跳到行尾）', act: { kind: 'seq', seq: '\x1b[F' } },
+  slash: { label: '/', title: '发送斜杠（路径 / 参数）', act: { kind: 'seq', seq: '/' } },
+  dash: { label: '-', title: '发送连字符（命令行选项）', act: { kind: 'seq', seq: '-' } },
   pgup: { label: '上页', title: '上翻一页（只滚本地回滚区，不进 PTY）', act: { kind: 'scroll', pages: -1 } },
   pgdn: { label: '下页', title: '下翻一页（只滚本地回滚区，不进 PTY）', act: { kind: 'scroll', pages: 1 } },
   top: { label: '顶', title: '滚到历史顶部（只滚本地回滚区）', act: { kind: 'scrollEnd', top: true } },
@@ -48,19 +50,28 @@ export type ToolBtn =
   // 自定义按键：label 显示在按钮上，seq 是发送给 PTY 的原始字节序列
   | { t: 'custom'; label: string; seq: string }
 
-const TOOLBAR_KEY = 'mysandbox:term-toolbar-v1'
+const TOOLBAR_KEY = 'mysandbox:term-toolbar-v2'
 export const TOOLBAR_MAX = 24
 
+// 预置布局参考 Termux 默认 extra-keys 两行的编排（ESC / - HOME UP END PGUP /
+// TAB CTRL ALT LEFT DOWN RIGHT PGDN；ALT 是粘滞键，暂无粘滞基建未收录），
+// 另补两个本场景高频键：⏎（系统键盘藏起时也能确认）与 Shift+Tab（切 agent 权限模式）。
 const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'esc' },
-  { t: 'key', id: 'stab' },
+  { t: 'key', id: 'slash' },
+  { t: 'key', id: 'dash' },
+  { t: 'key', id: 'home' },
   { t: 'key', id: 'up' },
-  { t: 'key', id: 'down' },
-  { t: 'key', id: 'enter' },
-  { t: 'key', id: 'ctrl' },
-  { t: 'key', id: 'tab' },
+  { t: 'key', id: 'endk' },
   { t: 'key', id: 'pgup' },
+  { t: 'key', id: 'tab' },
+  { t: 'key', id: 'ctrl' },
+  { t: 'key', id: 'left' },
+  { t: 'key', id: 'down' },
+  { t: 'key', id: 'right' },
   { t: 'key', id: 'pgdn' },
+  { t: 'key', id: 'enter' },
+  { t: 'key', id: 'stab' },
 ]
 
 function loadToolButtons(): ToolBtn[] {

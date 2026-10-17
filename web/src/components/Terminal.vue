@@ -1321,9 +1321,9 @@ onBeforeUnmount(() => {
     </div>
     <!-- 触屏工具条（手机 only，agent 遥控布局）。
          按钮全可配置（⋯ 设置弹窗编排，存 lib/termToolbar.ts 模块级状态 + localStorage），5 列 grid 自然换行——
-         「哪个键高频」由使用者编排，代码不硬编码。预置 agent 布局：Esc 中断（红色加重）/
-         Shift+Tab 切权限模式 / ↑↓ 菜单与输入历史（长按连发）/ 回车 / Ctrl 复合键面板 /
-         Tab / 翻页 / 快捷短语（一键文本+回车）。Ctrl 面板点组合即发送并收起，C/V 双语义
+         「哪个键高频」由使用者编排，代码不硬编码。预置 Termux 风格布局（ESC / - HOME ↑ END 上页 /
+         Tab Ctrl ← ↓ → 下页 / ⏎ ⇥）：Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
+         Ctrl 复合键面板 / 快捷短语（一键文本+回车）。Ctrl 面板点组合即发送并收起，C/V 双语义
          接管剪贴板（有选区 C=复制）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。桌面不渲染。 -->
     <div v-if="isPhone" class="shrink-0 select-none border-t border-zinc-800 pt-1 md:hidden">
