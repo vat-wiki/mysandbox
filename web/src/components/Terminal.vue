@@ -652,6 +652,45 @@ function tbDown(b: ToolBtn, ev: PointerEvent) {
   }
 }
 
+// —— 工具条分页（固定 2 行 × 7 列 = 一页 14 键）——
+// 两行是整体：键多于 14 个时整个卡片横向轻扫翻页（阈值 48px 且横向位移须大于纵向，
+// 不成手势就不拦截按钮点击），页面滑动有过渡动画；⋯ 设置入口作为列表最后一项参与
+// 分页，不再是常驻末格。页点指示器只在多于 1 页时出现。
+const TB_PER_PAGE = 14
+type TbItem = ToolBtn | { t: 'settings' }
+const toolItems = computed<TbItem[]>(() => [...toolButtons.value, { t: 'settings' }])
+const toolPages = computed<TbItem[][]>(() => {
+  const out: TbItem[][] = []
+  for (let i = 0; i < toolItems.value.length; i += TB_PER_PAGE) out.push(toolItems.value.slice(i, i + TB_PER_PAGE))
+  return out
+})
+const tbPage = ref(0)
+watch(
+  () => toolPages.value.length,
+  (n) => {
+    if (tbPage.value > n - 1) tbPage.value = Math.max(0, n - 1)
+  },
+  { immediate: true },
+)
+let tbTouchX = 0
+let tbTouchY = 0
+let tbTouching = false
+function tbTouchStart(e: TouchEvent) {
+  const t = e.touches[0]
+  tbTouchX = t.clientX
+  tbTouchY = t.clientY
+  tbTouching = true
+}
+function tbTouchEnd(e: TouchEvent) {
+  if (!tbTouching) return
+  tbTouching = false
+  const t = e.changedTouches[0]
+  const dx = t.clientX - tbTouchX
+  const dy = t.clientY - tbTouchY
+  if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return
+  tbPage.value = Math.min(toolPages.value.length - 1, Math.max(0, tbPage.value + (dx < 0 ? 1 : -1)))
+}
+
 // —— 软键盘自适应（仅手机）——
 // visualViewport 在键盘弹起时收缩（layout viewport 不动），kbH = 布局高 - 可视高 即键盘
 // 占位。把根容器 paddingBottom 撑出 kbH，内层 el 已有 ResizeObserver → 自动走现有 refit，
@@ -1341,31 +1380,45 @@ onBeforeUnmount(() => {
          （点亮→下一个键带修饰发出→用掉即灭，可叠加 C-M-x；软键盘单字符在
          attachCustomKeyEventHandler 接管）。Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
          快捷短语（一键文本+回车）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
-         （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。桌面不渲染。 -->
-    <div v-if="isPhone" class="shrink-0 select-none border-t border-zinc-800 pt-1 md:hidden">
-      <div class="grid grid-cols-7 gap-1">
-        <template v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : `s:${b.text}:${i}`">
-          <button
-            v-if="b.t === 'key'"
-            type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': (b.id === 'ctrl' && ctrlSticky) || (b.id === 'alt' && altSticky) }"
-            :disabled="b.id === 'copy' && !termHasSel"
-            :title="KEY_POOL[b.id]?.title"
-            @pointerdown="tbDown(b, $event)" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
-            @click="runKeyBtn(b.id)"
-          >{{ KEY_POOL[b.id]?.label }}</button>
-          <button
-            v-else-if="b.t === 'custom'"
-            type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送自定义按键「${b.label}」`"
-            @click="sendToolSeq(b.seq)"
-          >{{ b.label }}</button>
-          <button
-            v-else
-            type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送「${b.text}」并回车`"
-            @click="sendSnippet(b.text)"
-          >{{ b.text }}</button>
-        </template>
-        <!-- 管理入口恒在末格（不在配置列表里，撤不掉）：打开独立设置弹窗 -->
-        <button type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条按钮设置：增删 / 调序 / 快捷短语" @click="settingsOpen = true">⋯</button>
+         （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
+         一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
+         参与分页。桌面不渲染。 -->
+    <div v-if="isPhone" class="shrink-0 select-none overflow-hidden border-t border-zinc-800 pt-1 md:hidden" @touchstart="tbTouchStart" @touchend="tbTouchEnd">
+      <!-- 分页轨道：每页固定 2 行 × 7 列，横向轻扫翻页（手势见脚本 tbTouchStart/End） -->
+      <div
+        class="flex transition-transform duration-200 ease-out"
+        :style="{ width: `${toolPages.length * 100}%`, transform: `translateX(-${(tbPage * 100) / toolPages.length}%)` }"
+      >
+        <div v-for="(pg, pi) in toolPages" :key="pi" class="grid shrink-0 grid-cols-7 gap-1" :style="{ width: `${100 / toolPages.length}%` }">
+          <template v-for="(b, bi) in pg" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : b.t === 'settings' ? 'settings' : `s:${b.text}:${pi}:${bi}`">
+            <button
+              v-if="b.t === 'key'"
+              type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': (b.id === 'ctrl' && ctrlSticky) || (b.id === 'alt' && altSticky) }"
+              :disabled="b.id === 'copy' && !termHasSel"
+              :title="KEY_POOL[b.id]?.title"
+              @pointerdown="tbDown(b, $event)" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
+              @click="runKeyBtn(b.id)"
+            >{{ KEY_POOL[b.id]?.label }}</button>
+            <button
+              v-else-if="b.t === 'custom'"
+              type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送自定义按键「${b.label}」`"
+              @click="sendToolSeq(b.seq)"
+            >{{ b.label }}</button>
+            <button
+              v-else-if="b.t === 'settings'"
+              type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条按钮设置：增删 / 调序 / 快捷短语" @click="settingsOpen = true"
+            >⋯</button>
+            <button
+              v-else
+              type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送「${b.text}」并回车`"
+              @click="sendSnippet(b.text)"
+            >{{ b.text }}</button>
+          </template>
+        </div>
+      </div>
+      <!-- 页点指示器（仅多页时出现） -->
+      <div v-if="toolPages.length > 1" class="mt-1 flex justify-center gap-1.5 pb-0.5">
+        <span v-for="i in toolPages.length" :key="i" class="size-1.5 rounded-full transition-colors" :class="i - 1 === tbPage ? 'bg-zinc-400' : 'bg-zinc-700'" />
       </div>
     </div>
     <ToolbarSettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
