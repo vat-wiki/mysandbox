@@ -697,13 +697,53 @@ function rmBtn(i: number) {
   toolButtons.value.splice(i, 1)
   saveToolButtons()
 }
-function moveBtn(i: number, dir: -1 | 1) {
-  const j = i + dir
-  if (j < 0 || j >= toolButtons.value.length) return
-  const [b] = toolButtons.value.splice(i, 1)
-  toolButtons.value.splice(j, 0, b)
-  saveToolButtons()
+// 管理面板 chips 拖拽调序：pointerdown 记起点，移动超阈值（6px 防误触）才武装拖拽；
+// 武装后对拖拽 chip setPointerCapture（触摸隐式捕获也走这里），elementFromPoint 找落点
+// chip 换位（拖拽中的 chip 已被 .mg-drag 关掉 pointer-events，不会命中自己）。pointerup 统一落盘。
+const dragIdx = ref<number | null>(null)
+const dragArmed = ref(false)
+const chipDrag = { el: null as HTMLElement | null, x: 0, y: 0 }
+function chipDown(i: number, ev: PointerEvent) {
+  if (chipDrag.el || (ev.target as HTMLElement).closest('button')) return // ✕ 等按钮照常点击，不启动拖拽
+  chipDrag.el = ev.currentTarget as HTMLElement
+  chipDrag.x = ev.clientX
+  chipDrag.y = ev.clientY
+  dragIdx.value = i
+  dragArmed.value = false
 }
+function chipMove(ev: PointerEvent) {
+  if (!chipDrag.el) return
+  if (!dragArmed.value) {
+    if (Math.hypot(ev.clientX - chipDrag.x, ev.clientY - chipDrag.y) < 6) return
+    dragArmed.value = true
+    chipDrag.el.setPointerCapture(ev.pointerId)
+  }
+  const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.mg-chip') as HTMLElement | null
+  const to = Number(under?.dataset.idx)
+  if (under == null || Number.isNaN(to) || to === dragIdx.value) return
+  const [b] = toolButtons.value.splice(dragIdx.value!, 1)
+  toolButtons.value.splice(to, 0, b)
+  dragIdx.value = to
+}
+function chipUp() {
+  if (!chipDrag.el) return
+  if (dragArmed.value) saveToolButtons()
+  chipDrag.el = null
+  dragArmed.value = false
+  dragIdx.value = null
+}
+// 兜底：capture 之外丢掉 pointerup（窗外松手等）会卡死拖拽态，window 级再挂一份；
+// chipUp 幂等（chipDrag.el 清空后直接 return），与模板里的 chip 级监听重复无害。
+onMounted(() => {
+  window.addEventListener('pointerup', chipUp)
+  window.addEventListener('pointercancel', chipUp)
+  window.addEventListener('blur', chipUp)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerup', chipUp)
+  window.removeEventListener('pointercancel', chipUp)
+  window.removeEventListener('blur', chipUp)
+})
 function addKeyBtn(id: string) {
   if (!KEY_POOL[id] || toolButtons.value.length >= TOOLBAR_MAX) return
   if (toolButtons.value.some((b) => b.t === 'key' && b.id === id)) return
@@ -1458,11 +1498,19 @@ onBeforeUnmount(() => {
       </div>
       <!-- 管理面板：当前按钮增删调序 + 候选池追加 + 快捷短语，默认收起。 -->
       <div v-if="moreOpen" class="mt-1 rounded-md border border-zinc-800 bg-zinc-900/60 p-1.5">
-        <p class="mb-1 text-xs text-zinc-500">当前按钮（✕ 移除 · 箭头调序）</p>
+        <p class="mb-1 text-xs text-zinc-500">当前按钮（拖拽调序 · ✕ 移除）</p>
         <div class="flex flex-wrap items-center gap-1">
-          <span v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `mk:${b.id}` : `ms:${b.text}:${i}`" class="mg-chip">
-            <button type="button" class="mg-x" :disabled="i === 0" title="前移" @click="moveBtn(i, -1)">↑</button>
-            <button type="button" class="mg-x" :disabled="i === toolButtons.length - 1" title="后移" @click="moveBtn(i, 1)">↓</button>
+          <span
+            v-for="(b, i) in toolButtons"
+            :key="b.t === 'key' ? `mk:${b.id}` : `ms:${b.text}`"
+            class="mg-chip"
+            :class="{ 'mg-drag': dragArmed && dragIdx === i }"
+            :data-idx="i"
+            @pointerdown="chipDown(i, $event)"
+            @pointermove="chipMove"
+            @pointerup="chipUp"
+            @pointercancel="chipUp"
+          >
             <span class="max-w-24 truncate">{{ b.t === 'key' ? KEY_POOL[b.id]?.label : b.text }}</span>
             <button type="button" class="mg-x" title="移除" @click="rmBtn(i)">✕</button>
           </span>
@@ -1572,6 +1620,16 @@ onBeforeUnmount(() => {
   color: #d4d4d8;
   font-size: 12px;
   font-family: var(--font-mono), ui-monospace, monospace;
+  touch-action: none; /* 拖拽调序：起点在 chip 上的触摸不滚页面 */
+  cursor: grab;
+}
+.mg-chip:active {
+  cursor: grabbing;
+}
+/* 拖拽中的 chip：半透明 + 放手让 elementFromPoint 穿过自己命中落点 */
+.mg-drag {
+  opacity: 0.45;
+  pointer-events: none;
 }
 .mg-x {
   display: inline-flex;
