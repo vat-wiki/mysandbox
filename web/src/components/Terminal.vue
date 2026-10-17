@@ -300,8 +300,10 @@ function reconnect() {
 }
 defineExpose({ kill, reconnect, screenHash })
 
-// 页面回到前台/窗口重新聚焦时，意外断线的终端立即自愈。离开期间浏览器、系统休眠或
-// 网络切换可能已把 WebSocket 关掉；用户切回来就是要看，不该再等一次手动点击。
+// 页面回到前台/窗口重新聚焦/网络恢复/任意用户交互时，意外断线的终端立即自愈。离开期间
+// 浏览器、系统休眠或网络切换可能已把 WebSocket 关掉；用户切回来就是要看，不该再等一次
+// 手动点击。有些回前台路径 visibilitychange/focus 都不触发（手机息屏唤醒、页面一直
+// visible 只是断网恢复），所以交互事件也兜底——lost 状态下任何点击/按键即重连。
 function recoverOnReturn() {
   if (!document.hidden && connState.value === 'lost') reconnect()
 }
@@ -1176,6 +1178,11 @@ onMounted(async () => {
   if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) setupTouchScroll()
   document.addEventListener('visibilitychange', recoverOnReturn)
   window.addEventListener('focus', recoverOnReturn)
+  window.addEventListener('online', recoverOnReturn)
+  // 交互兜底重连：capture + passive，正常态进来第一个 if 就返回，零成本。
+  // pointerdown 覆盖触摸与鼠标（触屏浏览器均派发），keydown 覆盖外接键盘。
+  for (const t of ['pointerdown', 'keydown'] as const)
+    document.addEventListener(t, recoverOnReturn, { capture: true, passive: true })
 })
 
 // 路径链接 tooltip：挂在 term.element 内的动态 DOM（带 xterm-hover class——xterm 的
@@ -1207,6 +1214,9 @@ onBeforeUnmount(() => {
   if (hbTimer) clearInterval(hbTimer)
   document.removeEventListener('visibilitychange', recoverOnReturn)
   window.removeEventListener('focus', recoverOnReturn)
+  window.removeEventListener('online', recoverOnReturn)
+  for (const t of ['pointerdown', 'keydown'] as const)
+    document.removeEventListener(t, recoverOnReturn, { capture: true })
   stopRepeat() // 长按连发的定时器不随组件卸载自动消失
   touchCleanup?.()
   vvCleanup?.()
