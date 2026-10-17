@@ -12,6 +12,7 @@ export type PoolAct =
   | { kind: 'paste' }
   | { kind: 'copy' }
   | { kind: 'ctrl' }
+  | { kind: 'alt' }
   | { kind: 'font'; delta: number }
 
 export interface PoolEntry {
@@ -39,7 +40,8 @@ export const KEY_POOL: Record<string, PoolEntry> = {
   bottom: { label: '底', title: '滚回最新输出（只滚本地回滚区）', act: { kind: 'scrollEnd', top: false } },
   paste: { label: '粘贴', title: '粘贴剪贴板内容', act: { kind: 'paste' } },
   copy: { label: '复制', title: '复制选中内容', act: { kind: 'copy' } },
-  ctrl: { label: 'Ctrl', title: 'Ctrl 复合键面板（C/V/L/R/U/W/A/E/Z）', act: { kind: 'ctrl' } },
+  ctrl: { label: 'Ctrl', title: 'Ctrl 粘滞修饰（Termux 式）：点亮后下一个按键带 Ctrl 发出（^A / ^← 等），用掉即灭', act: { kind: 'ctrl' } },
+  alt: { label: 'Alt', title: 'Alt 粘滞修饰（Termux 式）：点亮后下一个按键带 Alt 前缀发出（M-a / M-← 等），用掉即灭', act: { kind: 'alt' } },
   fontp: { label: 'A+', title: '增大字号', act: { kind: 'font', delta: 1 } },
   fontm: { label: 'A−', title: '减小字号', act: { kind: 'font', delta: -1 } },
 }
@@ -53,11 +55,10 @@ export type ToolBtn =
 const TOOLBAR_KEY = 'mysandbox:term-toolbar-v2'
 export const TOOLBAR_MAX = 24
 
-// 预置布局参考 Termux 默认 extra-keys 两行（各 7 键）：第一行 ESC / - HOME UP END PGUP，
-// 第二行 TAB CTRL ALT LEFT DOWN RIGHT PGDN（ALT 是粘滞键，暂无粘滞基建未收录，行尾补 ⏎），
-// 另补 Shift+Tab（切 agent 权限模式）。前端 7 列 grid，默认布局逐行与 Termux 对齐。
+// 预置布局 = Termux 默认 extra-keys 两行（各 7 键）逐位对齐：第一行 ESC / - HOME UP END PGUP，
+// 第二行 TAB CTRL ALT LEFT DOWN RIGHT PGDN（Ctrl/Alt 都是粘滞修饰键，交互见 Terminal.vue）。
+// 另补 Shift+Tab（切 agent 权限模式）与 ⏎（系统键盘收起时也能确认）。
 const DEFAULT_BTNS: ToolBtn[] = [
-  // 第一行（Termux row 1）
   { t: 'key', id: 'esc' },
   { t: 'key', id: 'slash' },
   { t: 'key', id: 'dash' },
@@ -65,15 +66,14 @@ const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'up' },
   { t: 'key', id: 'endk' },
   { t: 'key', id: 'pgup' },
-  // 第二行（Termux row 2，ALT 位空缺，行尾补 ⏎）
   { t: 'key', id: 'tab' },
   { t: 'key', id: 'ctrl' },
+  { t: 'key', id: 'alt' },
   { t: 'key', id: 'left' },
   { t: 'key', id: 'down' },
   { t: 'key', id: 'right' },
   { t: 'key', id: 'pgdn' },
   { t: 'key', id: 'enter' },
-  // 第三行起：本场景补充
   { t: 'key', id: 'stab' },
 ]
 

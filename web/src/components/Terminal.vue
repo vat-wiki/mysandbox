@@ -546,38 +546,35 @@ function toolScrollEnd(top: boolean) {
 function sendRaw(s: string) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(s))
 }
-// Ctrl 复合键面板：点副行 Ctrl 弹出常用组合，点组合即发送并收起——一次交互完成复合键，
-// 比粘滞两段式（点亮→切软键盘按字母）少一步也不用唤键盘。C/V 双语义接管剪贴板：
-// 有选区时 C=复制选中、无选区才发 ^C；V=粘贴（走 toolPaste 的 clipboard/兜底链路）。
-const ctrlOpen = ref(false)
-interface CtrlCombo {
-  k: string
-  ch: string
-  hint: string
-  paste?: boolean
+// Alt / Ctrl 粘滞修饰（Termux extra-keys 同款交互）：点亮后下一个按键带修饰发出，
+// 用掉即灭；可叠加（Ctrl+Alt 都点亮再按字母 = C-M-x）。Ctrl 的改写只对可编码形状生效
+// （单字符 @A-Z[\]^_ → 控制字符、CSI 导航键 → ;5 修饰参数），改不动的原样发出；
+// Alt 恒为 ESC 前缀。软键盘敲的单字符在 attachCustomKeyEventHandler 里接管（见下），
+// 工具条自身按键走 sendToolSeq / tbDown。
+const altSticky = ref(false)
+const ctrlSticky = ref(false)
+// Ctrl 修饰的序列改写：返回 null = 该形状没有 Ctrl 编码。
+function ctrlify(s: string): string | null {
+  if (s.length === 1) {
+    const code = s.toUpperCase().charCodeAt(0)
+    if (code < 64 || code > 95) return null
+    return String.fromCharCode(code & 0x1f)
+  }
+  const m = /^\x1b\[(\d*)([A-H~])$/.exec(s)
+  if (m) return `\x1b[${m[1] || '1'};5${m[2]}`
+  return null
 }
-const ctrlCombos: CtrlCombo[] = [
-  { k: 'C', ch: '\x03', hint: '中断当前命令（有选区时改为复制选中）' },
-  { k: 'V', ch: '', hint: '粘贴剪贴板', paste: true },
-  { k: 'L', ch: '\x0c', hint: '清屏' },
-  { k: 'R', ch: '\x12', hint: '反向搜索历史命令' },
-  { k: 'U', ch: '\x15', hint: '删到行首' },
-  { k: 'W', ch: '\x17', hint: '删前一个词' },
-  { k: 'A', ch: '\x01', hint: '光标跳行首' },
-  { k: 'E', ch: '\x05', hint: '光标跳行尾' },
-  { k: 'Z', ch: '\x1a', hint: '挂起当前任务' },
-]
-function ctrlCombo(c: CtrlCombo) {
-  ctrlOpen.value = false
-  if (c.paste) {
-    void toolPaste()
-    return
+// 工具条按键统一出口（seq 键 / 自定义键 / 粘滞后的单键）：消费粘滞态后发送。
+function sendToolSeq(seq: string) {
+  if (ctrlSticky.value) {
+    ctrlSticky.value = false
+    seq = ctrlify(seq) ?? seq
   }
-  if (c.k === 'C' && term?.hasSelection()) {
-    void copyText(term.getSelection()).then(() => term?.clearSelection())
-    return
+  if (altSticky.value) {
+    altSticky.value = false
+    seq = '\x1b' + seq
   }
-  sendRaw(c.ch)
+  sendRaw(seq)
 }
 // ⋯ 打开工具条设置弹窗（ToolbarSettingsDialog）：按钮编排收进独立区域。
 const settingsOpen = ref(false)
@@ -614,8 +611,8 @@ function runKeyBtn(id: string) {
   const a = e.act
   switch (a.kind) {
     case 'seq':
-      sendRaw(a.seq)
-      if (id === 'enter') emit('enter') // 回车与短语一致走 cwd 跟随
+      sendToolSeq(a.seq)
+      if (id === 'enter' && !ctrlSticky.value && !altSticky.value) emit('enter') // 回车与短语一致走 cwd 跟随
       break
     case 'repeat':
       break // 长按连发在 tbDown 里处理
@@ -632,7 +629,10 @@ function runKeyBtn(id: string) {
       if (term?.hasSelection()) void copyText(term.getSelection()).then(() => term?.clearSelection())
       break
     case 'ctrl':
-      ctrlOpen.value = !ctrlOpen.value
+      ctrlSticky.value = !ctrlSticky.value
+      break
+    case 'alt':
+      altSticky.value = !altSticky.value
       break
     case 'font':
       stepFontSize(a.delta)
@@ -644,6 +644,10 @@ function tbDown(b: ToolBtn, ev: PointerEvent) {
   const a = KEY_POOL[b.id]?.act
   if (a?.kind === 'repeat') {
     ev.preventDefault() // 长按期间不转移焦点（软键盘不收起）
+    if (ctrlSticky.value || altSticky.value) {
+      sendToolSeq(a.seq) // 粘滞态：首键带修饰发出并消费粘滞（修饰组合没有连发需求）
+      return
+    }
     keyRepeat(a.seq)
   }
 }
@@ -1051,6 +1055,17 @@ onMounted(async () => {
       closeSearch()
       return false
     }
+    // 粘滞修饰（工具条 Ctrl/Alt 点亮态）+ 软键盘敲的单字符：在这里接管发送——Ctrl 字母
+    // → 控制字符、Alt → ESC 前缀（sendToolSeq 消费粘滞），return false 不让 xterm 再
+    // 处理一遍（否则字母会原样落屏）。带物理修饰的组合不拦，照常透传。
+    if (
+      e.type === 'keydown' && (ctrlSticky.value || altSticky.value) &&
+      e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey
+    ) {
+      e.preventDefault()
+      sendToolSeq(e.key)
+      return false
+    }
     if (!(e.ctrlKey && !e.altKey && !e.metaKey)) return true
     if (e.shiftKey && e.code === 'KeyC') {
       if (e.type === 'keydown' && term!.hasSelection()) void copyText(term!.getSelection())
@@ -1321,21 +1336,18 @@ onBeforeUnmount(() => {
     </div>
     <!-- 触屏工具条（手机 only，agent 遥控布局）。
          按钮全可配置（⋯ 设置弹窗编排，存 lib/termToolbar.ts 模块级状态 + localStorage），7 列 grid 自然换行（对齐 Termux 一行 7 键）——
-         「哪个键高频」由使用者编排，代码不硬编码。预置 Termux 风格布局（ESC / - HOME ↑ END 上页 /
-         Tab Ctrl ← ↓ → 下页 / ⏎ ⇥）：Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
-         Ctrl 复合键面板 / 快捷短语（一键文本+回车）。Ctrl 面板点组合即发送并收起，C/V 双语义
-         接管剪贴板（有选区 C=复制）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
+         「哪个键高频」由使用者编排，代码不硬编码。预置布局 = Termux 默认 extra-keys 两行
+         （ESC / - HOME ↑ END 上页 / Tab Ctrl Alt ← ↓ → 下页）+ ⏎ ⇥。Ctrl/Alt 是粘滞修饰
+         （点亮→下一个键带修饰发出→用掉即灭，可叠加 C-M-x；软键盘单字符在
+         attachCustomKeyEventHandler 接管）。Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
+         快捷短语（一键文本+回车）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。桌面不渲染。 -->
     <div v-if="isPhone" class="shrink-0 select-none border-t border-zinc-800 pt-1 md:hidden">
-      <!-- Ctrl 复合键面板：点 Ctrl 弹出、点组合发送并收起。临时行，压在按钮区上方。 -->
-      <div v-if="ctrlOpen" class="mb-1 flex items-center gap-1 overflow-x-auto scroll-thin rounded-md border border-amber-500/40 bg-amber-500/5 p-1">
-        <button v-for="c in ctrlCombos" :key="c.k" type="button" class="tb" :title="`Ctrl+${c.k}：${c.hint}`" @click="ctrlCombo(c)">{{ c.k }}</button>
-      </div>
       <div class="grid grid-cols-7 gap-1">
         <template v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : `s:${b.text}:${i}`">
           <button
             v-if="b.t === 'key'"
-            type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': b.id === 'ctrl' && ctrlOpen }"
+            type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': (b.id === 'ctrl' && ctrlSticky) || (b.id === 'alt' && altSticky) }"
             :disabled="b.id === 'copy' && !termHasSel"
             :title="KEY_POOL[b.id]?.title"
             @pointerdown="tbDown(b, $event)" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
@@ -1344,7 +1356,7 @@ onBeforeUnmount(() => {
           <button
             v-else-if="b.t === 'custom'"
             type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送自定义按键「${b.label}」`"
-            @click="sendRaw(b.seq)"
+            @click="sendToolSeq(b.seq)"
           >{{ b.label }}</button>
           <button
             v-else
