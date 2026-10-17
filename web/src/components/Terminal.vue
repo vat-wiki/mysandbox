@@ -298,6 +298,12 @@ function reconnect() {
 }
 defineExpose({ kill, reconnect, screenHash })
 
+// 页面回到前台/窗口重新聚焦时，意外断线的终端立即自愈。离开期间浏览器、系统休眠或
+// 网络切换可能已把 WebSocket 关掉；用户切回来就是要看，不该再等一次手动点击。
+function recoverOnReturn() {
+  if (!document.hidden && connState.value === 'lost') reconnect()
+}
+
 const el = ref<HTMLDivElement | null>(null)
 let term: XTerm | null = null
 // 程序性聚焦抑制标志：refit 的 term.focus() 是「切 tab 恢复/窗口 resize」的附带动作，
@@ -530,11 +536,8 @@ function syncSel() {
 function toolKey(ch: string) {
   sendRaw(ch)
 }
-// 工具条只滚本地 xterm scrollback，不向 PTY 发 PageUp/PageDown：
+// 工具条滚动只动本地 xterm scrollback，不向 PTY 发 PageUp/PageDown：
 // 这样翻历史时不会影响正在运行的 TUI/交互程序，也不会被识别成按键。
-function toolScroll(pages: number) {
-  term?.scrollPages(pages)
-}
 function toolScrollEnd(top: boolean) {
   if (top) term?.scrollToTop()
   else term?.scrollToBottom()
@@ -542,6 +545,79 @@ function toolScrollEnd(top: boolean) {
 // 直发 stdin（与 onData 同通道）：工具条按键/粘贴共用。
 function sendRaw(s: string) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(s))
+}
+// 粘滞 Ctrl 的字符映射：字母 → 0x01–0x1a；符号补 @ [ \ ] ^ _ ? 空格（C-@ 与
+// quoted-insert 等组合的常用面）。不可映射的字符返回 null（原样放行）。
+const CTRL_SYM: Record<string, string> = {
+  '@': '\x00', ' ': '\x00', '[': '\x1b', '\\': '\x1c', ']': '\x1d', '^': '\x1e', '_': '\x1f', '?': '\x7f',
+}
+function ctrlChar(ch: string): string | null {
+  const up = ch.toUpperCase()
+  if (up >= 'A' && up <= 'Z') return String.fromCharCode(up.charCodeAt(0) - 64)
+  return CTRL_SYM[ch] ?? null
+}
+// 粘滞 Ctrl 状态：点亮后软键盘来的下一个单字符组合成控制码发送（见 onData 内消费点），
+// 发送即熄灭——状态不跨输入残留，与 Termius 等移动终端的粘滞修饰键同语义。
+const stickyCtrl = ref(false)
+// 「⋯」更多面板（字号/滚顶底/快捷短语管理）：默认收起。
+const moreOpen = ref(false)
+
+// 工具条方向键长按连发：pointerdown 即发一次，400ms 后起 80ms 间隔连发；抬起/取消/
+// 移出（touch 有隐式指针捕获，pointerup 恒能到达）停止。只用于 ↑↓←→ 这类可重复键。
+let repDelay = 0
+let repIv = 0
+function keyRepeat(ch: string) {
+  sendRaw(ch)
+  stopRepeat()
+  repDelay = window.setTimeout(() => {
+    repIv = window.setInterval(() => sendRaw(ch), 80)
+  }, 400)
+}
+function stopRepeat() {
+  if (repDelay) clearTimeout(repDelay)
+  if (repIv) clearInterval(repIv)
+  repDelay = 0
+  repIv = 0
+}
+
+// 快捷短语：一键发送文本+回车（挂 agent 时「继续」补跑、确认类问答秒回）。存 localStorage
+// （同 tab 布局约定：查看偏好不进 sidecar），跨 pane/刷新共享一份。
+const SNIPPETS_KEY = 'mysandbox:term-quick-snippets'
+const SNIPPETS_MAX = 8
+function loadSnippets(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(SNIPPETS_KEY) ?? 'null')
+    if (Array.isArray(raw)) {
+      return raw.filter((s): s is string => typeof s === 'string' && s.trim() !== '').slice(0, SNIPPETS_MAX)
+    }
+  } catch {
+    /* 坏数据落默认 */
+  }
+  return ['继续']
+}
+const snippets = ref<string[]>(loadSnippets())
+const snippetDraft = ref('')
+function saveSnippets() {
+  try {
+    localStorage.setItem(SNIPPETS_KEY, JSON.stringify(snippets.value))
+  } catch {
+    /* 不可用就只本次生效 */
+  }
+}
+function addSnippet() {
+  const t = snippetDraft.value.trim()
+  if (!t || snippets.value.includes(t) || snippets.value.length >= SNIPPETS_MAX) return
+  snippets.value.push(t)
+  saveSnippets()
+  snippetDraft.value = ''
+}
+function rmSnippet(i: number) {
+  snippets.value.splice(i, 1)
+  saveSnippets()
+}
+function sendSnippet(s: string) {
+  sendRaw(s + '\r')
+  emit('enter') // 短语多带命令语义，与工具条回车一致走 cwd 跟随
 }
 
 // —— 软键盘自适应（仅手机）——
@@ -1042,6 +1118,16 @@ onMounted(async () => {
   connectWs()
 
   term.onData((data) => {
+    // 粘滞 Ctrl 消费点：点亮后软键盘来的下一个单字符映射成控制码发送、随即熄灭；
+    // 不可映射（多字符序列/符号表外）原样放行、同样熄灭——粘滞状态绝不跨输入残留。
+    if (stickyCtrl.value) {
+      stickyCtrl.value = false
+      const m = data.length === 1 ? ctrlChar(data) : null
+      if (m) {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(m))
+        return
+      }
+    }
     // 回车即提交命令：上抛给文件面板做即时的 cwd 跟随检查（cd 提交后壳立即改目录，
     // 250ms 后查基本必中）。粘贴多行也含 \r，多抛几次无妨（跟随端去重）。
     if (data.includes('\r')) emit('enter')
@@ -1072,6 +1158,8 @@ onMounted(async () => {
   if (isPhone.value) setupViewportWatch()
   // 触屏滚动接管：所有 touch 设备（含平板/触屏本）都挂，鼠标环境零成本（listener 不会被触发）。
   if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) setupTouchScroll()
+  document.addEventListener('visibilitychange', recoverOnReturn)
+  window.addEventListener('focus', recoverOnReturn)
 })
 
 // 路径链接 tooltip：挂在 term.element 内的动态 DOM（带 xterm-hover class——xterm 的
@@ -1101,6 +1189,9 @@ function hideLinkTip() {
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
   if (hbTimer) clearInterval(hbTimer)
+  document.removeEventListener('visibilitychange', recoverOnReturn)
+  window.removeEventListener('focus', recoverOnReturn)
+  stopRepeat() // 长按连发的定时器不随组件卸载自动消失
   touchCleanup?.()
   vvCleanup?.()
   resizeObs?.disconnect()
@@ -1201,24 +1292,65 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
-    <!-- 触屏工具条（手机 only）：复制/粘贴/Esc/Tab/方向/Ctrl 粘滞/字号。
-         桌面（≥768px 或鼠标环境）不渲染——右键与键盘快捷键已覆盖。 -->
-    <div v-if="isPhone" class="flex shrink-0 items-center gap-1 overflow-x-auto scroll-thin border-t border-zinc-800 pt-1 md:hidden">
-      <button type="button" class="tb" title="粘贴剪贴板内容" @click="toolPaste">粘贴</button>
-      <button type="button" class="tb" :disabled="!termHasSel" title="复制选中内容" @click="toolCopy">复制</button>
-      <button type="button" class="tb" title="发送 Ctrl+C（中断当前命令）" @click="toolKey('\x03')">Ctrl+C</button>
-      <button type="button" class="tb" title="发送 Esc" @click="toolKey('\x1b')">Esc</button>
-      <button type="button" class="tb" title="发送 Tab" @click="toolKey('\t')">Tab</button>
-      <button type="button" class="tb" title="上翻一页（只滚本地回滚区）" @click="toolScroll(-1)">上页</button>
-      <button type="button" class="tb" title="下翻一页（只滚本地回滚区）" @click="toolScroll(1)">下页</button>
-      <button type="button" class="tb" title="滚到历史顶部" @click="toolScrollEnd(true)">顶</button>
-      <button type="button" class="tb" title="滚回最新输出" @click="toolScrollEnd(false)">底</button>
-      <button type="button" class="tb" title="上方向键" @click="toolKey('\x1b[A')">↑</button>
-      <button type="button" class="tb" title="下方向键" @click="toolKey('\x1b[B')">↓</button>
-      <button type="button" class="tb" title="左方向键" @click="toolKey('\x1b[D')">←</button>
-      <button type="button" class="tb" title="右方向键" @click="toolKey('\x1b[C')">→</button>
-      <button type="button" class="tb" title="减小字号" @click="stepFontSize(-1)">A−</button>
-      <button type="button" class="tb" title="增大字号" @click="stepFontSize(1)">A+</button>
+    <!-- 触屏工具条（手机 only，两行 agent 遥控布局）。
+         主行 = agent 交互高频键：Esc 中断 / Shift+Tab 切权限模式 / ↑↓ 菜单与历史输入
+         （长按连发）/ 回车——不唤起软键盘即可完成全部操作；均分宽度的固定行，不滚动。
+         副行 = ←→ 光标 / 剪贴板 / Tab / 粘滞 Ctrl / Ctrl+C / 快捷短语（可横滚）+ 固定
+         右侧的「⋯」开更多面板（字号 / 滚顶底 / 短语管理）。
+         滑屏滚动的是本地回滚缓冲，方向键是发给程序的输入（agent 菜单/全屏 TUI 唯一导航
+         方式）——两者语义不同，都要保留。桌面（≥768px 或鼠标环境）不渲染。 -->
+    <div v-if="isPhone" class="shrink-0 select-none border-t border-zinc-800 pt-1 md:hidden">
+      <div class="flex items-center gap-1">
+        <button type="button" class="tb tb-esc flex-1" title="发送 Esc（中断 agent / 关闭菜单）" @click="toolKey('\x1b')">Esc</button>
+        <button type="button" class="tb flex-1" title="发送 Shift+Tab（切换权限模式）" @click="toolKey('\x1b[Z')">⇥</button>
+        <button
+          type="button" class="tb flex-1" title="上方向键：选菜单项 / 翻输入历史（长按连发）"
+          @pointerdown.prevent="keyRepeat('\x1b[A')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
+        >↑</button>
+        <button
+          type="button" class="tb flex-1" title="下方向键：选菜单项 / 翻输入历史（长按连发）"
+          @pointerdown.prevent="keyRepeat('\x1b[B')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
+        >↓</button>
+        <button type="button" class="tb flex-1" title="发送回车（确认 / 发送）" @click="toolKey('\r'); emit('enter')">⏎</button>
+      </div>
+      <div class="mt-1 flex items-center gap-1">
+        <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-thin">
+          <button type="button" class="tb" title="左方向键（长按连发）" @pointerdown.prevent="keyRepeat('\x1b[D')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent>←</button>
+          <button type="button" class="tb" title="右方向键（长按连发）" @pointerdown.prevent="keyRepeat('\x1b[C')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent>→</button>
+          <button type="button" class="tb" title="粘贴剪贴板内容" @click="toolPaste">粘贴</button>
+          <button type="button" class="tb" :disabled="!termHasSel" title="复制选中内容" @click="toolCopy">复制</button>
+          <button type="button" class="tb" title="发送 Tab（补全 @路径等）" @click="toolKey('\t')">Tab</button>
+          <button
+            type="button" class="tb" :class="{ 'tb-on': stickyCtrl }"
+            title="粘滞 Ctrl：点亮后软键盘的下一个字母与 Ctrl 组合发送（如点亮后按 r = Ctrl+R 翻转录）"
+            @click="stickyCtrl = !stickyCtrl"
+          >Ctrl</button>
+          <button type="button" class="tb" title="发送 Ctrl+C（中断 / 退出）" @click="toolKey('\x03')">^C</button>
+          <button v-for="(s, i) in snippets" :key="i" type="button" class="tb" :title="`发送「${s}」并回车`" @click="sendSnippet(s)">{{ s }}</button>
+        </div>
+        <button type="button" class="tb" :class="{ 'tb-on': moreOpen }" title="更多：字号 / 滚顶底 / 快捷短语管理" @click="moreOpen = !moreOpen">⋯</button>
+      </div>
+      <!-- 更多面板：低频操作 + 快捷短语管理，默认收起。 -->
+      <div v-if="moreOpen" class="mt-1 rounded-md border border-zinc-800 bg-zinc-900/60 p-1.5">
+        <div class="flex flex-wrap items-center gap-1">
+          <button type="button" class="tb" title="减小字号" @click="stepFontSize(-1)">A−</button>
+          <button type="button" class="tb" title="增大字号" @click="stepFontSize(1)">A+</button>
+          <button type="button" class="tb" title="滚到历史顶部（只滚本地回滚区）" @click="toolScrollEnd(true)">顶</button>
+          <button type="button" class="tb" title="滚回最新输出（只滚本地回滚区）" @click="toolScrollEnd(false)">底</button>
+          <span class="mx-1 h-5 w-px shrink-0 bg-zinc-700" />
+          <button v-for="(s, i) in snippets" :key="i" type="button" class="tb" :title="`删除快捷短语「${s}」`" @click="rmSnippet(i)">{{ s }} ✕</button>
+        </div>
+        <div class="mt-1.5 flex items-center gap-1">
+          <input
+            v-model="snippetDraft"
+            class="h-9 min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-100"
+            placeholder="新快捷短语（发送时自动补回车，上限 8 条）…"
+            spellcheck="false"
+            @keydown.enter.prevent="addSnippet"
+          />
+          <button type="button" class="tb tb-on" @click="addSnippet">添加</button>
+        </div>
+      </div>
     </div>
     <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox
          readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
@@ -1251,7 +1383,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style>
-/* 触屏工具条按钮：紧凑但命中区 ≥40px（高度 h-9），等宽字排布稳定。 */
+/* 触屏工具条按钮：紧凑但命中区 ≥40px（高度 h-9），等宽字排布稳定。
+   user-select/callout：长按连发期间不能弹出系统选择/放大镜；touch-action:manipulation
+   消双击缩放延迟（主行固定不滚，无横滚冲突）。 */
 .tb {
   height: 2.25rem;
   min-width: 2.75rem;
@@ -1263,6 +1397,20 @@ onBeforeUnmount(() => {
   color: #d4d4d8;
   font-size: 12px;
   font-family: var(--font-mono), ui-monospace, monospace;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+/* Esc = agent 中断键，视觉加重（红色系），主行 flex-1 拉出大命中面。 */
+.tb-esc {
+  border-color: #7f1d1d;
+  background: #2a1215;
+  color: #fca5a5;
+  font-weight: 600;
+}
+.tb-esc:active {
+  background: #451a1d;
 }
 .tb:active {
   background: #27272a;
