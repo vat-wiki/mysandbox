@@ -523,18 +523,11 @@ function onFallbackPaste(e: ClipboardEvent) {
 function onFallbackInput(e: InputEvent) {
   if (e.inputType === 'insertFromPaste' && pasteText.value) fallbackSend(pasteText.value)
 }
-function toolCopy() {
-  if (!term?.hasSelection()) return
-  void copyText(term.getSelection()).then(() => term?.clearSelection())
-}
-// 选区状态（复制按钮的禁用态用）：term 实例非响应式，选区变化时同步到 ref。
+// 选区状态（候选池「复制」按钮的禁用态用）：term 实例非响应式，选区变化时同步到 ref。
 // onSelectionChange 覆盖拖选/清选；工具条渲染期间手动同步一次。
 const termHasSel = ref(false)
 function syncSel() {
   termHasSel.value = !!term?.hasSelection()
-}
-function toolKey(ch: string) {
-  sendRaw(ch)
 }
 // 工具条滚动只动本地 xterm scrollback，不向 PTY 发 PageUp/PageDown：
 // 这样翻历史时不会影响正在运行的 TUI/交互程序，也不会被识别成按键。
@@ -582,7 +575,7 @@ function ctrlCombo(c: CtrlCombo) {
   }
   sendRaw(c.ch)
 }
-// 「⋯」更多面板（字号/滚顶底/快捷短语管理）：默认收起。
+// 「⋯」管理面板（按钮增删调序 / 候选池 / 快捷短语）：默认收起。
 const moreOpen = ref(false)
 
 // 工具条方向键长按连发：pointerdown 即发一次，400ms 后起 80ms 间隔连发；抬起/取消/
@@ -603,44 +596,171 @@ function stopRepeat() {
   repIv = 0
 }
 
-// 快捷短语：一键发送文本+回车（挂 agent 时「继续」补跑、确认类问答秒回）。存 localStorage
-// （同 tab 布局约定：查看偏好不进 sidecar），跨 pane/刷新共享一份。
-const SNIPPETS_KEY = 'mysandbox:term-quick-snippets'
-const SNIPPETS_MAX = 8
-function loadSnippets(): string[] {
+// —— 触屏工具条按钮（全可配置）——
+// 「哪个键高频」是使用者自己的事，代码不替人猜：两行按钮全部从候选池编排，✕ 移除、
+// 箭头调序、候选池点 + 追加，存 localStorage（同 tab 布局约定：查看偏好不进 sidecar）。
+// 预置一套 agent 布局作起点；首次加载迁移旧版快捷短语键（term-quick-snippets）。
+// Ctrl 复合键面板（上方 ctrlCombos）覆盖全部 Ctrl+字母，与候选池互补。
+type PoolAct =
+  | { kind: 'seq'; seq: string }
+  | { kind: 'repeat'; seq: string }
+  | { kind: 'scroll'; pages: number }
+  | { kind: 'scrollEnd'; top: boolean }
+  | { kind: 'paste' }
+  | { kind: 'copy' }
+  | { kind: 'ctrl' }
+  | { kind: 'font'; delta: number }
+interface PoolEntry {
+  label: string
+  title: string
+  act: PoolAct
+}
+const KEY_POOL: Record<string, PoolEntry> = {
+  esc: { label: 'Esc', title: '发送 Esc（中断 agent / 关闭菜单）', act: { kind: 'seq', seq: '\x1b' } },
+  stab: { label: '⇥', title: '发送 Shift+Tab（切换权限模式）', act: { kind: 'seq', seq: '\x1b[Z' } },
+  up: { label: '↑', title: '上方向键：选菜单项 / 翻输入历史（长按连发）', act: { kind: 'repeat', seq: '\x1b[A' } },
+  down: { label: '↓', title: '下方向键：选菜单项 / 翻输入历史（长按连发）', act: { kind: 'repeat', seq: '\x1b[B' } },
+  left: { label: '←', title: '左方向键（长按连发）', act: { kind: 'repeat', seq: '\x1b[D' } },
+  right: { label: '→', title: '右方向键（长按连发）', act: { kind: 'repeat', seq: '\x1b[C' } },
+  enter: { label: '⏎', title: '发送回车（确认 / 发送）', act: { kind: 'seq', seq: '\r' } },
+  tab: { label: 'Tab', title: '发送 Tab（补全）', act: { kind: 'seq', seq: '\t' } },
+  home: { label: 'Home', title: '发送 Home（跳到行首）', act: { kind: 'seq', seq: '\x1b[H' } },
+  endk: { label: 'End', title: '发送 End（跳到行尾）', act: { kind: 'seq', seq: '\x1b[F' } },
+  pgup: { label: '上页', title: '上翻一页（只滚本地回滚区，不进 PTY）', act: { kind: 'scroll', pages: -1 } },
+  pgdn: { label: '下页', title: '下翻一页（只滚本地回滚区，不进 PTY）', act: { kind: 'scroll', pages: 1 } },
+  top: { label: '顶', title: '滚到历史顶部（只滚本地回滚区）', act: { kind: 'scrollEnd', top: true } },
+  bottom: { label: '底', title: '滚回最新输出（只滚本地回滚区）', act: { kind: 'scrollEnd', top: false } },
+  paste: { label: '粘贴', title: '粘贴剪贴板内容', act: { kind: 'paste' } },
+  copy: { label: '复制', title: '复制选中内容', act: { kind: 'copy' } },
+  ctrl: { label: 'Ctrl', title: 'Ctrl 复合键面板（C/V/L/R/U/W/A/E/Z）', act: { kind: 'ctrl' } },
+  fontp: { label: 'A+', title: '增大字号', act: { kind: 'font', delta: 1 } },
+  fontm: { label: 'A−', title: '减小字号', act: { kind: 'font', delta: -1 } },
+}
+type ToolBtn = { t: 'key'; id: string } | { t: 'snippet'; text: string }
+const TOOLBAR_KEY = 'mysandbox:term-toolbar-v1'
+const TOOLBAR_MAX = 24
+const DEFAULT_BTNS: ToolBtn[] = [
+  { t: 'key', id: 'esc' },
+  { t: 'key', id: 'stab' },
+  { t: 'key', id: 'up' },
+  { t: 'key', id: 'down' },
+  { t: 'key', id: 'enter' },
+  { t: 'key', id: 'ctrl' },
+  { t: 'key', id: 'tab' },
+  { t: 'key', id: 'pgup' },
+  { t: 'key', id: 'pgdn' },
+]
+function loadToolButtons(): ToolBtn[] {
   try {
-    const raw: unknown = JSON.parse(localStorage.getItem(SNIPPETS_KEY) ?? 'null')
+    const raw: unknown = JSON.parse(localStorage.getItem(TOOLBAR_KEY) ?? 'null')
     if (Array.isArray(raw)) {
-      return raw.filter((s): s is string => typeof s === 'string' && s.trim() !== '').slice(0, SNIPPETS_MAX)
+      const out: ToolBtn[] = []
+      const seen = new Set<string>()
+      for (const b of raw) {
+        if (b?.t === 'key' && KEY_POOL[b.id] && !seen.has('k:' + b.id)) {
+          out.push({ t: 'key', id: b.id })
+          seen.add('k:' + b.id)
+        } else if (b?.t === 'snippet' && typeof b.text === 'string' && b.text.trim() && !seen.has('s:' + b.text)) {
+          out.push({ t: 'snippet', text: b.text })
+          seen.add('s:' + b.text)
+        }
+      }
+      if (out.length) return out.slice(0, TOOLBAR_MAX)
     }
   } catch {
     /* 坏数据落默认 */
   }
-  return ['继续']
-}
-const snippets = ref<string[]>(loadSnippets())
-const snippetDraft = ref('')
-function saveSnippets() {
+  // 首次：默认布局 + 迁移旧版快捷短语（旧默认「继续」也已含在迁移里）
   try {
-    localStorage.setItem(SNIPPETS_KEY, JSON.stringify(snippets.value))
+    const raw: unknown = JSON.parse(localStorage.getItem('mysandbox:term-quick-snippets') ?? 'null')
+    if (Array.isArray(raw)) {
+      for (const s of raw) {
+        if (typeof s === 'string' && s.trim()) DEFAULT_BTNS.push({ t: 'snippet', text: s })
+      }
+    }
+  } catch {
+    /* 迁移失败不影响默认布局 */
+  }
+  if (!DEFAULT_BTNS.some((b) => b.t === 'snippet')) DEFAULT_BTNS.push({ t: 'snippet', text: '继续' })
+  return DEFAULT_BTNS
+}
+const toolButtons = ref<ToolBtn[]>(loadToolButtons())
+const snippetDraft = ref('')
+function saveToolButtons() {
+  try {
+    localStorage.setItem(TOOLBAR_KEY, JSON.stringify(toolButtons.value))
   } catch {
     /* 不可用就只本次生效 */
   }
 }
+function rmBtn(i: number) {
+  toolButtons.value.splice(i, 1)
+  saveToolButtons()
+}
+function moveBtn(i: number, dir: -1 | 1) {
+  const j = i + dir
+  if (j < 0 || j >= toolButtons.value.length) return
+  const [b] = toolButtons.value.splice(i, 1)
+  toolButtons.value.splice(j, 0, b)
+  saveToolButtons()
+}
+function addKeyBtn(id: string) {
+  if (!KEY_POOL[id] || toolButtons.value.length >= TOOLBAR_MAX) return
+  if (toolButtons.value.some((b) => b.t === 'key' && b.id === id)) return
+  toolButtons.value.push({ t: 'key', id })
+  saveToolButtons()
+}
 function addSnippet() {
   const t = snippetDraft.value.trim()
-  if (!t || snippets.value.includes(t) || snippets.value.length >= SNIPPETS_MAX) return
-  snippets.value.push(t)
-  saveSnippets()
+  if (!t || toolButtons.value.length >= TOOLBAR_MAX) return
+  if (toolButtons.value.some((b) => b.t === 'snippet' && b.text === t)) return
+  toolButtons.value.push({ t: 'snippet', text: t })
+  saveToolButtons()
   snippetDraft.value = ''
-}
-function rmSnippet(i: number) {
-  snippets.value.splice(i, 1)
-  saveSnippets()
 }
 function sendSnippet(s: string) {
   sendRaw(s + '\r')
   emit('enter') // 短语多带命令语义，与工具条回车一致走 cwd 跟随
+}
+// 单个按钮的点击/按住分派：seq 直发；连发键走 pointerdown（click 忽略防双发）。
+function runKeyBtn(id: string) {
+  const e = KEY_POOL[id]
+  if (!e) return
+  const a = e.act
+  switch (a.kind) {
+    case 'seq':
+      sendRaw(a.seq)
+      if (id === 'enter') emit('enter') // 回车与短语一致走 cwd 跟随
+      break
+    case 'repeat':
+      break // 长按连发在 tbDown 里处理
+    case 'scroll':
+      toolScroll(a.pages)
+      break
+    case 'scrollEnd':
+      toolScrollEnd(a.top)
+      break
+    case 'paste':
+      void toolPaste()
+      break
+    case 'copy':
+      if (term?.hasSelection()) void copyText(term.getSelection()).then(() => term?.clearSelection())
+      break
+    case 'ctrl':
+      ctrlOpen.value = !ctrlOpen.value
+      break
+    case 'font':
+      stepFontSize(a.delta)
+      break
+  }
+}
+function tbDown(b: ToolBtn, ev: PointerEvent) {
+  if (b.t !== 'key') return
+  const a = KEY_POOL[b.id]?.act
+  if (a?.kind === 'repeat') {
+    ev.preventDefault() // 长按期间不转移焦点（软键盘不收起）
+    keyRepeat(a.seq)
+  }
 }
 
 // —— 软键盘自适应（仅手机）——
@@ -1306,60 +1426,62 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <!-- 触屏工具条（手机 only，agent 遥控布局）。
-         主行 = agent 交互高频键：Esc 中断 / Shift+Tab 切权限模式 / ↑↓ 菜单与历史输入
-         （长按连发）/ 回车——不唤起软键盘即可完成全部操作；均分宽度的固定行，不滚动。
-         副行 = Ctrl（弹出复合键面板）/ Tab / 翻页 / 快捷短语（可横滚）+ 固定右侧的
-         「⋯」开更多面板（字号 / 滚顶底 / 短语管理）。←→ 光标不设（点输入位置即可）。
-         Ctrl 面板点组合即发送并收起，C/V 双语义接管剪贴板（有选区 C=复制），剪贴板
-         不再单占按钮。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入（agent 菜单/
-         全屏 TUI 唯一导航方式）——两者语义不同。桌面（≥768px 或鼠标环境）不渲染。 -->
+         按钮全可配置（⋯ 管理面板增删调序，localStorage 记忆），5 列 grid 自然换行——
+         「哪个键高频」由使用者编排，代码不硬编码。预置 agent 布局：Esc 中断（红色加重）/
+         Shift+Tab 切权限模式 / ↑↓ 菜单与输入历史（长按连发）/ 回车 / Ctrl 复合键面板 /
+         Tab / 翻页 / 快捷短语（一键文本+回车）。Ctrl 面板点组合即发送并收起，C/V 双语义
+         接管剪贴板（有选区 C=复制）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
+         （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。桌面不渲染。 -->
     <div v-if="isPhone" class="shrink-0 select-none border-t border-zinc-800 pt-1 md:hidden">
-      <!-- Ctrl 复合键面板：点 Ctrl 弹出、点组合发送并收起。临时行，压在主行上方。 -->
+      <!-- Ctrl 复合键面板：点 Ctrl 弹出、点组合发送并收起。临时行，压在按钮区上方。 -->
       <div v-if="ctrlOpen" class="mb-1 flex items-center gap-1 overflow-x-auto scroll-thin rounded-md border border-amber-500/40 bg-amber-500/5 p-1">
         <button v-for="c in ctrlCombos" :key="c.k" type="button" class="tb" :title="`Ctrl+${c.k}：${c.hint}`" @click="ctrlCombo(c)">{{ c.k }}</button>
       </div>
-      <div class="flex items-center gap-1">
-        <button type="button" class="tb tb-esc flex-1" title="发送 Esc（中断 agent / 关闭菜单）" @click="toolKey('\x1b')">Esc</button>
-        <button type="button" class="tb flex-1" title="发送 Shift+Tab（切换权限模式）" @click="toolKey('\x1b[Z')">⇥</button>
-        <button
-          type="button" class="tb flex-1" title="上方向键：选菜单项 / 翻输入历史（长按连发）"
-          @pointerdown.prevent="keyRepeat('\x1b[A')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
-        >↑</button>
-        <button
-          type="button" class="tb flex-1" title="下方向键：选菜单项 / 翻输入历史（长按连发）"
-          @pointerdown.prevent="keyRepeat('\x1b[B')" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
-        >↓</button>
-        <button type="button" class="tb flex-1" title="发送回车（确认 / 发送）" @click="toolKey('\r'); emit('enter')">⏎</button>
-      </div>
-      <div class="mt-1 flex items-center gap-1">
-        <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-thin">
+      <div class="grid grid-cols-5 gap-1">
+        <template v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `k:${b.id}` : `s:${b.text}:${i}`">
           <button
-            type="button" class="tb" :class="{ 'tb-on': ctrlOpen }" :aria-expanded="ctrlOpen"
-            title="Ctrl 复合键：弹出常用组合（C 中断/复制、V 粘贴、L 清屏、R 搜历史…）"
-            @click="ctrlOpen = !ctrlOpen"
-          >Ctrl</button>
-          <button type="button" class="tb" title="发送 Tab（补全 @路径等）" @click="toolKey('\t')">Tab</button>
-          <button type="button" class="tb" title="上翻一页（只滚本地回滚区）" @click="toolScroll(-1)">上页</button>
-          <button type="button" class="tb" title="下翻一页（只滚本地回滚区）" @click="toolScroll(1)">下页</button>
-          <button v-for="(s, i) in snippets" :key="i" type="button" class="tb" :title="`发送「${s}」并回车`" @click="sendSnippet(s)">{{ s }}</button>
-        </div>
-        <button type="button" class="tb" :class="{ 'tb-on': moreOpen }" title="更多：字号 / 滚顶底 / 快捷短语管理" @click="moreOpen = !moreOpen">⋯</button>
+            v-if="b.t === 'key'"
+            type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': b.id === 'ctrl' && ctrlOpen }"
+            :disabled="b.id === 'copy' && !termHasSel"
+            :title="KEY_POOL[b.id]?.title"
+            @pointerdown="tbDown(b, $event)" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
+            @click="runKeyBtn(b.id)"
+          >{{ KEY_POOL[b.id]?.label }}</button>
+          <button
+            v-else
+            type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送「${b.text}」并回车`"
+            @click="sendSnippet(b.text)"
+          >{{ b.text }}</button>
+        </template>
+        <!-- 管理入口恒在末格（不在配置列表里，撤不掉） -->
+        <button type="button" class="tb" :class="{ 'tb-on': moreOpen }" title="管理工具条按钮：增删 / 调序 / 快捷短语" @click="moreOpen = !moreOpen">⋯</button>
       </div>
-      <!-- 更多面板：低频操作 + 快捷短语管理，默认收起。 -->
+      <!-- 管理面板：当前按钮增删调序 + 候选池追加 + 快捷短语，默认收起。 -->
       <div v-if="moreOpen" class="mt-1 rounded-md border border-zinc-800 bg-zinc-900/60 p-1.5">
+        <p class="mb-1 text-xs text-zinc-500">当前按钮（✕ 移除 · 箭头调序）</p>
         <div class="flex flex-wrap items-center gap-1">
-          <button type="button" class="tb" title="减小字号" @click="stepFontSize(-1)">A−</button>
-          <button type="button" class="tb" title="增大字号" @click="stepFontSize(1)">A+</button>
-          <button type="button" class="tb" title="滚到历史顶部（只滚本地回滚区）" @click="toolScrollEnd(true)">顶</button>
-          <button type="button" class="tb" title="滚回最新输出（只滚本地回滚区）" @click="toolScrollEnd(false)">底</button>
-          <span class="mx-1 h-5 w-px shrink-0 bg-zinc-700" />
-          <button v-for="(s, i) in snippets" :key="i" type="button" class="tb" :title="`删除快捷短语「${s}」`" @click="rmSnippet(i)">{{ s }} ✕</button>
+          <span v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `mk:${b.id}` : `ms:${b.text}:${i}`" class="mg-chip">
+            <button type="button" class="mg-x" :disabled="i === 0" title="前移" @click="moveBtn(i, -1)">↑</button>
+            <button type="button" class="mg-x" :disabled="i === toolButtons.length - 1" title="后移" @click="moveBtn(i, 1)">↓</button>
+            <span class="max-w-24 truncate">{{ b.t === 'key' ? KEY_POOL[b.id]?.label : b.text }}</span>
+            <button type="button" class="mg-x" title="移除" @click="rmBtn(i)">✕</button>
+          </span>
         </div>
-        <div class="mt-1.5 flex items-center gap-1">
+        <p class="mb-1 mt-2 text-xs text-zinc-500">候选按键（点 + 追加到末尾）</p>
+        <div class="flex flex-wrap items-center gap-1">
+          <template v-for="(e, id) in KEY_POOL" :key="id">
+            <button
+              v-if="!toolButtons.some((b) => b.t === 'key' && b.id === id)"
+              type="button" class="tb" :title="e.title"
+              @click="addKeyBtn(String(id))"
+            >+ {{ e.label }}</button>
+          </template>
+        </div>
+        <div class="mt-2 flex items-center gap-1">
           <input
             v-model="snippetDraft"
             class="h-9 min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-100"
-            placeholder="新快捷短语（发送时自动补回车，上限 8 条）…"
+            placeholder="快捷短语：发送文本并自动回车…"
             spellcheck="false"
             @keydown.enter.prevent="addSnippet"
           />
@@ -1436,6 +1558,36 @@ onBeforeUnmount(() => {
 .tb-on {
   border-color: #f59e0b;
   color: #fbbf24;
+}
+/* 管理面板里的按钮 chip：当前列表项（调序/移除）与候选追加项共用的小控件。 */
+.mg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 1.75rem;
+  padding: 0 0.375rem 0 0.25rem;
+  border-radius: 0.375rem;
+  border: 1px solid #3f3f46;
+  background: #18181b;
+  color: #d4d4d8;
+  font-size: 12px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+.mg-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.25rem;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+.mg-x:active {
+  background: #27272a;
+}
+.mg-x:disabled {
+  opacity: 0.3;
 }
 /* 终端搜索：单行控件。渐变和内高光让浮层在纯黑终端上有清晰的边界层次。 */
 .search-shell {
