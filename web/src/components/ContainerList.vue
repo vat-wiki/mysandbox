@@ -57,6 +57,14 @@ import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
 import { isPhone, isCoarse } from '@/composables/useDevice'
+import MobileCard from '@/components/mobile/MobileCard.vue'
+import type { CardAction } from '@/components/mobile/CardActionSheet.vue'
+import {
+  containerActions,
+  serviceActions,
+  runContainerAction,
+  runServiceAction,
+} from '@/components/mobile/mobileActions'
 import { extOf, previewKind } from '@/lib/preview'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -1909,6 +1917,48 @@ async function doAdopt(value: string | undefined) {
 function onDelete(c: ContainerView) {
   delTarget.value = c
 }
+
+function runMobileContainerAction(c: ContainerView, action: CardAction) {
+  runContainerAction(c, action, {
+    adopt: onAdopt,
+    start: (container) => void act(container.id, () => startContainer(container.id)),
+    power: onPower,
+    openDesktop: (container) => {
+      desktopTarget.value = { containerId: container.id, containerName: container.displayName || container.name }
+    },
+    rename: onRename,
+    export: (container) => {
+      exportTarget.value = container
+    },
+    remove: onDelete,
+    openUrl,
+    directPortUrl,
+    portTarget: portRowTarget,
+  })
+}
+
+function runMobileServiceAction(s: ServiceView, action: CardAction) {
+  runServiceAction(s, action, {
+    detail: (service) => emit('open-services', false, service.name),
+    rename: (service) => {
+      svcRenameTarget.value = service
+    },
+    copyConnect: copySvcConnect,
+    op: (service, kind) => {
+      const fn = kind === 'start' ? startService : kind === 'stop' ? stopService : restartService
+      void svcOp(service.name, () => fn(service.name))
+    },
+    unadopt: (name) => {
+      pendingSvcUnadopt.value = name
+    },
+    remove: (name, deleteData) => {
+      pendingSvcDelete.value = { name, deleteData }
+    },
+    openUrl,
+    directPortUrl: svcDirectPortUrl,
+    portTarget: svcPortRowTarget,
+  })
+}
 // 重命名 = 改显示名（meta.displayName）：tab/侧栏/文件面板全用它，随时可改、不动容器真名。
 // 成功后同步已开终端组的名字快照（组内 pane 头、文件面板 label 都读它）。
 const renameTarget = ref<ContainerView | null>(null)
@@ -2771,8 +2821,23 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         <template v-if="loading && !items.length">
           <Skeleton v-for="i in 3" :key="i" class="h-12 w-full rounded-lg" />
         </template>
-        <ContextMenu v-for="c in orderedItems" :key="c.id">
-          <ContextMenuTrigger as-child>
+        <template v-for="c in orderedItems" :key="c.id">
+          <MobileCard
+            v-if="isPhone"
+            :title="c.displayName || c.name"
+            :description="c.description || c.name"
+            :meta-label="c.ip || '无 IP'"
+            :badge-label="!c.managed && !c.adopted ? '外部' : undefined"
+            :active="activeGroup?.containerId === c.id"
+            :running="c.state === 'running'"
+            :color="containerColor(c.id)"
+            :actions="containerActions(c, cardPortRows(c.id), directOpenExtra)"
+            @open="openTerm(c)"
+            @meta="c.ip && copyIpOf(c.ip)"
+            @select="runMobileContainerAction(c, $event)"
+          />
+          <ContextMenu v-else>
+            <ContextMenuTrigger as-child>
             <div
               class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
               :class="[
@@ -2914,7 +2979,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </ContextMenuSub>
             </template>
           </ContextMenuContent>
-        </ContextMenu>
+          </ContextMenu>
+        </template>
         <!-- 空态：轻引导，与标题行的 ＋/⋯ 呼应 -->
         <div
           v-if="!items.length && !loading"
@@ -2983,8 +3049,22 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             运行时不可达
           </p>
           <template v-else>
-            <ContextMenu v-for="s in orderedSvc" :key="s.name">
-              <ContextMenuTrigger as-child>
+            <template v-for="s in orderedSvc" :key="s.name">
+              <MobileCard
+                v-if="isPhone"
+                :title="s.displayName || s.name"
+                :description="s.description || s.image"
+                :meta-label="s.ip || '无 IP'"
+                :badge-label="s.adopted ? '收编' : undefined"
+                :running="s.running"
+                :color="containerColor(s.name)"
+                :actions="serviceActions(s, svcPortRows(s), directOpenExtra)"
+                @open="openServiceTerm(s)"
+                @meta="s.ip && copyIpOf(s.ip)"
+                @select="runMobileServiceAction(s, $event)"
+              />
+              <ContextMenu v-else>
+                <ContextMenuTrigger as-child>
                 <div
                   class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
                   :class="dragCardKey === s.name ? 'opacity-40' : ''"
@@ -3109,7 +3189,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   >
                 </template>
               </ContextMenuContent>
-            </ContextMenu>
+              </ContextMenu>
+            </template>
             <p v-if="!svcItems.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
               暂无应用容器，点 ＋ 新建
             </p>
