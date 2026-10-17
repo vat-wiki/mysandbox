@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // 触屏工具条设置对话框（Terminal.vue 工具条 ⋯ 打开）：独立区域编排按钮——
-// 当前按钮 chip 拖拽调序 / ✕ 移除、候选按键点击追加、快捷短语增删。
+// 当前按钮 chip 拖拽调序 / ✕ 移除、候选按键点击追加、快捷短语增删、自定义按键。
 // 状态在 lib/termToolbar.ts 模块级单例，改完即时反映到工具条（无需确认按钮）。
 // 输入框添加后主动 blur——移动端不收键盘会一直盖着面板。
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { X } from 'lucide-vue-next'
+import { CircleDot } from 'lucide-vue-next'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   toolButtons,
@@ -12,34 +12,35 @@ import {
   rmBtn,
   addKeyBtn,
   addSnippet,
+  addCustomKey,
+  parseSeq,
+  encodeKeyDown,
   KEY_POOL,
   TOOLBAR_MAX,
 } from '@/lib/termToolbar'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-// —— chip 拖拽调序：pointerdown 记起点，移动超阈值（6px 防误触）才武装拖拽；
-// 武装后 setPointerCapture（触摸隐式捕获也走这里），elementFromPoint 找落点 chip
-// 即时换位（拖拽中的 chip 已被 .tsc-drag 关掉 pointer-events，不会命中自己）。
-// pointerup 统一落盘。chip 上 user-select/-webkit-touch-callout 全关——iOS 长按
-// 弹选择/放大镜会 pointercancel 掉拖拽，真机「拖不动」多是这个。
+// —— chip 拖拽调序：全部监听挂 window（不用 setPointerCapture——WebKit 对 touch
+// 指针的捕获有历史怪癖，隐式捕获目标还可能是 chip 内层 span），对各浏览器最钝感。
+// pointerdown 记 pointerId，move 超 6px 武装；武装后 elementFromPoint 找落点 chip
+// 即时换位（拖拽中的 chip 被 .tsc-drag 关掉 pointer-events，不会命中自己）。up 落盘。
 const dragIdx = ref<number | null>(null)
 const dragArmed = ref(false)
-const chipDrag = { el: null as HTMLElement | null, x: 0, y: 0 }
+const drag = { id: null as number | null, x: 0, y: 0 }
 function chipDown(i: number, ev: PointerEvent) {
-  if (chipDrag.el || (ev.target as HTMLElement).closest('button')) return // ✕ 等按钮照常点击，不启动拖拽
-  chipDrag.el = ev.currentTarget as HTMLElement
-  chipDrag.x = ev.clientX
-  chipDrag.y = ev.clientY
+  if (drag.id !== null || (ev.target as HTMLElement).closest('button')) return // ✕ 等按钮照常点击
+  drag.id = ev.pointerId
+  drag.x = ev.clientX
+  drag.y = ev.clientY
   dragIdx.value = i
   dragArmed.value = false
 }
-function chipMove(ev: PointerEvent) {
-  if (!chipDrag.el) return
+function dragMove(ev: PointerEvent) {
+  if (drag.id === null || ev.pointerId !== drag.id) return
   if (!dragArmed.value) {
-    if (Math.hypot(ev.clientX - chipDrag.x, ev.clientY - chipDrag.y) < 6) return
+    if (Math.hypot(ev.clientX - drag.x, ev.clientY - drag.y) < 6) return
     dragArmed.value = true
-    chipDrag.el.setPointerCapture(ev.pointerId)
   }
   const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.tsc-chip') as HTMLElement | null
   const to = Number(under?.dataset.idx)
@@ -48,24 +49,31 @@ function chipMove(ev: PointerEvent) {
   toolButtons.value.splice(to, 0, b)
   dragIdx.value = to
 }
-function chipUp() {
-  if (!chipDrag.el) return
+function dragEnd(ev: PointerEvent) {
+  if (drag.id === null || ev.pointerId !== drag.id) return
   if (dragArmed.value) saveToolButtons()
-  chipDrag.el = null
+  drag.id = null
   dragArmed.value = false
   dragIdx.value = null
 }
-// 兜底：capture 之外丢掉 pointerup（窗外松手等）会卡死拖拽态，window 级再挂一份；
-// chipUp 幂等（chipDrag.el 清空后直接 return），与 chip 级监听重复无害。
+function dragAbort() {
+  if (drag.id === null) return
+  if (dragArmed.value) saveToolButtons()
+  drag.id = null
+  dragArmed.value = false
+  dragIdx.value = null
+}
 onMounted(() => {
-  window.addEventListener('pointerup', chipUp)
-  window.addEventListener('pointercancel', chipUp)
-  window.addEventListener('blur', chipUp)
+  window.addEventListener('pointermove', dragMove)
+  window.addEventListener('pointerup', dragEnd)
+  window.addEventListener('pointercancel', dragAbort)
+  window.addEventListener('blur', dragAbort)
 })
 onBeforeUnmount(() => {
-  window.removeEventListener('pointerup', chipUp)
-  window.removeEventListener('pointercancel', chipUp)
-  window.removeEventListener('blur', chipUp)
+  window.removeEventListener('pointermove', dragMove)
+  window.removeEventListener('pointerup', dragEnd)
+  window.removeEventListener('pointercancel', dragAbort)
+  window.removeEventListener('blur', dragAbort)
 })
 
 // —— 快捷短语：添加后 blur 输入框，别让软键盘一直盖着面板 ——
@@ -76,6 +84,62 @@ function addSnippetAndBlur() {
   snippetDraft.value = ''
   snippetInput.value?.blur()
 }
+
+// —— 自定义按键：标签 + 任意转义序列（手输 \e \xHH 转义，或物理键盘录制）——
+const ckLabel = ref('')
+const ckSeqRaw = ref('')
+const ckInput = ref<HTMLInputElement | null>(null)
+function addCustomAndBlur() {
+  const seq = parseSeq(ckSeqRaw.value)
+  addCustomKey(ckLabel.value || ckSeqRaw.value.trim(), seq)
+  ckLabel.value = ''
+  ckSeqRaw.value = ''
+  ckInput.value?.blur()
+}
+// 键盘录制：武装后 window 捕获阶段吃掉全部 keydown（不落进输入框/不触发弹窗快捷键），
+// 编码成序列填进表单。需要物理键盘——纯触屏用户走上面的手输转义。
+const recording = ref(false)
+function toggleRecord() {
+  if (recording.value) {
+    recording.value = false
+    return
+  }
+  recording.value = true
+  ckInput.value?.blur()
+}
+function recordKeyDown(e: KeyboardEvent) {
+  if (!recording.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    recording.value = false // 裸 Esc = 退出录制；要发 Esc 走候选池
+    return
+  }
+  const enc = encodeKeyDown(e)
+  if (!enc) return
+  ckLabel.value = enc.label
+  ckSeqRaw.value = [...enc.seq].map((ch) => seqEscape(ch)).join('')
+  recording.value = false
+}
+// 录制监听常驻 window 捕获阶段，内部按 recording 守卫——capture 优先级最高，
+// 录制期间吃掉一切 keydown（不进输入框、不触发 reka 弹窗的 Esc 关闭）。
+onMounted(() => {
+  window.addEventListener('keydown', recordKeyDown, { capture: true })
+})
+// 序列反向转义成可读手输形式（展示在序列输入框里，可再手改）
+function seqEscape(ch: string): string {
+  const code = ch.charCodeAt(0)
+  if (ch === '\\') return '\\\\'
+  if (ch === '\x1b') return '\\e'
+  if (ch === '\n') return '\\n'
+  if (ch === '\r') return '\\r'
+  if (ch === '\t') return '\\t'
+  if (code < 0x20 || code === 0x7f) return '\\x' + code.toString(16).padStart(2, '0')
+  return ch
+}
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', recordKeyDown, { capture: true })
+})
 </script>
 
 <template>
@@ -94,16 +158,13 @@ function addSnippetAndBlur() {
         <div class="flex flex-wrap items-center gap-1">
           <span
             v-for="(b, i) in toolButtons"
-            :key="b.t === 'key' ? `k:${b.id}` : `s:${b.text}`"
+            :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : `s:${b.text}`"
             class="tsc-chip"
             :class="{ 'tsc-drag': dragArmed && dragIdx === i }"
             :data-idx="i"
             @pointerdown="chipDown(i, $event)"
-            @pointermove="chipMove"
-            @pointerup="chipUp"
-            @pointercancel="chipUp"
           >
-            <span class="max-w-24 truncate">{{ b.t === 'key' ? KEY_POOL[b.id]?.label : b.text }}</span>
+            <span class="max-w-24 truncate">{{ b.t === 'key' ? KEY_POOL[b.id]?.label : b.t === 'custom' ? b.label : b.text }}</span>
             <button type="button" class="tsc-x" title="移除" @click="rmBtn(i)">✕</button>
           </span>
         </div>
@@ -132,6 +193,36 @@ function addSnippetAndBlur() {
           />
           <button type="button" class="tsc-pool tsc-pool-on" @click="addSnippetAndBlur">添加</button>
         </div>
+
+        <p class="mb-1 mt-3 text-xs font-semibold text-muted-foreground">自定义按键（发送任意转义序列）</p>
+        <div class="flex items-center gap-1">
+          <input
+            ref="ckInput"
+            v-model="ckLabel"
+            class="h-9 w-20 shrink-0 rounded-md border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100"
+            placeholder="标签"
+            spellcheck="false"
+            enterkeyhint="done"
+            @keydown.enter.prevent="addCustomAndBlur"
+          />
+          <input
+            v-model="ckSeqRaw"
+            class="h-9 min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-100"
+            placeholder="序列：\e[5~ \x0c…"
+            spellcheck="false"
+            enterkeyhint="done"
+            @keydown.enter.prevent="addCustomAndBlur"
+          />
+          <button type="button" class="tsc-pool tsc-pool-on" @click="addCustomAndBlur">添加</button>
+        </div>
+        <button
+          type="button" class="mt-1 flex items-center gap-1 text-xs"
+          :class="recording ? 'text-amber-400' : 'text-muted-foreground hover:text-zinc-300'"
+          @click="toggleRecord"
+        >
+          <CircleDot class="size-3.5" :class="recording ? 'animate-pulse' : ''" />
+          {{ recording ? '录制中：按下要发送的按键组合（裸 Esc 退出）' : '录制按键（需物理键盘）' }}
+        </button>
       </div>
     </DialogContent>
   </Dialog>

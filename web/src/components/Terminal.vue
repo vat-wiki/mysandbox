@@ -1321,7 +1321,7 @@ onBeforeUnmount(() => {
         <button v-for="c in ctrlCombos" :key="c.k" type="button" class="tb" :title="`Ctrl+${c.k}：${c.hint}`" @click="ctrlCombo(c)">{{ c.k }}</button>
       </div>
       <div class="grid grid-cols-5 gap-1">
-        <template v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `k:${b.id}` : `s:${b.text}:${i}`">
+        <template v-for="(b, i) in toolButtons" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : `s:${b.text}:${i}`">
           <button
             v-if="b.t === 'key'"
             type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': b.id === 'ctrl' && ctrlOpen }"
@@ -1330,6 +1330,11 @@ onBeforeUnmount(() => {
             @pointerdown="tbDown(b, $event)" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
             @click="runKeyBtn(b.id)"
           >{{ KEY_POOL[b.id]?.label }}</button>
+          <button
+            v-else-if="b.t === 'custom'"
+            type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送自定义按键「${b.label}」`"
+            @click="sendRaw(b.seq)"
+          >{{ b.label }}</button>
           <button
             v-else
             type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送「${b.text}」并回车`"
