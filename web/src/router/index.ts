@@ -16,6 +16,18 @@ const pageRoutes: RouteRecordRaw[] = [
     component: RouteAnchor,
     meta: { layer: 'page', mobileOnly: true },
   },
+  {
+    path: '/services',
+    name: 'services',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'drawer', mobile: 'page' },
+  },
+  {
+    path: '/services/:name',
+    name: 'service',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'drawer', mobile: 'page' },
+  },
 ]
 
 export const routes: RouteRecordRaw[] = [

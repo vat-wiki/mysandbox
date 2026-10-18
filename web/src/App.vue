@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, startAuthSession, Unauthorized } from '@/lib/api'
 import { setEngineInfo } from '@/lib/caps'
 import { loadProxyConfig, proxyPrimary } from '@/lib/proxy'
@@ -20,9 +21,6 @@ const checkErr = ref('')
 // （基座就绪性不再常驻徽标展示——入口收进侧栏容器分区的 ⋯ 菜单与新建守卫，见 ContainerList。）
 const baseReady = ref<boolean | null>(null)
 const showBasePanel = ref(false)
-const showServicesPanel = ref(false)
-// 服务卡片点击带服务名：抽屉打开即定位到该服务详情。
-const svcSelect = ref('')
 // 侧栏 ＋ 的独立创建对话框（只开表单，不拉抽屉；进度靠 toast + 侧栏摘要）。
 // 服务抽屉操作回传计数：抽屉里启停/删除/创建完成后 +1，ContainerList 据此即时刷侧栏。
 const svcVersion = ref(0)
@@ -96,14 +94,20 @@ async function afterAuth() {
 const ready = computed(() => !!token.value)
 
 // —— 面板打开入口（全部来自侧栏，见 ContainerList）——
-// 卡片/分区：开抽屉（卡片带服务名定位）。服务不再有创建表单（compose 目录 + 收编）。
+// 服务页状态由路由承载：手机是全屏页面，桌面仍是右侧抽屉；系统后退/前进在两端同语义。
+const route = useRoute()
+const router = useRouter()
+const showServicesPanel = computed(() => route.name === 'services' || route.name === 'service')
+// 服务卡片点击带服务名：抽屉打开即定位到该服务详情。
+const svcSelect = computed(() => (route.name === 'service' && typeof route.params.name === 'string' ? route.params.name : ''))
 function openServices(_create = false, select?: string) {
-  svcSelect.value = select ?? ''
-  showServicesPanel.value = true
+  if (select) void router.push({ name: 'service', params: { name: select } })
+  else void router.push({ name: 'services' })
 }
 function closeServices() {
-  showServicesPanel.value = false
-  svcSelect.value = ''
+  if (route.name !== 'services' && route.name !== 'service') return
+  if (typeof history.state?.back === 'string') void router.back()
+  else void router.replace({ name: 'workspace' })
 }
 
 // —— CLI `mysandbox open` 深链 ——
