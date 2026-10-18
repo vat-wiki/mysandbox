@@ -518,6 +518,46 @@ watch(hiddenGroups, saveHidden, { deep: true })
 // 默认收起；选完容器/宿主自动收（见 openTerm/openHostTerm）。
 const drawerOpen = ref(false)
 
+// 手机环境选择页支持「向左拖动关闭」。横向意图确认后接管触摸（阻止列表纵向滚动），
+// 跟手位移；松手超过阈值、或短时间内的快速轻扫，都按系统级页面关闭处理。
+const drawerDragX = ref(0)
+const drawerDragging = ref(false)
+let drawerTouchStart: { x: number; y: number; at: number } | null = null
+let drawerTouchAxis: 'x' | 'y' | null = null
+
+function drawerTouchStartHandler(event: TouchEvent) {
+  if (!isPhone.value || !drawerOpen.value || event.touches.length !== 1) return
+  const touch = event.touches[0]
+  drawerTouchStart = { x: touch.clientX, y: touch.clientY, at: Date.now() }
+  drawerTouchAxis = null
+}
+
+function drawerTouchMoveHandler(event: TouchEvent) {
+  if (!drawerTouchStart || event.touches.length !== 1) return
+  const touch = event.touches[0]
+  const dx = touch.clientX - drawerTouchStart.x
+  const dy = touch.clientY - drawerTouchStart.y
+  if (!drawerTouchAxis) {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return
+    drawerTouchAxis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+  }
+  if (drawerTouchAxis !== 'x') return
+  event.preventDefault()
+  drawerDragging.value = true
+  drawerDragX.value = Math.min(0, dx)
+}
+
+function drawerTouchEndHandler() {
+  if (!drawerTouchStart) return
+  const elapsed = Date.now() - drawerTouchStart.at
+  const fling = elapsed < 220 && drawerDragX.value < -24
+  if (drawerDragX.value < -72 || fling) drawerOpen.value = false
+  drawerDragging.value = false
+  drawerDragX.value = 0
+  drawerTouchStart = null
+  drawerTouchAxis = null
+}
+
 // 侧栏收起（窄边 rail）：桌面(md+)专属形态——手机抽屉忽略此状态恒展开（rail 对触屏没意义）。
 // 收起态只留导航骨架：展开键 / ＋ 新建 / 容器首字图标列（title 带全名与状态）/ 底部环境区。
 // loadBool 为 function 声明（提升），此处可安全前置调用。
@@ -2574,6 +2614,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       ref="asideRef"
       class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-0 max-md:z-40 max-md:w-full max-md:pt-safe max-md:pb-safe max-md:transition-transform md:overflow-hidden md:transition-[width] md:duration-200"
       :class="[drawerOpen ? '' : 'max-md:-translate-x-full', railMode ? 'md:w-12 md:overflow-visible' : 'md:w-64 md:[&>*]:w-64']"
+      :style="drawerDragging ? { transform: `translateX(${drawerDragX}px)`, transition: 'none' } : undefined"
+      @touchstart="drawerTouchStartHandler"
+      @touchmove="drawerTouchMoveHandler"
+      @touchend="drawerTouchEndHandler"
+      @touchcancel="drawerTouchEndHandler"
     >
       <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：分组导航 + hover 子列表。
             rail 保持极窄，具体对象列表浮到主区一侧；手机抽屉仍走完整列表形态。 -->
