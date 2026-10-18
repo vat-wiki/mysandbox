@@ -113,6 +113,17 @@ export async function buildServer(cfg: Config) {
   const webDist = findWebDist();
   if (webDist) {
     await app.register(fastifyStatic, { root: webDist });
+    // HTML5 路由 fallback：只对浏览器导航（Accept: text/html）回 index.html，静态
+    // 资源缺失仍应 404，API/WS/代理路径维持各自的鉴权与错误语义。
+    app.setNotFoundHandler(async (req, reply) => {
+      const path = req.url.split(/[?#]/, 1)[0] ?? '';
+      const protectedPrefix = path.startsWith('/api/') || path.startsWith('/ws/') || path.startsWith('/proxy/');
+      const acceptsHtml = (req.headers.accept ?? '').includes('text/html');
+      if (req.method === 'GET' && acceptsHtml && !protectedPrefix) {
+        return reply.sendFile('index.html');
+      }
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } });
+    });
   } else {
     app.get('/', async () => ({
       app: 'mysandbox',
