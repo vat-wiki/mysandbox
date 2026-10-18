@@ -20,7 +20,7 @@ const checkErr = ref('')
 // 存 ready 而非 exists：LXC 模板存在但在运行时不能克隆，新建守卫要拦的是「不可用」。
 // （基座就绪性不再常驻徽标展示——入口收进侧栏容器分区的 ⋯ 菜单与新建守卫，见 ContainerList。）
 const baseReady = ref<boolean | null>(null)
-const showBasePanel = ref(false)
+const showBasePanel = computed(() => route.name === 'base')
 // 侧栏 ＋ 的独立创建对话框（只开表单，不拉抽屉；进度靠 toast + 侧栏摘要）。
 // 服务抽屉操作回传计数：抽屉里启停/删除/创建完成后 +1，ContainerList 据此即时刷侧栏。
 const svcVersion = ref(0)
@@ -104,6 +104,14 @@ function openServices(_create = false, select?: string) {
   if (select) void router.push({ name: 'service', params: { name: select } })
   else void router.push({ name: 'services' })
 }
+function openBase() {
+  void router.push({ name: 'base' })
+}
+function closeBase() {
+  if (route.name !== 'base') return
+  if (typeof history.state?.back === 'string') void router.back()
+  else void router.replace({ name: 'workspace' })
+}
 function closeServices() {
   if (route.name !== 'services' && route.name !== 'service') return
   if (typeof history.state?.back === 'string') void router.back()
@@ -172,11 +180,11 @@ onUnmounted(() => {
         :open-req="pendingOpen"
         :svc-version="svcVersion"
         @unauthorized="logout"
-        @open-base="showBasePanel = true"
+        @open-base="openBase"
         @open-services="openServices"
         @open-handled="onOpenHandled"
       />
-      <BasePanel v-if="showBasePanel" @close="showBasePanel = false" @changed="refreshBaseStatus" />
+      <BasePanel v-if="showBasePanel" @close="closeBase" @changed="refreshBaseStatus" />
       <ServicesPanel
         v-if="showServicesPanel"
         :initial-select="svcSelect"
