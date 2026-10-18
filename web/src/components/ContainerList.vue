@@ -669,30 +669,36 @@ provide(TERM_OPS, {
   groupLabel,
 })
 
-const showCreate = ref(false)
+const showCreate = computed({
+  get: () => route.name === 'container-create',
+  set: (open) => (open ? openRoute('container-create') : closePageRoute()),
+})
 // 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
-// 侧栏不再有选择态。
-const showBatch = ref(false)
-// AI 工具工作区（技能 / 模型接入）：主区级页面——文件 tab 栏的单例 tab（VSCode
-// 设置页模式）。aiOpen = tab 存在；激活与否由主区归属 mainView 表达（'ai'），与
-// 终端/文件天然互斥。Bot 钮 = 全局管理入口。tab 存在性持久化（独立 key）：刷新后
-// AI 页原样回来——与文件 tab 同一恢复语义，平级互切就不能只有它刷新即丢；
-// popout 独立 key，与主窗口互不读写（同 tabs/editor-tabs 约定）。
-const AI_OPEN_KEY =
-  props.popout && props.popoutTarget
-    ? `mysandbox:ai-open-popout-${props.popoutTarget}`
-    : 'mysandbox:ai-open'
-const aiOpen = ref(loadBool(AI_OPEN_KEY))
+// 侧栏不再有选择态；路由化后刷新也能回到当前批量流程入口。
+const showBatch = computed({
+  get: () => route.name === 'container-batch',
+  set: (open) => (open ? openRoute('container-batch') : closePageRoute()),
+})
+// AI 工作区（技能 / 模型接入）：主区级页面。路由是唯一开合状态，刷新后 /ai 原样恢复；
+// mainView 仍表达当前主区，路由变化时 watcher 同步归属。
+const aiOpen = computed({
+  get: () => route.name === 'ai',
+  set: (open) => (open ? openRoute('ai') : closePageRoute()),
+})
 function openAi() {
-  aiOpen.value = true
+  openRoute('ai')
   mainView.value = 'ai'
 }
 function closeAi() {
-  aiOpen.value = false
+  closePageRoute()
   // 主区回落：有文件 tab 回编辑器（关 AI 页不该把正开着的文件也带走进终端），
   // 没有才回终端。
   if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
 }
+watch(aiOpen, (open) => {
+  if (open) mainView.value = 'ai'
+  else if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
+}, { immediate: true })
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
 const delTarget = ref<ContainerView | null>(null)
@@ -759,6 +765,26 @@ const routeFileTarget = computed(() =>
 const routeFilePath = computed(() =>
   route.name === 'files' && typeof route.query.path === 'string' ? route.query.path : '',
 )
+// 这些路由还只是“壳层状态路由化”：内容组件保持现有 Dialog/Page 实现。先统一历史栈，
+// 再逐步把内容抽成 PC/移动共享组件。
+const pageRouteNames = new Set([
+  'ssh-targets',
+  'term-sessions',
+  'container-create',
+  'container-batch',
+  'container-export',
+  'container-desktop',
+  'service-adopt',
+])
+function openRoute(name: string, params?: Record<string, string>) {
+  if (route.name === name) return
+  void router.push({ name, params })
+}
+function closePageRoute() {
+  if (!pageRouteNames.has(String(route.name))) return
+  if (typeof history.state?.back === 'string') void router.back()
+  else void router.replace({ name: 'workspace' })
+}
 function onFilesPathChange(path: string) {
   if (route.name !== 'files' || !path || route.query.path === path) return
   void router.replace({ name: 'files', params: route.params, query: { ...route.query, path } })
@@ -1010,8 +1036,7 @@ const activeEditorIdx = ref(
 )
 function loadMainView(): 'file' | 'terminal' | 'ai' {
   try {
-    // 'ai' 原样落盘，恢复时以 aiOpen 存档校验 tab 还在（closeAi 两键一致清，正常不会有
-    // area=ai 而 aiOpen=0 的残局；旧存档/手清兜底回落文件或终端）
+    // '/ai' 路由即 AI 主区；本地 area 只记录离开 AI 后用户停在文件还是终端。
     const area = localStorage.getItem(EDITOR_AREA_KEY)
     if (area === 'ai') return aiOpen.value ? 'ai' : editorTabs.value.length ? 'file' : 'terminal'
     return area === 'file' && editorTabs.value.length ? 'file' : 'terminal'
@@ -1025,10 +1050,8 @@ watch(
   () => {
     try {
       localStorage.setItem(EDITOR_TABS_KEY, JSON.stringify(editorTabs.value))
-      // 'ai' 原样落盘（恢复时 loadMainView 以 aiOpen 存档校验），不再折成 'file'
       localStorage.setItem(EDITOR_AREA_KEY, mainView.value)
       localStorage.setItem(EDITOR_ACTIVE_KEY, String(activeEditorIdx.value))
-      localStorage.setItem(AI_OPEN_KEY, aiOpen.value ? '1' : '0')
     } catch {
       /* localStorage 不可用就跳过 */
     }
@@ -1190,8 +1213,18 @@ function onEditorSaved() {
   // 保存后刷新面板列表（若面板开着且指向同容器）。
   filePanelRef.value?.refresh()
 }
-// 桌面查看目标：null 关；打开时存容器 id/显示名。
-const desktopTarget = ref<{ containerId: string; containerName: string } | null>(null)
+// 桌面查看目标由路由承载：直接深链也能打开；容器列表就绪前短暂为 null。
+const desktopTarget = computed(() => {
+  if (route.name !== 'container-desktop' || typeof route.params.id !== 'string') return null
+  const container = items.value.find((c) => c.id === route.params.id)
+  return container ? { containerId: container.id, containerName: container.displayName || container.name } : null
+})
+function openDesktop(container: ContainerView) {
+  void openRoute('container-desktop', { id: container.id })
+}
+function closeDesktop() {
+  closePageRoute()
+}
 
 // ---- 容器网络信息（tab 栏右侧「网络」下拉的数据源）----
 // active group 容器的 IP（点击复制）· 容器内监听端口（点击打开）· docker 映射端口。
@@ -1722,11 +1755,17 @@ function activateGroupById(gId: string) {
   if (idx >= 0) onTabClick(idx)
 }
 
-// 会话对话框：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
-const showSessions = ref(false)
+// 会话页：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
+const showSessions = computed({
+  get: () => route.name === 'term-sessions',
+  set: (open) => (open ? openRoute('term-sessions') : closePageRoute()),
+})
 // 设置页（侧栏底部「设置」入口，展开行与 rail 各一枚）：移动端全屏，桌面仍是 dialog。
-// SSH 目标管理对话框（侧栏终端区「添加 / 管理」入口）。
-const showSshTargets = ref(false)
+// SSH 目标管理页（侧栏终端区「添加 / 管理」入口）。
+const showSshTargets = computed({
+  get: () => route.name === 'ssh-targets',
+  set: (open) => (open ? openRoute('ssh-targets') : closePageRoute()),
+})
 // 打开时剪掉容器已删的隐藏组：会话随容器消亡，留着只会恢复出连不上的空 tab。
 watch(showSessions, (open) => {
   if (!open) return
@@ -2046,11 +2085,11 @@ function runMobileContainerAction(c: ContainerView, action: CardAction) {
     start: (container) => void act(container.id, () => startContainer(container.id)),
     power: onPower,
     openDesktop: (container) => {
-      desktopTarget.value = { containerId: container.id, containerName: container.displayName || container.name }
+      openDesktop(container)
     },
     rename: onRename,
     export: (container) => {
-      exportTarget.value = container
+      openExport(container)
     },
     remove: onDelete,
     openUrl,
@@ -2134,7 +2173,16 @@ function onRename(c: ContainerView) {
   renameTarget.value = c
 }
 // 导出为包：任意容器 → tar.zst（不只模板）。要求容器已停止（对话框里有提示）。
-const exportTarget = ref<ContainerView | null>(null)
+const exportTarget = computed(() => {
+  if (route.name !== 'container-export' || typeof route.params.id !== 'string') return null
+  return items.value.find((c) => c.id === route.params.id) ?? null
+})
+function openExport(container: ContainerView) {
+  void openRoute('container-export', { id: container.id })
+}
+function closeExport() {
+  closePageRoute()
+}
 async function doRename(value: string | undefined) {
   const c = renameTarget.value
   if (!c) return
@@ -2234,9 +2282,12 @@ watch(
         pendingSvcUnadopt.value = ''
         await svcOp(name, () => unadoptService(name))
       }
-      // 收编入口（分区头 Import，与抽屉头部同款对话框）：外部 docker 容器纳入服务层。
+      // 收编入口（分区头 Import，与抽屉头部同款页面）：外部 docker 容器纳入服务层。
       // ContainerList 自挂对话框（TermSessionsDialog 同模式）；成功 toast + 即时刷侧栏。
-      const showSvcAdopt = ref(false)
+      const showSvcAdopt = computed({
+        get: () => route.name === 'service-adopt',
+        set: (open) => (open ? openRoute('service-adopt') : closePageRoute()),
+      })
       function onSvcAdopted(name: string) {
         toast.success(`已收编 ${name}，LXC 容器内按名字可达`)
         void refreshServices()
@@ -3094,12 +3145,12 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
               <ContextMenuItem
                 v-if="c.state === 'running'"
-                @click="desktopTarget = { containerId: c.id, containerName: c.displayName || c.name }"
+                @click="openDesktop(c)"
                 >桌面</ContextMenuItem
               >
               <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
               <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
-              <ContextMenuItem v-if="hasBaseAction('export')" @click="exportTarget = c">导出为包</ContextMenuItem>
+              <ContextMenuItem v-if="hasBaseAction('export')" @click="openExport(c)">导出为包</ContextMenuItem>
               <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
             </template>
             <!-- 监听端口（三级菜单）：右键菜单 → 端口列表 → 每个端口的打开方式。
@@ -4155,7 +4206,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         v-if="desktopTarget"
         :container-id="desktopTarget.containerId"
         :container-name="desktopTarget.containerName"
-        @close="desktopTarget = null"
+        @close="closeDesktop"
       />
     </div>
 
@@ -4198,8 +4249,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
   <ExportContainerDialog
     v-if="exportTarget"
     :container="exportTarget"
-    @done="refresh(); exportTarget = null"
-    @close="exportTarget = null"
+    @done="refresh(); closeExport()"
+    @close="closeExport"
   />
 
   <ConfirmDialog

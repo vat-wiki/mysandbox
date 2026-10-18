@@ -166,7 +166,7 @@ function submit() {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-lg">
+    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
       <DialogHeader>
         <DialogTitle>新建容器</DialogTitle>
         <DialogDescription>名称、描述与 IP；其余在「高级」里。</DialogDescription>

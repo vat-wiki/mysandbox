@@ -46,6 +46,54 @@ const pageRoutes: RouteRecordRaw[] = [
     component: RouteAnchor,
     meta: { layer: 'page', desktop: 'panel', mobile: 'page' },
   },
+  {
+    path: '/ssh',
+    name: 'ssh-targets',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/terminals',
+    name: 'term-sessions',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/containers/new',
+    name: 'container-create',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/containers/batch',
+    name: 'container-batch',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/containers/:id/export',
+    name: 'container-export',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/desktop/:id',
+    name: 'container-desktop',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/services/adopt',
+    name: 'service-adopt',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/ai',
+    name: 'ai',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'workspace', mobile: 'page' },
+  },
 ]
 
 export const routes: RouteRecordRaw[] = [

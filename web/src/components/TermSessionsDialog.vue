@@ -182,7 +182,7 @@ async function doKill() {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-lg">
+    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
           <TerminalSquare class="size-4" /> 所有终端
