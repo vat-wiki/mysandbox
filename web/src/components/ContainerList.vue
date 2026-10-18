@@ -518,6 +518,22 @@ watch(hiddenGroups, saveHidden, { deep: true })
 // 默认收起；选完容器/宿主自动收（见 openTerm/openHostTerm）。
 const drawerOpen = ref(false)
 
+// 环境选择页进入浏览器 History：手机上「打开=pushState，关闭=history.back」。系统级后退
+// 手势因此先关掉这层页面，而不是因为历史栈为空直接退回浏览器。watcher 同时统一处理按钮/
+// 手势/选中目标后的关闭；popstate 负责消费系统后退与前进。
+const ENV_PICKER_STATE = 'mysandbox-env-picker'
+function isEnvPickerState(state: unknown): boolean {
+  return !!(state as Record<string, unknown> | null)?.[ENV_PICKER_STATE]
+}
+function onHistoryPopState(event: PopStateEvent) {
+  drawerOpen.value = isEnvPickerState(event.state)
+}
+watch(drawerOpen, (open) => {
+  const current = isEnvPickerState(history.state)
+  if (open && isPhone.value && !current) history.pushState({ [ENV_PICKER_STATE]: true }, '')
+  if (!open && current) history.back()
+})
+
 // 手机环境选择页支持「向左拖动关闭」。横向意图确认后接管触摸（阻止列表纵向滚动），
 // 跟手位移；松手超过阈值、或短时间内的快速轻扫，都按系统级页面关闭处理。
 const drawerDragX = ref(0)
@@ -2549,6 +2565,7 @@ async function refreshActivity() {
 onMounted(() => {
   refresh()
   void refreshSshTargets()
+  window.addEventListener('popstate', onHistoryPopState)
   // 容器/服务状态事件驱动（lxc-monitor / docker events 旁路转发，见 lib/events.ts）：
   // 启停即刷（防抖合并状态风暴），固定轮询只留 30s 对账兜底。
   disposeEvents = onSandboxEvent((e) => {
@@ -2577,6 +2594,7 @@ onUnmounted(() => {
   if (svcPortsTimer) clearInterval(svcPortsTimer)
   if (actTimer) clearInterval(actTimer)
   disposeEvents?.()
+  window.removeEventListener('popstate', onHistoryPopState)
   document.removeEventListener('keydown', onEscCloseFile)
   document.removeEventListener('visibilitychange', onVisChange)
 })
