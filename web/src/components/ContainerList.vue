@@ -756,6 +756,13 @@ const router = useRouter()
 const routeFileTarget = computed(() =>
   route.name === 'files' && typeof route.params.target === 'string' ? decodeURIComponent(route.params.target) : '',
 )
+const routeFilePath = computed(() =>
+  route.name === 'files' && typeof route.query.path === 'string' ? route.query.path : '',
+)
+function onFilesPathChange(path: string) {
+  if (route.name !== 'files' || !path || route.query.path === path) return
+  void router.replace({ name: 'files', params: route.params, query: { ...route.query, path } })
+}
 const showRoutedFiles = computed({
   get: () => route.name === 'files',
   set: (open) => {
@@ -840,6 +847,18 @@ watch(routeFileTarget, (target) => {
   const gi = groups.value.findIndex((g) => fileTargetId(g) === target)
   if (gi >= 0) activeIdx.value = gi
 })
+// 深链 /files/<target>?path=<dir>：面板挂载或目标切换后一次性定位；随后路径由
+// FilePanel 的 path-change 反向同步（replace，不污染历史）。
+watch(
+  [showFiles, routeFileTarget],
+  async ([open, target], [prevOpen, prevTarget] = [false, '']) => {
+    if (!open || !target || !routeFilePath.value) return
+    if (prevOpen && prevTarget === target) return
+    await nextTick()
+    filePanelRef.value?.locate(target, routeFilePath.value)
+  },
+  { immediate: true },
+)
 // 每组最近聚焦的 pane（内存态）：文件面板跟随「最后落焦的命令行」的跨组记忆——
 // 切回某 tab 时跟随恢复到该组最后用的 pane，而不是固定回落首 pane。
 const paneFocusMemo = new Map<string, string>()
@@ -4163,6 +4182,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       :has-terminal="!!activeGroup"
       :browse-mode="fileBrowseMode"
       @browse-mode="setFileBrowseMode"
+      @path-change="onFilesPathChange"
       @close="showFiles = false"
       @open-file="onPanelOpenFile"
       @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"

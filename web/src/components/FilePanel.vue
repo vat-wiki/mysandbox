@@ -84,6 +84,8 @@ const emit = defineEmits<{
   // opts.diff 存在 = git 变更对比形态（Git 变更区块点击上抛；目录列表点文件不传）。
   // opts.editing = 文件行/右键「编辑」直接落编辑态；diff 打开不受影响。
   (e: 'open-file', path: string, opts?: { diff?: { headPath?: string }; editing?: boolean }): void
+  // 当前展示目录变化（跟随 cwd、手动导航、静默轮询都算）：父层同步 /files URL query。
+  (e: 'path-change', path: string): void
   (e: 'pane-pick', termId: string): void
   (e: 'browse-mode', mode: 'drill' | 'expand'): void
 }>()
@@ -555,6 +557,7 @@ async function loadDir(p: string, opts: { silent?: boolean } = {}) {
     if (opts.silent && p !== path.value) return
     path.value = v.path
     hostPath.value = v.hostPath ?? null
+    emit('path-change', v.path)
     const sig = sigOf(v)
     if (!opts.silent || sig !== lastSig) {
       entries.value = v.entries
