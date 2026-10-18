@@ -28,6 +28,12 @@ const pageRoutes: RouteRecordRaw[] = [
     component: RouteAnchor,
     meta: { layer: 'page', desktop: 'drawer', mobile: 'page' },
   },
+  {
+    path: '/settings',
+    name: 'settings',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
 ]
 
 export const routes: RouteRecordRaw[] = [

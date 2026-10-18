@@ -184,7 +184,7 @@ onMounted(load)
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+    <DialogContent class="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe sm:max-w-lg">
       <div class="flex items-center border-b px-5 py-3 pr-10">
         <!-- TestLens 详情层给返回键回目录页 -->
         <button

@@ -517,6 +517,7 @@ watch(hiddenGroups, saveHidden, { deep: true })
 // 手机侧栏环境选择页：overlay 形态（绝对定位 + 遮罩），终端区宽度不变——不选 push 是刻意的：
 // push 会改终端容器宽度 → 触发 refit / tmux resize，打断正在跑的 TUI/vim。
 const { isOpen: drawerOpen } = usePageRoute('environments')
+const { isOpen: showSettings } = usePageRoute('settings')
 
 // 手机环境选择页支持「向左拖动关闭」。横向意图确认后接管触摸（阻止列表纵向滚动），
 // 跟手位移；松手超过阈值、或短时间内的快速轻扫，都按系统级页面关闭处理。
@@ -1649,8 +1650,7 @@ function activateGroupById(gId: string) {
 
 // 会话对话框：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
 const showSessions = ref(false)
-// 设置弹框（侧栏底部「设置」入口，展开行与 rail 各一枚）
-const showSettings = ref(false)
+// 设置页（侧栏底部「设置」入口，展开行与 rail 各一枚）：移动端全屏，桌面仍是 dialog。
 // SSH 目标管理对话框（侧栏终端区「添加 / 管理」入口）。
 const showSshTargets = ref(false)
 // 打开时剪掉容器已删的隐藏组：会话随容器消亡，留着只会恢复出连不上的空 tab。
