@@ -513,7 +513,7 @@ function saveHidden(): void {
 }
 watch(hiddenGroups, saveHidden, { deep: true })
 
-// 手机侧栏抽屉：overlay 形态（绝对定位 + 遮罩），终端区宽度不变——不选 push 是刻意的：
+// 手机侧栏环境选择页：overlay 形态（绝对定位 + 遮罩），终端区宽度不变——不选 push 是刻意的：
 // push 会改终端容器宽度 → 触发 refit / tmux resize，打断正在跑的 TUI/vim。
 // 默认收起；选完容器/宿主自动收（见 openTerm/openHostTerm）。
 const drawerOpen = ref(false)
@@ -2572,7 +2572,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     <aside
       v-if="!props.popout"
       ref="asideRef"
-      class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[85vw] max-md:max-w-80 max-md:shadow-xl max-md:transition-transform md:overflow-hidden md:transition-[width] md:duration-200"
+      class="flex w-56 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-0 max-md:z-40 max-md:w-full max-md:pt-safe max-md:pb-safe max-md:transition-transform md:overflow-hidden md:transition-[width] md:duration-200"
       :class="[drawerOpen ? '' : 'max-md:-translate-x-full', railMode ? 'md:w-12 md:overflow-visible' : 'md:w-64 md:[&>*]:w-64']"
     >
       <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：分组导航 + hover 子列表。
@@ -2772,21 +2772,20 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
 
       <!-- 展开态：品牌块 + 容器卡片列表 + 底部环境区 -->
       <template v-else>
-      <!-- 品牌块：纯身份标识，居中。系统健康不做常驻展示——引擎/连接出问题时终端连不上，
-           tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。手机抽屉态左侧加收起按钮；
-           桌面收起动作在服务摘要行下方（与收缩态展开键同一位置，肌肉记忆一致）。 -->
+      <!-- 手机全屏环境选择页用任务标题，桌面保留品牌身份；系统健康不做常驻展示——引擎/
+           连接出问题时终端连不上，tmux 连接错误自然会暴露问题，不值得为小概率状态占一眼。 -->
       <div class="relative flex h-10 shrink-0 items-center justify-center gap-2 border-b border-border px-3">
         <Button
           variant="ghost"
           size="icon-xs"
           class="absolute left-1 md:hidden"
-          title="收起侧栏"
+          :title="isPhone ? '关闭环境选择' : '收起侧栏'"
           @click="drawerOpen = false"
         >
           <X />
         </Button>
-        <img src="/logo.svg" alt="" class="size-5" />
-        <span class="text-sm font-semibold tracking-tight">MySandbox</span>
+        <img v-if="!isPhone" src="/logo.svg" alt="" class="size-5" />
+        <span class="text-sm font-semibold tracking-tight">{{ isPhone ? '选择环境' : 'MySandbox' }}</span>
       </div>
 
       <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题
@@ -3367,11 +3366,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         <button
           type="button"
           class="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="收起侧栏（窄边）"
-          @click="collapseSidebar"
+          :title="isPhone ? '关闭环境选择' : '收起侧栏（窄边）'"
+          @click="isPhone ? (drawerOpen = false) : collapseSidebar()"
         >
           <PanelLeftClose class="size-3.5 shrink-0" />
-          <span class="min-w-0 truncate text-xs">收起侧栏</span>
+          <span class="min-w-0 truncate text-xs">{{ isPhone ? '关闭环境选择' : '收起侧栏' }}</span>
         </button>
       </div>
       </template>
