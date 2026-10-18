@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent, provide } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { usePageRoute } from '@/composables/usePageRoute'
 import {
   listContainers,
@@ -698,9 +699,9 @@ const delTarget = ref<ContainerView | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
 
 // ---- 文件面板 ----
-// 开合与「正在编辑哪个文件」都持久化：刷新后原样恢复（终端 tab 有存档，文件侧不能比它短）。
-// 与 tabs 同款：popout 独立 key，窗口间互不读写。编辑器只存 target（容器/路径/diff 模式）；
-// line/col 是一次性的 Ctrl+点击定位，不还原。
+// 主窗口的开合/目标由路由承载（/files/:target，target 是文件端点哨兵）：系统后退可关，
+// 刷新可回；popout 独立窗口不参与主导航，继续用本地布尔持久化。编辑器仍存 target/
+// 路径/diff；FilePanel 内部的浏览路径与 cwd 跟随后续单独路由化。
 const FILES_OPEN_KEY =
   props.popout && props.popoutTarget
     ? `mysandbox:files-open-popout-${props.popoutTarget}`
@@ -742,13 +743,39 @@ function saveNum(key: string, v: number): void {
     /* localStorage 不可用就跳过 */
   }
 }
-const showFiles = ref(loadBool(FILES_OPEN_KEY))
-watch(showFiles, (v) => {
+const popoutFilesOpen = ref(loadBool(FILES_OPEN_KEY))
+watch(popoutFilesOpen, (v) => {
   try {
     localStorage.setItem(FILES_OPEN_KEY, v ? '1' : '0')
   } catch {
     /* localStorage 不可用就跳过 */
   }
+})
+const route = useRoute()
+const router = useRouter()
+const routeFileTarget = computed(() =>
+  route.name === 'files' && typeof route.params.target === 'string' ? decodeURIComponent(route.params.target) : '',
+)
+const showRoutedFiles = computed({
+  get: () => route.name === 'files',
+  set: (open) => {
+    if (open) {
+      const target =
+        routeFileTarget.value || (activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID)
+      void router.push({ name: 'files', params: { target: encodeURIComponent(target) } })
+      return
+    }
+    if (route.name !== 'files') return
+    if (typeof history.state?.back === 'string') void router.back()
+    else void router.replace({ name: 'workspace' })
+  },
+})
+const showFiles = computed({
+  get: () => (props.popout ? popoutFilesOpen.value : showRoutedFiles.value),
+  set: (open) => {
+    if (props.popout) popoutFilesOpen.value = open
+    else showRoutedFiles.value = open
+  },
 })
 // 面板宽度（像素制，拖动独立于终端 pane 的比例制 grows）。
 const filesW = ref(320)
@@ -773,6 +800,18 @@ function onFilesDrag(dx: number) {
 // 文件面板跟随哪个 pane（active group 内的序号；切组时恢复到该组最近聚焦的 pane）。
 const filePaneIdx = ref(0)
 const activeGroup = computed(() => groups.value[activeIdx.value])
+// 路由目标是文件端点哨兵；没有对应终端组时也能直接浏览（面板降级为无终端模式）。
+function fileTargetName(id: string): string {
+  if (id === HOST_ID) return '本机'
+  if (id.startsWith('s:')) return id.slice(2)
+  if (id.startsWith('ssh:')) return id.slice(4)
+  const c = items.value.find((x) => x.id === id)
+  return c ? c.displayName || c.name : id
+}
+const filePanelTarget = computed(() =>
+  showFiles.value ? routeFileTarget.value || (activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID) : '',
+)
+const filePanelTargetName = computed(() => (filePanelTarget.value ? fileTargetName(filePanelTarget.value) : ''))
 // 文件面板/编辑器/复制粘贴的目标 id：服务组加 's:' 前缀（api.ts filesBase 切
 // /api/services/<name>/*），SSH 组 containerId 本体即 'ssh:'+名（切 /api/ssh/<name>/*），
 // 容器/宿主组原样（宿主即 HOST_ID 哨兵）。
@@ -785,6 +824,22 @@ const filePanes = computed(() => {
   return leafIds(g.root).map((termId, i) => ({ termId, label: `${groupLabel(g)} #${i + 1}` }))
 })
 const fileTermId = computed(() => filePanes.value[filePaneIdx.value]?.termId ?? null)
+// 用户切换终端 tab 时，面板仍保持“跟随当前终端组”的语义：同步路由目标。直接深链的
+// 目标没有对应终端组时不抢焦点，让面板独立浏览该目标。
+watch(activeGroup, (g) => {
+  if (!showFiles.value || !g) return
+  const oldTarget = routeFileTarget.value
+  if (oldTarget && !groups.value.some((x) => fileTargetId(x) === oldTarget)) return
+  const target = fileTargetId(g)
+  if (target !== oldTarget) {
+    void router.replace({ name: 'files', params: { target: encodeURIComponent(target) } })
+  }
+})
+watch(routeFileTarget, (target) => {
+  if (!showFiles.value || !target) return
+  const gi = groups.value.findIndex((g) => fileTargetId(g) === target)
+  if (gi >= 0) activeIdx.value = gi
+})
 // 每组最近聚焦的 pane（内存态）：文件面板跟随「最后落焦的命令行」的跨组记忆——
 // 切回某 tab 时跟随恢复到该组最后用的 pane，而不是固定回落首 pane。
 const paneFocusMemo = new Map<string, string>()
@@ -1361,7 +1416,7 @@ async function locateContainerPath(
 // 文件面板 open-file 汇聚点：目录列表点文件（无 opts）与 Git 变更条目点击（opts.diff
 // = 对比形态）共用。写成函数而非模板内联箭头——对象类型字面量在模板表达式里编不过。
 function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string }; editing?: boolean }) {
-  if (activeGroup.value) openFile(fileTargetId(activeGroup.value), activeGroup.value.name, p, o)
+  if (filePanelTarget.value) openFile(filePanelTarget.value, filePanelTargetName.value, p, o)
   // 手机文件面板是全屏覆盖层：选中文件后立即交还给编辑器，不再要求用户手动关面板。
   // 回入口是底部文件标签栏的「文件」钮，浏览上下文由 FilePanel 自身保留。
   if (isPhone.value) showFiles.value = false
@@ -4101,8 +4156,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       ref="filePanelRef"
       class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
       :style="isPhone ? undefined : { width: filesW + 'px' }"
-      :container-id="activeGroup ? fileTargetId(activeGroup) : ''"
-      :container-name="activeGroup ? activeGroup.name : ''"
+      :container-id="filePanelTarget"
+      :container-name="filePanelTargetName"
       :panes="filePanes"
       :term-id="fileTermId"
       :has-terminal="!!activeGroup"
