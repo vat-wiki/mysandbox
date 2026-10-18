@@ -12,6 +12,7 @@
 // 产出的服务。创建表单已退役（AI 时代服务经 compose 目录/agent 产生），完成 toast 由
 // lib/serviceJobs.ts 去重。
 import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   listServices,
   startService,
@@ -57,6 +58,8 @@ const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vu
 // initialSelect：侧栏卡片点击带来的服务名——打开或已打开时定位到该服务。
 const props = defineProps<{ initialSelect?: string }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>()
+const route = useRoute()
+const router = useRouter()
 
 const items = ref<ServiceView[]>([])
 const status = ref<ServicesStatus | null>(null)
@@ -85,6 +88,19 @@ watch(selService, () => {
   cfg.value = null
   cfgYaml.value = ''
   void refreshListen()
+})
+
+// URL 是外部可分享的入口；面板内部因任务落定、目标服务消失而换选时，把服务名同步回
+// 路由（replace，不制造额外历史）。泛 /services 打开并选中默认项后也收敛成具体详情 URL。
+watch(selService, (name) => {
+  if (route.name !== 'services' && route.name !== 'service') return
+  if (name) {
+    if (route.name !== 'service' || route.params.name !== name) {
+      void router.replace({ name: 'service', params: { name } })
+    }
+  } else if (route.name === 'service') {
+    void router.replace({ name: 'services' })
+  }
 })
 
 // —— 分层折叠态 ——
