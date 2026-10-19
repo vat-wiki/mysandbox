@@ -639,11 +639,10 @@ function runKeyBtn(id: string) {
       break
   }
 }
-function tbDown(b: ToolBtn, ev: PointerEvent) {
+function tbDown(b: ToolBtn) {
   if (b.t !== 'key') return
   const a = KEY_POOL[b.id]?.act
   if (a?.kind === 'repeat') {
-    ev.preventDefault() // 长按期间不转移焦点（软键盘不收起）
     if (ctrlSticky.value || altSticky.value) {
       sendToolSeq(a.seq) // 粘滞态：首键带修饰发出并消费粘滞（修饰组合没有连发需求）
       return
@@ -1388,6 +1387,9 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <!-- 触屏工具条（手机 only，agent 遥控布局）。
+         按钮全部 @pointerdown.prevent：点按钮不抢终端 textarea 焦点（否则软键盘收起→refit 的
+         term.focus() 又抢回 = 键盘闪一下，且正在输入的 composition 被中断吞字——粘滞 Ctrl 后
+         敲字母不响应就是它）。prevent 不影响 click 派发，各按钮 @click 照常工作。
          按钮全可配置（⋯ 设置弹窗编排，存 lib/termToolbar.ts 模块级状态 + localStorage），7 列 grid 自然换行（对齐 Termux 一行 7 键）——
          「哪个键高频」由使用者编排，代码不硬编码。预置布局 = Termux 默认 extra-keys 两行
          （ESC / - HOME ↑ END 上页 / Tab Ctrl Alt ← ↓ → 下页）+ ⏎ ⇥。Ctrl/Alt 是粘滞修饰
@@ -1410,22 +1412,22 @@ onBeforeUnmount(() => {
               type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': (b.id === 'ctrl' && ctrlSticky) || (b.id === 'alt' && altSticky) }"
               :disabled="b.id === 'copy' && !termHasSel"
               :title="KEY_POOL[b.id]?.title"
-              @pointerdown="tbDown(b, $event)" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
+              @pointerdown.prevent="tbDown(b)" @pointerup="stopRepeat" @pointercancel="stopRepeat" @pointerleave="stopRepeat" @contextmenu.prevent
               @click="runKeyBtn(b.id)"
             >{{ KEY_POOL[b.id]?.label }}</button>
             <button
               v-else-if="b.t === 'custom'"
               type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送自定义按键「${b.label}」`"
-              @click="sendToolSeq(b.seq)"
+              @pointerdown.prevent @click="sendToolSeq(b.seq)"
             >{{ b.label }}</button>
             <button
               v-else-if="b.t === 'settings'"
-              type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条按钮设置：增删 / 调序 / 快捷短语" @click="settingsOpen = true"
+              type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条按钮设置：增删 / 调序 / 快捷短语" @pointerdown.prevent @click="settingsOpen = true"
             >⋯</button>
             <button
               v-else
               type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送「${b.text}」并回车`"
-              @click="sendSnippet(b.text)"
+              @pointerdown.prevent @click="sendSnippet(b.text)"
             >{{ b.text }}</button>
           </template>
         </div>
