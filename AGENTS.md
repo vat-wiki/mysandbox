@@ -178,7 +178,8 @@ docker 引擎移除后 docker 的新角色：**配套服务层**（界面名词�
 
 ### 容器 code-server
 
-- **浏览器版 VS Code**（`server/codeserver.ts`，`POST /api/containers/:id/code-server` SSE）：照 desktop.ts 的按需 ensure 模式——探测（pgrep + /dev/tcp 8080）双确认 → 缺装装（npm 全局，registry 在本部署网络比 coder 官方 install.sh 稳）→ `setsid nohup` 起（dev 用户，常驻容器内）→ 就绪轮询。`--auth none`：代理口径必先过 cookie 鉴权、直连口径暴露面 = 自管网段（ufw 外部网段默认全拒），不新增暴露。打开走前端 `serviceUrl('c', name, 8080, ip)`（与端口点击同口径，见 lib/proxy.ts）。入口 = 容器右键菜单「Code Server」，进度进 toast（与桌面 Dialog 的进度形态不同：这里无 Dialog，装完即开新标签页）。
+- **浏览器版 VS Code**（`server/codeserver.ts`，`POST /api/containers/:id/code-server` SSE）：照 desktop.ts 的按需 ensure 模式——探测（pgrep + HTTP 实测，**curl 必须 `-L`**：记住上次工作区后裸 `/` 302 到 `/?folder=…`，固定等 200 会卡到超时）双确认 → 缺装装（npm 全局，registry 在本部署网络比 coder 官方 install.sh 稳）→ `setsid nohup` 起（dev 用户）→ 就绪轮询。`--auth none`：代理口径必先过 cookie 鉴权、直连口径暴露面 = 自管网段（ufw 外部网段默认全拒），不新增暴露。打开走前端 `serviceUrl('c', name, 8080, ip)`（与端口点击同口径，见 lib/proxy.ts）。入口 = 容器右键菜单「Code Server」+ 文件面板工具栏按钮（带 `?folder=` 当前目录），进度进 toast（与桌面 Dialog 的进度形态不同：这里无 Dialog，装完即开新标签页）。
+- **闲置自动停**（`startCodeServerIdleSweeper`，`cfg.codeServer.idleStopMinutes` 默认 30，0=常驻）：进程在用的唯一可靠信号是 8080 的 ESTABLISHED 连接（浏览器开着才有 workbench websocket）——sweep 每 5min 一拍（activity.ts 同形态：inFlight 防重入 + unref），对每台运行中容器一次 exec 读 `/proc/net/tcp(6)`（状态 01、本地端口 1F90）数连接；连接 >0 刷新 `lastSeen`、首见 0 连接只记基线（起服务到开 tab 有间隙），超时 `pkill`（TERM+KILL）。磁盘安装保留，下次打开 ensure 秒级重起；lastSeen 进程内不持久化（重启后重新计时，最多多宽限一拍）。
 
 ### web/（Vue 3 + Vite + Tailwind v4）
 

@@ -92,6 +92,11 @@ terminal:
   quietSeconds: 15
   agentNotify: true
 
+# 容器 code-server（按需 ensure）的闲置自动停：浏览器关掉 tab 后 8080 无连接，
+# 闲置超过 idleStopMinutes 分钟即停进程（磁盘安装保留，下次打开秒级重起）。0 = 常驻不停。
+codeServer:
+  idleStopMinutes: 30
+
 # 宿主防火墙（ufw）——三方互通（宿主 ↔ LXC ↔ docker 服务）的放行自管。
 # 核心规则由 server/firewall.ts 按 config 推导：自管网段（LXC ipPool / services ipPool）
 # = 可信工作区，INPUT 各一条全端口 blanket（容器 DNS 53、dockerApi 2375、peer 7331、

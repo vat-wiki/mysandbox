@@ -138,6 +138,14 @@ export const ConfigSchema = z.object({
       agentNotify: z.boolean().default(true),
     })
     .default({ quietSeconds: 15, agentNotify: true }),
+  // 容器 code-server（server/codeserver.ts）闲置自动停：浏览器开着才有 8080 的
+  // ESTABLISHED 连接，闲置超过 idleStopMinutes 分钟即 pkill（磁盘安装保留，下次打开
+  // 秒级重起）。0 = 不自动停（常驻，旧行为）。
+  codeServer: z
+    .object({
+      idleStopMinutes: z.number().int().default(30),
+    })
+    .default({ idleStopMinutes: 30 }),
   // 宿主防火墙（ufw）追加放行（外部网段特例：热点访问 console 等；port 缺省 = 全端口）。
   // 核心放行（自管网段全端口 blanket + LXC 桥 route）由 firewall.ts 从 ipPool/services
   // 推导，不经这里；应用在 mysandbox-firewall.service。

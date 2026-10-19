@@ -21,6 +21,7 @@ import { registerServices } from './services.js';
 import { registerServiceFileRoutes } from './serviceFiles.js';
 import { makeRewriteUrl, registerProxy, consoleOrigin, proxyBases, proxyUnauthorizedHtml } from './proxy.js';
 import { startActivityPoller } from './activity.js';
+import { startCodeServerIdleSweeper } from './codeserver.js';
 import { ensureTlsMaterial } from './tls.js';
 import { HttpError, wrapEngineError } from './errors.js';
 import { getVersion } from './version.js';
@@ -110,6 +111,8 @@ export async function buildServer(cfg: Config) {
   await registerProxy(app, cfg);
   // 终端输出活动扫描（server/activity.ts）：进程内周期轮询，供 /api/terminal-activity。
   startActivityPoller(cfg);
+  // code-server 闲置自动停（server/codeserver.ts）：进程内周期 sweep。
+  startCodeServerIdleSweeper(cfg);
 
   // 前端静态资源（web/dist）。开发期未构建则回退占位。
   const webDist = findWebDist();
