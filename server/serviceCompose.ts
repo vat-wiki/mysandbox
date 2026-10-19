@@ -229,8 +229,9 @@ function parseComposeServices(yaml: string): ParsedProjectService[] | null {
     if (Array.isArray(svc.ports)) {
       for (const p of svc.ports as unknown[]) {
         const s = typeof p === 'string' ? p : typeof p === 'object' && p ? String((p as Record<string, unknown>).target ?? '') : '';
-        const m = /^\d+/.exec(s.trim());
-        if (m) ports.push(Number(m[0].split(':')[0]));
+        // 容器端口在最后一段："8888:8080"、"127.0.0.1:8888:8080"、"8080/tcp"——首段可能是绑定 IP
+        const m = /^\d+/.exec(s.trim().split(':').pop() ?? '');
+        if (m) ports.push(Number(m[0]));
       }
     }
     out.push({
