@@ -160,7 +160,10 @@ export function batchExec(
 // 默认全局 prefix 会跟着 PATH 上第一个 node 的安装根走（dev 的 node26 把整批包装进
 // 过它自己的 lib/node_modules），不显式传落点不可预期。root 代写 /home/dev/.local
 // 后必须 chown 归还属主，残留 root 属主会让 dev 侧 npm 自更新写不进 prefix。
-// --ignore-scripts 防 pi 的 postinstall 挂住；opencode 的 postinstall 手动补跑。
+// --ignore-scripts 防 pi 的 postinstall 挂住；opencode/claude 的 postinstall 手动补跑
+// （claude-code 新版是原生二进制分发：postinstall install.cjs 把平台 optional dep 里的
+// ELF 拷到 bin/claude.exe，跳过它就留「native binary not installed」报错 stub；optional
+// dep 下载失败时它只打印提示、留 stub——好在收尾的 claude --version 会非零退出显式暴露）。
 const AGENT_UPDATE_SCRIPT = `\
 export HOME=/tmp
 PAIRS='claude:@anthropic-ai/claude-code codex:@openai/codex opencode:opencode-ai pi:@earendil-works/pi-coding-agent openclaw:openclaw'
@@ -178,11 +181,17 @@ if [ -n "\$root_pkgs" ]; then
   if [ -f /usr/local/lib/node_modules/opencode-ai/postinstall.mjs ]; then
     (cd /usr/local/lib/node_modules/opencode-ai && node postinstall.mjs)
   fi
+  if [ -f /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs ]; then
+    (cd /usr/local/lib/node_modules/@anthropic-ai/claude-code && node install.cjs)
+  fi
 fi
 if [ -n "\$local_pkgs" ]; then
   npm install -g --prefix /home/dev/.local --ignore-scripts \$local_pkgs || exit 1
   if [ -f /home/dev/.local/lib/node_modules/opencode-ai/postinstall.mjs ]; then
     (cd /home/dev/.local/lib/node_modules/opencode-ai && node postinstall.mjs)
+  fi
+  if [ -f /home/dev/.local/lib/node_modules/@anthropic-ai/claude-code/install.cjs ]; then
+    (cd /home/dev/.local/lib/node_modules/@anthropic-ai/claude-code && node install.cjs)
   fi
   for p in \$local_pkgs; do chown -R 1000:1000 "/home/dev/.local/lib/node_modules/\${p%@*}"; done
   chown -R 1000:1000 /home/dev/.local/bin
