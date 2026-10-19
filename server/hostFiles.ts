@@ -400,6 +400,43 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     } catch {
       unb = true; // 无任何提交：HEAD 校验失败但仓库存在（toplevel 刚 rev-parse 成功）
     }
+    // —— gitlink（子模块）条目：合成双侧文本，不只报「有变更」（与容器侧脚本同语义）——
+    // 普通文件协议对 gitlink 天然双侧落空（cat-file -s 对 commit 对象失败 / stat 非文件），
+    // 点开只有「无内容」。命中条件：index 或 HEAD 里该路径是 160000。左 = HEAD 记录的旧
+    // 指针；右 = 子模块工作区 HEAD（未初始化退 index 记录值；目录已删沿用 absent 语义只留
+    // 左指针）。子模块仓库可用时补 old..new 提交列表（限 50 条）。
+    const lsIdx = await gitExec(['-C', top, 'ls-files', '-s', '--', `:(literal)${wr}`]).catch(() => '');
+    let sub = lsIdx.startsWith('160000');
+    if (!sub && !unb) {
+      const tree = await gitExec(['-C', top, 'ls-tree', 'HEAD', '--', `:(literal)${hr}`]).catch(() => '');
+      sub = tree.startsWith('160000');
+    }
+    if (sub) {
+      const existsW = await exists(path); // 目录已删（D 条目）：work 侧沿 absent 语义
+      const subRepo = existsW && (await exists(join(path, '.git')));
+      let oh = '';
+      if (!unb) oh = (await gitExec(['-C', top, 'rev-parse', '-q', '--verify', `HEAD:${hr}`]).catch(() => '')).trim();
+      let nh = '';
+      if (subRepo) {
+        nh = (await gitExec(['-C', path, 'rev-parse', 'HEAD']).catch(() => '')).trim();
+      } else if (existsW) {
+        // index 记录值兜底（未初始化子模块）：ls-files 行形如「160000 <hash> 0\t<路径>」
+        nh = lsIdx.split('\t')[0]?.split(' ')[1] ?? '';
+      }
+      const lg =
+        oh && nh && oh !== nh && subRepo
+          ? (await gitExec(['-C', path, 'log', '--oneline', '--no-decorate', '-n', '50', `${oh}..${nh}`]).catch(() => '')).trim()
+          : '';
+      const bt = `子模块指针（HEAD 版本）\n${oh || '（HEAD 无此路径）'}`;
+      const wt =
+        `子模块指针（工作区）\n${nh || '（无）'}` +
+        (lg ? `\n\n指针间提交（${oh.slice(0, 7)}..${nh.slice(0, 7)}）:\n${lg}` : '');
+      const proto =
+        `FLAGS ${unb ? 1 : 0} b ${existsW ? 'b' : 'n'} 0 0\n` +
+        `@@BASE@@\n${Buffer.from(bt).toString('base64')}` +
+        `@@WORK@@\n${existsW ? Buffer.from(wt).toString('base64') : ''}`;
+      return { ...parseDiffProto(proto, path, headPath), toplevel: top };
+    }
     // HEAD 侧：cat-file -s 拿尺寸；show 流式读取至 MAX_BYTES+1 截断（防巨型 blob 进内存）。
     let bsize = 0;
     let bbuf: Buffer | null = null;
