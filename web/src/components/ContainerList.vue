@@ -25,6 +25,8 @@ import {
   listTermActivity,
   termSessionKey,
   HOST_ID,
+  SVC_FILE_PREFIX,
+  SSH_ID_PREFIX,
   serviceFileId,
   sshGroupId,
   sshTargetName,
@@ -2185,6 +2187,11 @@ function mobileFileTabActionList(t: EditorTab, index: number) {
     isFirst: index === 0,
     isLast: index === editorTabs.value.length - 1,
     single: editorTabs.value.length <= 1,
+    // 仅真容器目标（宿主/服务/SSH 无 code-server），与 FilePanel 的 canCodeServer 同判据。
+    codeServerable:
+      t.containerId !== HOST_ID &&
+      !t.containerId.startsWith(SVC_FILE_PREFIX) &&
+      !t.containerId.startsWith(SSH_ID_PREFIX),
   })
 }
 
@@ -2196,6 +2203,8 @@ function runMobileFileTabAction(t: EditorTab, action: CardAction) {
     },
     openNormal: onOpenNormal,
     download: (tab) => void downloadTab(tab),
+    openInCodeServer: (tab) =>
+      openCodeServer({ id: tab.containerId, name: tab.containerName, folder: dirname(tab.path) }),
     copyPath: (tab) => void copyTabPath(tab),
     copyHostPath: (tab) => void copyTabHostPath(tab),
     close: closeFileTab,

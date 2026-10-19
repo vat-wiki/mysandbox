@@ -50,12 +50,14 @@ export interface FileTabActionInput {
   isFirst: boolean
   isLast: boolean
   single: boolean
+  codeServerable: boolean
 }
 
 export interface FileTabActionDeps {
   toggleMode: (tab: MobileEditorTab) => void
   openNormal: (tab: MobileEditorTab) => void
   download: (tab: MobileEditorTab) => void
+  openInCodeServer: (tab: MobileEditorTab) => void
   copyPath: (tab: MobileEditorTab) => void
   copyHostPath: (tab: MobileEditorTab) => void
   close: (tab: MobileEditorTab) => void
@@ -63,12 +65,15 @@ export interface FileTabActionDeps {
 }
 
 export function fileTabActions(input: FileTabActionInput): CardAction[] {
-  const { tab, editing, preview, previewable, hasDiff, isFirst, isLast, single } = input
+  const { tab, editing, preview, previewable, hasDiff, isFirst, isLast, single, codeServerable } = input
   const actions: CardAction[] = [
     { id: 'toggle', label: editing && !preview ? '预览' : '编辑' },
   ]
   if (hasDiff) actions.push({ id: 'normal', label: '以普通方式打开' })
   if (previewable) actions.push({ id: 'download', label: '下载' })
+  // 文件 tab 长按直达 Code Server（所在目录作工作区）：仅真容器目标——宿主/服务/SSH
+  // 无 code-server 可言，与 FilePanel 的 canCodeServer 同判据。
+  if (codeServerable) actions.push({ id: 'code-server', label: '在 Code Server 打开' })
   actions.push(
     { id: 'copy-path', label: '复制容器路径', detail: tab.path },
     { id: 'copy-host-path', label: '复制实际路径' },
@@ -84,6 +89,7 @@ export function runFileTabAction(tab: MobileEditorTab, action: CardAction, deps:
   if (action.id === 'toggle') deps.toggleMode(tab)
   else if (action.id === 'normal') deps.openNormal(tab)
   else if (action.id === 'download') deps.download(tab)
+  else if (action.id === 'code-server') deps.openInCodeServer(tab)
   else if (action.id === 'copy-path') deps.copyPath(tab)
   else if (action.id === 'copy-host-path') deps.copyHostPath(tab)
   else if (action.id === 'close') deps.close(tab)
