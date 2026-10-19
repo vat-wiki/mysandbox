@@ -305,7 +305,7 @@ export const deleteContainer = (id: string, opts: { deleteData?: boolean; confir
 // 容器内 code-server（浏览器版 VS Code）按需 ensure：缺装装、没起起。done 帧
 // result = {name, ip}，前端拼打开 URL（serviceUrl('c', …)）。端口与后端
 // server/codeserver.ts 的 CODE_SERVER_PORT 对齐。
-export const CODE_SERVER_PORT = 8080
+export const CODE_SERVER_PORT = 7332
 export async function ensureCodeServer(
   id: string,
   onEvent: (e: BaseProgressEvent) => void,

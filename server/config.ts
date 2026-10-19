@@ -138,7 +138,7 @@ export const ConfigSchema = z.object({
       agentNotify: z.boolean().default(true),
     })
     .default({ quietSeconds: 15, agentNotify: true }),
-  // 容器 code-server（server/codeserver.ts）闲置自动停：浏览器开着才有 8080 的
+  // 容器 code-server（server/codeserver.ts，监听 7332）闲置自动停：浏览器开着才有
   // ESTABLISHED 连接，闲置超过 idleStopMinutes 分钟即 pkill（磁盘安装保留，下次打开
   // 秒级重起）。0 = 不自动停（常驻，旧行为）。
   codeServer: z

@@ -1,10 +1,10 @@
 // 容器内 code-server（浏览器版 VS Code）：照 desktop.ts 的按需 ensure 模式，
 // 走 SSE（beginSse，create 容器同款）——装包可能要几分钟，进度人话帧给前端 toast。
-// 打开 = 前端 serviceUrl('c', name, 8080, ip)，与容器端口点击同一条路径（代理口径
+// 打开 = 前端 serviceUrl('c', name, PORT, ip)，与容器端口点击同一条路径（代理口径
 // 经 Web 代理、直连口径 IP:端口，见 web/src/lib/proxy.ts）。
 //
 // 生命周期：setsid nohup 起在容器内（dev 用户），关标签页/重启 mysandbox 都不影响；
-// 闲置自动停——浏览器关掉 tab 后 8080 无 ESTABLISHED 连接，超过 cfg.codeServer.
+// 闲置自动停——浏览器关掉 tab 后本端口无 ESTABLISHED 连接，超过 cfg.codeServer.
 // idleStopMinutes 即被周期 sweep 停掉（磁盘安装保留，下次 ensure 秒级重起）。
 // 容器重启后进程没了，ready 缓存被 alive 实测探测纠正，下次触发自动重起。
 // 安装通道 npm 全局（与模板 AI CLI 同通道——registry 在本部署网络实测可达，
@@ -18,13 +18,15 @@ import { execRun, listManaged } from './engine/index.js';
 import { beginSse } from './sse.js';
 import { log } from './logger.js';
 
-export const CODE_SERVER_PORT = 8080;
+// 端口选 7332：与 7321（控制台）/7331（peer）同族好记；8080 是 dev server 重灾区，
+// 容器内自起服务容易撞。容器各自网络命名空间，多容器同端口互不冲突，无需可配。
+export const CODE_SERVER_PORT = 7332;
 
 // 已确认 code-server 活着的容器 id（进程级缓存，同 desktopReady 的取舍）。
 const ready = new Set<string>();
 
 // 闲置停：每容器最近一次「有连接」的时间（进程内，同 jobs.ts 取舍——重启后重新计时，
-// 最多多宽限一个闲置周期，无害）。浏览器开着 code-server 才有 8080 的 ESTABLISHED
+// 最多多宽限一个闲置周期，无害）。浏览器开着 code-server 才有监听端口的 ESTABLISHED
 // 连接（workbench websocket），关 tab 即断——连接数就是在用的唯一可靠信号。
 const lastSeen = new Map<string, number>();
 
@@ -131,10 +133,13 @@ export async function ensureCodeServer(
 
 // ---- 闲置自动停（cfg.codeServer.idleStopMinutes，0 = 关闭）----
 // 照 activity.ts 的周期 sweep 形态：inFlight 防重入 + unref。对每台运行中容器一次
-// exec 同时探「进程在不在 + 8080 的 ESTABLISHED 连接数」（/proc/net/tcp，状态 01，
-// 本地端口 1F90=8080 十六进制）——不额外引入探测连接，也不会被 curl 探活误刷。
+// exec 同时探「进程在不在 + 监听端口的 ESTABLISHED 连接数」（/proc/net/tcp，状态 01，
+// 本地端口十六进制，由常量换算——改端口不会两处失同步）——不额外引入探测连接，
+// 也不会被 curl 探活误刷。
 
 const SWEEP_MS = 5 * 60_000;
+
+const PORT_HEX = CODE_SERVER_PORT.toString(16).toUpperCase();
 
 // 单容器一拍：返回 'none'（进程没了）| 数字（established 连接数）。
 async function idleProbe(cfg: Config, id: string): Promise<'none' | number> {
@@ -142,7 +147,7 @@ async function idleProbe(cfg: Config, id: string): Promise<'none' | number> {
     cfg,
     id,
     `pgrep -f 'code-serv[e]r' >/dev/null 2>&1 || { echo none; exit 0; }
-     awk 'NR>1 && $4=="01" && $2 ~ /:1F90$/' /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l`,
+     awk 'NR>1 && $4=="01" && $2 ~ /:${PORT_HEX}$/' /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l`,
   );
   if (r.exitCode !== 0) return 'none';
   const out = r.stdout.trim();

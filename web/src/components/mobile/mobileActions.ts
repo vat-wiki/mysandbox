@@ -14,6 +14,7 @@ export interface ContainerActionDeps {
   start: (container: ContainerView) => void
   power: (container: ContainerView, action: 'stop' | 'restart') => void
   openDesktop: (container: ContainerView) => void
+  codeServer: (container: ContainerView) => void
   rename: (container: ContainerView) => void
   export: (container: ContainerView) => void
   remove: (container: ContainerView) => void
@@ -43,7 +44,12 @@ export function containerActions(c: ContainerView, ports: ContainerPortRow[], di
   }
 
   if (c.state === 'running') {
-    actions.push({ id: 'stop', label: '停止' }, { id: 'desktop', label: '桌面' }, { id: 'restart', label: '重启' })
+    actions.push(
+      { id: 'stop', label: '停止' },
+      { id: 'desktop', label: '桌面' },
+      { id: 'codeServer', label: 'Code Server' },
+      { id: 'restart', label: '重启' },
+    )
   } else {
     actions.push({ id: 'start', label: '启动' })
   }
@@ -85,6 +91,7 @@ export function runContainerAction(c: ContainerView, action: CardAction, deps: C
   else if (action.id === 'stop') deps.power(c, 'stop')
   else if (action.id === 'restart') deps.power(c, 'restart')
   else if (action.id === 'desktop') deps.openDesktop(c)
+  else if (action.id === 'codeServer') deps.codeServer(c)
   else if (action.id === 'rename') deps.rename(c)
   else if (action.id === 'export') deps.export(c)
   else if (action.id === 'delete') deps.remove(c)

@@ -92,7 +92,7 @@ terminal:
   quietSeconds: 15
   agentNotify: true
 
-# 容器 code-server（按需 ensure）的闲置自动停：浏览器关掉 tab 后 8080 无连接，
+# 容器 code-server（按需 ensure，监听 7332）的闲置自动停：浏览器关掉 tab 后无连接，
 # 闲置超过 idleStopMinutes 分钟即停进程（磁盘安装保留，下次打开秒级重起）。0 = 常驻不停。
 codeServer:
   idleStopMinutes: 30

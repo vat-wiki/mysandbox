@@ -2122,6 +2122,7 @@ function runMobileContainerAction(c: ContainerView, action: CardAction) {
     openDesktop: (container) => {
       openDesktop(container)
     },
+    codeServer: onCodeServer,
     rename: onRename,
     export: (container) => {
       openExport(container)
