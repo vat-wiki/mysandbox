@@ -131,8 +131,8 @@ const canCodeServer = computed(() => {
   const id = targetId()
   return id !== HOST_ID && !id.startsWith(SVC_FILE_PREFIX) && !id.startsWith(SSH_ID_PREFIX)
 })
-function openInCodeServer(): void {
-  openCodeServer({ id: targetId(), name: props.containerName, folder: path.value || null })
+function openInCodeServer(folder?: string | null): void {
+  openCodeServer({ id: targetId(), name: props.containerName, folder: folder ?? (path.value || null) })
 }
 
 // —— 添加为技能（pull 反向：就地收进库）——把一个含 SKILL.md 的目录直接收进技能库
@@ -1761,6 +1761,10 @@ function fmtSize(n: number): string {
                     <DropdownMenuItem v-if="row.entry.type === 'file'" :disabled="isMultiHit(row)" @click="emit('open-file', row.path, { editing: true })">
                       <Pencil /> 编辑
                     </DropdownMenuItem>
+                    <!-- 与 ContextMenu 同动作：目录行直达 Code Server（触屏右键不可达的补偿入口）。 -->
+                    <DropdownMenuItem v-if="row.entry.type === 'dir' && canCodeServer" :disabled="isMultiHit(row)" @click="openInCodeServer(row.path)">
+                      <SquareCode /> 在 Code Server 打开
+                    </DropdownMenuItem>
                     <template v-if="row.entry.type === 'dir' && canRegistry && isSkillDir(row.path)">
                       <DropdownMenuItem :disabled="regBusy || isMultiHit(row)" @click="registerSkillFrom(row.path)">
                         <BookPlus /> 添加为技能
@@ -1800,6 +1804,11 @@ function fmtSize(n: number): string {
           <ContextMenuItem v-if="ctxTarget.entry.type === 'file'" :disabled="ctxMulti" @click="emit('open-file', ctxTarget.path, { editing: true })">
             编辑
           </ContextMenuItem>
+          <!-- 在 Code Server 打开：目录行/当前目录右键直达（带该目录作 ?folder= 工作区）。
+               仅真容器目标（canCodeServer），文件行不给——文件走上面的「编辑」。 -->
+          <ContextMenuItem v-if="ctxTarget.entry.type === 'dir' && canCodeServer" :disabled="ctxMulti" @click="openInCodeServer(ctxTarget.path)">
+            在 Code Server 打开
+          </ContextMenuItem>
           <!-- 添加为技能：只对含 SKILL.md 的目录显示（isSkillDir 门控），文案与工具栏按钮一致。
                separator 放项下不放上——目录没有「编辑」项，放上方它会贴住菜单顶缘。 -->
           <template v-if="ctxTarget.entry.type === 'dir' && canRegistry && isSkillDir(ctxTarget.path)">
@@ -1834,6 +1843,11 @@ function fmtSize(n: number): string {
           </ContextMenuItem>
           <ContextMenuSeparator />
         </template>
+        <!-- 空白处右键 = 当前目录：「在 Code Server 打开当前目录」与工具栏按钮同动作。
+             命中条目时不给（目录行有自己的项，避免同菜单两个近义项）。 -->
+        <ContextMenuItem v-if="!ctxTarget && canCodeServer && path" @click="openInCodeServer()">
+          在 Code Server 打开当前目录
+        </ContextMenuItem>
         <ContextMenuItem v-if="clip" :disabled="!path" @click="pasteInto(path)">
           粘贴到当前目录
         </ContextMenuItem>
