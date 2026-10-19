@@ -9,10 +9,11 @@
 import { HttpError, badRequest } from './errors.js';
 
 export interface GitChange {
-  file: string; // 相对 toplevel 的 posix 相对路径；两侧 status 均 -uall 展开 untracked 目录，恒为单个文件（不出现尾 / 的目录条目）
+  file: string; // 相对 toplevel 的 posix 相对路径；两侧 status 均 -uall 展开 untracked 目录，恒为单个文件（实测 git 2.43 连未跟踪嵌套仓库都整条不出现，无目录条目）
   x: string; // porcelain 第 1 列（index 态）
   y: string; // porcelain 第 2 列（worktree 态）
   oldFile?: string; // 仅 R/C 条目：改名/拷贝前旧路径（-z 下跟在记录后的独立字段）
+  submodule?: boolean; // gitlink 条目（index 里 mode 160000）：子模块指针变更，点行应下钻其变更列表而非开普通 diff
 }
 
 export interface GitStatusView {
@@ -101,6 +102,26 @@ export function parsePorcelainZ(out: string): Omit<GitStatusView, 'repo' | 'topl
     if (changes.length > MAX_CHANGES) view.truncated = true;
   }
   return view;
+}
+
+// status 协议尾部（\0\n@\n 之后 ls-files -s -z 的输出）-> gitlink 路径集。注意 -z 只把
+// 行尾换成 \0，meta 与路径之间仍是 TAB：token 形如「160000 <hash> <stage>\t<路径>」，
+// 路径取首个 \t 之后（路径本身可含 \t 之外无碍——取段后整段）。只收 mode 160000 的条目。
+export function parseGitlinkSet(lsZ: string): Set<string> {
+  const set = new Set<string>();
+  for (const tok of lsZ.split('\0')) {
+    if (!tok.startsWith('160000 ')) continue;
+    const i = tok.indexOf('\t');
+    if (i >= 0) set.add(tok.slice(i + 1));
+  }
+  return set;
+}
+
+// 给 status 视图的变更条目打 submodule 标记（四侧 status 路由共用；没有 gitlink 时原样返回）。
+export function withSubmodules<T extends { changes?: GitChange[] }>(v: T, lsZ: string): T {
+  const gl = parseGitlinkSet(lsZ);
+  if (gl.size && v.changes) v.changes = v.changes.map((c) => (gl.has(c.file) ? { ...c, submodule: true } : c));
+  return v;
 }
 
 // 分支行解析：填充 branch/label/unborn/ahead/behind。

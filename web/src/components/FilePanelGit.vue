@@ -29,7 +29,7 @@ import {
   type GitWorktreesView,
   type GitRestoreTarget,
 } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, ArrowLeft, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -50,6 +50,14 @@ const err = ref('') // 温和降级：灰字提示，不进面板主错误条
 // 折叠态本地保存（path 变不清，切容器随 :key 重建复位）。dock 在面板底部（VSCode 源代码
 // 管理式），默认展开、高度定档：变更数在折叠头徽章上仍可见，收起省列表高度。
 const collapsed = ref(false)
+
+// —— 子模块下钻：点子模块条目进入其自身变更列表（同一 dock 复用，数据源换成子模块仓库）——
+// status 端点把 index 里 mode 160000 的 gitlink 条目标记 submodule=true（porcelain 对
+// gitlink 与普通文件同形，只有 index 的 mode 能分辨）。下钻后 fetch/restore/分支/worktree
+// 全走 statusPath（各端点本就按 path 所在仓库解析），顶部给返回行 + 指针变更入口（开上级
+// 仓库视角的 gitlink 合成 diff）。子模块不可用（未检出/已删）时自动退出下钻回上级。
+const drillPath = ref<string | null>(null)
+const statusPath = computed(() => drillPath.value ?? props.path)
 
 // —— 视图模式（平铺 / 目录树），localStorage 持久化 ——
 type GitViewMode = 'list' | 'tree'
@@ -77,14 +85,21 @@ let inFlight = false // 门闩：上一发没回来不发下一发（慢仓不�
 let notRepoKey = '' // repo:false 结果的缓存键（path 变化才失效）
 
 async function fetchStatus() {
-  if (!props.path || inFlight) return
-  if (notRepoKey === props.path) return // 已确认非仓库，等 path 变化再试
+  const sp = statusPath.value
+  if (!sp || inFlight) return
+  if (!drillPath.value && notRepoKey === props.path) return // 已确认非仓库，等 path 变化再试
   const seq = ++gitSeq
   inFlight = true
   try {
-    const v = await getGitStatus(props.containerId, props.path)
+    const v = await getGitStatus(props.containerId, sp)
     if (seq !== gitSeq) return // 过期响应
     if (!v.repo) {
+      if (drillPath.value) {
+        drillPath.value = null // 子模块仓库不可用（未检出/已删）：退出下钻回上级
+        err.value = '子模块仓库不可用（未检出或已删除）'
+        setTimeout(fetchStatus, 0) // 立刻回刷上级列表（此刻 inFlight 仍占着，让下一拍跑）
+        return
+      }
       notRepoKey = props.path
       view.value = null
       return
@@ -115,11 +130,12 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
 
-// path / 容器变化立刻重查（含从仓库内走到仓库外的场景）；树折叠状态一并复位
+// path / 容器变化立刻重查（含从仓库内走到仓库外的场景）；树折叠与下钻状态一并复位
 watch(
-  () => [props.containerId, props.path],
+  () => [props.containerId, statusPath.value],
   () => {
     notRepoKey = ''
+    drillPath.value = null
     collapsedDirs.value = new Set()
     seenDirs.clear()
     armed.value = new Set()
@@ -172,6 +188,21 @@ function openChange(c: GitChange) {
     ...(c.oldFile ? { headPath: absOf(c.oldFile) } : {}),
   })
 }
+// 条目点击分流：子模块下钻进其变更列表，其余开对比。
+// 下钻 = 把 dock 数据源切到子模块路径（statusPath），列表/撤销/分支全套照旧。
+//（未跟踪嵌套仓库不用管：实测 git 2.43 的 status 压根不列它，列表里不会出现。）
+function isSubEntry(c: GitChange): boolean {
+  return !!c.submodule
+}
+function onRowClick(c: GitChange) {
+  if (isSubEntry(c)) drillPath.value = absOf(c.file)
+  else openChange(c)
+}
+// 下钻视角的指针变更入口：path = 子模块目录本身，diff 端点按上级仓库解析出 gitlink，
+// 合成「旧指针 vs 新指针 + 指针间提交」文本（tracked 子模块才有意义，untracked 开了是空）。
+function openPointerDiff() {
+  if (drillPath.value) emit('open-change', { path: drillPath.value.replace(/\/+$/, '') })
+}
 
 // —— 撤销变更：单文件/目录/整体，恢复到 HEAD（VSCode「放弃更改」同语义）——
 // file：tracked（M/D/R/T/冲突）一键（丢 index+工作区改动、D 复活、R = 恢复旧路径+移除新
@@ -203,7 +234,7 @@ async function restoreByKey(key: string, needArm: boolean, target: GitRestoreTar
   }
   restoring.value = new Set([...restoring.value, key])
   try {
-    await gitRestore(props.containerId, props.path, target)
+    await gitRestore(props.containerId, statusPath.value, target)
     const a = new Set(armed.value)
     a.delete(key)
     armed.value = a
@@ -231,7 +262,7 @@ async function revertAll() {
   }
   restoringAll.value = true
   try {
-    await gitRestore(props.containerId, props.path, { all: true })
+    await gitRestore(props.containerId, statusPath.value, { all: true })
     armedAll.value = false
     refresh()
   } catch (e) {
@@ -270,7 +301,7 @@ watch(branchOpen, (open) => {
 async function fetchBranches() {
   branchLoading.value = true
   try {
-    branches.value = await getGitBranches(props.containerId, props.path)
+    branches.value = await getGitBranches(props.containerId, statusPath.value)
   } catch (e) {
     if (e instanceof Unauthorized) return
     branchErr.value = e instanceof Error ? e.message : String(e)
@@ -332,22 +363,22 @@ function onFilterEnter() {
 }
 function createBranch() {
   const name = branchFilter.value.trim()
-  if (name) void runBranchAction(() => gitCheckout(props.containerId, props.path, name, { create: true }), 'close')
+  if (name) void runBranchAction(() => gitCheckout(props.containerId, statusPath.value, name, { create: true }), 'close')
 }
-const switchTo = (b: string) => runBranchAction(() => gitCheckout(props.containerId, props.path, b), 'close')
+const switchTo = (b: string) => runBranchAction(() => gitCheckout(props.containerId, statusPath.value, b), 'close')
 const checkoutRemote = (r: string) =>
-  runBranchAction(() => gitCheckout(props.containerId, props.path, r, { remote: true }), 'close')
-const deleteBranch = (b: string) => runBranchAction(() => gitBranchDelete(props.containerId, props.path, b), 'list')
+  runBranchAction(() => gitCheckout(props.containerId, statusPath.value, r, { remote: true }), 'close')
+const deleteBranch = (b: string) => runBranchAction(() => gitBranchDelete(props.containerId, statusPath.value, b), 'list')
 const fetchRemotes = async () => {
   fetching.value = true
   try {
-    await runBranchAction(() => gitFetch(props.containerId, props.path), 'list')
+    await runBranchAction(() => gitFetch(props.containerId, statusPath.value), 'list')
   } finally {
     fetching.value = false
   }
 }
-const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, props.path), 'status')
-const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, props.path), 'status')
+const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, statusPath.value), 'status')
+const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, statusPath.value), 'status')
 
 // —— worktree 管理（多工作树）：入口在 dock 头（worktree 图标），popover 与分支菜单同构。
 // worktree 与分支是两个维度：分支菜单改「当前工作树的状态」，这里管「工作树本体」——
@@ -384,7 +415,7 @@ watch(wtOpen, (open) => {
 async function fetchWorktrees() {
   wtLoading.value = true
   try {
-    const v = await getGitWorktrees(props.containerId, props.path)
+    const v = await getGitWorktrees(props.containerId, statusPath.value)
     if (!v.repo) {
       wtOpen.value = false // 面板路径已走出仓库（轮询间隙发生）：静默收窗
       return
@@ -434,7 +465,7 @@ function gotoWt(w: { path: string; bare?: boolean }) {
 }
 
 async function removeWt(w: { path: string }) {
-  const ok = await runWtAction(() => gitWorktreeRemove(props.containerId, props.path, w.path, forceSet.value.has(w.path)))
+  const ok = await runWtAction(() => gitWorktreeRemove(props.containerId, statusPath.value, w.path, forceSet.value.has(w.path)))
   if (!ok) {
     // dirty/locked 被 git 拒：原话已留窗，放行该行的「强制移除」（显式二次确认）
     forceSet.value = new Set([...forceSet.value, w.path])
@@ -449,7 +480,7 @@ async function removeWt(w: { path: string }) {
 async function pruneWts() {
   if (pruning.value) return
   pruning.value = true
-  const ok = await runWtAction(() => gitWorktreePrune(props.containerId, props.path))
+  const ok = await runWtAction(() => gitWorktreePrune(props.containerId, statusPath.value))
   pruning.value = false
   if (ok) await fetchWorktrees()
 }
@@ -484,7 +515,7 @@ async function createWt() {
   const name = wtBranchInput.value.trim()
   const dir = wtDirInput.value.trim()
   if (!name || !dir || wtBusy.value) return
-  const ok = await runWtAction(() => gitWorktreeAdd(props.containerId, props.path, dir, wtModeOf(name), name))
+  const ok = await runWtAction(() => gitWorktreeAdd(props.containerId, statusPath.value, dir, wtModeOf(name), name))
   if (!ok) return
   // 成功：收表单、清输入、刷列表并直接导航到新工作树（开箱即用）
   wtCreating.value = false
@@ -980,6 +1011,25 @@ watch(view, (v) => {
     <template v-if="!collapsed">
       <PaneDivider vertical @dragstart="onHDragStart" @drag="onHDrag" @dragend="persistH" />
       <div class="scroll-thin overflow-y-auto" :style="{ height: gitH + 'px' }">
+        <!-- 子模块下钻导航条：返回上级 + 指针变更入口（开上级仓库视角的 gitlink 合成 diff） -->
+        <div v-if="drillPath" class="sticky top-0 z-10 flex items-center gap-1 border-b border-border/60 bg-background px-1.5 py-1">
+          <button
+            class="flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="返回上级仓库的变更列表"
+            @click="drillPath = null"
+          >
+            <ArrowLeft class="size-3 shrink-0" />
+            返回上级仓库
+          </button>
+          <button
+            class="ml-auto flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="查看子模块指针变更与指针间提交"
+            @click="openPointerDiff()"
+          >
+            <GitBranch class="size-3 shrink-0" />
+            指针变更与提交
+          </button>
+        </div>
         <p v-if="err" class="px-2.5 py-1 text-[11px] text-muted-foreground">{{ err }}</p>
         <p
           v-else-if="!view.changes?.length"
@@ -994,12 +1044,13 @@ watch(view, (v) => {
             v-for="c in view.changes"
             :key="c.file"
             class="group flex cursor-pointer items-center gap-1.5 px-2.5 py-1 hover:bg-accent/50"
-            :title="`${kindTitle(c)} · 点击查看对比`"
-            @click="openChange(c)"
+            :title="isSubEntry(c) ? '子模块 · 点击进入其变更列表' : `${kindTitle(c)} · 点击查看对比`"
+            @click="onRowClick(c)"
           >
             <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(c).cls">{{
               badgeOf(c).text
             }}</span>
+            <FolderGit2 v-if="isSubEntry(c)" class="size-3 shrink-0 text-muted-foreground" />
             <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="c.oldFile ? `${c.oldFile} → ${c.file}` : c.file">
               <template v-if="c.oldFile">{{ c.oldFile }} →</template> {{ c.file }}
             </span>
@@ -1050,12 +1101,14 @@ watch(view, (v) => {
               :style="{ paddingLeft: 8 + r.depth * 12 + 'px' }"
               :title="
                 r.change
-                  ? r.change.oldFile
-                    ? `${kindTitle(r.change)} · 点击查看对比 · ${r.change.oldFile} → ${r.change.file}`
-                    : `${kindTitle(r.change)} · 点击查看对比 · ${r.change.file}`
+                  ? isSubEntry(r.change)
+                    ? `子模块 · 点击进入其变更列表 · ${r.change.file}`
+                    : r.change.oldFile
+                      ? `${kindTitle(r.change)} · 点击查看对比 · ${r.change.oldFile} → ${r.change.file}`
+                      : `${kindTitle(r.change)} · 点击查看对比 · ${r.change.file}`
                   : ''
               "
-              @click="r.change && openChange(r.change)"
+              @click="r.change && onRowClick(r.change)"
             >
               <span
                 class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold"
@@ -1063,6 +1116,7 @@ watch(view, (v) => {
               >
                 {{ r.change ? badgeOf(r.change).text : '' }}
               </span>
+              <FolderGit2 v-if="r.change && isSubEntry(r.change)" class="size-3 shrink-0 text-muted-foreground" />
               <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.change ? fileNameOf(r.change.file) : '' }}</span>
               <button
                 v-if="r.change"

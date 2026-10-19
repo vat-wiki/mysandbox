@@ -25,6 +25,7 @@ import {
   parseBranchList,
   parseRemoteBranches,
   parseWorktreeListZ,
+  withSubmodules,
   mapGitExit,
   assertBranchName,
   assertGitRelPath,
@@ -904,8 +905,10 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const res = await execRun(cfg, r.id, {
       Cmd: [
         'sh', '-c',
-        // --untracked-files=all：untracked 目录展开成逐个文件，列表不出现「目录」条目
-        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" status --porcelain=v1 -z --branch --untracked-files=all',
+        // --untracked-files=all：untracked 目录展开成逐个文件，列表不出现「目录」条目。
+        // 尾部追加 ls-files -s -z（\0\n@\n 分隔，路径不含 \0 故切分无歧义）供打 submodule
+        // 标记——porcelain 对 gitlink 与普通文件同形，只有 index 的 mode 能分辨。
+        'p="$1"; t=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7; printf "%s\\n" "$t"; git --no-optional-locks -C "$t" status --porcelain=v1 -z --branch --untracked-files=all; printf "\\0\\n@\\n"; git -C "$t" ls-files -s -z',
         'sh', path,
       ],
       User: '1000:1000',
@@ -919,7 +922,17 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const nl = res.stdout.indexOf('\n');
     const toplevel = res.stdout.slice(0, nl); // 空串/异常形状按非仓库兜底
     if (nl < 0 || !toplevel.startsWith('/')) return { repo: false };
-    return { repo: true, toplevel, ...parsePorcelainZ(res.stdout.slice(nl + 1)) };
+    // porcelain 与 ls-files 段以 \0\n@\n 切开（porcelain 自带尾 \0，序列无歧义）
+    const rest = res.stdout.slice(nl + 1);
+    const sep = rest.indexOf('\0\n@\n');
+    return withSubmodules(
+      {
+        repo: true,
+        toplevel,
+        ...parsePorcelainZ(sep >= 0 ? rest.slice(0, sep + 1) : rest),
+      },
+      sep >= 0 ? rest.slice(sep + 4) : '',
+    );
   });
 
   // —— git 变更对比（HEAD 版本 vs 工作区，Monaco diff 视图数据源）——

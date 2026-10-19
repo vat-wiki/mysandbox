@@ -1162,6 +1162,7 @@ export interface GitChange {
   x: string
   y: string
   oldFile?: string
+  submodule?: boolean // gitlink 条目：子模块指针变更，点行下钻其变更列表（与 server/gitpanel.ts 对齐）
 }
 export interface GitStatusView {
   repo: boolean

@@ -34,6 +34,7 @@ import {
   parseBranchList,
   parseRemoteBranches,
   parseWorktreeListZ,
+  withSubmodules,
   assertBranchName,
   assertGitRelPath,
   assertWorktreeDir,
@@ -369,7 +370,9 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     const out = await gitExec([
       '--no-optional-locks', '-C', top, 'status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all',
     ]);
-    return { repo: true, toplevel: top, ...parsePorcelainZ(out) };
+    // gitlink（子模块）标记：porcelain 对 gitlink 与普通文件同形，只有 index 的 mode 能分辨
+    const lsZ = await gitExec(['-C', top, 'ls-files', '-s', '-z']).catch(() => '');
+    return withSubmodules({ repo: true, toplevel: top, ...parsePorcelainZ(out) }, lsZ);
   });
 
   app.get('/api/host-terminal/git/diff', async (req): Promise<GitDiffView> => {
