@@ -629,11 +629,8 @@ function runKeyBtn(id: string) {
       if (term?.hasSelection()) void copyText(term.getSelection()).then(() => term?.clearSelection())
       break
     case 'ctrl':
-      ctrlSticky.value = !ctrlSticky.value
-      break
     case 'alt':
-      altSticky.value = !altSticky.value
-      break
+      break // 粘滞修饰在 tbDown（pointerdown）里切换——click 生成在某些浏览器不可靠
     case 'font':
       stepFontSize(a.delta)
       break
@@ -642,6 +639,14 @@ function runKeyBtn(id: string) {
 function tbDown(b: ToolBtn) {
   if (b.t !== 'key') return
   const a = KEY_POOL[b.id]?.act
+  if (a?.kind === 'ctrl') {
+    ctrlSticky.value = !ctrlSticky.value
+    return
+  }
+  if (a?.kind === 'alt') {
+    altSticky.value = !altSticky.value
+    return
+  }
   if (a?.kind === 'repeat') {
     if (ctrlSticky.value || altSticky.value) {
       sendToolSeq(a.seq) // 粘滞态：首键带修饰发出并消费粘滞（修饰组合没有连发需求）
@@ -1206,8 +1211,11 @@ onMounted(async () => {
     // 粘滞修饰兜底（composition 路径见 attachCustomKeyEventHandler 注释）：keydown 拦截
     // return false 后 xterm 不再处理、不会走到这里，所以粘滞态还亮着就说明这次输入绕过
     // 了 keydown——在此消费并改写（Ctrl 逐字符 ctrlify，编码不了的保持原样；Alt 恒 ESC 前缀）。
+    // ESC 开头的序列（1004 焦点上报 \x1b[I、鼠标上报、括号粘贴）不是「待修饰的按键」，
+    // 不许碰——否则 ctrlify 会把 \x1b[I 改成 \x1b[\t 且白白消费掉粘滞态（vim/claude 开
+    // 焦点上报时点 Ctrl 再落焦就是这条雷）。
     let out = data
-    if (ctrlSticky.value || altSticky.value) {
+    if ((ctrlSticky.value || altSticky.value) && !out.startsWith('\x1b')) {
       const withCtrl = ctrlSticky.value
       const withAlt = altSticky.value
       ctrlSticky.value = false
