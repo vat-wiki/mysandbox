@@ -863,7 +863,9 @@ const everGroupTargets = new Set<string>()
 watch(activeGroup, (g) => {
   if (!showFiles.value || !g) return
   const oldTarget = routeFileTarget.value
-  const oldAlive = !oldTarget || groups.value.some((x) => fileTargetId(x) === oldTarget)
+  // HOST_ID 恒算「活的」：组全关后的回退目标就是它（无组时 filePanelTarget 同口径），
+  // 不是独立深链——回退后新开终端组要恢复跟随，不能停在死哨兵上。
+  const oldAlive = !oldTarget || oldTarget === HOST_ID || groups.value.some((x) => fileTargetId(x) === oldTarget)
   if (!oldAlive && !everGroupTargets.has(oldTarget)) return
   const target = fileTargetId(g)
   if (target !== oldTarget) {
@@ -884,7 +886,9 @@ watch(
     for (const g of groups.value) everGroupTargets.add(fileTargetId(g))
     if (!open || !target) return
     if (groups.value.some((x) => fileTargetId(x) === target)) return
-    if (!everGroupTargets.has(target)) return
+    // 回退目标 HOST_ID 不算深链（无组兜底/重载恢复都落在它上，everGroupTargets 永远
+    // 不含它）：有活跃组就恢复跟随。真要独立浏览本机，开个本机终端组即是「活」目标。
+    if (target !== HOST_ID && !everGroupTargets.has(target)) return
     const next = activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID
     if (next !== target) {
       void router.replace({ name: 'files', params: { target: encodeURIComponent(next) } })
