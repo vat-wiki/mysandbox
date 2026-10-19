@@ -29,6 +29,8 @@ import {
   sshGroupId,
   sshTargetName,
   listSshTargets,
+  ensureCodeServer,
+  CODE_SERVER_PORT,
   type SshTargetView,
   getServiceListenPorts,
   Unauthorized,
@@ -1249,6 +1251,32 @@ const desktopTarget = computed(() => {
 function openDesktop(container: ContainerView) {
   void openRoute('container-desktop', { id: container.id })
 }
+
+// code-server（浏览器版 VS Code）：按需 ensure（缺装装、没起起，进度进 toast），
+// 就绪后按端口点击同款口径打开（serviceUrl：代理/直连跟随控制台）。开着时秒过，
+// toast 一闪即被成功帧替换。
+function onCodeServer(c: ContainerView) {
+  const tid = toast.loading(`code-server · ${c.displayName || c.name}`, {
+    description: '检查中…',
+    duration: Infinity,
+  })
+  void ensureCodeServer(c.id, (e) => {
+    if (e.type === 'progress' && e.status) {
+      toast.loading(`code-server · ${c.displayName || c.name}`, { id: tid, description: e.status })
+    }
+  })
+    .then((r) => {
+      toast.success('code-server 已就绪，新标签页打开', { id: tid, duration: 4000 })
+      openUrl(serviceUrl('c', r.name || c.name, CODE_SERVER_PORT, r.ip || c.ip))
+    })
+    .catch((e: unknown) => {
+      toast.error('code-server 启动失败', {
+        id: tid,
+        description: (e instanceof Error ? e.message : String(e)).slice(0, 300),
+        duration: 10_000,
+      })
+    })
+}
 function closeDesktop() {
   closePageRoute()
 }
@@ -1492,9 +1520,10 @@ async function locateContainerPath(
   }
 }
 
-// 文件面板 open-file 汇聚点：目录列表点文件（无 opts）与 Git 变更条目点击（opts.diff
-// = 对比形态）共用。写成函数而非模板内联箭头——对象类型字面量在模板表达式里编不过。
-function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string }; editing?: boolean }) {
+// 文件面板 open-file 汇聚点：目录列表点文件（无 opts）、Git 变更条目点击（opts.diff
+// = 对比形态）与内容搜索命中行（opts.line = 编辑器跳行）共用。写成函数而非模板内联
+// 箭头——对象类型字面量在模板表达式里编不过。
+function onPanelOpenFile(p: string, o?: { diff?: { headPath?: string }; line?: number; editing?: boolean }) {
   if (filePanelTarget.value) openFile(filePanelTarget.value, filePanelTargetName.value, p, o)
   // 手机文件面板是全屏覆盖层：选中文件后立即交还给编辑器，不再要求用户手动关面板。
   // 回入口是底部文件标签栏的「文件」钮，浏览上下文由 FilePanel 自身保留。
@@ -3175,6 +3204,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 @click="openDesktop(c)"
                 >桌面</ContextMenuItem
               >
+              <ContextMenuItem v-if="c.state === 'running'" @click="onCodeServer(c)">Code Server</ContextMenuItem>
               <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
               <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
               <ContextMenuItem v-if="hasBaseAction('export')" @click="openExport(c)">导出为包</ContextMenuItem>

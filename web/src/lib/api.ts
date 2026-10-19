@@ -302,6 +302,22 @@ export async function streamCreateContainer(
 export const deleteContainer = (id: string, opts: { deleteData?: boolean; confirmName?: string } = {}) =>
   api(`/api/containers/${id}`, { method: 'DELETE', body: JSON.stringify(opts) }) as Promise<{ ok: true; dataRemoved: boolean; name: string }>
 
+// 容器内 code-server（浏览器版 VS Code）按需 ensure：缺装装、没起起。done 帧
+// result = {name, ip}，前端拼打开 URL（serviceUrl('c', …)）。端口与后端
+// server/codeserver.ts 的 CODE_SERVER_PORT 对齐。
+export const CODE_SERVER_PORT = 8080
+export async function ensureCodeServer(
+  id: string,
+  onEvent: (e: BaseProgressEvent) => void,
+): Promise<{ name: string; ip: string }> {
+  let result: { name: string; ip: string } | undefined
+  await streamOp(`/api/containers/${encodeURIComponent(id)}/code-server`, {}, (e) => {
+    if (e.type === 'done' && e.result) result = { name: String(e.result.name), ip: String(e.result.ip) }
+    onEvent(e)
+  })
+  return result ?? { name: id, ip: '' }
+}
+
 export interface IpPoolView {
   network: string
   pool: { from: string; to: string }
@@ -1005,6 +1021,36 @@ export interface FileView {
 }
 export const listFiles = (id: string, path: string) =>
   api(`${filesBase(id)}/files?path=${encodeURIComponent(path)}`) as Promise<FilesView>
+// 目录内容搜索（grep，服务端执行）：四侧经 filesBase 自动分发。结果为相对 path 的
+// flat hits + truncated（500 条截断，截断判定在服务端脚本层 head）。
+export interface SearchHit {
+  path: string // 相对搜索起始目录的 posix 相对路径
+  line: number
+  text: string
+}
+export interface SearchView {
+  hits: SearchHit[]
+  truncated: boolean
+}
+export const searchFiles = (
+  id: string,
+  path: string,
+  q: string,
+  o: { cs?: boolean; re?: boolean; deps?: boolean } = {},
+  signal?: AbortSignal,
+) => {
+  const p = new URLSearchParams({ path, q })
+  if (o.cs) p.set('cs', '1')
+  if (o.re) p.set('re', '1')
+  if (o.deps) p.set('deps', '1')
+  // api() 对 init.signal 直通（无 signal 走其默认 10s 超时）；有 signal 时并上 30s
+  // 兜底——服务端搜索 30s 封顶（大目录罕见 pattern 是全扫），这里只是防外层 abort
+  // 缺失时挂死。
+  const init: RequestInit = signal
+    ? { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) }
+    : {}
+  return api(`${filesBase(id)}/search?${p}`, init) as Promise<SearchView>
+}
 export const readFile = (id: string, path: string) =>
   api(`${filesBase(id)}/file?path=${encodeURIComponent(path)}`) as Promise<FileView>
 export const writeFile = (id: string, path: string, content: string, baseMtime?: number) =>

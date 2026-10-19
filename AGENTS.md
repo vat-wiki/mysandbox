@@ -176,6 +176,10 @@ docker 引擎移除后 docker 的新角色：**配套服务层**（界面名词�
 - **前端 noVNC 的三个坑**（都已有对策，改动前先看 `vite.config.ts`/`DesktopDialog.vue` 注释）：包的 exports 字段是非法形状（字符串）→ vite alias 直指磁盘 `core/rfb.js`（同 Monaco 手法）；rfb.js 有 top-level await → build target es2022；noVNC 在 canvas mousedown 时往 body 挂全屏鼠标捕获层（z-index 10000）→ **reka-ui Dialog 会把它当 outside 点击而关窗**，DialogContent 已 `@pointer-down-outside.prevent`，且组件卸载要手动 `remove()` 该层（disconnect 不回收）。
 - Dialog 窗口可拖边缘/四角改大小（8 向手柄，`startResize`），右上角按钮/双击标题栏铺满；尺寸持久化 localStorage、位置不持久（默认居中，拖动后锚定左上角——`!translate-x-0` class 压居中 translate，**不能用 inline transform**：reka-ui 动画结束会清 inline style）。分辨率固定于连接时（`resizeSession: false`，Xvfb 屏幕尺寸不动态改）；`scaleViewport: true` 让 canvas 等比缩放适配窗口。
 
+### 容器 code-server
+
+- **浏览器版 VS Code**（`server/codeserver.ts`，`POST /api/containers/:id/code-server` SSE）：照 desktop.ts 的按需 ensure 模式——探测（pgrep + /dev/tcp 8080）双确认 → 缺装装（npm 全局，registry 在本部署网络比 coder 官方 install.sh 稳）→ `setsid nohup` 起（dev 用户，常驻容器内）→ 就绪轮询。`--auth none`：代理口径必先过 cookie 鉴权、直连口径暴露面 = 自管网段（ufw 外部网段默认全拒），不新增暴露。打开走前端 `serviceUrl('c', name, 8080, ip)`（与端口点击同口径，见 lib/proxy.ts）。入口 = 容器右键菜单「Code Server」，进度进 toast（与桌面 Dialog 的进度形态不同：这里无 Dialog，装完即开新标签页）。
+
 ### web/（Vue 3 + Vite + Tailwind v4）
 
 - UI 组件库走 **shadcn-vue**（reka-ui 底座），源码拷贝在 `src/components/ui/`。优先 `npx shadcn-vue@latest search` 找现成组件、用语义色（`bg-primary`）不用裸色值。（曾有的 `.claude/skills/shadcn-vue` 技能已删除——2026-09 工作区清空，该目录下别再引用。）

@@ -11,6 +11,7 @@ import { registerRoutes } from './routes.js';
 import { registerFileRoutes } from './files.js';
 import { registerTerminal } from './terminal.js';
 import { registerDesktop } from './desktop.js';
+import { registerCodeServer } from './codeserver.js';
 import { registerHostTerminal } from './hostTerminal.js';
 import { registerSshTerminal } from './sshTerminal.js';
 import { registerSshFileRoutes } from './sshFiles.js';
@@ -92,6 +93,7 @@ export async function buildServer(cfg: Config) {
   await registerFileRoutes(app, cfg);
   await registerTerminal(app, cfg);
   await registerDesktop(app, cfg);
+  await registerCodeServer(app, cfg);
   await registerHostTerminal(app, cfg);
   // SSH 终端（server/sshTerminal.ts）：远程主机的 tmux 会话 + 目标 CRUD（sidecar）。
   await registerSshTerminal(app);
