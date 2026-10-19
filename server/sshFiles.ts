@@ -33,6 +33,11 @@ import {
   parentOf,
   parseDiffProto,
   streamProbe,
+  SEARCH_SCRIPT,
+  parseSearchOutput,
+  searchQuery,
+  mapSearchErr,
+  type SearchView,
 } from './files.js';
 import {
   parsePorcelainZ,
@@ -119,6 +124,22 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
       return a.name.localeCompare(b.name);
     });
     return { path, parent: parentOf(path), entries, hostPath: null };
+  });
+
+  // —— 目录内容搜索 ——（脚本/解析/校验/错误映射单源 files.ts SEARCH_SCRIPT；argv 逐
+  // 元素经 sshChannel 的 shq 真转义（pattern 可含任意引号/空格），远端 busybox 由脚本内
+  // 探测自动落兜底分支）
+  app.get('/api/ssh/:name/search', async (req): Promise<SearchView> => {
+    const t = await requireTarget((req.params as { name: string }).name);
+    await requireRemoteLinux(t);
+    const sp = searchQuery((req.query as Record<string, string | undefined>) || {});
+    const res = await sshExec(
+      t,
+      ['sh', '-c', SEARCH_SCRIPT, 'sh', sp.path, sp.pattern, sp.cs, sp.re, sp.deps],
+      30_000,
+    );
+    if (res.exitCode !== 0) throw mapSearchErr(res, sp.path);
+    return parseSearchOutput(res.stdout);
   });
 
   // —— 读文件 ——（META+base64 协议与 files.ts 同源）

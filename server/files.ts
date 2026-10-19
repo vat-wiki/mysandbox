@@ -117,6 +117,118 @@ export const LIST_SCRIPT = [
 // 都支持 %Y）。
 export const MTIME_SNIPPET = 'date -r "$f" +%s.%N 2>/dev/null || stat -c %Y "$f" 2>/dev/null';
 
+// —— 目录内容搜索（grep）——
+// 搜索脚本（本文件与 hostFiles.ts / serviceFiles.ts / sshFiles.ts 四侧共用单源）。输出
+// 协议：grep 原生「相对路径:行号:文本」逐行——cd 起始目录后搜 `.`，路径恒 ./ 前缀，
+// parseSearchOutput 剥前缀后按前两个冒号锚定切分（正文含冒号不干扰；相对路径含 `:` 的
+// 文件会错切，极罕见，接受降级）。argv：$1=起始目录(绝对) $2=pattern $3=大小写敏感
+// ('1'/'0'，0=-i) $4=正则('1'=-E ERE / '0'=-F 固定串) $5=含依赖目录('1'/'0'，0=剪掉
+// 默认排除集)。
+// pattern/开关全部走位置参数、绝不内插进脚本（四侧执行层都是数组 argv，无注入面）；
+// flags 无引号展开是刻意的（token 全为受控常量，pattern 不在 flags 串里）。
+// 退出码：2=不存在 3=非目录；grep 退出码刻意不透传（管道尾是 head 恒 0）——无命中=
+// 空输出非错误，head 截断后 grep 吃 SIGPIPE(141) 属预期；截断判定在解析侧（收到
+// SEARCH_LIMIT+1 行即 truncated）。不用 grep -m：那是 per-file 上限，递归总量不可控。
+// 行文本 cut 480 字节封顶：grep -n 每行输出无界（实测远端 MB 级 JSONL 单行），501 行
+// 能撑爆执行层 64MB stdout 缓冲（ENOBUFS）；截断边界可能切断多字节字符（行尾 U+FFFD，
+// 接受）。不用 grep -m：见上。
+// busybox 兜底（老版 grep 无 --exclude-dir/-I）：完整 flags 对 /dev/null 空跑探测（不
+// 支持时 getopt 报错退出 ≥2、支持时恒 exit 1——/dev/null 无行），失败落 find -prune +
+// xargs -0 grep（flags 退回 -rn：-I/--exclude-dir 都可能缺，「Binary file … matches」
+// 行不符合输出协议，解析侧自然丢弃）；/dev/null 垫底保证「单文件命中也带文件名前缀」。
+export const SEARCH_LIMIT = 500;
+export const SEARCH_SCRIPT = [
+  'p="$1"; pat="$2"',
+  '[ -e "$p" ] || exit 2',
+  '[ -d "$p" ] || exit 3',
+  'cd "$p" || exit 2',
+  'flags="-rnI"',
+  '[ "$3" = 0 ] && flags="$flags -i"',
+  '[ "$4" = 1 ] && flags="$flags -E"',
+  '[ "$4" = 0 ] && flags="$flags -F"',
+  'DEPS=".git node_modules venv .venv __pycache__ .cache dist target"',
+  'if [ "$5" != 1 ]; then',
+  '  for d in $DEPS; do flags="$flags --exclude-dir=$d"; done',
+  'fi',
+  'if grep $flags -- __msb_probe__ /dev/null >/dev/null 2>&1 || [ $? -eq 1 ]; then',
+  '  grep $flags -- "$pat" . 2>/dev/null | cut -c 1-480 | head -n 501',
+  'else',
+  '  bflags="-rn"',
+  '  prune=""',
+  '  if [ "$5" != 1 ]; then',
+  '    first=1',
+  '    for d in $DEPS; do',
+  '      if [ "$first" = 1 ]; then prune="-name $d"; first=0',
+  '      else prune="$prune -o -name $d"; fi',
+  '    done',
+  '  fi',
+  '  if [ -n "$prune" ]; then',
+  '    find . -type d \\( $prune \\) -prune -o -type f -print0 2>/dev/null',
+  '  else',
+  '    find . -type f -print0 2>/dev/null',
+  '  fi | xargs -0 grep $bflags -- "$pat" /dev/null 2>/dev/null | cut -c 1-480 | head -n 501',
+  'fi',
+].join('\n');
+
+export interface SearchHit {
+  path: string; // 相对起始目录的 posix 相对路径（脚本层已相对化）
+  line: number;
+  text: string;
+}
+export interface SearchView {
+  hits: SearchHit[];
+  truncated: boolean;
+}
+
+// 解析 SEARCH_SCRIPT 输出：每行「./rel:line:text」按前两个冒号锚定切分（正文冒号安全；
+// 文件名含换行会撕裂行，同 LIST_SCRIPT 接受降级丢弃）。行数超 limit 即 truncated
+// （脚本 head 收 SEARCH_LIMIT+1 行，这里按 limit 收集、总数记账）。
+export function parseSearchOutput(stdout: string, limit = SEARCH_LIMIT): SearchView {
+  const hits: SearchHit[] = [];
+  let total = 0;
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    const m = /^\.\/([^:]+):(\d+):(.*)$/.exec(line);
+    if (!m) continue; // 撕裂行/异常行，丢弃
+    total++;
+    if (hits.length < limit) hits.push({ path: m[1], line: Number(m[2]), text: m[3] });
+  }
+  return { hits, truncated: total > limit };
+}
+
+// /search 端点的共用入参校验（四侧同形）。pattern：非空、≤200 字符、无 \0/\n（\n 会
+// 撕裂输出协议）；正则模式 JS 预编译（非法直接 400，不留给 grep 报含糊错）。
+export function searchQuery(
+  q: Record<string, string | undefined>,
+): { path: string; pattern: string; cs: string; re: string; deps: string } {
+  const path = cleanPath(q.path);
+  const pattern = typeof q.q === 'string' ? q.q : '';
+  if (!pattern.trim()) throw badRequest('q must not be empty');
+  if (pattern.length > 200 || pattern.includes('\0') || pattern.includes('\n')) {
+    throw badRequest('invalid q');
+  }
+  const s = (v: string | undefined) => (v === '1' ? '1' : '0');
+  const cs = s(q.cs);
+  const re = s(q.re);
+  const deps = s(q.deps);
+  if (re === '1') {
+    try {
+      new RegExp(pattern);
+    } catch {
+      throw badRequest('invalid regex');
+    }
+  }
+  return { path, pattern, cs, re, deps };
+}
+
+// /search 端点错误映射（退出码约定同 mapListErr：2=不存在 3=非目录）。hostFiles /
+// serviceFiles / sshFiles 复用。
+export function mapSearchErr(r: { exitCode: number; stderr: string }, path: string): HttpError {
+  if (r.exitCode === 2) return notFound(`path not found: ${path}`);
+  if (r.exitCode === 3) return new HttpError(400, 'not a directory', 'not_a_directory');
+  return new HttpError(500, r.stderr.trim() || `search failed (exit ${r.exitCode})`, 'search_failed');
+}
+
 // 宿主面板哨兵：与 web/src/lib/api.ts 的 HOST_ID 一致（复制粘贴双端统一在此端点解析）。
 const HOST_ID = '__host__';
 
@@ -224,6 +336,22 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     });
     const rootfs = rootfsPath(cfg, r.id);
     return { path, parent: parentOf(path), entries, hostPath: rootfs ? rootfs + path : null };
+  });
+
+  // —— 目录内容搜索（grep -rnI）——
+  // 脚本/解析/校验/错误映射单源见 SEARCH_SCRIPT 注释；默认用户视角（同列目录，不传
+  // User），结果为相对 path 的 flat hits + truncated，前端分组展示。
+  app.get('/api/containers/:id/search', async (req): Promise<SearchView> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const sp = searchQuery((req.query as Record<string, string | undefined>) || {});
+    const res = await execRun(cfg, r.id, {
+      Cmd: ['sh', '-c', SEARCH_SCRIPT, 'sh', sp.path, sp.pattern, sp.cs, sp.re, sp.deps],
+      Tty: false,
+      // 大目录罕见 pattern 是全扫（实测 dev 容器 home 3.7 万文件 ~9s），10s 会掐掉合法搜索
+      timeoutMs: 30_000,
+    });
+    if (res.exitCode !== 0) throw mapSearchErr(res, sp.path);
+    return parseSearchOutput(res.stdout);
   });
 
   // —— 读文件 ——

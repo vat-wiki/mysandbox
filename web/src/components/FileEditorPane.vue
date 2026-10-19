@@ -489,7 +489,9 @@ function revealTarget() {
   const ln = Math.min(Math.max(1, props.line), ed.getModel()?.getLineCount() ?? 1)
   ed.revealLineInCenter(ln)
   ed.setPosition({ lineNumber: ln, column: Math.max(1, props.col ?? 1) })
-  ed.focus()
+  // 不 focus：TestLens headless 下 mount 即 focus 会把渲染器整个挂死（reveal 本身没问题，
+  // 终端 Ctrl+点击的定位链路同样受益）；用户点开文件时面板本身就是焦点所在。
+  // ed.focus()
 }
 function onEditorMount(ed: unknown) {
   editorRef.value = ed as import('monaco-editor').editor.IStandaloneCodeEditor

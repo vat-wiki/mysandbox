@@ -20,9 +20,14 @@ import {
   contentDisposition,
   streamProbe,
   parseDiffProto,
+  SEARCH_SCRIPT,
+  parseSearchOutput,
+  searchQuery,
+  mapSearchErr,
   type FileEntry,
   type FilesView,
   type FileView,
+  type SearchView,
 } from './files.js';
 import {
   parsePorcelainZ,
@@ -121,6 +126,32 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1,
     );
     return { path, parent: parentOf(path), entries, hostPath: path };
+  });
+
+  // —— 目录内容搜索 ——
+  // 宿主是 Linux（sh/grep 恒在），跑同一 SEARCH_SCRIPT 保证四侧协议逐字节一致——脚本
+  // 承载 cd 相对化 + head 截断 + 排除集 + busybox 兜底四个协议要素，node:fs 直写必然
+  // 复刻漂移。非 0 退出从 err.code 取（execFile 超时/非零退出都走 reject）。
+  app.get('/api/host-terminal/search', async (req): Promise<SearchView> => {
+    const sp = searchQuery((req.query as Record<string, string | undefined>) || {});
+    let r: { exitCode: number; stdout: string; stderr: string };
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        'sh',
+        ['-c', SEARCH_SCRIPT, 'sh', sp.path, sp.pattern, sp.cs, sp.re, sp.deps],
+        { timeout: 30_000, maxBuffer: 16 * 1024 * 1024 },
+      );
+      r = { exitCode: 0, stdout, stderr };
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
+      r = {
+        exitCode: typeof err.code === 'number' ? err.code : 1,
+        stdout: String(err.stdout ?? ''),
+        stderr: String(err.stderr ?? err.message ?? ''),
+      };
+    }
+    if (r.exitCode !== 0) throw mapSearchErr(r, sp.path);
+    return parseSearchOutput(r.stdout);
   });
 
   // —— 读文件 ——
