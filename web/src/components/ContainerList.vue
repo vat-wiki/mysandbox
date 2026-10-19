@@ -695,10 +695,6 @@ function closeAi() {
   // 没有才回终端。
   if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
 }
-watch(aiOpen, (open) => {
-  if (open) mainView.value = 'ai'
-  else if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
-}, { immediate: true })
 // 纳入管理（输入显示名）/ 删除 的目标容器，非 null 即弹对应 Dialog
 const adoptTarget = ref<ContainerView | null>(null)
 const delTarget = ref<ContainerView | null>(null)
@@ -1045,6 +1041,10 @@ function loadMainView(): 'file' | 'terminal' | 'ai' {
   }
 }
 const mainView = ref<'terminal' | 'ai' | 'file'>(loadMainView())
+watch(aiOpen, (open) => {
+  if (open) mainView.value = 'ai'
+  else if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
+}, { immediate: true })
 watch(
   [editorTabs, activeEditorIdx, mainView, aiOpen],
   () => {
