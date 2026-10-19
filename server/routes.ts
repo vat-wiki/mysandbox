@@ -24,6 +24,7 @@ import { listSshSessions, killSshSession } from './sshTerminal.js';
 import { terminalActivity } from './activity.js';
 import { agentKeyOf, agentSeenOf, agentWaitingView } from './agentNotify.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
+import { syncSshConfig } from './sshConfigSync.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
 import { beginSse } from './sse.js';
 import { registerEventsRoute } from './events.js';
@@ -304,6 +305,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       source: managed ? 'mysandbox' : body.source || 'external',
       createdAt: new Date().toISOString(),
     });
+    void syncSshConfig(cfg); // 收编的容器（有 IP）也进 SSH 别名
     return { ok: true, name, managed, adopted: !managed };
   });
 
@@ -321,6 +323,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       await setMeta(name, m);
       await deleteMeta(r.name);
     }
+    void syncSshConfig(cfg); // SSH 别名跟新名字（旧别名随整文件重写消失）
     return { ok: true, name };
   });
 

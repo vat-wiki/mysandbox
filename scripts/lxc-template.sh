@@ -124,7 +124,7 @@ export DEBIAN_FRONTEND=noninteractive
 sed -i "s|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g" /etc/apt/sources.list
 apt-get update
 apt-get install -y --no-install-recommends \
-  zsh git openssh-client ca-certificates jq curl less vim-tiny xz-utils tzdata tmux \
+  zsh git openssh-client openssh-server ca-certificates jq curl less vim-tiny xz-utils tzdata tmux \
   zsh-autosuggestions zsh-syntax-highlighting adb \
   python3 make g++ sudo bsdutils locales \
   xvfb x11vnc xfce4 xfce4-terminal dbus-x11 \
@@ -142,6 +142,24 @@ ln -sf /usr/share/zoneinfo/Asia/Singapore /etc/localtime
 echo Asia/Singapore > /etc/timezone
 rm -rf /var/lib/apt/lists/*
 chsh -s /usr/bin/zsh dev
+EOS
+
+# ---------- sshd：VS Code Remote-SSH / 通用 SSH 入口 ----------
+# 密钥双路：容器 ~/.ssh/authorized_keys（seed 补宿主公钥 + 用户自加）+ /mnt/host/.ssh/
+# authorized_keys 直读（只读挂载、实时跟随宿主——能进宿主的 key 即能进容器，信任模型
+# 对齐「token = 宿主属主权限」）。密码登录关：契约身份是 dev，密钥面已够，密码是多余
+# 攻击面。host key 逐容器重生成在 engine create()（克隆共享模板 key，见 resetSshIdentity）。
+step sshd
+attsh <<'EOS'
+install -d -m 755 /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/mysandbox.conf <<CONF
+# mysandbox：密钥只进；/mnt/host/.ssh 是宿主 ~/.ssh 的只读实时挂载（第二授权源）
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AuthorizedKeysFile .ssh/authorized_keys /mnt/host/.ssh/authorized_keys
+CONF
+systemctl enable ssh >/dev/null 2>&1 || true
 EOS
 
 # ---------- oh-my-zsh：zsh 框架（apt 无包，git clone 系统级装到 /usr/share）----------
@@ -300,6 +318,7 @@ chk "home /home/dev"      '[ -d /home/dev ]'
 chk "dev shell = zsh"     'getent passwd dev | grep -q zsh'
 chk "zsh"                 'command -v zsh'
 chk "tmux"                'command -v tmux'
+chk "sshd"                '[ -x /usr/sbin/sshd ] && [ -f /etc/ssh/sshd_config.d/mysandbox.conf ]'
 chk "git"                 'command -v git'
 chk "script(1)"           'command -v script'
 chk "node"                'command -v node'

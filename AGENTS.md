@@ -83,6 +83,7 @@ idmap 参数取自该容器 config 自己的 `lxc.idmap` 行（不能硬编码�
 ### 容器契约
 
 容器内契约：uid:gid `1000:1000`（用户名 `dev`，home `/home/dev`）、zsh/git/tmux/node/AI CLI 就位、
+sshd 就位（`/etc/ssh/sshd_config.d/mysandbox.conf`：密钥只进 + `/mnt/host/.ssh/authorized_keys` 作第二授权源；host key 由 create() 逐容器重生成；宿主 `~/.ssh/config.d/mysandbox` 有 `sb-<容器名>` 别名，`server/sshConfigSync.ts` 在 create/delete/adopt/rename 时同步——VS Code Remote-SSH 即开即连）、
 `/etc/skel-home/.zshrc` 作首启模板、宿主 `~/.ssh` 只读可见于 `/mnt/host/.ssh`、
 `/etc/systemd/resolved.conf.d/mysandbox.conf` 配上游 DNS（静态 IP 无 DHCP）、
 `fontconfig` + `fonts-noto-cjk` 中文字体（桌面/容器内 GUI 渲染中文；fc-list 必须在——只装字体包不装 fontconfig 工具，zh 查询恒 0）、

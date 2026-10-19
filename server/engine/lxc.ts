@@ -490,6 +490,7 @@ async function create(
     // 语义保持「缺失才写」——用户后续改了 ~/.zshrc / ~/.gitconfig 不会被覆盖。
     onProgress?.({ status: '首启 seed' });
     await seedHome(cfg, name, spec);
+    await resetSshIdentity(cfg, name);
   } catch (e) {
     // 半成品清理。LXC 下 rootfs 就是数据，
     // 一起删——此时容器刚克隆出来还没有用户数据，删掉是安全的。
@@ -541,6 +542,14 @@ if [ -d /mnt/host/.ssh ] && [ ! -d "$HOME/.ssh" ]; then
   chmod 700 "$HOME/.ssh"
   chmod 600 "$HOME/.ssh"/id_* 2>/dev/null || true
 fi
+# authorized_keys：宿主自己的公钥（宿主 → 容器免密，VS Code Remote-SSH 走这条路；
+# 宿主 authorized_keys 里的外部 key 由 sshd 的 AuthorizedKeysFile 第二源 /mnt/host
+# 实时覆盖，见模板 sshd 配置）。只补缺（幂等），用户手工加的 key 原样保留。
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" || true
+for f in /mnt/host/.ssh/*.pub; do
+  [ -e "$f" ] || continue
+  grep -qxF "$(cat "$f")" "$HOME/.ssh/authorized_keys" 2>/dev/null || cat "$f" >> "$HOME/.ssh/authorized_keys"
+done
 if [ ! -f "$HOME/.gitconfig" ]; then
   printf '[user]\\n\\tname = %s\\n\\temail = %s\\n[init]\\n\\tdefaultBranch = main\\n' \
     ${shq(spec.gitName)} ${shq(spec.gitEmail)} > "$HOME/.gitconfig"
@@ -555,6 +564,33 @@ exit 0
   }, null);
   if (r.exitCode !== 0) {
     log.warn({ name, exitCode: r.exitCode, stderr: r.stderr.slice(0, 500) }, 'lxc home seed failed');
+  }
+}
+
+// ssh 身份重置：克隆连模板的 SSH host key 一起拷（openssh-server 安装时生成一次），
+// 不处理的话全舰队共享同一 host key——known_hosts 撞车，且同一 key 对所有容器构成
+// 伪装面（与 MAC 碰撞同构的网络身份问题，见 create 注释）。逐容器重生成 + 确保 sshd
+// enable（模板已做，这里兜底旧模板克隆出来的容器）。旧模板没装 sshd 时整体跳过——
+// 补装是存量容器的一次性动作，不归 create 管。
+async function resetSshIdentity(cfg: Config, name: string): Promise<void> {
+  const script = `
+set -u
+[ -x /usr/sbin/sshd ] || exit 0
+ls /etc/ssh/ssh_host_* >/dev/null 2>&1 || exit 0
+rm -f /etc/ssh/ssh_host_*
+ssh-keygen -A
+systemctl enable ssh >/dev/null 2>&1 || true
+systemctl restart ssh >/dev/null 2>&1 || true
+exit 0
+`;
+  const r = await runAttach(cfg, name, {
+    Cmd: ['sh', '-c', script],
+    User: 'root',
+    Tty: false,
+    timeoutMs: 30_000,
+  }, null);
+  if (r.exitCode !== 0) {
+    log.warn({ name, exitCode: r.exitCode, stderr: r.stderr.slice(0, 500) }, 'ssh identity reset failed');
   }
 }
 

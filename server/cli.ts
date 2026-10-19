@@ -20,6 +20,7 @@ import { log, LOG_DIR } from './logger.js';
 import { guardStdio } from './pty.js';
 import { sweepContainerCli } from './container-cli.js';
 import { sweepHosts, startHostsEventSync } from './hosts-sync.js';
+import { syncSshConfig } from './sshConfigSync.js';
 import { startServicesEventSync } from './services.js';
 import { ensureComposeRoot } from './serviceCompose.js';
 import { startDockerApiBridge } from './dockerApi.js';
@@ -261,6 +262,8 @@ async function main(): Promise<void> {
   // 全局 hosts 启动补刷（幂等，hash 跳过；不阻塞 listen）+ events 自动重刷（容器重启追平）。
   void sweepHosts(config);
   startHostsEventSync(config);
+  // SSH 别名（sb-*）启动补刷：生成文件被删/容器集合在服务停摆期变化，重启即自愈。
+  void syncSshConfig(config);
   // docker 服务事件 → hosts 服务行追平（debounce + 断线重连，见 services.ts）。
   startServicesEventSync(config);
   // compose 底账根目录（~/.config/mysandbox/compose/）：首启兜底建出来（幂等）。

@@ -24,6 +24,7 @@ import { peerSeedInfo } from './peer.js';
 import { syncContainerSkills } from './skillSync.js';
 import { applyAiToContainer } from './aiconfig.js';
 import { applyAgentNotifyToContainer } from './agentNotify.js';
+import { syncSshConfig } from './sshConfigSync.js';
 import { log } from './logger.js';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,30}$/;
@@ -134,6 +135,7 @@ export async function createContainer(
   // 启动 sweep 同款定序）。
   void syncContainerSkills(cfg, name);
   void applyAiToContainer(cfg, name).then(() => applyAgentNotifyToContainer(cfg, name));
+  void syncSshConfig(cfg); // SSH 别名（sb-*）跟进新容器，VS Code Remote-SSH 即开即连
   return { id, name, ip };
 }
 
@@ -169,6 +171,7 @@ export async function deleteManaged(
   await removeContainer(cfg, id, { force: true });
   await deleteMeta(name);
   await deleteAiTargetOverride(name); // AI 目标覆盖随容器走（残留会对不上任何容器）
+  void syncSshConfig(cfg); // 摘掉已删容器的 SSH 别名
 
   log.warn({ name, dataRemoved: true }, 'container deleted');
   return { ok: true, dataRemoved: true, name };
