@@ -821,6 +821,9 @@ async function configCodex(
   // 可选上下文窗口和 reasoning 元数据，避免 TUI 每次启动都告警。
   const catalogModels = [...new Set([...wireModels(p, 'openai-responses'), ...(model ? [model.trim()] : [])])]
     .filter((id) => !isBuiltinCodexSlug(id));
+  // Codex 0.163 起默认进 alternate screen；web 终端的滚动条在 alternate screen 里没有
+  // scrollback 可滚。这里恒用 CLI `--no-alt-screen` 的等效配置，保持 inline TUI 语义。
+  toml = tomlSetTopLevel(toml, 'alternate_screen', 'alternate_screen = false');
   let wroteCatalog = false;
   if (catalogModels.length) {
     const catalogPath = join(base, '.codex', 'model-catalog.json');
