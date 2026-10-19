@@ -29,7 +29,7 @@ import {
   type GitWorktreesView,
   type GitRestoreTarget,
 } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, ArrowLeft, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -51,13 +51,20 @@ const err = ref('') // 温和降级：灰字提示，不进面板主错误条
 // 管理式），默认展开、高度定档：变更数在折叠头徽章上仍可见，收起省列表高度。
 const collapsed = ref(false)
 
-// —— 子模块下钻：点子模块条目进入其自身变更列表（同一 dock 复用，数据源换成子模块仓库）——
+// —— 子模块行内展开：子模块条目默认收起，展开才拉取其自身变更列表（点文件开对比）——
 // status 端点把 index 里 mode 160000 的 gitlink 条目标记 submodule=true（porcelain 对
-// gitlink 与普通文件同形，只有 index 的 mode 能分辨）。下钻后 fetch/restore/分支/worktree
-// 全走 statusPath（各端点本就按 path 所在仓库解析），顶部给返回行 + 指针变更入口（开上级
-// 仓库视角的 gitlink 合成 diff）。子模块不可用（未检出/已删）时自动退出下钻回上级。
-const drillPath = ref<string | null>(null)
-const statusPath = computed(() => drillPath.value ?? props.path)
+// gitlink 与普通文件同形，只有 index 的 mode 能分辨）。展开态按子模块绝对路径记账，
+// 已展开的随 8s 轮询跟刷；子模块不可用（未检出/已删）显示灰字占位。
+const subOpen = ref(new Set<string>()) // 已展开的子模块（absOf(条目) 绝对路径）
+const subViews = ref(new Map<string, GitStatusView | null>()) // 绝对路径 -> 子模块状态（null = 不可用）
+async function fetchSub(abs: string) {
+  try {
+    const v = await getGitStatus(props.containerId, abs)
+    subViews.value = new Map(subViews.value).set(abs, v.repo ? v : null)
+  } catch {
+    subViews.value = new Map(subViews.value).set(abs, null)
+  }
+}
 
 // —— 视图模式（平铺 / 目录树），localStorage 持久化 ——
 type GitViewMode = 'list' | 'tree'
@@ -85,27 +92,21 @@ let inFlight = false // 门闩：上一发没回来不发下一发（慢仓不�
 let notRepoKey = '' // repo:false 结果的缓存键（path 变化才失效）
 
 async function fetchStatus() {
-  const sp = statusPath.value
-  if (!sp || inFlight) return
-  if (!drillPath.value && notRepoKey === props.path) return // 已确认非仓库，等 path 变化再试
+  if (!props.path || inFlight) return
+  if (notRepoKey === props.path) return // 已确认非仓库，等 path 变化再试
   const seq = ++gitSeq
   inFlight = true
   try {
-    const v = await getGitStatus(props.containerId, sp)
+    const v = await getGitStatus(props.containerId, props.path)
     if (seq !== gitSeq) return // 过期响应
     if (!v.repo) {
-      if (drillPath.value) {
-        drillPath.value = null // 子模块仓库不可用（未检出/已删）：退出下钻回上级
-        err.value = '子模块仓库不可用（未检出或已删除）'
-        setTimeout(fetchStatus, 0) // 立刻回刷上级列表（此刻 inFlight 仍占着，让下一拍跑）
-        return
-      }
       notRepoKey = props.path
       view.value = null
       return
     }
     view.value = v
     err.value = ''
+    for (const abs of subOpen.value) void fetchSub(abs) // 已展开的子模块随拍跟刷
   } catch (e) {
     if (seq !== gitSeq) return
     if (e instanceof Unauthorized) return // 会话过期由面板统一处理，这里静默
@@ -130,12 +131,13 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
 
-// path / 容器变化立刻重查（含从仓库内走到仓库外的场景）；树折叠与下钻状态一并复位
+// path / 容器变化立刻重查（含从仓库内走到仓库外的场景）；树折叠与子模块展开态一并复位
 watch(
-  () => [props.containerId, statusPath.value],
+  () => [props.containerId, props.path],
   () => {
     notRepoKey = ''
-    drillPath.value = null
+    subOpen.value = new Set()
+    subViews.value = new Map()
     collapsedDirs.value = new Set()
     seenDirs.clear()
     armed.value = new Set()
@@ -188,20 +190,35 @@ function openChange(c: GitChange) {
     ...(c.oldFile ? { headPath: absOf(c.oldFile) } : {}),
   })
 }
-// 条目点击分流：子模块下钻进其变更列表，其余开对比。
-// 下钻 = 把 dock 数据源切到子模块路径（statusPath），列表/撤销/分支全套照旧。
+// 条目点击分流：子模块切换行内展开（默认收起），其余开对比。
 //（未跟踪嵌套仓库不用管：实测 git 2.43 的 status 压根不列它，列表里不会出现。）
 function isSubEntry(c: GitChange): boolean {
   return !!c.submodule
 }
+function toggleSub(c: GitChange) {
+  const abs = absOf(c.file)
+  const next = new Set(subOpen.value)
+  if (!next.delete(abs)) {
+    next.add(abs)
+    if (!subViews.value.has(abs)) void fetchSub(abs) // 首次展开才拉，之后随轮询跟刷
+  }
+  subOpen.value = next
+}
 function onRowClick(c: GitChange) {
-  if (isSubEntry(c)) drillPath.value = absOf(c.file)
+  if (isSubEntry(c)) toggleSub(c)
   else openChange(c)
 }
-// 下钻视角的指针变更入口：path = 子模块目录本身，diff 端点按上级仓库解析出 gitlink，
-// 合成「旧指针 vs 新指针 + 指针间提交」文本（tracked 子模块才有意义，untracked 开了是空）。
-function openPointerDiff() {
-  if (drillPath.value) emit('open-change', { path: drillPath.value.replace(/\/+$/, '') })
+const subViewOf = (c: GitChange): GitStatusView | null | undefined => subViews.value.get(absOf(c.file))
+// 子模块内条目开对比：相对路径按子模块 toplevel 拼绝对路径（diff 端点按其所在仓库解析）
+function openSubChange(abs: string, sc: GitChange) {
+  const t = subViews.value.get(abs)?.toplevel ?? abs
+  const join = (rel: string) => (t === '/' ? `/${rel}` : `${t}/${rel}`)
+  emit('open-change', { path: join(sc.file), ...(sc.oldFile ? { headPath: join(sc.oldFile) } : {}) })
+}
+// 指针变更入口：path = 子模块目录本身，diff 端点按上级仓库解析出 gitlink，
+// 合成「旧指针 vs 新指针 + 指针间提交」文本（tracked 子模块才有意义）。
+function openPointerDiff(abs: string) {
+  emit('open-change', { path: abs.replace(/\/+$/, '') })
 }
 
 // —— 撤销变更：单文件/目录/整体，恢复到 HEAD（VSCode「放弃更改」同语义）——
@@ -234,7 +251,7 @@ async function restoreByKey(key: string, needArm: boolean, target: GitRestoreTar
   }
   restoring.value = new Set([...restoring.value, key])
   try {
-    await gitRestore(props.containerId, statusPath.value, target)
+    await gitRestore(props.containerId, props.path, target)
     const a = new Set(armed.value)
     a.delete(key)
     armed.value = a
@@ -262,7 +279,7 @@ async function revertAll() {
   }
   restoringAll.value = true
   try {
-    await gitRestore(props.containerId, statusPath.value, { all: true })
+    await gitRestore(props.containerId, props.path, { all: true })
     armedAll.value = false
     refresh()
   } catch (e) {
@@ -301,7 +318,7 @@ watch(branchOpen, (open) => {
 async function fetchBranches() {
   branchLoading.value = true
   try {
-    branches.value = await getGitBranches(props.containerId, statusPath.value)
+    branches.value = await getGitBranches(props.containerId, props.path)
   } catch (e) {
     if (e instanceof Unauthorized) return
     branchErr.value = e instanceof Error ? e.message : String(e)
@@ -363,22 +380,22 @@ function onFilterEnter() {
 }
 function createBranch() {
   const name = branchFilter.value.trim()
-  if (name) void runBranchAction(() => gitCheckout(props.containerId, statusPath.value, name, { create: true }), 'close')
+  if (name) void runBranchAction(() => gitCheckout(props.containerId, props.path, name, { create: true }), 'close')
 }
-const switchTo = (b: string) => runBranchAction(() => gitCheckout(props.containerId, statusPath.value, b), 'close')
+const switchTo = (b: string) => runBranchAction(() => gitCheckout(props.containerId, props.path, b), 'close')
 const checkoutRemote = (r: string) =>
-  runBranchAction(() => gitCheckout(props.containerId, statusPath.value, r, { remote: true }), 'close')
-const deleteBranch = (b: string) => runBranchAction(() => gitBranchDelete(props.containerId, statusPath.value, b), 'list')
+  runBranchAction(() => gitCheckout(props.containerId, props.path, r, { remote: true }), 'close')
+const deleteBranch = (b: string) => runBranchAction(() => gitBranchDelete(props.containerId, props.path, b), 'list')
 const fetchRemotes = async () => {
   fetching.value = true
   try {
-    await runBranchAction(() => gitFetch(props.containerId, statusPath.value), 'list')
+    await runBranchAction(() => gitFetch(props.containerId, props.path), 'list')
   } finally {
     fetching.value = false
   }
 }
-const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, statusPath.value), 'status')
-const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, statusPath.value), 'status')
+const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, props.path), 'status')
+const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, props.path), 'status')
 
 // —— worktree 管理（多工作树）：入口在 dock 头（worktree 图标），popover 与分支菜单同构。
 // worktree 与分支是两个维度：分支菜单改「当前工作树的状态」，这里管「工作树本体」——
@@ -415,7 +432,7 @@ watch(wtOpen, (open) => {
 async function fetchWorktrees() {
   wtLoading.value = true
   try {
-    const v = await getGitWorktrees(props.containerId, statusPath.value)
+    const v = await getGitWorktrees(props.containerId, props.path)
     if (!v.repo) {
       wtOpen.value = false // 面板路径已走出仓库（轮询间隙发生）：静默收窗
       return
@@ -465,7 +482,7 @@ function gotoWt(w: { path: string; bare?: boolean }) {
 }
 
 async function removeWt(w: { path: string }) {
-  const ok = await runWtAction(() => gitWorktreeRemove(props.containerId, statusPath.value, w.path, forceSet.value.has(w.path)))
+  const ok = await runWtAction(() => gitWorktreeRemove(props.containerId, props.path, w.path, forceSet.value.has(w.path)))
   if (!ok) {
     // dirty/locked 被 git 拒：原话已留窗，放行该行的「强制移除」（显式二次确认）
     forceSet.value = new Set([...forceSet.value, w.path])
@@ -480,7 +497,7 @@ async function removeWt(w: { path: string }) {
 async function pruneWts() {
   if (pruning.value) return
   pruning.value = true
-  const ok = await runWtAction(() => gitWorktreePrune(props.containerId, statusPath.value))
+  const ok = await runWtAction(() => gitWorktreePrune(props.containerId, props.path))
   pruning.value = false
   if (ok) await fetchWorktrees()
 }
@@ -515,7 +532,7 @@ async function createWt() {
   const name = wtBranchInput.value.trim()
   const dir = wtDirInput.value.trim()
   if (!name || !dir || wtBusy.value) return
-  const ok = await runWtAction(() => gitWorktreeAdd(props.containerId, statusPath.value, dir, wtModeOf(name), name))
+  const ok = await runWtAction(() => gitWorktreeAdd(props.containerId, props.path, dir, wtModeOf(name), name))
   if (!ok) return
   // 成功：收表单、清输入、刷列表并直接导航到新工作树（开箱即用）
   wtCreating.value = false
@@ -1011,25 +1028,6 @@ watch(view, (v) => {
     <template v-if="!collapsed">
       <PaneDivider vertical @dragstart="onHDragStart" @drag="onHDrag" @dragend="persistH" />
       <div class="scroll-thin overflow-y-auto" :style="{ height: gitH + 'px' }">
-        <!-- 子模块下钻导航条：返回上级 + 指针变更入口（开上级仓库视角的 gitlink 合成 diff） -->
-        <div v-if="drillPath" class="sticky top-0 z-10 flex items-center gap-1 border-b border-border/60 bg-background px-1.5 py-1">
-          <button
-            class="flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            title="返回上级仓库的变更列表"
-            @click="drillPath = null"
-          >
-            <ArrowLeft class="size-3 shrink-0" />
-            返回上级仓库
-          </button>
-          <button
-            class="ml-auto flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            title="查看子模块指针变更与指针间提交"
-            @click="openPointerDiff()"
-          >
-            <GitBranch class="size-3 shrink-0" />
-            指针变更与提交
-          </button>
-        </div>
         <p v-if="err" class="px-2.5 py-1 text-[11px] text-muted-foreground">{{ err }}</p>
         <p
           v-else-if="!view.changes?.length"
@@ -1038,32 +1036,74 @@ watch(view, (v) => {
         >
           无变更
         </p>
-        <!-- 平铺：全路径逐文件（服务端 -uall，untracked 目录已展开为单个文件）；点行开对比 -->
+        <!-- 平铺：全路径逐文件（服务端 -uall，untracked 目录已展开为单个文件）；点行开对比；
+             子模块行默认收起，展开内嵌其自身变更列表 -->
         <template v-else-if="viewMode === 'list'">
-          <div
-            v-for="c in view.changes"
-            :key="c.file"
-            class="group flex cursor-pointer items-center gap-1.5 px-2.5 py-1 hover:bg-accent/50"
-            :title="isSubEntry(c) ? '子模块 · 点击进入其变更列表' : `${kindTitle(c)} · 点击查看对比`"
-            @click="onRowClick(c)"
-          >
-            <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(c).cls">{{
-              badgeOf(c).text
-            }}</span>
-            <FolderGit2 v-if="isSubEntry(c)" class="size-3 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="c.oldFile ? `${c.oldFile} → ${c.file}` : c.file">
-              <template v-if="c.oldFile">{{ c.oldFile }} →</template> {{ c.file }}
-            </span>
-            <button
-              class="mr-0.5 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:pointer-events-none"
-              :class="armed.has(c.file) ? 'text-destructive opacity-100' : ''"
-              :title="revertTitle(c)"
-              :disabled="restoring.has(c.file)"
-              @click.stop="revertChange(c)"
+          <template v-for="c in view.changes" :key="c.file">
+            <div
+              class="group flex cursor-pointer items-center gap-1.5 px-2.5 py-1 hover:bg-accent/50"
+              :title="isSubEntry(c) ? '子模块 · 点击展开/收起其变更列表' : `${kindTitle(c)} · 点击查看对比`"
+              @click="onRowClick(c)"
             >
-              <Undo2 class="size-3" />
-            </button>
-          </div>
+              <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(c).cls">{{
+                badgeOf(c).text
+              }}</span>
+              <component
+                :is="subOpen.has(absOf(c.file)) ? ChevronDown : ChevronRight"
+                v-if="isSubEntry(c)"
+                class="size-3 shrink-0 text-muted-foreground"
+              />
+              <FolderGit2 v-if="isSubEntry(c)" class="size-3 shrink-0 text-muted-foreground" />
+              <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="c.oldFile ? `${c.oldFile} → ${c.file}` : c.file">
+                <template v-if="c.oldFile">{{ c.oldFile }} →</template> {{ c.file }}
+              </span>
+              <button
+                class="mr-0.5 shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:pointer-events-none"
+                :class="armed.has(c.file) ? 'text-destructive opacity-100' : ''"
+                :title="revertTitle(c)"
+                :disabled="restoring.has(c.file)"
+                @click.stop="revertChange(c)"
+              >
+                <Undo2 class="size-3" />
+              </button>
+            </div>
+            <!-- 子模块展开体：首次展开才拉状态，之后随轮询跟刷；不可用（未检出/已删）灰字占位 -->
+            <template v-if="isSubEntry(c) && subOpen.has(absOf(c.file))">
+              <p v-if="subViewOf(c) === undefined" class="py-1 pl-9 text-[11px] text-muted-foreground">加载中…</p>
+              <p v-else-if="subViewOf(c) === null" class="py-1 pl-9 text-[11px] text-muted-foreground">
+                子模块仓库不可用（未检出或已删除）
+              </p>
+              <template v-else-if="subViewOf(c)">
+                <div class="flex items-center gap-1.5 py-1 pl-9 pr-2.5 text-[11px] text-muted-foreground">
+                  <span class="min-w-0 flex-1 truncate">
+                    {{ subViewOf(c)!.label }} · {{ subViewOf(c)!.changes?.length ?? 0 }} 个变更
+                  </span>
+                  <button
+                    class="shrink-0 rounded px-1 py-0.5 hover:bg-accent/50 hover:text-foreground"
+                    title="查看子模块指针变更与指针间提交"
+                    @click="openPointerDiff(absOf(c.file))"
+                  >
+                    指针变更与提交
+                  </button>
+                </div>
+                <div
+                  v-for="sc in subViewOf(c)!.changes ?? []"
+                  :key="sc.file"
+                  class="flex cursor-pointer items-center gap-1.5 py-1 pl-12 pr-2.5 hover:bg-accent/50"
+                  :title="sc.oldFile ? `点击查看对比 · ${sc.oldFile} → ${sc.file}` : `点击查看对比 · ${sc.file}`"
+                  @click="openSubChange(absOf(c.file), sc)"
+                >
+                  <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(sc).cls">{{
+                    badgeOf(sc).text
+                  }}</span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-xs">
+                    <template v-if="sc.oldFile">{{ sc.oldFile }} →</template> {{ sc.file }}
+                  </span>
+                </div>
+                <p v-if="!subViewOf(c)!.changes?.length" class="py-1 pl-12 text-[11px] text-muted-foreground">无变更</p>
+              </template>
+            </template>
+          </template>
         </template>
         <!-- 目录树：目录行聚合子树计数、点击折叠（折叠钮与撤销钮之间不能嵌套 button，
              拆外层 div + 内层折叠钮）；文件行只显段名、点行开对比（完整路径进 title） -->
@@ -1102,7 +1142,7 @@ watch(view, (v) => {
               :title="
                 r.change
                   ? isSubEntry(r.change)
-                    ? `子模块 · 点击进入其变更列表 · ${r.change.file}`
+                    ? `子模块 · 点击展开/收起其变更列表 · ${r.change.file}`
                     : r.change.oldFile
                       ? `${kindTitle(r.change)} · 点击查看对比 · ${r.change.oldFile} → ${r.change.file}`
                       : `${kindTitle(r.change)} · 点击查看对比 · ${r.change.file}`
@@ -1116,6 +1156,11 @@ watch(view, (v) => {
               >
                 {{ r.change ? badgeOf(r.change).text : '' }}
               </span>
+              <component
+                :is="r.change && subOpen.has(absOf(r.change.file)) ? ChevronDown : ChevronRight"
+                v-if="r.change && isSubEntry(r.change)"
+                class="size-3 shrink-0 text-muted-foreground"
+              />
               <FolderGit2 v-if="r.change && isSubEntry(r.change)" class="size-3 shrink-0 text-muted-foreground" />
               <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ r.change ? fileNameOf(r.change.file) : '' }}</span>
               <button
@@ -1129,6 +1174,62 @@ watch(view, (v) => {
                 <Undo2 class="size-3" />
               </button>
             </div>
+            <!-- 子模块展开体（树模式缩进随深度）：同平铺模式的展开语义 -->
+            <template v-if="r.change && isSubEntry(r.change) && subOpen.has(absOf(r.change.file))">
+              <p
+                v-if="subViewOf(r.change) === undefined"
+                class="py-1 text-[11px] text-muted-foreground"
+                :style="{ paddingLeft: 20 + (r.depth + 1) * 12 + 'px' }"
+              >
+                加载中…
+              </p>
+              <p
+                v-else-if="subViewOf(r.change) === null"
+                class="py-1 text-[11px] text-muted-foreground"
+                :style="{ paddingLeft: 20 + (r.depth + 1) * 12 + 'px' }"
+              >
+                子模块仓库不可用（未检出或已删除）
+              </p>
+              <template v-else-if="r.change && subViewOf(r.change)">
+                <div
+                  class="flex items-center gap-1.5 py-1 pr-2.5 text-[11px] text-muted-foreground"
+                  :style="{ paddingLeft: 20 + (r.depth + 1) * 12 + 'px' }"
+                >
+                  <span class="min-w-0 flex-1 truncate">
+                    {{ subViewOf(r.change)!.label }} · {{ subViewOf(r.change)!.changes?.length ?? 0 }} 个变更
+                  </span>
+                  <button
+                    class="shrink-0 rounded px-1 py-0.5 hover:bg-accent/50 hover:text-foreground"
+                    title="查看子模块指针变更与指针间提交"
+                    @click="openPointerDiff(absOf(r.change.file))"
+                  >
+                    指针变更与提交
+                  </button>
+                </div>
+                <div
+                  v-for="sc in subViewOf(r.change)!.changes ?? []"
+                  :key="sc.file"
+                  class="flex cursor-pointer items-center gap-1.5 py-1 pr-2.5 hover:bg-accent/50"
+                  :style="{ paddingLeft: 32 + (r.depth + 1) * 12 + 'px' }"
+                  :title="sc.oldFile ? `点击查看对比 · ${sc.oldFile} → ${sc.file}` : `点击查看对比 · ${sc.file}`"
+                  @click="openSubChange(absOf(r.change.file), sc)"
+                >
+                  <span class="w-4 shrink-0 text-center font-mono text-[10px] font-semibold" :class="badgeOf(sc).cls">{{
+                    badgeOf(sc).text
+                  }}</span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-xs">
+                    <template v-if="sc.oldFile">{{ sc.oldFile }} →</template> {{ sc.file }}
+                  </span>
+                </div>
+                <p
+                  v-if="!subViewOf(r.change)!.changes?.length"
+                  class="py-1 text-[11px] text-muted-foreground"
+                  :style="{ paddingLeft: 32 + (r.depth + 1) * 12 + 'px' }"
+                >
+                  无变更
+                </p>
+              </template>
+            </template>
           </template>
         </template>
       </div>
