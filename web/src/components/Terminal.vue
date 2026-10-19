@@ -1096,6 +1096,9 @@ onMounted(async () => {
     // 粘滞修饰（工具条 Ctrl/Alt 点亮态）+ 软键盘敲的单字符：在这里接管发送——Ctrl 字母
     // → 控制字符、Alt → ESC 前缀（sendToolSeq 消费粘滞），return false 不让 xterm 再
     // 处理一遍（否则字母会原样落屏）。带物理修饰的组合不拦，照常透传。
+    // ⚠️ 这只拦得到真实 keydown——Android 软键盘（GBoard 等）敲字母走 composition/IME
+    // 通道，keydown 只有 Unidentified，字符经 xterm 处理后从 onData 出来；那条路在
+    // term.onData 里兜底消费粘滞（见下），keydown 拦走的不会进 onData，两边不双发。
     if (
       e.type === 'keydown' && (ctrlSticky.value || altSticky.value) &&
       e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey
@@ -1201,9 +1204,21 @@ onMounted(async () => {
   term.onData((data) => {
     // 回车即提交命令：上抛给文件面板做即时的 cwd 跟随检查（cd 提交后壳立即改目录，
     // 250ms 后查基本必中）。粘贴多行也含 \r，多抛几次无妨（跟随端去重）。
+    // 粘滞修饰兜底（composition 路径见 attachCustomKeyEventHandler 注释）：keydown 拦截
+    // return false 后 xterm 不再处理、不会走到这里，所以粘滞态还亮着就说明这次输入绕过
+    // 了 keydown——在此消费并改写（Ctrl 逐字符 ctrlify，编码不了的保持原样；Alt 恒 ESC 前缀）。
+    let out = data
+    if (ctrlSticky.value || altSticky.value) {
+      const withCtrl = ctrlSticky.value
+      const withAlt = altSticky.value
+      ctrlSticky.value = false
+      altSticky.value = false
+      if (withCtrl) out = Array.from(out, (ch) => ctrlify(ch) ?? ch).join('')
+      if (withAlt) out = '\x1b' + out
+    }
     if (data.includes('\r')) emit('enter')
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(data))
+      ws.send(new TextEncoder().encode(out))
     }
   })
   term.onResize(({ cols, rows }) => {
