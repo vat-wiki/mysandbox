@@ -62,7 +62,6 @@ import {
   FolderPlus,
   Trash2,
   Download,
-  Search,
   Loader2,
   ClipboardPaste,
   Copy,
@@ -71,7 +70,6 @@ import {
   Pencil,
   FolderInput,
   FolderTree,
-  FileSearch,
   CaseSensitive,
   Regex,
   Package,
@@ -1443,20 +1441,27 @@ function fmtSize(n: number): string {
     </p>
 
     <!-- 搜索行：名称搜索（随浏览模式分两套：下钻=当前目录排序平铺 / 展开=树内过滤保层级）
-         与内容搜索（grep，服务端执行）两模式。左侧图标即模式切换（browseMode 切换钮同款
-         裸 button + 图标即状态）；内容模式追加 大小写/正则/含依赖目录 三开关。Esc/✕ 清空。 -->
+         与内容搜索（grep，服务端执行）两模式。左侧显式分段切换（初版是图标即切换，实测太
+         隐晦没人发现）；内容模式追加 大小写/正则/含依赖目录 三开关。Esc/✕ 清空。 -->
     <div v-if="hasTerminal" class="flex h-7 shrink-0 items-center gap-1.5 border-b border-border px-2">
-      <button
-        class="shrink-0"
-        :title="searchMode === 'name' ? '切换到内容搜索（grep 当前目录）' : '切换到文件名搜索'"
-        @click="searchMode = searchMode === 'name' ? 'content' : 'name'"
-      >
-        <Search
-          v-if="searchMode === 'name'"
-          class="size-3.5 text-muted-foreground hover:text-foreground"
-        />
-        <FileSearch v-else class="size-3.5 text-sky-400" />
-      </button>
+      <div class="flex shrink-0 items-center gap-0.5 rounded bg-muted/60 p-0.5 text-[10px] leading-none">
+        <button
+          class="rounded px-1.5 py-1"
+          :class="searchMode === 'name' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+          title="按文件名过滤当前目录列表"
+          @click="searchMode = 'name'"
+        >
+          文件名
+        </button>
+        <button
+          class="rounded px-1.5 py-1"
+          :class="searchMode === 'content' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+          title="grep 当前目录文件内容（含子目录）"
+          @click="searchMode = 'content'"
+        >
+          内容
+        </button>
+      </div>
       <input
         v-model="q"
         class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
