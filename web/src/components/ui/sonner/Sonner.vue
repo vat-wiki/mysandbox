@@ -16,3 +16,14 @@ import 'vue-sonner/style.css'
     v-bind="$attrs"
   />
 </template>
+
+<!-- 长描述（报错截断残留的长 URL/路径）撑破气泡的兜底：允许任意断行 + 限高滚动。
+     vue-sonner 自带样式对 description 是 pre-line，断不了无空格长 token。 -->
+<style>
+[data-sonner-toast] [data-description] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-height: 7rem;
+  overflow-y: auto;
+}
+</style>

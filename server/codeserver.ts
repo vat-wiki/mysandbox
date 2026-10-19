@@ -74,7 +74,22 @@ export async function ensureCodeServer(
   const has = await sh(cfg, id, 'command -v code-server >/dev/null');
   if (has.exitCode !== 0) {
     onProgress('安装 code-server（npm 全局，约一两分钟）…');
-    const r = await sh(cfg, id, 'npm install -g code-server@latest', { timeoutMs: 600_000 });
+    // --ignore-scripts：依赖链里的 kerberos/argon2 是 native 模块，容器缺 libkrb5-dev
+    // 等头文件时 node-gyp 编译失败整包报废（cet 实测）。脚本不跑完全能用：4.141 的
+    // npm 包自带产物（dev 容器 scripts 被拦下后照常跑），且 --auth none 下 argon2
+    // （密码哈希）/kerberos（企业认证）根本不会走到。
+    let r = await sh(cfg, id, 'npm install -g --ignore-scripts code-server@latest', {
+      timeoutMs: 600_000,
+    });
+    if (r.exitCode !== 0) {
+      onProgress('默认 registry 失败，换 npmmirror 镜像重试…');
+      r = await sh(
+        cfg,
+        id,
+        'npm install -g --ignore-scripts --registry=https://registry.npmmirror.com code-server@latest',
+        { timeoutMs: 600_000 },
+      );
+    }
     if (r.exitCode !== 0) {
       throw new Error(`code-server 安装失败：${(r.stderr || r.stdout).slice(-300)}`);
     }
