@@ -34,18 +34,15 @@ async function sh(
   });
 }
 
-// 容器内 8080 是否可连（TCP 握手，1s 快失败）。
-async function portReachable(cfg: Config, id: string): Promise<boolean> {
-  const r = await sh(cfg, id, `timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/${CODE_SERVER_PORT}" 2>/dev/null`);
-  return r.exitCode === 0;
-}
-
-// code-server 是否活着：进程在（[c] 防 pgrep -f 匹配到探测命令自己）+ 端口可连。
-// 任一不满足即认为没起（半死状态也重起）。
+// code-server 是否活着：进程在（[c] 防 pgrep -f 匹配到探测命令自己）+ HTTP 实测 200。
+// 仅 TCP 可连判不出半残树起的 500（cet 实测踩过：端口通、页面 500）——curl 在模板契约里。
 async function alive(cfg: Config, id: string): Promise<boolean> {
   const r = await sh(cfg, id, `pgrep -f 'code-serv[e]r' >/dev/null 2>&1`);
   if (r.exitCode !== 0) return false;
-  return portReachable(cfg, id);
+  const http = await sh(cfg, id, `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${CODE_SERVER_PORT}/`, {
+    timeoutMs: 15_000,
+  });
+  return http.exitCode === 0 && http.stdout.trim() === '200';
 }
 
 // 容器 id/name → { ip, name }（校验 running）。与 desktop.ts 的 resolveTarget 同款
@@ -73,21 +70,27 @@ export async function ensureCodeServer(
   onProgress('检查 code-server…');
   const has = await sh(cfg, id, 'command -v code-server >/dev/null');
   if (has.exitCode !== 0) {
-    onProgress('安装 code-server（npm 全局，约一两分钟）…');
-    // --ignore-scripts：依赖链里的 kerberos/argon2 是 native 模块，容器缺 libkrb5-dev
-    // 等头文件时 node-gyp 编译失败整包报废（cet 实测）。脚本不跑完全能用：4.141 的
-    // npm 包自带产物（dev 容器 scripts 被拦下后照常跑），且 --auth none 下 argon2
-    // （密码哈希）/kerberos（企业认证）根本不会走到。
-    let r = await sh(cfg, id, 'npm install -g --ignore-scripts code-server@latest', {
-      timeoutMs: 600_000,
-    });
+    // 前置：依赖链里的 kerberos（vscode 自带依赖）要 node-gyp 本地编译，缺 gssapi
+    // 头文件必挂（cet 实测）；g++/make/python3 模板契约已带，这里只补 krb5 头。
+    // ⚠️ 不能用 --ignore-scripts 绕：postinstall 还负责补 vscode 子树的缺失依赖
+    // （@microsoft/1ds-core-js 等），跳过它装是半残树、起服务 500（同日实测）。
+    onProgress('安装 code-server（npm 全局，约几分钟）…');
+    await sh(
+      cfg,
+      id,
+      'dpkg -s libkrb5-dev >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq libkrb5-dev; }',
+      { timeoutMs: 300_000 },
+    );
+    // 残缺安装先清掉：上次半途失败的树留着会让 npm 复用/直接撞 EEXIST。
+    await sh(cfg, id, 'npm rm -g code-server 2>/dev/null; rm -rf /usr/local/lib/node_modules/code-server; true');
+    let r = await sh(cfg, id, 'npm install -g code-server@latest', { timeoutMs: 900_000 });
     if (r.exitCode !== 0) {
       onProgress('默认 registry 失败，换 npmmirror 镜像重试…');
       r = await sh(
         cfg,
         id,
-        'npm install -g --ignore-scripts --registry=https://registry.npmmirror.com code-server@latest',
-        { timeoutMs: 600_000 },
+        'npm install -g --registry=https://registry.npmmirror.com code-server@latest',
+        { timeoutMs: 900_000 },
       );
     }
     if (r.exitCode !== 0) {
