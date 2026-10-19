@@ -56,8 +56,7 @@ import WebSocket, { type RawData } from 'ws';
 import replyFrom from '@fastify/reply-from';
 import type { Config } from './config.js';
 import { listManaged, startContainer } from './engine/index.js';
-import { containerIpamIp, listServiceContainers } from './docker.js';
-import { adoptedServiceNames, getAllServiceMeta } from './state.js';
+import { listServices } from './services.js';
 import { log } from './logger.js';
 import { badRequest, notFound } from './errors.js';
 import { COOKIE_NAME, proxySessionToken, tokenValid } from './auth.js';
@@ -104,23 +103,13 @@ async function refreshTargets(cfg: Config): Promise<void> {
     } catch {
       /* 引擎不可用：容器段空，服务段照常 */
     }
-    // 服务段：state.services 是停机也可解析的权威；running 实测补状态与 state 缺失的孤儿。
-    // 列表双源（label 集 ∪ 收编名集）——收编容器的 running 标志才立得住，否则代理恒 502。
+    // 服务段：面板视图单源（listServices：目录注册表 ∪ 外部栈 stub ∪ label 行）。
+    // 停机服务也有 ip（compose 文件静态 IP / stub 成员记账），代理 target 才立得住。
     try {
-      const meta = await getAllServiceMeta();
-      for (const [name, m] of Object.entries(meta)) {
-        if (!m.ip) continue;
-        map.set(`s/${name}`, { kind: 's', name, ip: m.ip, running: false });
-      }
-      for (const row of await listServiceContainers(adoptedServiceNames(meta))) {
-        const name = rowNameOf(row.Names);
-        const t = map.get(`s/${name}`);
-        if (t) {
-          t.running = row.State === 'running';
-        } else {
-          const ip = await containerIpamIp(name).catch(() => null);
-          if (ip) map.set(`s/${name}`, { kind: 's', name, ip, running: row.State === 'running' });
-        }
+      const { items } = await listServices(cfg);
+      for (const v of items) {
+        if (!v.ip) continue;
+        map.set(`s/${v.name}`, { kind: 's', name: v.name, ip: v.ip, running: v.running });
       }
     } catch {
       /* docker daemon 挂了：服务段空，不拖垮容器段 */

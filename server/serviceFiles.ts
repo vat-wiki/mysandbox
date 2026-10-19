@@ -20,10 +20,10 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
-import { listServiceContainers } from './docker.js';
+
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE } from './terminal.js';
-import { getServiceMeta } from './state.js';
+import { findServiceTarget } from './serviceMeta.js';
 import {
   MAX_BYTES,
   LIST_SCRIPT,
@@ -124,23 +124,25 @@ function svcFeed(
 
 // —— 前置检查 ——
 
-// 受管服务查找：listServiceContainers 双源（label 集 ∪ 收编名集，收编凭证在 adopted
-// meta——非 mysandbox 且未收编的容器即使同名也结构性进不来）。返回 null = 404。
-async function lookupService(name: string): Promise<{ running: boolean } | null> {
-  const adopted = !!(await getServiceMeta(name))?.adopted;
-  const rows = await listServiceContainers(adopted ? [name] : []);
-  const row = rows.find((r) => r.Names.split(',')[0].replace(/^\//, '') === name);
-  return row ? { running: row.State === 'running' } : null;
+// 受管服务查找（findServiceTarget 单源）：目录项目 ∪ 外部栈 stub ∪ 受管行——非
+// mysandbox 且未收编的容器即使同名也结构性进不来。返回 docker exec 锚容器名（目录项目
+// 可能是 <project>-<key>-1 默认命名的成员容器，≠ :name）。
+async function lookupService(name: string): Promise<{ running: boolean; container: string } | null> {
+  const t = await findServiceTarget(name);
+  if (!t) return null;
+  return { running: t.running === true, container: t.container };
 }
 
-async function requireServiceRunning(name: string): Promise<void> {
-  // 收编容器名允许 `_`（compose 惯例），仅以 adopted meta 为凭证放宽。
-  if (!NAME_RE.test(name) && !((await getServiceMeta(name))?.adopted && ADOPT_NAME_RE.test(name))) {
+// 返回 exec 应使用的容器名（= :name 或解析后的成员容器名），调用方拿返回值继续。
+async function requireServiceRunning(name: string): Promise<string> {
+  // `_`（compose 命名惯例）放行——结构判定在 findServiceTarget（未收编同名仍 404）。
+  if (!NAME_RE.test(name) && !ADOPT_NAME_RE.test(name)) {
     throw badRequest('invalid service name');
   }
   const svc = await lookupService(name);
   if (!svc) throw notFound(`service "${name}" not found`);
   if (!svc.running) throw conflict('service not running');
+  return svc.container;
 }
 
 // 列表错误映射（files.ts mapListErr 同款退出码约定）。
@@ -173,11 +175,11 @@ const CWD_SCAN = cwdScan('1');
 export function registerServiceFileRoutes(app: FastifyInstance): void {
   // —— 终端 pane（= exec 的那个 shell）容器内当前目录 ——
   app.get('/api/services/:name/cwd', async (req): Promise<{ cwd: string }> => {
-    const name = (req.params as { name: string }).name;
+    let name = (req.params as { name: string }).name;
     const q = (req.query as Record<string, string | undefined>) || {};
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
-    await requireServiceRunning(name);
+    name = await requireServiceRunning(name);
     const res = await svcExec(name, ['sh', '-c', CWD_SCAN, 'sh', termId], 5_000);
     if (res.exitCode !== 0) throw notFound('terminal session not found');
     const cwd = res.stdout.trim();
@@ -189,8 +191,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   // hostPath 恒 null：docker 容器 fs 没有稳定的宿主实址（overlayfs 挂载点随驱动/快照漂移），
   // 前端对 null 本就隐藏「复制实际路径」）
   app.get('/api/services/:name/files', async (req) => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const res = await svcExec(name, ['sh', '-c', LIST_SCRIPT, 'sh', path], 10_000);
@@ -220,8 +222,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   // —— 目录内容搜索 ——（脚本/解析/校验/错误映射单源 files.ts SEARCH_SCRIPT；alpine
   // busybox 老版无 --exclude-dir/-I 由脚本内 /dev/null 探测自动落 find+xargs 兜底分支）
   app.get('/api/services/:name/search', async (req): Promise<SearchView> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const sp = searchQuery((req.query as Record<string, string | undefined>) || {});
     const res = await svcExec(
       name,
@@ -234,8 +236,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
 
   // —— 读文件 ——（META+base64 协议与 files.ts 同源）
   app.get('/api/services/:name/file', async (req) => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const fname = path.slice(path.lastIndexOf('/') + 1);
@@ -273,8 +275,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
     '/api/services/:name/file',
     { bodyLimit: 16 * 1024 * 1024 },
     async (req): Promise<{ ok: true; mtime?: number }> => {
-      const name = (req.params as { name: string }).name;
-      await requireServiceRunning(name);
+      let name = (req.params as { name: string }).name;
+      name = await requireServiceRunning(name);
       const body = (req.body as { path?: unknown; content?: unknown; baseMtime?: unknown }) || {};
       const path = cleanPath(body.path);
       if (typeof body.content !== 'string') throw badRequest('content (string) required');
@@ -327,8 +329,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
 
   // —— 下载（文件/目录，流式；tar/cat 直通与 files.ts 同源）——
   app.get('/api/services/:name/download', async (req, reply) => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const fname = path.slice(path.lastIndexOf('/') + 1);
@@ -371,8 +373,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
 
   // —— 新建 / 重命名 / 删除 ——（脚本与退出码约定同 files.ts）
   app.post('/api/services/:name/fs/create', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown; type?: unknown }) || {};
     const path = cleanPath(body.path);
     const type = body.type === 'dir' ? 'dir' : body.type === 'file' ? 'file' : undefined;
@@ -391,8 +393,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   // 重命名 / 移动（toDir 可选 = 目标目录，缺省 = 原父目录纯改名；自嵌套前置拒绝，
   // 语义同 files.ts 容器侧）。
   app.post('/api/services/:name/fs/rename', async (req): Promise<{ ok: true; to: string }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown; name?: unknown; toDir?: unknown }) || {};
     const path = cleanPath(body.path);
     const nname = body.name;
@@ -414,8 +416,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/fs/delete', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown }) || {};
     const path = cleanPath(body.path);
     const res = await svcExec(
@@ -433,8 +435,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   // cwd 源与 /cwd 同（进程标记扫描）；~ 展开用 exec 默认用户的 $HOME（docker exec 继承
   // 镜像 USER 的家目录，与会话 shell 一致）。readlink -m 失败（busybox 等无 -m）容忍降级。
   app.get('/api/services/:name/resolve', async (req): Promise<{ path: string; kind: 'dir' | 'file' | 'missing' }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
@@ -475,8 +477,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   // 的可辨识形态是 127（command not found），按非仓库返回（dock 整块隐藏，与「没仓库」
   // 同语义，不给用户报一堆红字）。git 镜像内的仓库照常全套可用。
   app.get('/api/services/:name/git/status', async (req): Promise<GitStatusView> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const res = await svcExec(
@@ -512,8 +514,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
 
   // —— git 变更对比（HEAD 版本 vs 工作区，Monaco diff 视图数据源；协议同 files.ts）——
   app.get('/api/services/:name/git/diff', async (req): Promise<GitDiffView> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const headPath = q.headPath ? cleanPath(q.headPath, 'headPath') : path;
@@ -579,8 +581,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
 
   // —— git 分支列表 / 切换（协议与 files.ts 同源）——
   app.get('/api/services/:name/git/branches', async (req): Promise<GitBranchesView> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const res = await svcExec(
@@ -613,8 +615,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/git/checkout', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown; name?: unknown; create?: unknown; remote?: unknown }) || {};
     const path = cleanPath(body.path);
     const bname = assertBranchName(body.name);
@@ -654,8 +656,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   // 三种目标互斥：file（+可选 oldFile）/ dir（目录下全部）/ all（整个工作区）。详版注释
   // 见 files.ts 同名端点。
   app.post('/api/services/:name/git/restore', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown; file?: unknown; oldFile?: unknown; dir?: unknown; all?: unknown }) || {};
     const path = cleanPath(body.path);
     const all = body.all === true;
@@ -725,8 +727,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   const GIT_NET_TIMEOUT = 120_000;
 
   app.post('/api/services/:name/git/fetch', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown }) || {};
     const path = cleanPath(body.path);
     const res = await svcExec(
@@ -745,8 +747,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/git/pull', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown }) || {};
     const path = cleanPath(body.path);
     const res = await svcExec(
@@ -765,8 +767,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/git/push', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown }) || {};
     const path = cleanPath(body.path);
     const res = await svcExec(
@@ -792,8 +794,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/git/branch-delete', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown; name?: unknown }) || {};
     const path = cleanPath(body.path);
     const bname = assertBranchName(body.name);
@@ -821,8 +823,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
 
   // —— git worktree 管理（协议与退出码同 files.ts：7 非仓库 / 9 名字不合法 / 11 嵌套）——
   app.get('/api/services/:name/git/worktrees', async (req): Promise<GitWorktreesView> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
     const res = await svcExec(
@@ -844,8 +846,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/git/worktree-add', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown; dir?: unknown; mode?: unknown; name?: unknown }) || {};
     const path = cleanPath(body.path);
     const dir = assertWorktreeDir(body.dir);
@@ -883,8 +885,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/git/worktree-remove', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown; dir?: unknown; force?: unknown }) || {};
     const path = cleanPath(body.path);
     const dir = assertWorktreeDir(body.dir);
@@ -911,8 +913,8 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/services/:name/git/worktree-prune', async (req): Promise<{ ok: true }> => {
-    const name = (req.params as { name: string }).name;
-    await requireServiceRunning(name);
+    let name = (req.params as { name: string }).name;
+    name = await requireServiceRunning(name);
     const body = (req.body as { path?: unknown }) || {};
     const path = cleanPath(body.path);
     const res = await svcExec(

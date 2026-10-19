@@ -12,9 +12,8 @@ import { readFile } from 'node:fs/promises';
 import pLimit from 'p-limit';
 import { composeHostsContent, stripServicesBlock, serviceBlockLines } from './hosts.js';
 import { listServiceEndpoints } from './docker.js';
-import { listComposeDirServices } from './serviceCompose.js';
+import { listProjectDirs } from './serviceCompose.js';
 import { relayContainerState } from './events.js';
-import { adoptedContainerNames, getAllServiceMeta } from './state.js';
 import { DOCKER_API_HOSTNAME } from './dockerApi.js';
 import { ANDROID_ADB_HOSTNAME } from './androidBridge.js';
 import { gatewayOf } from './network.js';
@@ -35,11 +34,11 @@ async function currentSvcLines(cfg: Config): Promise<string[]> {
   // ADB 桥：host.android.internal → 网关 IP，容器内 adb 客户端直连宿主 ADB server。
   if (cfg.android.enabled) endpoints.push({ name: ANDROID_ADB_HOSTNAME, ip: gatewayOf(cfg) });
   if (cfg.services.enabled) {
-    // 服务事实源三源并集：label 集 ∪ adopted meta（收编无 label；栈按成员容器名展开）
-    // ∪ compose 目录注册表（agent 自放文件的服务容器同样无我们的 label，靠 project 命中）。
-    const adopted = adoptedContainerNames(await getAllServiceMeta());
-    const dirs = await listComposeDirServices();
-    endpoints.push(...(await listServiceEndpoints(cfg, adopted, dirs)));
+    // 服务事实源单源化：目录注册表（自有 compose 项目 ∪ 外部栈 stub）+ label 行，
+    // 并集在 docker.ts listServiceEndpoints 内部（目录注册表容器无我们的 label，靠
+    // project 命中——原第三源「state 收编名集」随 state.json services 键退役）。
+    const dirs = await listProjectDirs();
+    endpoints.push(...(await listServiceEndpoints(cfg, dirs)));
   }
   // 集群 peer 服务：`<peer名>.<服务名>` → peer 的服务 IP（WireGuard overlay 路由可达）。
   // 失败不阻塞本机服务——peer 掉线只少几行 hosts，不影响正常使用。

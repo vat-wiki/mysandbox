@@ -474,7 +474,9 @@ export function ensureComposeRoot(): void {
 // 面板即出现该服务，不需要过任何表单。目录名即服务名（compose 项目名约定）。
 const DIR_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
-export async function listComposeDirServices(): Promise<string[]> {
+// 项目目录全集（1 目录 = 1 项目）：有 compose.yaml 的自有项目 + 只有 meta.json 的
+// 外部栈 stub（只读收编，见 serviceMeta.ts）都算——目录在即受管。
+export async function listProjectDirs(): Promise<string[]> {
   let entries: string[];
   try {
     entries = await readdir(`${CONFIG_DIR}/compose`);
@@ -484,7 +486,7 @@ export async function listComposeDirServices(): Promise<string[]> {
   const out: string[] = [];
   for (const e of entries) {
     if (!DIR_NAME_RE.test(e)) continue;
-    if (existsSync(composeFileOf(e))) out.push(e);
+    if (existsSync(composeFileOf(e)) || existsSync(`${composeDir(e)}/meta.json`)) out.push(e);
   }
   return out.sort();
 }

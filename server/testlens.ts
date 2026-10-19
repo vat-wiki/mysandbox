@@ -18,7 +18,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Config } from './config.js';
 import { listManaged } from './engine/index.js';
-import { HOST_TARGET, getAllServiceMeta } from './state.js';
+import { HOST_TARGET } from './state.js';
+import { readComposeProject } from './serviceCompose.js';
 import { homeOf } from './aiconfig.js';
 import { HttpError } from './errors.js';
 
@@ -144,9 +145,9 @@ async function installOneTarget(cfg: Config, target: string, hostUrl: string): P
 export async function testlensView(cfg: Config): Promise<TestlensView> {
   const targets = [HOST_TARGET, ...(await listManaged(cfg)).map((v) => v.id)];
   const views = await Promise.all(targets.map((t) => viewOne(cfg, t)));
-  const metas = await getAllServiceMeta();
-  const svc = metas[SERVICE_NAME];
-  const port = svc?.ports?.[0];
+  // TestLens 服务的端口以 compose 底账为准（目录注册表单源；无目录 = 未部署）
+  const proj = await readComposeProject(SERVICE_NAME);
+  const port = proj?.services[0]?.ports[0];
   return {
     targets: views,
     suggestedHost: port ? `http://${SERVICE_NAME}:${port}` : null,

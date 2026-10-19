@@ -34,7 +34,7 @@ import {
   type ServiceConfigView,
   type ServiceJobView,
 } from '@/lib/api'
-import { trackServiceJobs, requestServiceMigrate } from '@/lib/serviceJobs'
+import { trackServiceJobs } from '@/lib/serviceJobs'
 import { serviceUrl } from '@/lib/proxy'
 import { stateLabel } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -257,7 +257,7 @@ async function refresh() {
 
 // —— 创建任务横幅：进行中/失败/取消才出现（done 由自动选中承接）——
 const jobs = ref<ServiceJobView[]>([])
-const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', migrate: '迁移', adopt: '收编接管' }
+const kindLabel: Record<ServiceJobView['kind'], string> = { create: '创建', apply: '应用', adopt: '收编接管' }
 const activeJobs = computed(() =>
   jobs.value.filter((j) => j.state === 'running' || j.state === 'error' || j.state === 'canceled').slice(0, 3),
 )
@@ -370,10 +370,10 @@ async function confirmDelete() {
   )
 }
 
-// 取消收编：还原网络接入 + 清 meta，容器本体不动（收编容器没有删除操作）。
+// 取消收编：还原网络接入 + 删 stub 目录，容器本体不动（外部栈没有删除操作）。
 function askUnadopt() {
   const s = sel.value
-  if (s?.adopted) pendingUnadopt.value = s.name
+  if (s?.externalStack) pendingUnadopt.value = s.name
 }
 
 async function confirmUnadopt() {
@@ -542,13 +542,6 @@ onUnmounted(() => {
               <div class="flex min-w-0 flex-wrap items-center gap-2">
                 <h3 class="min-w-0 truncate text-base font-semibold" :title="sel.name">{{ sel.displayName || sel.name }}</h3>
                 <Badge variant="outline" class="shrink-0 font-normal">{{ sel.preset === 'adopted' ? '收编' : sel.preset }}</Badge>
-                <span
-                  v-if="sel.adopted === false && sel.hasCompose === false"
-                  class="shrink-0 text-amber-600"
-                  title="旧版创建、没有 compose 底账——配置页可一键迁移"
-                  >旧版 · 待迁移</span
-                >
-                <span v-if="sel.metaMissing" class="shrink-0 text-amber-600" title="sidecar 元数据缺失（state.json 被清过？）">⚠</span>
                 <span class="shrink-0 text-xs" :class="stateCls(sel)" :title="sel.status">{{ stateLabel(sel.state) }}</span>
               </div>
               <p v-if="sel.description" class="text-xs text-muted-foreground">{{ sel.description }}</p>
@@ -583,10 +576,10 @@ onUnmounted(() => {
                 >
                   <Globe class="size-3.5" /> 打开 {{ p }}
                 </Button>
-                <!-- 收编容器不能删（不是我们的对象）：取消收编 = 还原网络 + 清登记，
-                     容器本体不动（adopted 栈也走这里——整栈一起摘）。 -->
+                <!-- 外部栈不能删（不是我们的对象）：取消收编 = 还原网络 + 删 stub 目录，
+                     容器本体不动（整栈一起摘）。 -->
                 <Button
-                  v-if="sel.adopted"
+                  v-if="sel.externalStack"
                   variant="ghost"
                   size="sm"
                   class="ml-auto text-destructive hover:text-destructive"
@@ -756,7 +749,7 @@ onUnmounted(() => {
                 </Button>
               </div>
 
-              <!-- adopted 栈：原文件只读展示（编辑/应用归原编排方）——必须在 adopted 分支前 -->
+              <!-- 外部栈：原文件只读展示（编辑/应用归原编排方）——必须在编辑分支前 -->
               <div v-if="openCfg && cfg && cfg.readonly" class="space-y-2 pt-1.5">
                 <div class="flex items-start gap-1.5">
                   <p class="flex-1 text-xs text-muted-foreground">
@@ -775,25 +768,6 @@ onUnmounted(() => {
                   class="h-72 rounded-md border"
                   :options="{ readOnly: true }"
                 />
-              </div>
-
-              <!-- 收编容器没有底账（生命周期归它自己的编排方） -->
-              <p v-else-if="openCfg && sel.adopted" class="pt-1.5 text-xs text-muted-foreground">
-                收编容器没有 compose 底账——配置归原编排方管。
-              </p>
-
-              <!-- 旧版创建（无底账）：迁移入口 -->
-              <div v-else-if="openCfg && cfg && cfg.yaml == null" class="space-y-2 pt-1.5">
-                <div class="flex items-start gap-1.5">
-                  <p class="flex-1 text-xs text-muted-foreground">
-                    旧版创建、没有 compose 底账——迁移后才能「编辑 + 应用」。
-                  </p>
-                  <InfoHint label="迁移语义说明">
-                    <p>迁移按当前容器形状生成底账 <span class="font-mono break-all">{{ cfg.path }}</span>，然后由 compose 接管。</p>
-                    <p>数据卷无损；容器会重建一次，短暂中断。</p>
-                  </InfoHint>
-                </div>
-                <Button size="sm" :disabled="!!busyName || applying" @click="sel && requestServiceMigrate(sel)">迁移到 compose 底账</Button>
               </div>
 
               <!-- 编辑 + 应用 -->

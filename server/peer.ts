@@ -32,8 +32,8 @@ import type { Config } from './config.js';
 import { gatewayOf } from './network.js';
 import { log } from './logger.js';
 import { listManaged, inspectContainer, execRun } from './engine/index.js';
-import { listServiceContainers } from './docker.js';
-import { adoptedServiceNames, getAllServiceMeta, getServiceMeta } from './state.js';
+import { findServiceTarget } from './serviceMeta.js';
+import { listServices } from './services.js';
 import { recordAgentNotify } from './agentNotify.js';
 
 const execFileAsync = promisify(execFile);
@@ -90,18 +90,16 @@ async function execLxc(cfg: Config, name: string, req: PeerExecRequest, timeoutM
   return { ok: r.exitCode === 0, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
-// docker 应用容器：docker exec（管理边界 = 双源的 listServiceContainers——label 集 ∪
-// 收编名集，未收编的外部容器结构性进不来，同名也 404）。argv 直传不经 shell；cwd 走 -w。
+// docker 应用容器：docker exec（管理边界 = findServiceTarget 单源——目录 ∪ stub ∪
+// 受管行，未收编的外部容器结构性进不来，同名也 404）。argv 直传不经 shell；cwd 走 -w。
 async function execService(name: string, req: PeerExecRequest, timeoutMs: number): Promise<PeerExecResult> {
-  const adopted = !!(await getServiceMeta(name))?.adopted;
-  const rows = await listServiceContainers(adopted ? [name] : []);
-  const row = rows.find((r) => r.Names.split(',')[0].replace(/^\//, '') === name);
-  if (!row) return failed(`service not found: ${name}`);
-  if (row.State !== 'running') return failed(`service not running (${row.Status})`);
+  const t = await findServiceTarget(name);
+  if (!t) return failed(`service not found: ${name}`);
+  if (t.running !== true) return failed(t.running == null ? `service container absent: ${name}` : `service not running: ${name}`);
   const args = ['exec'];
   if (req.cwd) args.push('-w', req.cwd);
   if (req.user) args.push('-u', req.user);
-  args.push(name, ...req.cmd);
+  args.push(t.container, ...req.cmd);
   try {
     const { stdout, stderr } = await execFileAsync('docker', args, { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
     return { ok: true, exitCode: 0, stdout, stderr };
@@ -196,18 +194,17 @@ export interface PeerTargets {
 }
 
 export async function listTargets(cfg: Config): Promise<PeerTargets> {
-  const adopted = adoptedServiceNames(await getAllServiceMeta());
   const [containers, services] = await Promise.all([
     listManaged(cfg).catch(() => []), // 引擎不可达：列不出容器但不拖垮整体
-    listServiceContainers(adopted),
+    listServices(cfg).catch(() => ({ items: [] as { name: string; running: boolean; image: string }[] })),
   ]);
   return {
     host: { name: 'host' },
     containers: containers.map((c) => ({ name: c.name, ip: c.ip ?? null, running: c.state === 'running' })),
-    services: services.map((s) => ({
-      name: s.Names.split(',')[0].replace(/^\//, ''),
-      running: s.State === 'running',
-      image: s.Image,
+    services: services.items.map((v) => ({
+      name: v.name,
+      running: v.running,
+      image: v.image,
     })),
   };
 }

@@ -14,11 +14,12 @@
 //   - 权限：宿主用户在 docker 组（免 sudo 直连 /var/run/docker.sock）。systemd user service
 //     里同样可用——group 成员在 user manager 启动时快照，后加组需 daemon-restart。
 //
-// 管理边界（结构性，不靠约定）：受管服务 = label mysandbox.kind=service + mysandbox.managed-by。
-// docker 不能给既有容器后补 label，收编的外部容器（无 label）走 sidecar（state.json
-// services.adopted）纳管——所以列表/事件等过滤点都要**双源**：label 集 ∪ 调用方传入的
-// 收编名集（extraNames，由 state 的 adopted meta 得出）。未收编的外部容器（dener-* 等）
-// 依然永远不进列表、对它们的服务操作只会 404。
+// 管理边界（结构性，不靠约定）：受管服务 = 目录注册表（compose.yaml 项目 ∪ 外部栈
+// stub 目录，见 serviceMeta.ts/serviceCompose.ts）∪ label mysandbox.kind=service +
+// mysandbox.managed-by ∪ compose project label ∈ 目录名集。docker 不能给既有容器后补
+// label——目录注册表与 label 集是列表/事件等过滤点的**双源**（原第三源「state 收编名集
+// extraNames」随 state.json services 键退役）。未收编的外部容器（dener-* 等）依然永远
+// 不进列表、对它们的服务操作只会 404。
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
@@ -184,20 +185,19 @@ export function rowLabels(row: Pick<DockerContainerRow, 'Labels'>): Record<strin
 }
 
 // ⚠️ network inspect 只列 running 端点：停机服务的静态 IP 不在这里——占用判定必须
-// 并上 state.services 里登记的 IP（见 services.ts allocateServiceIp）。
+// 并上 compose 文件的 ipv4_address 与外部栈 stub 的成员记账（见 services.ts
+// allocateServiceIp / serviceMeta.ts）。
 //
-// 双源（见文件头「管理边界」）：label 命中的受管服务 ∪ extraNames 里无 label 的收编
-// 容器（精确名匹配，extraNames 来自 state 的 adopted meta）。一次无过滤 `ps -a` 在 JS
-// 分区——宿主容器量级（几十）下比 N 条 `--filter name=` 便宜，且 name 过滤是子串匹配
-// 不能直接用。
-export async function listServiceContainers(extraNames: string[] = []): Promise<DockerContainerRow[]> {
+// 受管行 = label 集（见文件头「管理边界」）。一次无过滤 `ps -a` 在 JS 分区——宿主容器
+// 量级（几十）下比 N 条 `--filter name=` 便宜，且 name 过滤是子串匹配不能直接用。
+// 目录注册表服务的容器（无我们的 label）由 listComposeProjectContainers 按 project
+// 命中，业务层并集/去重。
+export async function listServiceContainers(): Promise<DockerContainerRow[]> {
   try {
     const rows = await dockerJsonLines<DockerContainerRow>(['ps', '-a']);
-    const extra = new Set(extraNames);
     return rows.filter((r) => {
       const labels = rowLabels(r);
-      const managed = labels[MANAGED_LABEL] === 'mysandbox' && labels[KIND_LABEL] === 'service';
-      return managed || (extra.has(rowName(r)) && labels[MANAGED_LABEL] !== 'mysandbox');
+      return labels[MANAGED_LABEL] === 'mysandbox' && labels[KIND_LABEL] === 'service';
     });
   } catch (e) {
     log.warn({ err: String(e) }, 'docker ps failed');
@@ -206,7 +206,7 @@ export async function listServiceContainers(extraNames: string[] = []): Promise<
 }
 
 // 非 mysandbox 管理的容器全集（收编候选列表用）。已收编的也在（无 label 无法区分），
-// 由业务层对着 state 的 adopted meta 排除。
+// 由业务层对着目录注册表（目录名 = compose project label / 容器名）排除。
 export async function listExternalContainers(): Promise<DockerContainerRow[]> {
   try {
     const rows = await dockerJsonLines<DockerContainerRow>(['ps', '-a']);
@@ -667,12 +667,11 @@ export function subscribeServiceEvents(
 // 等价于「没有服务」，容器里旧的服务行下次 docker 恢复后被追平。
 export async function listServiceEndpoints(
   cfg: Config,
-  extraNames: string[] = [],
-  composeProjects: string[] = [], // 目录注册表服务的 project 名（agent 自放文件的服务无我们的 label）
+  composeProjects: string[] = [], // 目录注册表服务的 project 名（agent 自放文件 / 外部栈成员无我们的 label）
 ): Promise<{ name: string; ip: string }[]> {
   const net = await inspectNetwork(cfg.services.network);
   if (!net) return [];
-  const rows = await listServiceContainers(extraNames);
+  const rows = await listServiceContainers();
   let renames: Map<string, string> | null = null;
   if (composeProjects.length) {
     const projRows = await listComposeProjectContainers(composeProjects);

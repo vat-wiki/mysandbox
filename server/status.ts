@@ -22,8 +22,10 @@ import type { ContainerView } from './engine/index.js';
 import { lxcPath, configPath, configValue } from './engine/lxc.js';
 import { installRoot as wslInstallRoot } from './engine/wsl2.js';
 import { HOST_SOCKET } from './hostTerminal.js';
-import { dockerStatus, listServiceContainers, listManagedVolumes, rowLabels } from './docker.js';
-import { getAllMeta, getAllServiceMeta, adoptedContainerNames } from './state.js';
+import { dockerStatus, listManagedVolumes } from './docker.js';
+import { getAllMeta } from './state.js';
+import { listServices, type ServiceView } from './services.js';
+import { listProjectDirs, readComposeProject } from './serviceCompose.js';
 import { getVersion } from './version.js';
 
 const execFileAsync = promisify(execFile);
@@ -100,34 +102,36 @@ async function collectTemplate(cfg: Config): Promise<StatusReport['template']> {
   return { name: engine.baseName(cfg), exists: !!st?.exists, ip: null };
 }
 
-// docker 服务层：label 过滤的服务容器 + label 过滤的卷。孤儿卷 = 有 label 但 meta 里没有
-// 登记（删服务不勾「删数据」留下的，无 UI 入口可清——提示手工 docker volume rm）。
-async function collectServices(): Promise<StatusReport['docker']> {
+// docker 服务层：服务视图（listServices 单源：目录注册表 ∪ 外部栈 stub ∪ label 行）
+// + label 过滤的卷。孤儿卷 = 有 label 但没有任何 compose 文件声明（删服务不勾「删数据」
+// 留下的，无 UI 入口可清——提示手工 docker volume rm）。
+async function collectServices(cfg: Config): Promise<StatusReport['docker']> {
   const d = await dockerStatus();
   if (!d.reachable) {
     return { reachable: false, error: d.error, services: [], volumes: [], orphanVolumes: [] };
   }
-  const meta = await getAllServiceMeta();
-  const [rows, volumes] = await Promise.all([
-    listServiceContainers(adoptedContainerNames(meta)),
+  const [views, volumes] = await Promise.all([
+    listServices(cfg).catch(() => ({ items: [] as ServiceView[] })),
     listManagedVolumes().catch(() => [] as { name: string }[]),
   ]);
-  const services = rows.map((row) => {
-    const name = row.Names.split(',')[0].replace(/^\//, '');
-    const m = meta[name];
-    return {
-      name,
-      state: row.State,
-      preset: rowLabels(row)['mysandbox.service-preset'] ?? m?.preset ?? '?',
-      image: row.Image,
-      ip: m?.ip,
-      ports: m?.ports,
-      displayName: m?.displayName,
-      volume: m?.volume ?? null,
-    };
-  });
-  const registered = new Set(Object.values(meta).map((m) => m.volume).filter(Boolean));
-  const orphanVolumes = volumes.filter((v) => !registered.has(v.name)).map((v) => v.name);
+  const services = views.items.map((v) => ({
+    name: v.name,
+    state: v.state,
+    preset: v.preset,
+    image: v.image,
+    ip: v.ip ?? undefined,
+    ports: v.ports.length ? v.ports : undefined,
+    displayName: v.displayName,
+    volume: v.volume ?? null,
+  }));
+  // 卷声明全集：目录项目的 compose 文件（外部栈 stub 的卷归原编排方，不算我们的孤儿）
+  const declared = new Set<string>();
+  for (const dir of await listProjectDirs()) {
+    for (const svc of (await readComposeProject(dir))?.services ?? []) {
+      for (const v of svc.volumes) declared.add(v);
+    }
+  }
+  const orphanVolumes = volumes.filter((v) => !declared.has(v.name)).map((v) => v.name);
   return {
     reachable: true,
     version: d.version,
@@ -193,7 +197,7 @@ export async function collectStatusReport(cfg: Config): Promise<StatusReport> {
   const [containers, template, docker, hostTerminal, units, sidecar] = await Promise.all([
     d.reachable ? collectContainers(cfg) : Promise.resolve(null),
     collectTemplate(cfg),
-    collectServices(),
+    collectServices(cfg),
     collectHostTerminal(),
     collectUnits(),
     collectSidecar(),

@@ -3314,7 +3314,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 :title="s.displayName || s.name"
                 :description="s.description || s.image"
                 :meta-label="s.ip || '无 IP'"
-                :badge-label="s.adopted ? '收编' : undefined"
+                :badge-label="s.externalStack ? '收编' : undefined"
                 :running="s.running"
                 :color="containerColor(s.name)"
                 :actions="serviceActions(s, svcPortRows(s), directOpenExtra)"
@@ -3352,12 +3352,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                     <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground" :title="s.name">{{
                       s.displayName || s.name
                     }}</span>
-                    <span
-                      v-if="s.metaMissing"
-                      class="shrink-0 text-amber-600"
-                      title="sidecar 元数据缺失（state.json 被清过？），重建可恢复"
-                      >⚠</span
-                    >
                   </div>
                   <!-- 第二行：IP（点击复制，成功回显绿色）+ 描述/镜像。 -->
                   <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground" :class="s.running ? '' : 'opacity-50'">
@@ -3374,9 +3368,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                     <span class="min-w-0 flex-1 truncate" :title="s.description || s.image">{{
                       s.description || s.image
                     }}</span>
-                    <!-- 收编的外部容器：身份标记常驻（操作边界不同——无删除/更新，只有取消收编） -->
+                    <!-- 收编的外部栈：身份标记常驻（操作边界不同——无删除/更新，只有取消收编） -->
                     <Badge
-                      v-if="s.adopted"
+                      v-if="s.externalStack"
                       variant="outline"
                       class="shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground"
                       title="生命周期归原编排方——这里只提供终端/文件/网络可达"
@@ -3436,9 +3430,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 <ContextMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</ContextMenuItem>
                 <ContextMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</ContextMenuItem>
                 <!-- 删除：留数据卷 / 连数据双入口，文案与确认语义同服务抽屉操作行；
-                     收编容器不可删，给「取消收编」（还原网络 + 清登记，本体不动）。 -->
+                     外部栈不可删，给「取消收编」（还原网络 + 删 stub 目录，本体不动）。 -->
                 <ContextMenuSeparator />
-                <template v-if="s.adopted">
+                <template v-if="s.externalStack">
                   <ContextMenuItem class="text-destructive" @click="pendingSvcUnadopt = s.name">取消收编</ContextMenuItem>
                 </template>
                 <template v-else>

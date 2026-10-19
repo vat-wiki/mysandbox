@@ -17,7 +17,8 @@ import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { listServiceContainers } from './docker.js';
-import { getServiceMeta, getSshTargets, type SshTarget } from './state.js';
+import { getSshTargets, type SshTarget } from './state.js';
+import { findServiceTarget } from './serviceMeta.js';
 import { sshExec, sshSpawn, sshSpawnIn, sshTest } from './sshChannel.js';
 import { TERMID_RE, sessionName } from './terminal.js';
 import {
@@ -610,8 +611,8 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (!srcC || !dstC) throw badRequest('srcContainer and dstContainer are required');
     if (srcPath === '/') throw badRequest('cannot copy /');
 
-    // 服务侧探测/操作小助手（docker exec，数组参数无 shell 注入面；受管边界 = 双源的
-    // listServiceContainers——label 集 ∪ 收编名集，非 mysandbox 且未收编的容器结构性查不到）。
+    // 服务侧探测/操作小助手（docker exec，数组参数无 shell 注入面；受管边界 =
+    // findServiceTarget 单源——目录 ∪ stub ∪ 受管行，未收编的容器结构性查不到）。
     async function svcTest(sname: string, script: string, p: string): Promise<boolean> {
       try {
         await execFileAsync('docker', ['exec', sname, 'sh', '-c', script, 'sh', p], { timeout: 8_000 });
@@ -621,9 +622,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
       }
     }
     async function svcRow(sname: string): Promise<boolean> {
-      const adopted = !!(await getServiceMeta(sname))?.adopted;
-      const rows = await listServiceContainers(adopted ? [sname] : []);
-      return rows.some((r) => r.Names.split(',')[0].replace(/^\//, '') === sname);
+      return (await findServiceTarget(sname)) != null;
     }
 
     type Side =

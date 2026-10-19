@@ -109,7 +109,7 @@ export function serviceActions(s: ServiceView, ports: ServicePortRow[], directOp
   if (!s.running) actions.push({ id: 'start', label: '启动' })
   else actions.push({ id: 'stop', label: '停止' })
   actions.push({ id: 'restart', label: '重启' })
-  if (s.adopted) actions.push({ id: 'unadopt', label: '取消收编', destructive: true })
+  if (s.externalStack) actions.push({ id: 'unadopt', label: '取消收编', destructive: true })
   else {
     actions.push({ id: 'delete-keep', label: '删除（留数据卷）' })
     actions.push({ id: 'delete-data', label: '删除（连数据）', destructive: true })
