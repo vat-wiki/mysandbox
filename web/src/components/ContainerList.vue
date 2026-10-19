@@ -853,12 +853,18 @@ const filePanes = computed(() => {
   return leafIds(g.root).map((termId, i) => ({ termId, label: `${groupLabel(g)} #${i + 1}` }))
 })
 const fileTermId = computed(() => filePanes.value[filePaneIdx.value]?.termId ?? null)
+// 「曾是组目标」记账：组的目标哨兵一旦出现在 groups 里就留痕。路由化后面板目标由
+// /files/:target 承载，组被关掉（✕/隐藏/容器或服务被删的修剪）时路由还停在死哨兵上
+// ——面板永远「终端会话未就绪」且切 tab 救不回（下面的深链守卫会跳过同步）。有这份
+// 记账才能区分「跟随的组没了」（回退活跃组）与「真深链目标」（保持独立浏览不动）。
+const everGroupTargets = new Set<string>()
 // 用户切换终端 tab 时，面板仍保持“跟随当前终端组”的语义：同步路由目标。直接深链的
 // 目标没有对应终端组时不抢焦点，让面板独立浏览该目标。
 watch(activeGroup, (g) => {
   if (!showFiles.value || !g) return
   const oldTarget = routeFileTarget.value
-  if (oldTarget && !groups.value.some((x) => fileTargetId(x) === oldTarget)) return
+  const oldAlive = !oldTarget || groups.value.some((x) => fileTargetId(x) === oldTarget)
+  if (!oldAlive && !everGroupTargets.has(oldTarget)) return
   const target = fileTargetId(g)
   if (target !== oldTarget) {
     void router.replace({ name: 'files', params: { target: encodeURIComponent(target) } })
@@ -869,6 +875,23 @@ watch(routeFileTarget, (target) => {
   const gi = groups.value.findIndex((g) => fileTargetId(g) === target)
   if (gi >= 0) activeIdx.value = gi
 })
+// 文件路由目标的失效恢复：目标曾是组目标而对应组已不在 → 回退当前活跃组（没有组退回
+// 本机，与 filePanelTarget 的无组兜底同口径）。组消失有三条路（closeGroupById /
+// hideGroupById / 容器与服务修剪），不去各处埋点、按组花名册变化在消费端统一兜住。
+watch(
+  [showFiles, routeFileTarget, () => groups.value.map((g) => g.id).join('\n')],
+  ([open, target]) => {
+    for (const g of groups.value) everGroupTargets.add(fileTargetId(g))
+    if (!open || !target) return
+    if (groups.value.some((x) => fileTargetId(x) === target)) return
+    if (!everGroupTargets.has(target)) return
+    const next = activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID
+    if (next !== target) {
+      void router.replace({ name: 'files', params: { target: encodeURIComponent(next) } })
+    }
+  },
+  { immediate: true },
+)
 // 深链 /files/<target>?path=<dir>：面板挂载或目标切换后一次性定位；随后路径由
 // FilePanel 的 path-change 反向同步（replace，不污染历史）。
 watch(
