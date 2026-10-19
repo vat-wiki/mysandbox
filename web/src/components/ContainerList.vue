@@ -29,8 +29,6 @@ import {
   sshGroupId,
   sshTargetName,
   listSshTargets,
-  ensureCodeServer,
-  CODE_SERVER_PORT,
   type SshTargetView,
   getServiceListenPorts,
   Unauthorized,
@@ -42,6 +40,7 @@ import {
   type AgentWaitingView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
+import { openCodeServer } from '@/lib/codeserver'
 import { onSandboxEvent } from '@/lib/events'
 import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
 import {
@@ -1252,30 +1251,10 @@ function openDesktop(container: ContainerView) {
   void openRoute('container-desktop', { id: container.id })
 }
 
-// code-server（浏览器版 VS Code）：按需 ensure（缺装装、没起起，进度进 toast），
-// 就绪后按端口点击同款口径打开（serviceUrl：代理/直连跟随控制台）。开着时秒过，
-// toast 一闪即被成功帧替换。
+// code-server（浏览器版 VS Code）：ensure + 打开共用逻辑在 lib/codeserver.ts
+// （文件面板「在 Code Server 打开」同源）。开着时秒过，toast 一闪即被成功帧替换。
 function onCodeServer(c: ContainerView) {
-  const tid = toast.loading(`code-server · ${c.displayName || c.name}`, {
-    description: '检查中…',
-    duration: Infinity,
-  })
-  void ensureCodeServer(c.id, (e) => {
-    if (e.type === 'progress' && e.status) {
-      toast.loading(`code-server · ${c.displayName || c.name}`, { id: tid, description: e.status })
-    }
-  })
-    .then((r) => {
-      toast.success('code-server 已就绪，新标签页打开', { id: tid, duration: 4000 })
-      openUrl(serviceUrl('c', r.name || c.name, CODE_SERVER_PORT, r.ip || c.ip))
-    })
-    .catch((e: unknown) => {
-      toast.error('code-server 启动失败', {
-        id: tid,
-        description: (e instanceof Error ? e.message : String(e)).slice(0, 300),
-        duration: 10_000,
-      })
-    })
+  openCodeServer({ id: c.id, name: c.displayName || c.name, ip: c.ip })
 }
 function closeDesktop() {
   closePageRoute()

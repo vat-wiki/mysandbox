@@ -15,11 +15,15 @@ import {
   setFileClipboard,
   getFileClipboard,
   registryAddSkill,
+  searchFiles,
   Unauthorized,
   HOST_ID,
+  SVC_FILE_PREFIX,
+  SSH_ID_PREFIX,
   type FileEntry,
   type FilesView,
   type FileClipboard,
+  type SearchHit,
 } from '@/lib/api'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
@@ -39,6 +43,7 @@ import {
 } from '@/components/ui/context-menu'
 import NameDialog from '@/components/NameDialog.vue'
 import { onSandboxEvent, setWatchDirs, type SandboxEvent } from '@/lib/events'
+import { openCodeServer } from '@/lib/codeserver'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
 import MobileTabActions from '@/components/mobile/MobileTabActions.vue'
@@ -66,6 +71,11 @@ import {
   Pencil,
   FolderInput,
   FolderTree,
+  FileSearch,
+  CaseSensitive,
+  Regex,
+  Package,
+  SquareCode,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -83,7 +93,8 @@ const emit = defineEmits<{
   (e: 'close'): void
   // opts.diff 存在 = git 变更对比形态（Git 变更区块点击上抛；目录列表点文件不传）。
   // opts.editing = 文件行/右键「编辑」直接落编辑态；diff 打开不受影响。
-  (e: 'open-file', path: string, opts?: { diff?: { headPath?: string }; editing?: boolean }): void
+  // opts.line = 内容搜索命中行：编辑器打开后跳到该行（revealTarget）。
+  (e: 'open-file', path: string, opts?: { diff?: { headPath?: string }; editing?: boolean; line?: number }): void
   // 当前展示目录变化（跟随 cwd、手动导航、静默轮询都算）：父层同步 /files URL query。
   (e: 'path-change', path: string): void
   (e: 'pane-pick', termId: string): void
@@ -113,6 +124,16 @@ function targetId(): string {
 }
 // 宿主面板（HOST_ID 哨兵）：路径本来就是宿主路径，弹框里不重复展示容器路径行。
 const isHost = computed(() => targetId() === HOST_ID)
+
+// 在 Code Server 打开：仅真容器目标（宿主/服务 s:/SSH ssh: 无 code-server 可言）。
+// 带当前目录作工作区（?folder=），「看着文件面板一键升到 IDE」的最短动线。
+const canCodeServer = computed(() => {
+  const id = targetId()
+  return id !== HOST_ID && !id.startsWith(SVC_FILE_PREFIX) && !id.startsWith(SSH_ID_PREFIX)
+})
+function openInCodeServer(): void {
+  openCodeServer({ id: targetId(), name: props.containerName, folder: path.value || null })
+}
 
 // —— 添加为技能（pull 反向：就地收进库）——把一个含 SKILL.md 的目录直接收进技能库
 // （拷一份静态快照，与来源解耦；此后任何目标都能「安装技能」拉它，更新在技能中心）。
@@ -716,6 +737,7 @@ watch(
     skillProbeSeq.clear()
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
     q.value = '' // 搜索是当前目录视图，切容器一并清掉
+    searchMode.value = 'name' // 内容搜索上下文不跨容器，视图重置回名称搜索
     tick()
   },
 )
@@ -811,7 +833,10 @@ watch(crumbsEl, (el) => {
     crumbRO.observe(el)
   }
 })
-onBeforeUnmount(() => crumbRO?.disconnect())
+onBeforeUnmount(() => {
+  crumbRO?.disconnect()
+  resetSearchState() // 在途搜索请求作废 + 清防抖 timer
+})
 function crumbW(name: string): number {
   return name.length * 6.6 + 6 // mono 11px 字宽 + chip px-0.5 内边距（略保守）
 }
@@ -975,8 +1000,9 @@ const displayEntries = computed(() => {
     .map((x) => x.e)
 })
 // 文件名拆段渲染高亮（多处命中全高亮；大小写不敏感，lower 与原串位置一一对应）。
-function nameSegs(name: string): { t: string; hit: boolean }[] {
-  const needle = q.value.trim().toLowerCase()
+// needle 参数化：名称搜索传 q（小写化）、内容搜索命中行传 pattern（正则模式不高亮，
+// 传空串走全不命中分支）。
+function nameSegs(name: string, needle: string): { t: string; hit: boolean }[] {
   if (!needle) return [{ t: name, hit: false }]
   const segs: { t: string; hit: boolean }[] = []
   let rest = name
@@ -991,6 +1017,108 @@ function nameSegs(name: string): { t: string; hit: boolean }[] {
   }
   if (rest) segs.push({ t: rest, hit: false })
   return segs
+}
+
+// —— 内容搜索（grep，服务端视图）——
+// 与名称搜索（displayEntries 纯客户端派生）并列的第二模式：服务端对当前目录跑 grep
+// -rnI，结果按文件分组平铺在列表区（完全接管 rows 渲染分支，见模板），点命中行
+// emit open-file 带 line + editing（md/svg 默认预览态，跳行只在源码态有意义，必须
+// editing:true 强制进源码），父级汇聚到 FileEditorPane 的 revealTarget 跳行。
+// 名称搜索的 MIN 无关：MIN_QUERY 只约束内容模式（1 个字符的 grep 请求噪声太大）。
+const searchMode = ref<'name' | 'content'>('name')
+const searchHits = ref<SearchHit[] | null>(null) // null = 无结果态（未搜/已清）
+const searchLoading = ref(false)
+const searchErr = ref('')
+const searchTruncated = ref(false)
+const searchCs = ref(false) // 大小写敏感（默认否）
+const searchRe = ref(false) // 正则模式（默认固定串）
+const searchDeps = ref(false) // 含依赖目录（默认剪 .git/node_modules 等）
+const MIN_QUERY = 2
+// 内容模式激活 = 列表区被结果接管（渲染分支判它，一处收口）。
+const contentActive = computed(() => searchMode.value === 'content' && q.value.trim().length >= MIN_QUERY)
+
+let searchCtl: AbortController | null = null
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+let searchSeq = 0 // 过期响应守卫（loadSeq 同手法，防 abort 竞态漏网）
+function resetSearchState() {
+  searchCtl?.abort()
+  searchCtl = null
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  searchHits.value = null
+  searchLoading.value = false
+  searchErr.value = ''
+  searchTruncated.value = false
+}
+async function runContentSearch() {
+  const needle = q.value.trim()
+  if (searchMode.value !== 'content' || needle.length < MIN_QUERY) {
+    resetSearchState()
+    return
+  }
+  const my = ++searchSeq
+  searchCtl?.abort()
+  const ctl = new AbortController()
+  searchCtl = ctl
+  searchLoading.value = true
+  searchErr.value = ''
+  try {
+    const v = await searchFiles(
+      targetId(),
+      path.value,
+      needle,
+      { cs: searchCs.value, re: searchRe.value, deps: searchDeps.value },
+      ctl.signal,
+    )
+    if (my !== searchSeq) return
+    searchHits.value = v.hits
+    searchTruncated.value = v.truncated
+    searchLoading.value = false
+  } catch (e) {
+    if (my !== searchSeq || ctl.signal.aborted) return // 换词/换路径/换容器的过期响应，静默丢弃
+    searchLoading.value = false
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
+    }
+    searchErr.value = e instanceof Error ? e.message : String(e)
+  }
+}
+function scheduleContentSearch() {
+  if (searchMode.value !== 'content' || q.value.trim().length < MIN_QUERY) {
+    resetSearchState()
+    return
+  }
+  searchCtl?.abort()
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(runContentSearch, 300)
+}
+// path 进依赖 = 搜索作用域就是当前目录，导航即按新目录重搜（旧结果过期丢弃）；容器 id
+// 兜底（切容器 watch 已清 q，q 变化会触发本 watch，双保险）。开关变化即重搜。
+watch([q, searchMode, searchCs, searchRe, searchDeps, path, () => props.containerId], scheduleContentSearch)
+
+// 结果按文件分组（服务端 flat hits，客户端分组纯展示）：保持服务端返回序（grep 递归序）。
+const contentGroups = computed(() => {
+  const out: { path: string; name: string; dir: string; hits: SearchHit[] }[] = []
+  const byPath = new Map<string, { path: string; name: string; dir: string; hits: SearchHit[] }>()
+  for (const h of searchHits.value ?? []) {
+    let g = byPath.get(h.path)
+    if (!g) {
+      const i = h.path.lastIndexOf('/')
+      const dir = i < 0 ? '' : h.path.slice(0, i) // 根下文件无 dir（slice(0,-1) 会剪名尾）
+      g = { path: h.path, name: h.path.split('/').pop() ?? h.path, dir, hits: [] }
+      byPath.set(h.path, g)
+      out.push(g)
+    }
+    g.hits.push(h)
+  }
+  return out
+})
+// 命中行相对路径 -> 当前目录下的绝对路径（open-file 汇聚点吃绝对路径）。
+function hitAbsPath(rel: string): string {
+  return path.value === '/' ? `/${rel}` : `${path.value}/${rel}`
 }
 
 // —— 目录展开（行内树形视图）——
@@ -1269,6 +1397,18 @@ function fmtSize(n: number): string {
       >
         <BookPlus class="size-3.5" />
       </Button>
+      <!-- 在 Code Server 打开当前目录（?folder=）：文件面板 → IDE 的最短动线。
+           仅真容器目标；ensure 逻辑与右键菜单同源（lib/codeserver.ts）。 -->
+      <Button
+        v-if="canCodeServer"
+        variant="ghost"
+        size="icon-xs"
+        class="shrink-0"
+        title="在 Code Server 打开当前目录"
+        @click="openInCodeServer"
+      >
+        <SquareCode class="size-3.5" />
+      </Button>
       <Button
         variant="ghost"
         size="icon-xs"
@@ -1302,16 +1442,60 @@ function fmtSize(n: number): string {
       终端会话未就绪，等待中…
     </p>
 
-    <!-- 名称搜索：随浏览模式分两套（下钻=当前目录排序平铺 / 展开=树内过滤保层级）；
-         Esc/✕ 清空 -->
+    <!-- 搜索行：名称搜索（随浏览模式分两套：下钻=当前目录排序平铺 / 展开=树内过滤保层级）
+         与内容搜索（grep，服务端执行）两模式。左侧图标即模式切换（browseMode 切换钮同款
+         裸 button + 图标即状态）；内容模式追加 大小写/正则/含依赖目录 三开关。Esc/✕ 清空。 -->
     <div v-if="hasTerminal" class="flex h-7 shrink-0 items-center gap-1.5 border-b border-border px-2">
-      <Search class="size-3.5 shrink-0 text-muted-foreground" />
+      <button
+        class="shrink-0"
+        :title="searchMode === 'name' ? '切换到内容搜索（grep 当前目录）' : '切换到文件名搜索'"
+        @click="searchMode = searchMode === 'name' ? 'content' : 'name'"
+      >
+        <Search
+          v-if="searchMode === 'name'"
+          class="size-3.5 text-muted-foreground hover:text-foreground"
+        />
+        <FileSearch v-else class="size-3.5 text-sky-400" />
+      </button>
       <input
         v-model="q"
         class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
-        :placeholder="browseMode === 'expand' ? '在目录树中过滤（含已展开的子目录）…' : '搜索当前目录文件名…'"
+        :placeholder="
+          searchMode === 'content'
+            ? '搜索当前目录内容（grep）…'
+            : browseMode === 'expand'
+              ? '在目录树中过滤（含已展开的子目录）…'
+              : '搜索当前目录文件名…'
+        "
         @keydown.esc="q = ''"
       />
+      <!-- 内容模式三开关：激活态与 browseMode 切换钮同语言（sky-400 图标即状态） -->
+      <template v-if="searchMode === 'content'">
+        <button
+          class="shrink-0"
+          :class="searchCs ? 'text-sky-400' : 'text-muted-foreground/60 hover:text-foreground'"
+          title="区分大小写"
+          @click="searchCs = !searchCs"
+        >
+          <CaseSensitive class="size-3.5" />
+        </button>
+        <button
+          class="shrink-0"
+          :class="searchRe ? 'text-sky-400' : 'text-muted-foreground/60 hover:text-foreground'"
+          title="正则表达式（默认固定字符串）"
+          @click="searchRe = !searchRe"
+        >
+          <Regex class="size-3.5" />
+        </button>
+        <button
+          class="shrink-0"
+          :class="searchDeps ? 'text-sky-400' : 'text-muted-foreground/60 hover:text-foreground'"
+          title="包含 node_modules/venv 等依赖目录"
+          @click="searchDeps = !searchDeps"
+        >
+          <Package class="size-3.5" />
+        </button>
+      </template>
       <button
         v-if="q"
         class="shrink-0 text-muted-foreground hover:text-foreground"
@@ -1418,6 +1602,61 @@ function fmtSize(n: number): string {
           <p v-if="!hasTerminal" class="px-3 py-6 text-center text-xs text-muted-foreground">
             先在左侧打开终端
           </p>
+          <!-- 内容搜索结果完全接管列表区（平铺分组，不做树形——窄面板里树形折叠命中组难读）。
+               结果行不进拖拽/多选/右键体系（不是目录树条目），行点击 = 开编辑器（命中行带
+               line 跳行，文件头只开文件）。高亮复用 nameSegs（正则模式语义不合字面包含，
+               传空 needle 走全不命中）。 -->
+          <template v-else-if="contentActive">
+            <p
+              v-if="searchLoading"
+              class="flex items-center justify-center gap-1.5 px-3 py-6 text-xs text-muted-foreground"
+            >
+              <Loader2 class="size-3.5 animate-spin" /> 搜索中…
+            </p>
+            <p v-else-if="searchErr" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+              {{ searchErr }}
+            </p>
+            <p v-else-if="!contentGroups.length" class="px-3 py-6 text-center text-xs text-muted-foreground">
+              无匹配内容
+            </p>
+            <template v-else>
+              <p v-if="searchTruncated" class="px-2.5 py-1 text-[11px] text-muted-foreground">
+                结果已截断（前 500 条）——换更具体的关键词或目录
+              </p>
+              <template v-for="g in contentGroups" :key="'sg:' + g.path">
+                <button
+                  class="flex w-full items-center gap-2 py-1.5 pl-2.5 pr-2.5 text-left hover:bg-accent/50"
+                  :title="hitAbsPath(g.path)"
+                  @click="emit('open-file', hitAbsPath(g.path))"
+                >
+                  <FileText class="size-3.5 shrink-0 text-muted-foreground" />
+                  <span class="min-w-0 flex-1 truncate font-mono text-xs font-medium">
+                    <span v-if="g.dir" class="text-muted-foreground">{{ g.dir }}/</span>
+                    <template v-for="(s, i) in nameSegs(g.name, q.trim())" :key="i">
+                      <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
+                      <template v-else>{{ s.t }}</template>
+                    </template>
+                  </span>
+                  <span class="shrink-0 text-[10px] text-muted-foreground">{{ g.hits.length }}</span>
+                </button>
+                <button
+                  v-for="h in g.hits"
+                  :key="'sh:' + g.path + ':' + h.line + ':' + h.text"
+                  class="flex w-full items-center gap-2 py-1 pl-9 pr-2.5 text-left font-mono text-xs hover:bg-accent/50"
+                  :title="`${g.path}:${h.line}`"
+                  @click="emit('open-file', hitAbsPath(h.path), { line: h.line, editing: true })"
+                >
+                  <span class="w-8 shrink-0 text-right text-[10px] text-muted-foreground/70">{{ h.line }}</span>
+                  <span class="min-w-0 flex-1 truncate">
+                    <template v-for="(s, i) in nameSegs(h.text, searchRe ? '' : q.trim())" :key="i">
+                      <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
+                      <template v-else>{{ s.t }}</template>
+                    </template>
+                  </span>
+                </button>
+              </template>
+            </template>
+          </template>
           <template v-else>
             <p v-if="err" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
               {{ err }}
@@ -1497,7 +1736,7 @@ function fmtSize(n: number): string {
                 <Link2 v-if="row.entry.type === 'link'" class="size-3.5 shrink-0 text-violet-400" />
                 <FileText v-else-if="row.entry.type === 'file'" class="size-3.5 shrink-0 text-muted-foreground" />
                 <span class="min-w-0 flex-1 truncate font-mono text-xs">
-                  <template v-for="(s, i) in nameSegs(row.entry.name)" :key="i">
+                  <template v-for="(s, i) in nameSegs(row.entry.name, q.trim().toLowerCase())" :key="i">
                     <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
                     <template v-else>{{ s.t }}</template>
                   </template>
