@@ -17,7 +17,7 @@
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { langForFilename } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
+import { langForFilename, monaco } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
 import { onSandboxEvent, setWatchDirs } from '@/lib/events'
 import { previewKind, previewMime, extOf } from '@/lib/preview'
 import { hydrateMermaid } from '@/lib/mermaid'
@@ -487,15 +487,58 @@ function revealTarget() {
   const ed = editorRef.value
   if (!ed || props.line === undefined || props.diff) return
   const ln = Math.min(Math.max(1, props.line), ed.getModel()?.getLineCount() ?? 1)
-  ed.revealLineInCenter(ln)
-  ed.setPosition({ lineNumber: ln, column: Math.max(1, props.col ?? 1) })
-  // 不 focus：TestLens headless 下 mount 即 focus 会把渲染器整个挂死（reveal 本身没问题，
-  // 终端 Ctrl+点击的定位链路同样受益）；用户点开文件时面板本身就是焦点所在。
-  // ed.focus()
+  // ⚠️ 别用 ed.setPosition()/revealLineInCenter() 定位：markdown + wordWrap 下二者都把渲染器
+  // 同步死循环挂死（Monaco 侧 bug，Chrome 实测 100% 复现；plaintext 大文件只是长 jank）。
+  // 纯滚动等价物：getTopForLineNumber 拿目标行纵坐标，滚到视口垂直居中。不动 cursor——
+  // 光标还落不上去（同一死循环），行高亮失效可接受，跳转本身就是视觉定位。
+  // 另外 setScrollTop 会被钳到 Monaco 自认的 scrollDimensions 内，而内容高度（wordWrap 下
+  // 要逐行量宽）是异步算出来的，早到的一次 setScrollTop 会静默钳回 0。max≤0 有两种含义：
+  // 内容不超一屏（目标行天然可见，直接成功）或视图未就绪（真要滚却滚不动，等
+  // onDidContentSizeChange 后落位；3s 兜底——内容高度若真不更新，滚动本身不可用，不归这里管）。
+  const apply = () => {
+    const top = ed.getTopForLineNumber(ln)
+    const layout = ed.getLayoutInfo()
+    const lineH = ed.getOption(monaco.editor.EditorOption.lineHeight)
+    const max = ed.getScrollHeight() - layout.height
+    if (max <= 0) return top <= layout.height
+    ed.setScrollTop(Math.max(0, Math.min(top - layout.height / 2 + lineH / 2, max)))
+    return true
+  }
+  if (apply()) {
+    ed.focus()
+    return
+  }
+  let settled = false
+  const settle = () => {
+    if (settled) return
+    settled = true
+    off.dispose()
+    clearTimeout(timer)
+    apply()
+    ed.focus()
+  }
+  const off = ed.onDidContentSizeChange(settle)
+  const timer = setTimeout(settle, 3000)
 }
 function onEditorMount(ed: unknown) {
   editorRef.value = ed as import('monaco-editor').editor.IStandaloneCodeEditor
-  revealTarget()
+  // mount 事件早于容器首次布局（automaticLayout 由 ResizeObserver 异步驱动），行坐标还没
+  // 算出来，定位必须等真实尺寸。已挂载后的 watch 路径（终端 Ctrl+点击换行号）布局已稳定，
+  // 保持同步；只有 mount 首定位走这里：首个 onDidLayoutChange 即真实尺寸，100ms 兜底。
+  let done = false
+  const once = () => {
+    if (done) return
+    const node = (ed as import('monaco-editor').editor.IStandaloneCodeEditor).getContainerDomNode()
+    if ((node?.clientHeight ?? 0) > 0) {
+      done = true
+      revealTarget()
+    }
+  }
+  const off = (ed as import('monaco-editor').editor.IStandaloneCodeEditor).onDidLayoutChange(once)
+  setTimeout(() => {
+    off.dispose()
+    if (!done) revealTarget() // 兜底：Layout 事件缺失的环境也照常定位
+  }, 100)
 }
 watch(() => [props.line, props.col], revealTarget)
 
