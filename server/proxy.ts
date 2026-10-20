@@ -449,6 +449,11 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
       && safeEqual(credentials.password ?? '', PROXY_ACCOUNT.password);
   }
 
+  function requestHost(req: FastifyRequest): string {
+    const host = typeof req.headers.host === 'string' ? req.headers.host.split(':')[0] : '';
+    return host.replace(/\.$/, '').toLowerCase();
+  }
+
   async function createSession(req: FastifyRequest, reply: FastifyReply) {
     allowSessionOrigin(req, reply, bases);
     if (!sessionValid(req, cfg)) {
@@ -463,7 +468,13 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
       });
     }
     const attrs = `Path=/; HttpOnly; SameSite=Strict; Max-Age=${60 * 60 * 24 * 365}`;
+    const host = requestHost(req);
     const cookies = new Set<string>([`${COOKIE_NAME}=${session}; ${attrs}`]);
+    // 面板可能经任意可达基域名访问；同面板再打开 *.基域名 的 vhost 目标时，
+    // host-only cookie 不会跟随，这里补一份 Domain cookie。
+    if (host && !/^\[?[0-9a-f:.]+\]?$/i.test(host)) {
+      cookies.add(`${COOKIE_NAME}=${session}; Domain=${host}; ${attrs}`);
+    }
     for (const b of bases) cookies.add(`${COOKIE_NAME}=${session}; Domain=${b.base}; ${attrs}`);
     reply.header('set-cookie', [...cookies]);
     return { ok: true };

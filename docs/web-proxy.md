@@ -61,7 +61,9 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
   **本体 `Path=/`**（vhost 门面的页面路径任意——应用的 `/`、`/dashboard`……Path 限
   /proxy 的话浏览器根本不随行），HttpOnly SameSite=Strict。每个候选基域各发一份
   Domain cookie（浏览器拒收 domain-match 不成立的）：本机走 `mysandbox.test`，远程
-  设备经 tailscale 域名开控制台也能种上；宿主级那份兜子路径门面。
+  设备经 tailscale 域名开控制台也能种上；宿主级那份兜子路径门面。还会按当前控制台
+  Host 补一份 Domain cookie，保证 `cet-7332.<基域名>` 这类 vhost 跳转直接复用面板
+  会话；IP 字面量不带 Domain 属性。
 - **隔离性在 auth hook 而非 Path**：cookie 仅在 `/proxy` 门面被承认（auth.ts
   extractToken 的 allowCookie），`/api/*`、`/ws/*` 维持 header/query-only——被代理
   页面里的 JS 拿着 cookie 打不进控制台 API，爆炸半径不因 Path=/ 而扩。
