@@ -568,10 +568,12 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       // exec 登录 shell。一次连接一次认证，持久/降级两条路都通，永不挂死。
       const usePw = sshAuthActive(target);
       const tmuxAttach = `exec tmux -L ${SSH_SOCKET} new-session -A -s ${shq(session)}`;
-      // 降级说明经 printf 上屏（\033 八进制转义；文本避开单引号）。$SHELL = 远端登录
-      // shell（sshd 注入），-l 保登录环境。session 名过 TERMID_RE，shq 后无注入面。
+      // 降级说明经 printf 上屏（\033 八进制转义；文本避开单引号）。$SHELL = 远端 passwd
+      // 里的登录 shell——**可能没装**（实测：passwd 写 /bin/zsh 但机器没 zsh，sshd 执行
+      // 命令时自己回退 /bin/sh，而 exec "$SHELL" 会 127 退出 = 连上即断），所以先 [ -x ]
+      // 再 exec，不行落 /bin/sh -l（恒存在）。session 名过 TERMID_RE，shq 后无注入面。
       const fallbackShell =
-        "printf '\\033[33m>> 远端未安装 tmux：已降级为直连 shell——断开即结束、会话不保留；装上 tmux 后自动恢复持久会话。\\033[0m\\r\\n'; exec \"${SHELL:-/bin/sh}\" -l";
+        "printf '\\033[33m>> 远端未安装 tmux：已降级为直连 shell——断开即结束、会话不保留；装上 tmux 后自动恢复持久会话。\\033[0m\\r\\n'; if [ -x \"${SHELL:-/bin/sh}\" ]; then exec \"${SHELL:-/bin/sh}\" -l; else exec /bin/sh -l; fi";
       const remoteCmd = `if command -v tmux >/dev/null 2>&1; then ${tmuxAttach}; else ${fallbackShell}; fi`;
       const sshCmd = [
         ...(usePw ? ['sshpass', '-e'] : []),
