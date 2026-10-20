@@ -26,6 +26,7 @@ import { ensureTlsMaterial } from './tls.js';
 import { HttpError, wrapEngineError } from './errors.js';
 import { getVersion } from './version.js';
 import { loggerOptions } from './logger.js';
+import { trustedNetworkRequest } from './trust.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -70,6 +71,7 @@ export async function buildServer(cfg: Config) {
       (u === '/api/auth/session' || u === '/proxy/__auth/session')
       && (req.method === 'POST' || req.method === 'OPTIONS')
     ) return;
+    if (trustedNetworkRequest(req, cfg)) return;
     const isProxy = u.startsWith('/proxy/');
     if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
       if (isProxy && req.method === 'GET' && !tokenOk(req, cfg, true)) {

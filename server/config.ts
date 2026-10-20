@@ -195,8 +195,11 @@ export const ConfigSchema = z.object({
       vhost: z.string().default('auto'),
       // 钉死基 IP（多网卡/动态 IP 环境）；auto = 默认路由接口 IPv4。
       ip: z.string().default('auto'),
+      // 内网互信：本机/RFC1918/Tailscale CGNAT/IPv6 ULA 等私网来源免 token。
+      // 只应在明确确认 mysandbox 不暴露给不可信网络的部署里打开。
+      trustLan: z.boolean().default(false),
     })
-    .default({ vhost: 'auto', ip: 'auto' }),
+    .default({ vhost: 'auto', ip: 'auto', trustLan: false }),
   // peer API（server/peer.ts）：容器间命令互通的转发枢纽。绑网关 IP 的迷你 HTTP
   // 服务（POST /exec 由宿主代为 lxc-attach / docker exec / 直接 spawn），容器内
   // `mysandbox exec <目标> -- 命令` 走它，免 SSH。端口可配（peer.json 随种子刷新，

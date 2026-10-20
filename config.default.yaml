@@ -181,3 +181,6 @@ proxy:
   vhost: auto
   # 钉死基 IP（多网卡/动态 IP 环境想让 sslip 域名稳定时设）；auto = 默认路由接口 IPv4。
   ip: auto
+  # 内网互信：true 时本机/私网来源（RFC1918、Tailscale CGNAT、IPv6 ULA）免 token。
+  # 仅在确认 mysandbox 不会暴露给不可信网络时打开。
+  trustLan: false

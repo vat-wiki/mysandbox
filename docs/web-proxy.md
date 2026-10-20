@@ -67,6 +67,11 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
 - **隔离性在 auth hook 而非 Path**：cookie 仅在 `/proxy` 门面被承认（auth.ts
   extractToken 的 allowCookie），`/api/*`、`/ws/*` 维持 header/query-only——被代理
   页面里的 JS 拿着 cookie 打不进控制台 API，爆炸半径不因 Path=/ 而扩。
+- **内网互信（显式开启）**：`proxy.trustLan: true` 时，本机和私网来源
+  （RFC1918、Tailscale CGNAT、IPv6 ULA/link-local）访问 `/api`、`/ws`、`/proxy`
+  都免 token/cookie。HTTPS facade 会覆写回源 `X-Forwarded-For`，后端只信任
+  loopback 回源连接上的该头，避免客户端伪造来源。只应在确认不暴露给不可信网络的
+  部署里打开。
 - SameSite=Strict：控制台内 window.open（同站）与地址栏直贴都带 cookie；从其他应用
   点链接会 401 → HTML 登录页（`proxyUnauthorizedHtml`）。页面只暴露代理专用
   账号密码：fetch 到同源 `/proxy/__auth/session` 校验后种 cookie，再 reload 当前代理
@@ -130,6 +135,7 @@ docker 服务 IP（state.services 权威，停机可解析；docker ps 补 runni
 proxy:
   vhost: auto   # auto | off | <自有域名>
   ip: auto      # 钉死基 IP；auto = 默认路由接口 IPv4
+  trustLan: false # true = 本机/私网来源免 token（显式内网互信）
 ```
 
 ## TLS（listen.tls）

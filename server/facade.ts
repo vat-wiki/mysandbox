@@ -27,6 +27,16 @@ function socketActivatedFd(): number | null {
   return 3;
 }
 
+function forwardedHeaders(req: http.IncomingMessage): http.OutgoingHttpHeaders {
+  return {
+    ...req.headers,
+    // 回源连接来自 loopback；后端只在 loopback 直连时信任这个头。
+    // 必须覆盖客户端伪造的 XFF，否则内网互信会被伪装来源绕过。
+    'x-forwarded-for': req.socket.remoteAddress ?? '',
+    'x-forwarded-proto': 'https',
+  };
+}
+
 function writeSimpleResponse(res: http.ServerResponse, status: number, message: string): void {
   if (res.headersSent) {
     res.destroy();
@@ -54,7 +64,7 @@ async function main(): Promise<void> {
         port: targetPort,
         method: req.method,
         path: req.url,
-        headers: req.headers,
+        headers: forwardedHeaders(req),
         agent,
       }, (upstreamRes) => {
         res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
@@ -70,7 +80,7 @@ async function main(): Promise<void> {
       host: targetHost,
       port: targetPort,
       path: req.url,
-      headers: req.headers,
+        headers: forwardedHeaders(req),
       agent,
     });
     upstream.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
