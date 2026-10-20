@@ -64,6 +64,7 @@ import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
 import { isPhone, isCoarse } from '@/composables/useDevice'
 import MobileCard from '@/components/mobile/MobileCard.vue'
+import CardActionSheet from '@/components/mobile/CardActionSheet.vue'
 import type { CardAction } from '@/components/mobile/CardActionSheet.vue'
 import {
   containerActions,
@@ -78,6 +79,7 @@ import {
 } from '@/components/mobile/mobileActions'
 import MobileTabActions from '@/components/mobile/MobileTabActions.vue'
 import MobileBottomNav from '@/components/mobile/MobileBottomNav.vue'
+import MobileTermSwitcher, { type TermSwitcherRow } from '@/components/mobile/MobileTermSwitcher.vue'
 import type { MobileNavTarget } from '@/components/mobile/mobileNavigation'
 import {
   groupActions,
@@ -1092,9 +1094,13 @@ function navigateMobileNav(target: MobileNavTarget) {
     return
   }
   if (target === 'terminal') {
+    const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
     showFiles.value = false
     if (aiOpen.value) closeAi()
     mainView.value = 'terminal'
+    // 激活态再点 = 弹终端切换 sheet（iOS Safari 标签页同款「再点已激活页签出总览」）——
+    // 顶栏取消后终端切换/组管理的唯一落点，也让底栏不再是点了没反应的 no-op。
+    if (alreadyTerminal) termSwitcherOpen.value = true
     return
   }
   if (target === 'ai') {
@@ -2203,6 +2209,91 @@ function mobileGroupActionList(group: TermGroup) {
   return groupActions(group, containerRunning(group.containerId))
 }
 
+// —— 手机终端切换 sheet（底栏「终端」再点弹出）——
+// 顶栏取消后终端切换/组管理/网络信息的落点。组动作复用 groupActions 清单（CardActionSheet）；
+// 网络信息沿用原顶栏下拉的数据源（activeContainer 的轮询探测），仅当前组有意义，放全局区。
+const termSwitcherOpen = ref(false)
+const switcherRows = computed<TermSwitcherRow[]>(() =>
+  groups.value.map((g) => ({
+    id: g.id,
+    label: groupLabel(g),
+    sub: leafCount(g.root) > 1 ? `${leafCount(g.root)} 块分屏` : undefined,
+    color: tabDotColor(g),
+    busy: busyGroupIds.value.has(g.id),
+    attention: quietAttention.value.has(g.id),
+    active: groups.value[activeIdx.value]?.id === g.id,
+  })),
+)
+function onSwitcherSelect(id: string) {
+  termSwitcherOpen.value = false
+  const i = groups.value.findIndex((g) => g.id === id)
+  if (i >= 0) onTabClick(i)
+}
+// 组动作表：sheet 内 ⋯ 开 CardActionSheet（与原顶栏 MobileTabActions 同一份动作清单）。
+const switcherActionGroup = ref<TermGroup | null>(null)
+const switcherActionOpen = ref(false)
+const switcherActionList = computed(() =>
+  switcherActionGroup.value ? mobileGroupActionList(switcherActionGroup.value) : [],
+)
+function onSwitcherActions(id: string) {
+  switcherActionGroup.value = groups.value.find((g) => g.id === id) ?? null
+  if (switcherActionGroup.value) switcherActionOpen.value = true
+}
+function onSwitcherGroupAction(action: CardAction) {
+  if (switcherActionGroup.value) runMobileGroupAction(switcherActionGroup.value, action)
+}
+// 网络信息 sheet：IP 复制 / web 端口打开 / 监听端口打开 / docker 映射端口——与原顶栏
+// 下拉同源（webPorts 等是 activeContainer 的 5s 探测），所以只在当前组有数据。
+const networkSheetOpen = ref(false)
+const networkSheetActions = computed<CardAction[]>(() => {
+  const c = activeContainer.value
+  if (!c || c.state !== 'running') return [{ id: 'down', label: c ? '容器未运行' : '暂无终端', disabled: true }]
+  const acts: CardAction[] = []
+  if (c.ip) acts.push({ id: 'ip', label: '复制 IP', detail: c.ip })
+  for (const p of webPorts.value) acts.push({ id: `w:${p}`, label: `${p} · 网页`, detail: serviceUrl('c', c.name, p, c.ip) })
+  for (const p of otherListenPorts.value) acts.push({ id: `o:${p}`, label: `${p} · 监听`, detail: serviceUrl('c', c.name, p, c.ip) })
+  for (const m of mappedPorts.value) acts.push({ id: `m:${m.pub}`, label: `${m.pub} → ${m.priv}`, detail: 'docker 映射，宿主侧访问' })
+  if (!acts.length) acts.push({ id: 'none', label: '暂无网络信息', disabled: true })
+  return acts
+})
+function onNetworkSheetAction(a: CardAction) {
+  const c = activeContainer.value
+  if (!c || a.disabled) return
+  if (a.id === 'ip' && c.ip) void copyIpOf(c.ip)
+  else if (a.id.startsWith('w:')) openUrl(serviceUrl('c', c.name, Number(a.id.slice(2)), c.ip))
+  else if (a.id.startsWith('o:')) openUrl(serviceUrl('c', c.name, Number(a.id.slice(2)), c.ip))
+  else if (a.id.startsWith('m:')) openUrl(`http://127.0.0.1:${Number(a.id.slice(2))}`)
+}
+
+// —— 手机左缘右滑开环境抽屉 ——
+// 顶栏汉堡随顶栏一起取消后的开抽屉手势（滑关手势原本就有）。document capture 挂载：
+// 终端区自管的触屏滚动会 stopPropagation（见 Terminal.vue setupTouchScroll），只有
+// capture 能保证边缘手势必达。只探测不 preventDefault——抽屉随即盖上，底下的滚动无碍。
+let edgeSwipe: { x: number; y: number; axis: 'x' | 'y' | null; fired: boolean } | null = null
+function edgeSwipeStart(e: TouchEvent) {
+  if (!isPhone.value || drawerOpen.value || e.touches.length !== 1) return
+  const t = e.touches[0]
+  if (t.clientX > 32) return
+  edgeSwipe = { x: t.clientX, y: t.clientY, axis: null, fired: false }
+}
+function edgeSwipeMove(e: TouchEvent) {
+  if (!edgeSwipe || e.touches.length !== 1) return
+  const t = e.touches[0]
+  const dx = t.clientX - edgeSwipe.x
+  const dy = t.clientY - edgeSwipe.y
+  if (!edgeSwipe.axis) {
+    if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return
+    edgeSwipe.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+  }
+  if (edgeSwipe.axis === 'x' && !edgeSwipe.fired && dx > 48) {
+    edgeSwipe.fired = true
+    drawerOpen.value = true
+  }
+}
+function edgeSwipeEnd() {
+  edgeSwipe = null
+}
+
 function runMobileGroupAction(group: TermGroup, action: CardAction) {
   runGroupAction(group, action, {
     create: openNewGroup,
@@ -2827,6 +2918,11 @@ onMounted(() => {
     svcPortsTimer = setInterval(() => void refreshSvcPorts(), 15_000)
     document.addEventListener('visibilitychange', onVisChange)
   }
+  // 手机左缘右滑开环境抽屉（capture，理由见 edgeSwipeStart 注释）。
+  document.addEventListener('touchstart', edgeSwipeStart, { capture: true, passive: true })
+  document.addEventListener('touchmove', edgeSwipeMove, { capture: true, passive: true })
+  document.addEventListener('touchend', edgeSwipeEnd, { capture: true, passive: true })
+  document.addEventListener('touchcancel', edgeSwipeEnd, { capture: true, passive: true })
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
@@ -2837,6 +2933,10 @@ onUnmounted(() => {
   disposeEvents?.()
   document.removeEventListener('keydown', onEscCloseFile)
   document.removeEventListener('visibilitychange', onVisChange)
+  document.removeEventListener('touchstart', edgeSwipeStart, { capture: true })
+  document.removeEventListener('touchmove', edgeSwipeMove, { capture: true })
+  document.removeEventListener('touchend', edgeSwipeEnd, { capture: true })
+  document.removeEventListener('touchcancel', edgeSwipeEnd, { capture: true })
 })
 
 // 事件触发的即时刷新：300ms 防抖合并（lxc-monitor 对批量启停会连发状态行）。
@@ -3756,8 +3856,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             文件面板按钮固定右侧。
            min-h-7：桌面 28px 托底，= 有 tab 时 tab 项（text-xs + py-1.5）撑出的行高——groups
            全关/全隐藏时只剩图标按钮（无纵向 padding），不托底整条栏会塌到 ~14px。
-           max-md:min-h-10：手机 40px，对应 max-md:py-2.5 + text-sm。 -->
-      <div class="flex min-h-7 border-b border-border bg-muted/30 max-md:min-h-10">
+           max-md:min-h-10：手机 40px，对应 max-md:py-2.5 + text-sm。
+           手机主窗口整条隐藏（2026-10-21 起）：终端切换/组动作/网络/环境入口全部下沉——
+           底栏「终端」激活态再点弹 MobileTermSwitcher，开抽屉靠左缘右滑 + sheet 兜底入口，
+           省出 ~40px 给终端内容。popout 无底栏，保留本条作为手机端唯一切换/动作入口。 -->
+      <div class="flex min-h-7 border-b border-border bg-muted/30 max-md:min-h-10" :class="!props.popout && 'max-md:hidden'">
         <button
           v-if="!props.popout"
           class="flex shrink-0 items-center border-r border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:px-4 md:hidden"
@@ -4403,11 +4506,40 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
     />
 
-    <!-- 手机一级导航：终端 / 文件 / AI。文件 Tab 条与当前 Tab 动作只处理二级编辑态。 -->
+    <!-- 手机一级导航：终端 / 文件 / AI / 设置。文件 Tab 条与当前 Tab 动作只处理二级编辑态。
+         busy：任一终端组有输出时「终端」图标挂呼吸标（原顶栏 tab 光晕的底栏落点）。 -->
     <MobileBottomNav
       v-if="!props.popout"
       :active="mobileNavTarget"
+      :busy="busyGroupIds.size > 0"
       @navigate="navigateMobileNav"
+    />
+
+    <!-- 手机终端切换 sheet：底栏「终端」激活态再点弹出（组列表 + 组动作 + 网络信息 +
+         所有终端 / 环境列表）。顶栏取消后这些功能的唯一手机入口，popout 不经此路径。 -->
+    <MobileTermSwitcher
+      v-model:open="termSwitcherOpen"
+      :rows="switcherRows"
+      @select="onSwitcherSelect"
+      @close="closeGroupById($event)"
+      @actions="onSwitcherActions"
+      @sessions="termSwitcherOpen = false; showSessions = true"
+      @environments="termSwitcherOpen = false; drawerOpen = true"
+      @network="termSwitcherOpen = false; networkSheetOpen = true"
+    />
+    <CardActionSheet
+      v-model:open="switcherActionOpen"
+      :title="switcherActionGroup ? groupLabel(switcherActionGroup) : ''"
+      description="终端组动作"
+      :actions="switcherActionList"
+      @select="onSwitcherGroupAction"
+    />
+    <CardActionSheet
+      v-model:open="networkSheetOpen"
+      :title="activeContainer ? (activeContainer.displayName || activeContainer.name) : '网络信息'"
+      description="IP 与端口"
+      :actions="networkSheetActions"
+      @select="onNetworkSheetAction"
     />
   </div>
 

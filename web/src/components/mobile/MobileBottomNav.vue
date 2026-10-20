@@ -4,6 +4,7 @@ import type { MobileNavTarget } from './mobileNavigation'
 
 defineProps<{
   active: MobileNavTarget
+  busy?: boolean // 任一终端组有输出：终端图标挂呼吸标（原顶栏 tab 光晕的底栏落点）
 }>()
 
 const emit = defineEmits<{
@@ -34,7 +35,15 @@ const items: { target: MobileNavTarget; label: string; icon: typeof Terminal }[]
       :aria-current="active === item.target ? 'page' : undefined"
       @click="emit('navigate', item.target)"
     >
-      <component :is="item.icon" class="size-5" />
+      <span class="relative inline-flex">
+        <component :is="item.icon" class="size-5" />
+        <!-- busy 呼吸标只挂终端项：底栏全局唯一，语义是「有组在输出」 -->
+        <span
+          v-if="busy && item.target === 'terminal'"
+          class="term-busy-halo absolute -inset-1 rounded-full"
+          :style="{ backgroundColor: 'var(--primary)', '--dot': 'var(--primary)' }"
+        />
+      </span>
       <span class="truncate">{{ item.label }}</span>
     </button>
   </nav>
