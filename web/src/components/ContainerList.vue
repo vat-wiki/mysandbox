@@ -2225,12 +2225,22 @@ function runSshCardAction(t: SshTargetView, action: CardAction) {
     popout: () => openPopout(sshGroupId(t.name)),
     openSessions: () => openRoute('term-sessions'),
     copySsh: (cmd) => void copyTabText(cmd, '已复制 ssh 命令'),
+    edit: (target) => {
+      sshEditName.value = target.name
+      showSshTargets.value = true
+    },
     manage: () => (showSshTargets.value = true),
     remove: (target) => {
       sshDelTarget.value = target
     },
   })
 }
+
+// 右键「编辑 / 改密码」：目标名带进 SshTargetsDialog 预填编辑态，关窗即清。
+const sshEditName = ref<string | null>(null)
+watch(showSshTargets, (open) => {
+  if (!open) sshEditName.value = null
+})
 
 // SSH 目标删除（卡片右键 / 手机面板入口，与 SshTargetsDialog 同语义）：远端 tmux
 // 会话不受影响，只摘掉面板入口；已开的目标组留着，会话对话框会过滤失效目标。
@@ -3687,6 +3697,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>
+                <ContextMenuItem
+                  @click="
+                    ((sshEditName = t.name), (showSshTargets = true))
+                  "
+                >编辑 / 改密码</ContextMenuItem>
                 <ContextMenuItem @click="openRoute('term-sessions')">全部终端会话</ContextMenuItem>
                 <ContextMenuItem @click="showSshTargets = true">管理 SSH 主机</ContextMenuItem>
                 <ContextMenuSeparator />
@@ -4528,9 +4543,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     @close="showSvcAdopt = false"
   />
 
-  <!-- SSH 主机管理：添加 / 从 ~/.ssh/config 候选导入 / 删除（目标存 sidecar） -->
+  <!-- SSH 主机管理：添加 / 编辑（改密码）/ 从 ~/.ssh/config 候选导入 / 删除（目标存 sidecar）。
+       sshEditName = 右键「编辑 / 改密码」带进来的预填目标，关窗即清。 -->
   <SshTargetsDialog
     v-if="showSshTargets"
+    :prefill-edit="sshEditName"
     @changed="refreshSshTargets()"
     @open="openSshTerm($event)"
     @close="showSshTargets = false"

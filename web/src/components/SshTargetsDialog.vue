@@ -4,11 +4,12 @@
 // state.json（server/sshTerminal.ts），这里只存「怎么连」——凭据缺省走宿主 ssh
 // （keys / agent / ssh config 别名含跳板）；密码为可选填项（服务端本地存储、
 // 经 sshpass 自动应答，API 不回明文），另有备注等可选项。
-import { ref, onMounted } from 'vue'
-import { RefreshCw, Server, Trash2, ArrowRight, KeyRound } from 'lucide-vue-next'
+import { ref, onMounted, watch, computed } from 'vue'
+import { RefreshCw, Server, Trash2, ArrowRight, KeyRound, Pencil } from 'lucide-vue-next'
 import {
   listSshTargets,
   addSshTarget,
+  updateSshTarget,
   deleteSshTarget,
   listSshConfigHosts,
   Unauthorized,
@@ -55,7 +56,7 @@ async function load() {
 }
 onMounted(load)
 
-// —— 添加表单（候选导入 = 预填，确认仍走这里）——
+// —— 添加 / 编辑表单（候选导入 = 预填，确认仍走这里；编辑模式名称与目的地锁定）——
 const name = ref('')
 const host = ref('')
 const user = ref('')
@@ -63,23 +64,71 @@ const port = ref('')
 const password = ref('')
 const note = ref('')
 const adding = ref(false)
+// 编辑态：editing = 目标名。密码留空 = 保持不变；勾「清除」= 发空串删除已存密码。
+const editing = ref<string | null>(null)
+const clearPassword = ref(false)
+const editHasPassword = computed(
+  () => !!editing.value && !!targets.value.find((x) => x.name === editing.value)?.hasPassword,
+)
+
+function editTarget(t: SshTargetView) {
+  editing.value = t.name
+  name.value = t.name
+  host.value = t.host
+  user.value = t.user || ''
+  port.value = t.port ? String(t.port) : ''
+  note.value = t.note || ''
+  password.value = ''
+  clearPassword.value = false
+}
+
+function exitEdit() {
+  editing.value = null
+  name.value = host.value = user.value = port.value = password.value = note.value = ''
+}
+
+// 右键「编辑 / 改密码」入口：父级把目标名经 prefillEdit 传进来（列表未就绪时等加载）。
+// immediate：对话框按 v-if 挂载，挂上时 prop 已有值，普通 watch 不会再触发。
+const props = defineProps<{ prefillEdit?: string | null }>()
+watch(
+  () => props.prefillEdit,
+  async (n) => {
+    if (!n) return
+    if (!targets.value.length) await load()
+    const t = targets.value.find((x) => x.name === n)
+    if (t) editTarget(t)
+  },
+  { immediate: true },
+)
+
 async function submit() {
-  if (!name.value.trim() || !host.value.trim()) {
+  if (!editing.value && (!name.value.trim() || !host.value.trim())) {
     err.value = '名称与目的地都必填'
     return
   }
   adding.value = true
   err.value = ''
   try {
-    await addSshTarget({
-      name: name.value.trim(),
-      host: host.value.trim(),
-      user: user.value.trim() || undefined,
-      port: port.value.trim() ? Number(port.value.trim()) : undefined,
-      password: password.value || undefined,
-      note: note.value.trim() || undefined,
-    })
-    name.value = host.value = user.value = port.value = password.value = note.value = ''
+    if (editing.value) {
+      // 密码：留空不发送（保持不变）；勾清除发 ''；填了发新值。
+      await updateSshTarget(editing.value, {
+        user: user.value.trim() || '',
+        port: port.value.trim() ? Number(port.value.trim()) : '',
+        ...(clearPassword.value ? { password: '' } : password.value ? { password: password.value } : {}),
+        note: note.value.trim(),
+      })
+      exitEdit()
+    } else {
+      await addSshTarget({
+        name: name.value.trim(),
+        host: host.value.trim(),
+        user: user.value.trim() || undefined,
+        port: port.value.trim() ? Number(port.value.trim()) : undefined,
+        password: password.value || undefined,
+        note: note.value.trim() || undefined,
+      })
+      name.value = host.value = user.value = port.value = password.value = note.value = ''
+    }
     await load()
     emit('changed')
   } catch (e) {
@@ -94,6 +143,7 @@ async function submit() {
 }
 
 function useCandidate(c: SshConfigHost) {
+  editing.value = null
   name.value = c.name
   host.value = c.host || c.name
   user.value = c.user || ''
@@ -187,6 +237,15 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
           <Button
             variant="ghost"
             size="icon-xs"
+            class="shrink-0 text-muted-foreground hover:text-foreground"
+            title="编辑 / 改密码"
+            @click="editTarget(t)"
+          >
+            <Pencil />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
             class="shrink-0 text-muted-foreground hover:text-destructive"
             title="删除目标"
             @click="delTarget = t"
@@ -215,24 +274,34 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
         </template>
       </div>
 
-      <!-- 手动添加：候选点击后这里预填，确认仍显式提交 -->
+      <!-- 手动添加 / 编辑：候选点击后这里预填，确认仍显式提交。编辑态名称与目的地锁定，
+           密码留空 = 不改，勾「清除」= 删除已存密码。 -->
       <div class="border-t border-border pt-3">
+        <div v-if="editing" class="mb-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+          <Badge variant="outline" class="border-transparent bg-primary/10 text-[10px] text-primary">编辑</Badge>
+          <span class="min-w-0 flex-1 truncate">正在编辑 <span class="font-medium text-foreground">{{ editing }}</span>，名称与目的地不可改</span>
+          <button type="button" class="shrink-0 text-muted-foreground hover:text-foreground" @click="exitEdit">取消</button>
+        </div>
         <div class="grid grid-cols-[1fr_2fr] gap-2">
-          <Input v-model="name" placeholder="名称（显示名）" class="h-8 text-xs" />
-          <Input v-model="host" placeholder="目的地 host / user@host / 别名" class="h-8 font-mono text-xs" />
+          <Input v-model="name" :disabled="!!editing" placeholder="名称（显示名）" class="h-8 text-xs" />
+          <Input v-model="host" :disabled="!!editing" placeholder="目的地 host / user@host / 别名" class="h-8 font-mono text-xs" />
           <Input v-model="user" placeholder="用户名（可选）" class="h-8 text-xs" />
           <Input v-model="port" placeholder="端口（可选）" class="h-8 text-xs" />
           <Input
             v-model="password"
             type="password"
             autocomplete="new-password"
-            placeholder="密码（可选）"
+            :placeholder="editing ? '密码（留空 = 不修改）' : '密码（可选）'"
             class="h-8 text-xs"
           />
           <Input v-model="note" placeholder="备注（可选）" class="h-8 text-xs" />
         </div>
+        <label v-if="editing && editHasPassword" class="mt-1.5 flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <input v-model="clearPassword" type="checkbox" class="size-3 accent-primary" />
+          清除已存密码（改用密钥 / 手动输密码）
+        </label>
         <Button size="sm" class="mt-2 w-full" :disabled="adding" @click="submit">
-          {{ adding ? '添加中…' : '添加主机' }}
+          {{ adding ? '保存中…' : editing ? '保存修改' : '添加主机' }}
         </Button>
       </div>
 

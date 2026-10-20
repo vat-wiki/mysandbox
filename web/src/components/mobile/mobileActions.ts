@@ -178,6 +178,7 @@ export function sshSshCommand(t: Pick<SshTargetView, 'user' | 'host' | 'port'>):
 
 export interface SshCardActionDeps extends TermCardActionDeps {
   copySsh: (cmd: string) => void
+  edit: (t: SshTargetView) => void
   manage: () => void
   remove: (t: SshTargetView) => void
 }
@@ -187,6 +188,7 @@ export function sshTermActions(t: SshTargetView): CardAction[] {
     { id: 'open', label: '打开终端', primary: true },
     { id: 'popout', label: '在独立窗口打开' },
     { id: 'copy', label: '复制 ssh 命令', detail: sshSshCommand(t) },
+    { id: 'edit', label: '编辑 / 改密码' },
     { id: 'sessions', label: '全部终端会话' },
     { id: 'manage', label: '管理 SSH 主机' },
     { id: 'delete', label: '删除目标', destructive: true },
@@ -197,6 +199,7 @@ export function runSshTermAction(t: SshTargetView, action: CardAction, deps: Ssh
   if (action.id === 'open') deps.openTerminal()
   else if (action.id === 'popout') deps.popout()
   else if (action.id === 'copy') deps.copySsh(sshSshCommand(t))
+  else if (action.id === 'edit') deps.edit(t)
   else if (action.id === 'sessions') deps.openSessions()
   else if (action.id === 'manage') deps.manage()
   else if (action.id === 'delete') deps.remove(t)

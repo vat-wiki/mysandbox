@@ -124,6 +124,19 @@ export async function addSshTarget(t: SshTarget): Promise<SshTarget | null> {
   return t;
 }
 
+/** 局部更新（名称不可改；patch 只含调用方显式给出的键——显式 undefined = 清除该可选字段）。 */
+export async function updateSshTarget(
+  name: string,
+  patch: Partial<Pick<SshTarget, 'user' | 'port' | 'password' | 'note'>>,
+): Promise<SshTarget | null> {
+  const s = await load();
+  const t = s.sshTargets?.find((x) => x.name === name);
+  if (!t) return null;
+  Object.assign(t, patch);
+  await persist(s);
+  return t;
+}
+
 export async function deleteSshTarget(name: string): Promise<boolean> {
   const s = await load();
   const before = s.sshTargets?.length ?? 0;

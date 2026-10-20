@@ -664,6 +664,15 @@ export interface SshConfigHost {
 export const listSshTargets = () => api('/api/ssh/targets') as Promise<{ targets: SshTargetView[] }>
 export const addSshTarget = (t: { name: string; host: string; user?: string; port?: number; password?: string; note?: string }) =>
   api('/api/ssh/targets', { method: 'POST', body: JSON.stringify(t) }) as Promise<{ ok: true; target: SshTargetView }>
+// 编辑（名称不可改）：patch 只给要改的键；'' = 清除该可选字段，密码缺省 = 不动
+export const updateSshTarget = (
+  name: string,
+  patch: { user?: string; port?: number | ''; password?: string; note?: string },
+) =>
+  api(`/api/ssh/targets/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  }) as Promise<{ ok: true; target: SshTargetView }>
 export const deleteSshTarget = (name: string) =>
   api(`/api/ssh/targets/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<{ ok: true }>
 export const listSshConfigHosts = () =>

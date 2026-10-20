@@ -32,7 +32,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ChildProcess } from 'node:child_process';
 import { TERMID_RE, LIST_FMT, type TermSessionView } from './terminal.js';
 import { badRequest, conflict, notFound } from './errors.js';
-import { addSshTarget, deleteSshTarget, getSshTargets, type SshTarget } from './state.js';
+import { addSshTarget, deleteSshTarget, getSshTargets, updateSshTarget, type SshTarget } from './state.js';
 import { children, childTty, applyTtySize, detectEnv } from './hostTerminal.js';
 
 const execFileAsync = promisify(execFile);
@@ -308,6 +308,38 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
     if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw badRequest('端口需为 1-65535 的整数');
     const t = await addSshTarget({ name, host, user, port, password, note, createdAt: new Date().toISOString() });
     if (!t) throw conflict(`SSH 目标 ${name} 已存在`);
+    return { ok: true, target: sshTargetView(t) };
+  });
+
+  // 编辑（名称不可改，user/port/password/note 可改）：patch 只收 body 里显式出现的键，
+  // 缺席 = 保持不变；password/note 给空串 = 清除。存量目标（功能上线前添加、没有密码
+  // 字段）与密码轮换都走这里，不必删了重加。
+  app.put('/api/ssh/targets/:name', async (req) => {
+    const { name } = req.params as { name: string };
+    if (!SSH_NAME_RE.test(name)) throw badRequest('invalid target name');
+    if (!(await getSshTargets()).some((t) => t.name === name)) throw notFound('ssh target not found');
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const patch: Partial<SshTarget> = {};
+    if ('user' in b) {
+      const user = b.user === null || b.user === '' ? undefined : String(b.user).trim();
+      if (user !== undefined && !SSH_USER_RE.test(user)) throw badRequest('用户名含非法字符');
+      patch.user = user;
+    }
+    if ('port' in b) {
+      const port = b.port === undefined || b.port === null || b.port === '' ? undefined : Number(b.port);
+      if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw badRequest('端口需为 1-65535 的整数');
+      patch.port = port;
+    }
+    if ('password' in b) {
+      const p = typeof b.password === 'string' ? b.password : '';
+      patch.password = p ? p.slice(0, 512) : undefined; // 空串/非字符串 = 清除
+    }
+    if ('note' in b) {
+      const n = typeof b.note === 'string' ? b.note.trim().slice(0, 200) : '';
+      patch.note = n || undefined;
+    }
+    const t = await updateSshTarget(name, patch);
+    if (!t) throw notFound('ssh target not found');
     return { ok: true, target: sshTargetView(t) };
   });
 
