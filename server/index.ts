@@ -19,7 +19,7 @@ import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
 import { registerServices } from './services.js';
 import { registerServiceFileRoutes } from './serviceFiles.js';
-import { makeRewriteUrl, registerProxy, consoleOrigin, proxyBases, proxyUnauthorizedHtml } from './proxy.js';
+import { makeRewriteUrl, registerProxy, proxyUnauthorizedHtml } from './proxy.js';
 import { startActivityPoller } from './activity.js';
 import { startCodeServerIdleSweeper } from './codeserver.js';
 import { ensureTlsMaterial } from './tls.js';
@@ -65,16 +65,15 @@ export async function buildServer(cfg: Config) {
   app.addHook('onRequest', async (req, reply) => {
     const u = req.url;
     if (u.startsWith('/api/health')) return;
-    // session 自带 token 校验；vhost 401 内页要跨源调用它完成直接登录。
+    // session 自带 token 校验；vhost 401 内页用同源请求完成登录。
     if (u === '/api/auth/session' && (req.method === 'POST' || req.method === 'OPTIONS')) return;
     const isProxy = u.startsWith('/proxy/');
     if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
       if (isProxy && req.method === 'GET' && !tokenOk(req, cfg, true)) {
-        const bases = await proxyBases(cfg);
         return reply
           .code(401)
           .type('text/html; charset=utf-8')
-          .send(proxyUnauthorizedHtml(consoleOrigin(cfg, bases[0]?.base ?? null)));
+          .send(proxyUnauthorizedHtml());
       }
       await requireToken(req, reply, cfg, isProxy);
     }

@@ -674,17 +674,10 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   });
 }
 
-// 控制台入口 origin（/proxy 401 引导页的「打开控制台」链接用，index.ts 传入）：
-// listen.tls=true 表示 443 HTTPS 门面生效，本体端口只作为内部回源地址，
-// 因此公网跳转不得带本体端口。primary 为 null（off/全败）时退相对路径。
-export function consoleOrigin(cfg: Config, primary: string | null): string {
-  if (!primary) return '/';
-  return `${cfg.listen.tls ? 'https' : 'http'}://${primary}`;
-}
-
 // 401 内页：vhost 门面下未带 cookie 的导航——JSON 一行人看不懂，给控制台链接引导登录。
-// origin 由调用方经 consoleOrigin(cfg, primary) 传入（index.ts 的 hook 本就是 async）。
-export function proxyUnauthorizedHtml(origin: string): string {
+// JSON 页不适合浏览器导航，这里给同源登录表单。
+// 登录请求固定同源发起：vhost 的固定基域只是可选入口，任意可达域名都要能种 cookie。
+export function proxyUnauthorizedHtml(): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>登录</title>
@@ -702,7 +695,7 @@ button{display:block;width:100%;box-sizing:border-box;align-self:stretch;padding
 button:disabled{opacity:.65;cursor:not-allowed}
 .error{color:#f87171}
 </style></head><body><div class="card">
-<form id="sb-login" class="stack" data-origin="${esc(origin)}">
+<form id="sb-login" class="stack" data-origin="/">
   <div class="field">
     <label for="sb-user">账号</label>
     <input id="sb-user" autocomplete="username" placeholder="账号">
