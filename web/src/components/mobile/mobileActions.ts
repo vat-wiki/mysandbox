@@ -1,6 +1,6 @@
 import { directUrl, serviceUrl } from '@/lib/proxy'
 import { hasBaseAction } from '@/lib/caps'
-import type { ContainerView, ServiceView } from '@/lib/api'
+import type { ContainerView, ServiceView, SshTargetView } from '@/lib/api'
 import type { CardAction } from './CardActionSheet.vue'
 
 export type { CardAction } from './CardActionSheet.vue'
@@ -147,4 +147,57 @@ export function runServiceAction(s: ServiceView, action: CardAction, deps: Servi
   else if (action.id === 'unadopt') deps.unadopt(s.name)
   else if (action.id === 'delete-keep') deps.remove(s.name, false)
   else if (action.id === 'delete-data') deps.remove(s.name, true)
+}
+
+// —— 终端区（本机 / SSH 主机）卡片动作：桌面右键菜单与手机动作面板共用同一份清单 ——
+
+export interface TermCardActionDeps {
+  openTerminal: () => void
+  popout: () => void
+  openSessions: () => void
+}
+
+export function hostTermActions(): CardAction[] {
+  return [
+    { id: 'open', label: '打开终端', primary: true },
+    { id: 'popout', label: '在独立窗口打开' },
+    { id: 'sessions', label: '全部终端会话', detail: '找回 / 结束活跃会话' },
+  ]
+}
+
+export function runHostTermAction(action: CardAction, deps: TermCardActionDeps): void {
+  if (action.id === 'open') deps.openTerminal()
+  else if (action.id === 'popout') deps.popout()
+  else if (action.id === 'sessions') deps.openSessions()
+}
+
+// ssh 命令串（复制用）：port 缺省省略 -p，user 缺省省略 user@。
+export function sshSshCommand(t: Pick<SshTargetView, 'user' | 'host' | 'port'>): string {
+  return `ssh ${t.port ? `-p ${t.port} ` : ''}${t.user ? `${t.user}@` : ''}${t.host}`
+}
+
+export interface SshCardActionDeps extends TermCardActionDeps {
+  copySsh: (cmd: string) => void
+  manage: () => void
+  remove: (t: SshTargetView) => void
+}
+
+export function sshTermActions(t: SshTargetView): CardAction[] {
+  return [
+    { id: 'open', label: '打开终端', primary: true },
+    { id: 'popout', label: '在独立窗口打开' },
+    { id: 'copy', label: '复制 ssh 命令', detail: sshSshCommand(t) },
+    { id: 'sessions', label: '全部终端会话' },
+    { id: 'manage', label: '管理 SSH 主机' },
+    { id: 'delete', label: '删除目标', destructive: true },
+  ]
+}
+
+export function runSshTermAction(t: SshTargetView, action: CardAction, deps: SshCardActionDeps): void {
+  if (action.id === 'open') deps.openTerminal()
+  else if (action.id === 'popout') deps.popout()
+  else if (action.id === 'copy') deps.copySsh(sshSshCommand(t))
+  else if (action.id === 'sessions') deps.openSessions()
+  else if (action.id === 'manage') deps.manage()
+  else if (action.id === 'delete') deps.remove(t)
 }

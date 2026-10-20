@@ -31,6 +31,7 @@ import {
   sshGroupId,
   sshTargetName,
   listSshTargets,
+  deleteSshTarget,
   type SshTargetView,
   getServiceListenPorts,
   Unauthorized,
@@ -69,6 +70,11 @@ import {
   serviceActions,
   runContainerAction,
   runServiceAction,
+  hostTermActions,
+  sshTermActions,
+  runHostTermAction,
+  runSshTermAction,
+  sshSshCommand,
 } from '@/components/mobile/mobileActions'
 import MobileTabActions from '@/components/mobile/MobileTabActions.vue'
 import MobileBottomNav from '@/components/mobile/MobileBottomNav.vue'
@@ -2204,6 +2210,45 @@ function runMobileGroupAction(group: TermGroup, action: CardAction) {
   })
 }
 
+// —— 终端区卡片动作（本机 / SSH 主机）：桌面右键菜单与手机动作面板共用一份清单 ——
+function runHostCardAction(action: CardAction) {
+  runHostTermAction(action, {
+    openTerminal: openHostTerm,
+    popout: () => openPopout(HOST_ID),
+    openSessions: () => openRoute('term-sessions'),
+  })
+}
+
+function runSshCardAction(t: SshTargetView, action: CardAction) {
+  runSshTermAction(t, action, {
+    openTerminal: () => openSshTerm(t),
+    popout: () => openPopout(sshGroupId(t.name)),
+    openSessions: () => openRoute('term-sessions'),
+    copySsh: (cmd) => void copyTabText(cmd, '已复制 ssh 命令'),
+    manage: () => (showSshTargets.value = true),
+    remove: (target) => {
+      sshDelTarget.value = target
+    },
+  })
+}
+
+// SSH 目标删除（卡片右键 / 手机面板入口，与 SshTargetsDialog 同语义）：远端 tmux
+// 会话不受影响，只摘掉面板入口；已开的目标组留着，会话对话框会过滤失效目标。
+const sshDelTarget = ref<SshTargetView | null>(null)
+async function doSshDelete() {
+  const t = sshDelTarget.value
+  if (!t) return
+  sshDelTarget.value = null
+  try {
+    await deleteSshTarget(t.name)
+    await refreshSshTargets()
+    toast(`已删除 SSH 主机 ${t.name}`)
+  } catch (e) {
+    if (e instanceof Unauthorized) emit('unauthorized')
+    else err.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 function mobileFileTabActionList(t: EditorTab, index: number) {
   const mode = tabMode.value[tabId(t)]
   return fileTabActions({
@@ -3112,7 +3157,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            信息密度低——改两行卡片平铺「看一眼就该知道」的状态（状态文字、IP、描述），
            低频操作仍收 ⋯。色条与 tab 栏同色呼应。卡片可拖拽排序（桌面，localStorage 记忆），
            FLIP 补间让被 cross 让位的卡实时滑移（flipCapture/flipPlay）。 -->
-      <div v-if="ctExpanded" data-flip="ct" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+      <div v-if="ctExpanded" data-flip="ct" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto scroll-thin p-2">
         <!-- 首屏加载骨架：只在列表还没数据时占位（轮询静默刷新不打这里） -->
         <template v-if="loading && !items.length">
           <Skeleton v-for="i in 3" :key="i" class="h-12 w-full rounded-lg" />
@@ -3538,60 +3583,117 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           class="flex flex-col gap-0.5 overflow-y-auto scroll-thin px-2 pb-2"
           :style="{ maxHeight: sectionHeights.term + 'px' }"
         >
-          <!-- 本机卡片：宿主终端恒可用——色条 amber 恒饱和（与 tab 身份点同色） -->
-          <div
-            class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
-            :class="
-              activeGroup?.kind === 'host'
-                ? 'border-border/60 bg-accent'
-                : 'border-transparent hover:bg-accent/40'
-            "
-            @click="openHostTerm()"
-          >
-            <span
-              class="absolute inset-y-2.5 left-0 w-[3px] rounded-full bg-amber-500"
-              title="本机终端"
-            />
-            <div class="flex min-w-0 items-center gap-1.5">
-              <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground">本机</span>
-            </div>
-            <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground">
-              <span class="min-w-0 flex-1 truncate">宿主 shell · tmux 会话保留</span>
-            </div>
-          </div>
-          <!-- SSH 主机卡片：无运行态概念（连接失败在终端里可见），色条恒用身份色 -->
-          <div
-            v-for="t in orderedSsh"
-            :key="t.name"
-            class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
-            :class="[
-              activeGroup?.containerId === sshGroupId(t.name)
-                ? 'border-border/60 bg-accent'
-                : 'border-transparent hover:bg-accent/40',
-              dragCardKey === t.name ? 'opacity-40' : '',
-            ]"
-            :draggable="!isPhone"
-            :data-card-key="t.name"
-            :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
-            @dragstart="cardDragStart($event, 'ssh', t.name)"
-            @dragover="cardDragOver($event, 'ssh', t.name)"
-            @dragend="cardDragEnd('ssh')"
-            @click="openSshTerm(t)"
-          >
-            <span
-              class="absolute inset-y-2.5 left-0 w-[3px] rounded-full"
-              :style="{ backgroundColor: containerColor(t.name) }"
+          <!-- 本机卡片：宿主终端恒可用——色条 amber 恒饱和（与 tab 身份点同色）。
+               右键 / 长按 = 终端动作清单（与容器卡片同交互语言）。 -->
+          <MobileCard
+            v-if="isPhone"
+            title="本机"
+            description="宿主 shell · tmux 会话保留"
+            :running="true"
+            color="var(--color-amber-500)"
+            :actions="hostTermActions()"
+            @select="runHostCardAction($event)"
+          />
+          <ContextMenu v-else>
+            <ContextMenuTrigger as-child>
+              <div
+                class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
+                :class="
+                  activeGroup?.kind === 'host'
+                    ? 'border-border/60 bg-accent'
+                    : 'border-transparent hover:bg-accent/40'
+                "
+                @pointerdown="cardPointerDown"
+                @pointermove="cardPointerMove"
+                @pointercancel="cardPointerCancel"
+                @pointerup="cardPointerCancel"
+                @click="cardClickSwallowed() || openHostTerm()"
+              >
+                <span
+                  class="absolute inset-y-2.5 left-0 w-[3px] rounded-full bg-amber-500"
+                  title="本机终端"
+                />
+                <div class="flex min-w-0 items-center gap-1.5">
+                  <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground">本机</span>
+                </div>
+                <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground">
+                  <span class="min-w-0 flex-1 truncate">宿主 shell · tmux 会话保留</span>
+                </div>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem @click="openHostTerm()">打开终端</ContextMenuItem>
+              <ContextMenuItem @click="openPopout(HOST_ID)">在独立窗口打开</ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem @click="openRoute('term-sessions')">全部终端会话</ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+          <!-- SSH 主机卡片：无运行态概念（连接失败在终端里可见），色条恒用身份色。
+               右键 / 长按 = 终端动作清单（开终端 / 独立窗口 / 复制 ssh 命令 / 会话 / 管理 / 删除）。 -->
+          <template v-for="t in orderedSsh" :key="t.name">
+            <MobileCard
+              v-if="isPhone"
               :title="t.name"
+              :description="`${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
+              :badge-label="t.hasPassword ? '密码' : undefined"
+              :badge-title="t.hasPassword ? '已存密码，连接时自动应答' : undefined"
+              :active="activeGroup?.containerId === sshGroupId(t.name)"
+              :running="true"
+              :color="containerColor(t.name)"
+              :actions="sshTermActions(t)"
+              @select="runSshCardAction(t, $event)"
             />
-            <div class="flex min-w-0 items-center gap-1.5">
-              <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground">{{ t.name }}</span>
-            </div>
-            <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground">
-              <span class="min-w-0 flex-1 truncate font-mono">{{
-                `${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`
-              }}</span>
-            </div>
-          </div>
+            <ContextMenu v-else>
+              <ContextMenuTrigger as-child>
+                <div
+                  class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
+                  :class="[
+                    activeGroup?.containerId === sshGroupId(t.name)
+                      ? 'border-border/60 bg-accent'
+                      : 'border-transparent hover:bg-accent/40',
+                    dragCardKey === t.name ? 'opacity-40' : '',
+                  ]"
+                  :draggable="!isPhone"
+                  :data-card-key="t.name"
+                  :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}${t.note ? ' · ' + t.note : ''}`"
+                  @pointerdown="cardPointerDown"
+                  @pointermove="cardPointerMove"
+                  @pointercancel="cardPointerCancel"
+                  @pointerup="cardPointerCancel"
+                  @dragstart="cardDragStart($event, 'ssh', t.name)"
+                  @dragover="cardDragOver($event, 'ssh', t.name)"
+                  @dragend="cardDragEnd('ssh')"
+                  @click="cardClickSwallowed() || openSshTerm(t)"
+                >
+                  <span
+                    class="absolute inset-y-2.5 left-0 w-[3px] rounded-full"
+                    :style="{ backgroundColor: containerColor(t.name) }"
+                    :title="t.name"
+                  />
+                  <div class="flex min-w-0 items-center gap-1.5">
+                    <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground">{{ t.name }}</span>
+                    <KeyRound v-if="t.hasPassword" class="size-3 shrink-0 text-muted-foreground" aria-label="已存密码" />
+                  </div>
+                  <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground">
+                    <span class="min-w-0 flex-1 truncate font-mono">{{
+                      `${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`
+                    }}</span>
+                    <span v-if="t.note" class="min-w-0 flex-1 truncate" :title="t.note">{{ t.note }}</span>
+                  </div>
+                </div>
+              </ContextMenuTrigger>
+              <ContextMenuContent>
+                <ContextMenuItem @click="openSshTerm(t)">打开终端</ContextMenuItem>
+                <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>
+                <ContextMenuItem @click="openRoute('term-sessions')">全部终端会话</ContextMenuItem>
+                <ContextMenuItem @click="showSshTargets = true">管理 SSH 主机</ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem class="text-destructive" @click="sshDelTarget = t">删除目标</ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          </template>
           <p v-if="!sshTargets.length" class="px-1.5 py-2 text-[11px] text-muted-foreground">
             暂无 SSH 主机，点 ＋ 添加
           </p>
