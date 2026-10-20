@@ -71,6 +71,8 @@ import {
   runServiceAction,
 } from '@/components/mobile/mobileActions'
 import MobileTabActions from '@/components/mobile/MobileTabActions.vue'
+import MobileBottomNav from '@/components/mobile/MobileBottomNav.vue'
+import type { MobileNavTarget } from '@/components/mobile/mobileNavigation'
 import {
   groupActions,
   runGroupAction,
@@ -1071,6 +1073,32 @@ function loadMainView(): 'file' | 'terminal' | 'ai' {
   }
 }
 const mainView = ref<'terminal' | 'ai' | 'file'>(loadMainView())
+const mobileNavTarget = computed<MobileNavTarget>(() => {
+  if (showFiles.value) return 'files'
+  if (mainView.value === 'ai') return 'ai'
+  if (mainView.value === 'file') return 'files'
+  return 'terminal'
+})
+function navigateMobileNav(target: MobileNavTarget) {
+  if (target === 'terminal') {
+    showFiles.value = false
+    if (aiOpen.value) closeAi()
+    mainView.value = 'terminal'
+    return
+  }
+  if (target === 'ai') {
+    showFiles.value = false
+    openAi()
+    return
+  }
+  if (showFiles.value) {
+    showFiles.value = false
+    if (aiOpen.value) closeAi()
+    return
+  }
+  mainView.value = editorTabs.value.length ? 'file' : 'terminal'
+  showFiles.value = true
+}
 watch(aiOpen, (open) => {
   if (open) mainView.value = 'ai'
   else if (mainView.value === 'ai') mainView.value = editorTabs.value.length ? 'file' : 'terminal'
@@ -3587,7 +3615,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     </aside>
 
     <!-- 右侧终端主区：tab 栏 + 分屏，占满剩余空间 -->
-    <div class="flex min-w-0 flex-1 flex-col">
+    <div class="flex min-w-0 flex-1 flex-col max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
       <div
         v-if="!props.popout && baseReady === false"
         class="flex items-center gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
@@ -4117,23 +4145,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            多 tab 收缩同终端 tab（浏览器式，桌面收缩/手机滚动）；右键菜单承载
            tab 管理（关闭系）+ 形态动作（编辑⇄预览/下载/普通打开）+ 复制路径。 -->
       <div v-if="editorTabs.length || aiOpen" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
-        <!-- 手机回入口：文件浏览层选中文件后自动收起，这里提供固定的返回通道；
-             显示面板时再点一次即关闭。桌面仍是右侧常驻列，不需要这个切换钮。 -->
-        <button
-          class="flex shrink-0 items-center gap-1.5 border-r border-border/60 px-3 py-1.5 text-xs max-md:flex max-md:py-2.5 max-md:text-sm md:hidden"
-          :class="showFiles ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50'"
-          title="打开 / 关闭文件面板"
-          @click="showFiles = !showFiles"
-        >
-          <FolderOpen class="size-4" />
-          <span>文件</span>
-        </button>
         <!-- AI 工具 tab（单例，恒在文件 tab 最左，v-if=aiOpen——有文件 tab 时栏仍渲染，
              不挂条件的话 X 关不掉它：aiOpen 已清但页签照画，用户怎么点都"关不掉"）：
-             Bot 钮打开的页面在这里落位，与文件 tab 平级互切；X 关闭整个 AI 工作区。 -->
+             Bot 钮打开的页面在这里落位，与文件 tab 平级互切；X 关闭整个 AI 工作区。
+             手机由底部导航承担 AI 一级入口，这条只保留桌面切换形态。 -->
         <div
           v-if="aiOpen"
-          class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
+          class="hidden shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs md:flex"
           :class="
             mainView === 'ai'
               ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
@@ -4264,7 +4282,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     <FilePanel
       v-if="showFiles"
       ref="filePanelRef"
-      class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe md:static"
+      class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:static"
       :style="isPhone ? undefined : { width: filesW + 'px' }"
       :container-id="filePanelTarget"
       :container-name="filePanelTargetName"
@@ -4277,6 +4295,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @close="showFiles = false"
       @open-file="onPanelOpenFile"
       @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
+    />
+
+    <!-- 手机一级导航：终端 / 文件 / AI。文件 Tab 条与当前 Tab 动作只处理二级编辑态。 -->
+    <MobileBottomNav
+      v-if="!props.popout"
+      :active="mobileNavTarget"
+      @navigate="navigateMobileNav"
     />
   </div>
 
