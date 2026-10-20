@@ -701,14 +701,14 @@ button{display:block;width:100%;box-sizing:border-box;align-self:stretch;padding
 button:disabled{opacity:.65;cursor:not-allowed}
 .error{color:#f87171}
 </style></head><body><div class="card">
-<form id="sb-login" class="stack">
+<form id="sb-login" class="stack" autocomplete="off">
   <div class="field">
     <label for="sb-user">账号</label>
-    <input id="sb-user" autocomplete="username" placeholder="账号">
+    <input id="sb-user" autocomplete="off" placeholder="账号">
   </div>
   <div class="field">
     <label for="sb-pass">密码</label>
-    <input id="sb-pass" type="password" autocomplete="current-password" placeholder="密码">
+    <input id="sb-pass" type="password" autocomplete="new-password" placeholder="密码">
   </div>
   <button id="sb-submit" type="submit">登录</button>
   <p id="sb-error" class="error" role="alert" hidden></p>
@@ -738,10 +738,18 @@ button:disabled{opacity:.65;cursor:not-allowed}
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: username, password: password })
     }).then(function (res) {
-      if (res.ok) { location.reload(); return; }
+      if (res.ok) {
+        user.value = '';
+        pass.value = '';
+        location.reload();
+        return;
+      }
       return res.json().catch(function () { return null; });
     }).then(function (body) {
-      throw new Error((body && body.error && body.error.message) || '账号密码错误或控制台不可达');
+      if (body && body.error && body.error.code === 'unauthorized') {
+        throw new Error('代理账号或密码错误');
+      }
+      throw new Error('控制台不可达，请稍后再试');
     }).catch(function (err) {
       error.textContent = err.message || '登录失败，请重试';
       error.hidden = false;
