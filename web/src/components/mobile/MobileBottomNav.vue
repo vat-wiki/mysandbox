@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bot, FolderOpen, Terminal } from 'lucide-vue-next'
+import { Bot, FolderOpen, Settings, Terminal } from 'lucide-vue-next'
 import type { MobileNavTarget } from './mobileNavigation'
 
 defineProps<{
@@ -10,10 +10,12 @@ const emit = defineEmits<{
   navigate: [target: MobileNavTarget]
 }>()
 
+// settings 是动作不是视图（弹设置框，永不处于激活态），与三个视图项同栏但语义不同。
 const items: { target: MobileNavTarget; label: string; icon: typeof Terminal }[] = [
   { target: 'terminal', label: '终端', icon: Terminal },
   { target: 'files', label: '文件', icon: FolderOpen },
   { target: 'ai', label: 'AI', icon: Bot },
+  { target: 'settings', label: '设置', icon: Settings },
 ]
 </script>
 

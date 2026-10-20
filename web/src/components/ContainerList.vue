@@ -1086,6 +1086,11 @@ const mobileNavTarget = computed<MobileNavTarget>(() => {
   return 'terminal'
 })
 function navigateMobileNav(target: MobileNavTarget) {
+  // settings 是动作不是视图：弹设置框即返回，mobileNavTarget 永不等于它（按钮无激活态）。
+  if (target === 'settings') {
+    showSettings.value = true
+    return
+  }
   if (target === 'terminal') {
     showFiles.value = false
     if (aiOpen.value) closeAi()
@@ -4063,8 +4068,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <Settings class="size-3.5" />
         </button>
-        <!-- 手机全局动作：会话 / AI / 文件 / 设置 / 网络与当前终端管理收进一个入口，
-             顶栏只保留「导航 + 终端切换 + 更多」。桌面仍用独立图标，少一跳。 -->
+        <!-- 手机全局动作：会话与网络信息、当前终端管理收进一个入口。一级任务（终端/文件/AI）
+             已由底部导航承载、设置也进了底栏——这里刻意不再重复，避免同一动作两处入口。 -->
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
             <button
@@ -4078,22 +4083,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="showSessions = true">
               <TerminalIcon class="size-4" />
               所有终端
-            </DropdownMenuItem>
-            <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="openAi()">
-              <Bot class="size-4" />
-              AI 工具
-            </DropdownMenuItem>
-            <DropdownMenuItem class="max-md:py-2.5 max-md:text-sm" @click="showSettings = true">
-              <Settings class="size-4" />
-              设置
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              class="max-md:py-2.5 max-md:text-sm"
-              :class="showFiles ? 'bg-accent text-accent-foreground' : ''"
-              @click="showFiles = !showFiles"
-            >
-              <FolderOpen class="size-4" />
-              {{ showFiles ? '关闭文件面板' : '打开文件面板' }}
             </DropdownMenuItem>
             <template v-if="activeGroup">
               <DropdownMenuSeparator />
