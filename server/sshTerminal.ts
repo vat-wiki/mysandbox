@@ -87,6 +87,20 @@ export function sshAuthActive(t: SshTarget): boolean {
   return !!t.password && sshpassBin() !== null;
 }
 
+// 剥 -o BatchMode=yes（成对剥：filter 只删值会把前面的 -o 留成孤儿，ssh 报
+// "no argument after keyword \"-o\""——实测踩坑，密码目标的文件层全挂）。
+function stripBatchMode(opts: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < opts.length; i++) {
+    if (opts[i] === '-o' && opts[i + 1] === 'BatchMode=yes') {
+      i++;
+      continue;
+    }
+    out.push(opts[i]);
+  }
+  return out;
+}
+
 // bg 命令的启动规格：程序名/argv/env 三件套（env 供调用方并进 spawn/execFile 的 env）。
 // 导出：sshChannel.ts（文件层通道）同用。
 export function sshAuthSpec(
@@ -97,7 +111,7 @@ export function sshAuthSpec(
   if (!sshAuthActive(t)) return { program: 'ssh', argv: sshArgv(t, opts, cmd), env: {} };
   return {
     program: 'sshpass',
-    argv: ['-e', 'ssh', ...sshArgv(t, opts.filter((o) => o !== 'BatchMode=yes'), cmd)],
+    argv: ['-e', 'ssh', ...sshArgv(t, stripBatchMode(opts), cmd)],
     env: { SSHPASS: t.password! },
   };
 }
@@ -568,12 +582,19 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       // exec 登录 shell。一次连接一次认证，持久/降级两条路都通，永不挂死。
       const usePw = sshAuthActive(target);
       const tmuxAttach = `exec tmux -L ${SSH_SOCKET} new-session -A -s ${shq(session)}`;
-      // 降级说明经 printf 上屏（\033 八进制转义；文本避开单引号）。$SHELL = 远端 passwd
-      // 里的登录 shell——**可能没装**（实测：passwd 写 /bin/zsh 但机器没 zsh，sshd 执行
-      // 命令时自己回退 /bin/sh，而 exec "$SHELL" 会 127 退出 = 连上即断），所以先 [ -x ]
-      // 再 exec，不行落 /bin/sh -l（恒存在）。session 名过 TERMID_RE，shq 后无注入面。
+      // 降级 shell 本体：先补登录环境（/etc/profile + ~/.profile，PATH 等以登录语义为
+      // 准），再**强制可见提示符**——实测有机器的 PS1 是纯隐形 OSC 序列（远端自己的
+      // shell 配置问题，但降级兜底必须保证有前缀），最后 exec 交互 shell：bash 优先
+      // （--norc 防 rc 链把 PS1 再改坏，登录环境已手动 source 过），$SHELL 可执行则
+      // 用它（-l 保持登录语义——passwd 写的 shell 可能没装，exec 会 127 即断，先
+      // [ -x ] 再上），否则落 /bin/sh -l（恒存在）。
+      const fallbackExec =
+        '. /etc/profile 2>/dev/null; [ -r "${HOME:-}/.profile" ] && . "${HOME:-}/.profile" 2>/dev/null; export PS1=\'\\u@\\h:\\w\\$ \'; if [ -x /bin/bash ]; then exec /bin/bash --norc -i; elif [ -x "${SHELL:-/bin/sh}" ]; then exec "${SHELL:-/bin/sh}" -l; else exec /bin/sh -l; fi';
+      // 降级说明经 printf 上屏（\033 八进制转义；文本避开单引号）——远端侧检测分支用
+      // （noRemoteTmux 分支的说明走本地 socket 消息，不重复打印）。
       const fallbackShell =
-        "printf '\\033[33m>> 远端未安装 tmux：已降级为直连 shell——断开即结束、会话不保留；装上 tmux 后自动恢复持久会话。\\033[0m\\r\\n'; if [ -x \"${SHELL:-/bin/sh}\" ]; then exec \"${SHELL:-/bin/sh}\" -l; else exec /bin/sh -l; fi";
+        "printf '\\033[33m>> 远端未安装 tmux：已降级为直连 shell——断开即结束、会话不保留；装上 tmux 后自动恢复持久会话。\\033[0m\\r\\n'; " +
+        fallbackExec;
       const remoteCmd = `if command -v tmux >/dev/null 2>&1; then ${tmuxAttach}; else ${fallbackShell}; fi`;
       const sshCmd = [
         ...(usePw ? ['sshpass', '-e'] : []),
@@ -582,7 +603,7 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
         ...(target.port ? ['-p', String(target.port)] : []),
         sshDest(target),
         // 远端命令含元字符：经 shqLocal 裹成单个词过本地 sh（script -c），远端拿到原样串
-        ...(noRemoteTmux ? [] : [shqLocal(remoteCmd)]),
+        ...(noRemoteTmux ? [shqLocal(fallbackExec)] : [shqLocal(remoteCmd)]),
       ].join(' ');
       if (noRemoteTmux && socket.readyState === 1) {
         socket.send(

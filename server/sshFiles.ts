@@ -92,8 +92,14 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
     const cwd = await remotePaneCwd(t, termId);
-    if (!cwd) throw notFound('terminal session not found');
-    return { cwd };
+    if (cwd) return { cwd };
+    // pane 探不到（降级直连 shell 无 tmux / 会话死了）：回退远端 $HOME——文件面板的
+    // 跟随轮询拿到落点才肯首拉列表（cwd 一直失败 path 一直是空串，面板永远空）。
+    // 降级 shell 无集成链路，跟随停在这里，可手动导航。
+    const r = await sshExec(t, ['sh', '-c', 'printf %s "$HOME"'], 8_000);
+    const home = r.stdout.trim();
+    if (r.exitCode === 0 && home.startsWith('/')) return { cwd: home };
+    throw notFound('terminal session not found');
   });
 
   // —— 列目录 ——（脚本单源 files.ts LIST_SCRIPT（busybox 兜底）；hostPath 恒 null：
