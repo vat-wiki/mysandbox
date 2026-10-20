@@ -574,11 +574,30 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       child.stdout?.on('error', () => { /* noop */ });
       child.stderr?.on('error', () => { /* noop */ });
 
+      let tmuxHinted = false;
+      const tmuxMissingHint = (d: Buffer) => {
+        if (tmuxHinted) return;
+        // 远端没装 tmux：attach 命令直接失败，裸报错（"bash: tmux: command not found"）
+        // 难懂——给一句人话 + 安装指引（会话本体在远端 tmux，这是硬前提）。
+        if (/tmux.*command not found|command not found.*tmux/.test(d.toString())) {
+          tmuxHinted = true;
+          if (socket.readyState === 1) {
+            socket.send(
+              Buffer.from(
+                '\x1b[33m>> 远端未安装 tmux，无法建立持久会话。请在远端安装：\r\n' +
+                  '   Debian/Ubuntu: sudo apt install tmux    RHEL/CentOS: sudo yum install tmux\x1b[0m\r\n',
+              ),
+            );
+          }
+        }
+      };
       child.stdout?.on('data', (d: Buffer) => {
+        tmuxMissingHint(d);
         if (socket.readyState === 1) socket.send(d);
       });
       child.stderr?.on('data', (d: Buffer) => {
         // ssh 的连接错误/host key 确认/密码提示多走 stderr：必须透传（同宿主终端）。
+        tmuxMissingHint(d);
         if (socket.readyState === 1) socket.send(d);
       });
       child.on('exit', () => {
