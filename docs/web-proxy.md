@@ -57,7 +57,7 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
 ## 鉴权
 
 - 浏览器直接导航/新开 tab 到代理 URL 带不上 `X-Sandbox-Token` header →
-  `POST /api/auth/session`（登录后 App.vue 自动调）下发 `mysandbox_token` cookie，
+  `POST /api/auth/session`（控制台登录后 App.vue 自动调）下发 `mysandbox_token` cookie，
   **本体 `Path=/`**（vhost 门面的页面路径任意——应用的 `/`、`/dashboard`……Path 限
   /proxy 的话浏览器根本不随行），HttpOnly SameSite=Strict。每个候选基域各发一份
   Domain cookie（浏览器拒收 domain-match 不成立的）：本机走 `mysandbox.test`，远程
@@ -67,9 +67,9 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
   页面里的 JS 拿着 cookie 打不进控制台 API，爆炸半径不因 Path=/ 而扩。
 - SameSite=Strict：控制台内 window.open（同站）与地址栏直贴都带 cookie；从其他应用
   点链接会 401 → HTML 登录页（`proxyUnauthorizedHtml`）。页面只暴露代理专用
-  账号密码：fetch 到 `/api/auth/session`（基域 origin）校验后种 cookie，再 reload
-  当前代理页。控制台 token 不在代理登录页展示；该端点是唯一绕过全局 token hook 的
-  `/api` 路径，由路由自己校验凭证；CORS 只放行代理基域下的 same-site origin。
+  账号密码：fetch 到同源 `/proxy/__auth/session` 校验后种 cookie，再 reload 当前代理
+  页。控制台 token 不在代理登录页展示；该端点与 `/api/auth/session` 绕过全局 token
+  hook，由路由自己校验凭证；CORS 只放行代理基域下的 same-site origin。
 - 未授权的浏览器导航（GET + Accept html）回 HTML 引导页而非 JSON；其余回 JSON 401。
 
 ## 两种访问口径（IP 直连 ⇄ 域名代理）
@@ -83,8 +83,9 @@ token**，浏览器点端口图标就得到一个可远程访问的 URL。
   子网路由（advertise-routes）下的设备可达。这是代理功能上线前的原始形式，保持一等
   公民；目标 IP 未知（停机解析不出等）时退同源子路径门面兜底。
 - **域名代理口径**：控制台经基域名打开 → 端口点击拼 vhost URL（探测择优，全败降级
-  子路径门面）。会话 cookie 在 `/api/auth/session` 下发（每个候选基域一份 Domain
-  cookie + 宿主级一份兜子路径）。适合没有到私网路由的 LAN 设备。
+  子路径门面）。会话 cookie 在 `/api/auth/session` 或同源 `/proxy/__auth/session`
+  下发（每个候选基域一份 Domain cookie + 宿主级一份兜子路径）。适合没有到私网路由的
+  LAN 设备。
 
 `mysandbox open` 深链恒走 IP 口径（任何设备可解析，TLS SAN 覆盖全部本机 IPv4）；
 CLI 横幅把两个口径的入口都列出来。

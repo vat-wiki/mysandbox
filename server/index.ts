@@ -66,7 +66,10 @@ export async function buildServer(cfg: Config) {
     const u = req.url;
     if (u.startsWith('/api/health')) return;
     // session 自带 token 校验；vhost 401 内页用同源请求完成登录。
-    if (u === '/api/auth/session' && (req.method === 'POST' || req.method === 'OPTIONS')) return;
+    if (
+      (u === '/api/auth/session' || u === '/proxy/__auth/session')
+      && (req.method === 'POST' || req.method === 'OPTIONS')
+    ) return;
     const isProxy = u.startsWith('/proxy/');
     if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
       if (isProxy && req.method === 'GET' && !tokenOk(req, cfg, true)) {

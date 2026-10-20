@@ -402,7 +402,8 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
   // 每个候选基域各发一份 Domain cookie（浏览器拒收 domain-match 不成立的那份）：
   // 本机走 mysandbox.test，远程设备经 tailscale 域名开控制台也能种上。
   // session 是唯一的免 hook token 端点：token 有效性在路由内自己校验，错误只回 401。
-  // 401 内页在代理 vhost 上直接登录时是跨源（但 same-site）fetch，需要有限 CORS。
+  // 401 内页固定走同源 /proxy/__auth/session；/api/auth/session 仍给控制台会话使用，
+  // 两者共用同一套凭证校验与 cookie 下发逻辑。
   function allowSessionOrigin(req: FastifyRequest, reply: FastifyReply, bases: ProxyBase[]): void {
     const origin = req.headers.origin;
     if (typeof origin !== 'string') return;
@@ -448,7 +449,7 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
       && safeEqual(credentials.password ?? '', PROXY_ACCOUNT.password);
   }
 
-  app.post('/api/auth/session', async (req, reply) => {
+  async function createSession(req: FastifyRequest, reply: FastifyReply) {
     allowSessionOrigin(req, reply, bases);
     if (!sessionValid(req, cfg)) {
       return reply.code(401).send({
@@ -466,14 +467,19 @@ export async function registerProxy(app: FastifyInstance, cfg: Config): Promise<
     for (const b of bases) cookies.add(`${COOKIE_NAME}=${session}; Domain=${b.base}; ${attrs}`);
     reply.header('set-cookie', [...cookies]);
     return { ok: true };
-  });
+  }
 
-  app.options('/api/auth/session', async (req, reply) => {
+  function sessionPreflight(req: FastifyRequest, reply: FastifyReply) {
     allowSessionOrigin(req, reply, bases);
     reply.header('access-control-allow-methods', 'POST');
     reply.header('access-control-allow-headers', 'content-type, x-sandbox-token');
     return reply.code(204).send();
-  });
+  }
+
+  app.post('/api/auth/session', async (req, reply) => createSession(req, reply));
+  app.post('/proxy/__auth/session', async (req, reply) => createSession(req, reply));
+  app.options('/api/auth/session', async (req, reply) => sessionPreflight(req, reply));
+  app.options('/proxy/__auth/session', async (req, reply) => sessionPreflight(req, reply));
 
   // —— vhost 信息（前端拼代理 URL 与探测择优用；次选候选给远程设备）——
   app.get('/api/proxy/config', async () => {
@@ -695,7 +701,7 @@ button{display:block;width:100%;box-sizing:border-box;align-self:stretch;padding
 button:disabled{opacity:.65;cursor:not-allowed}
 .error{color:#f87171}
 </style></head><body><div class="card">
-<form id="sb-login" class="stack" data-origin="/">
+<form id="sb-login" class="stack">
   <div class="field">
     <label for="sb-user">账号</label>
     <input id="sb-user" autocomplete="username" placeholder="账号">
@@ -710,7 +716,6 @@ button:disabled{opacity:.65;cursor:not-allowed}
 <script>
 (function () {
   var form = document.getElementById('sb-login');
-  var o = form.dataset.origin === '/' ? '' : form.dataset.origin;
   var user = document.getElementById('sb-user');
   var pass = document.getElementById('sb-pass');
   var button = document.getElementById('sb-submit');
@@ -727,7 +732,7 @@ button:disabled{opacity:.65;cursor:not-allowed}
     button.disabled = true;
     button.textContent = '验证中…';
     error.hidden = true;
-    fetch(o + '/api/auth/session', {
+    fetch('/proxy/__auth/session', {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
