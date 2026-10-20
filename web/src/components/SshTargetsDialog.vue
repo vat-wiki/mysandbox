@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // SSH 主机管理对话框（侧栏终端区「添加 / 管理」入口）：现有目标（点击直开终端、
 // 可删）+ ~/.ssh/config 候选（点击预填表单）+ 手动添加。目标存 sidecar
-// state.json（server/sshTerminal.ts），这里只存「怎么连」——凭据全走宿主 ssh
-// （keys / agent / ssh config 别名含跳板），不新增任何凭据存储。
+// state.json（server/sshTerminal.ts），这里只存「怎么连」——凭据缺省走宿主 ssh
+// （keys / agent / ssh config 别名含跳板）；密码为可选填项（服务端本地存储、
+// 经 sshpass 自动应答，API 不回明文），另有备注等可选项。
 import { ref, onMounted } from 'vue'
-import { RefreshCw, Server, Trash2, ArrowRight } from 'lucide-vue-next'
+import { RefreshCw, Server, Trash2, ArrowRight, KeyRound } from 'lucide-vue-next'
 import {
   listSshTargets,
   addSshTarget,
@@ -59,6 +60,8 @@ const name = ref('')
 const host = ref('')
 const user = ref('')
 const port = ref('')
+const password = ref('')
+const note = ref('')
 const adding = ref(false)
 async function submit() {
   if (!name.value.trim() || !host.value.trim()) {
@@ -73,8 +76,10 @@ async function submit() {
       host: host.value.trim(),
       user: user.value.trim() || undefined,
       port: port.value.trim() ? Number(port.value.trim()) : undefined,
+      password: password.value || undefined,
+      note: note.value.trim() || undefined,
     })
-    name.value = host.value = user.value = port.value = ''
+    name.value = host.value = user.value = port.value = password.value = note.value = ''
     await load()
     emit('changed')
   } catch (e) {
@@ -130,8 +135,9 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
 
       <div class="flex justify-end">
         <InfoHint label="接入方式说明">
-          <p>远程主机作为「终端」接入，会话在远端 tmux 上；凭据复用本机 ssh，这里不存密码。</p>
-          <p>会话跨重启存活；密钥 / agent / ~/.ssh/config 别名（含跳板）直接生效。</p>
+          <p>远程主机作为「终端」接入，会话在远端 tmux 上；凭据缺省复用本机 ssh（密钥 / agent）。</p>
+          <p>密码为可选填项：仅存本机 sidecar（0600），经 sshpass 自动应答，不出 API；不填则用密钥，首连可在终端交互确认。</p>
+          <p>会话跨重启存活；~/.ssh/config 别名（含跳板）直接生效。</p>
         </InfoHint>
       </div>
 
@@ -168,8 +174,12 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
             class="min-w-0 flex-1 text-left"
             @click="emit('open', t)"
           >
-            <span class="block truncate text-sm">{{ t.name }}</span>
+            <span class="flex items-center gap-1 truncate text-sm">
+              {{ t.name }}
+              <KeyRound v-if="t.hasPassword" class="size-3 shrink-0 text-muted-foreground" aria-label="已存密码" />
+            </span>
             <span class="block truncate font-mono text-[10px] text-muted-foreground">{{ destLabel(t) }}</span>
+            <span v-if="t.note" class="block truncate text-[10px] text-muted-foreground/80">{{ t.note }}</span>
           </button>
           <Button variant="outline" size="xs" class="shrink-0" @click="emit('open', t)">
             终端 <ArrowRight />
@@ -212,6 +222,14 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
           <Input v-model="host" placeholder="目的地 host / user@host / 别名" class="h-8 font-mono text-xs" />
           <Input v-model="user" placeholder="用户名（可选）" class="h-8 text-xs" />
           <Input v-model="port" placeholder="端口（可选）" class="h-8 text-xs" />
+          <Input
+            v-model="password"
+            type="password"
+            autocomplete="new-password"
+            placeholder="密码（可选）"
+            class="h-8 text-xs"
+          />
+          <Input v-model="note" placeholder="备注（可选）" class="h-8 text-xs" />
         </div>
         <Button size="sm" class="mt-2 w-full" :disabled="adding" @click="submit">
           {{ adding ? '添加中…' : '添加主机' }}

@@ -648,10 +648,12 @@ export const killTermSession = (s: TermSessionView) =>
 // —— SSH 终端目标（server/sshTerminal.ts；存 sidecar，UI 可增删）——
 export interface SshTargetView {
   name: string
-  host: string // ssh 目的地：host / user@host / ~/.ssh/config 别名（凭据全走宿主 ssh）
+  host: string // ssh 目的地：host / user@host / ~/.ssh/config 别名（凭据缺省走宿主 ssh）
   user?: string
   port?: number
+  note?: string // 备注（纯展示）
   createdAt?: string
+  hasPassword?: boolean // 密码存于服务端 state.json（0600），不回传明文
 }
 export interface SshConfigHost {
   name: string
@@ -660,7 +662,7 @@ export interface SshConfigHost {
   port?: number
 }
 export const listSshTargets = () => api('/api/ssh/targets') as Promise<{ targets: SshTargetView[] }>
-export const addSshTarget = (t: { name: string; host: string; user?: string; port?: number }) =>
+export const addSshTarget = (t: { name: string; host: string; user?: string; port?: number; password?: string; note?: string }) =>
   api('/api/ssh/targets', { method: 'POST', body: JSON.stringify(t) }) as Promise<{ ok: true; target: SshTargetView }>
 export const deleteSshTarget = (name: string) =>
   api(`/api/ssh/targets/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<{ ok: true }>

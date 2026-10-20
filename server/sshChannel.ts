@@ -3,15 +3,17 @@
 // 引号手工包裹；这边的参数来自 HTTP 请求（路径可含单引号/空格/中文），统一在 sshExec/
 // sshFeed/sshSpawn 内做**真转义**单引号包裹，调用方一律传未包裹的裸 argv。
 //
-// 权限面：凭据全走宿主 ssh（keys / agent / ~/.ssh/config），与 /ws/host-terminal 同源——
+// 权限面：凭据缺省全走宿主 ssh（keys / agent / ~/.ssh/config），与 /ws/host-terminal 同源——
 // token 本就等价宿主 leon 用户、可在宿主终端手敲 ssh 到任意目标，文件端点不新增越权。
+// 目标可选存密码（state.json 0600），经 sshTerminal.ts 的 sshAuthSpec 换 sshpass -e 自动
+// 应答，文件端点获得与密钥目标一致的非交互体验。
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ChildProcessByStdio } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import type { SshTarget } from './state.js';
 import { HttpError, badRequest } from './errors.js';
-import { SSH_BG_OPTS, sshArgv } from './sshTerminal.js';
+import { SSH_BG_OPTS, sshAuthSpec } from './sshTerminal.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,10 +25,17 @@ export function shq(s: string): string {
 }
 
 // ssh 传输失败（exit 255）→ 502：连接拒绝/认证失败/host key 未确认各不相同，stderr
-// 首行给人话。BatchMode（SSH_BG_OPTS）下密码认证目标也在此快败，不会吊死请求。
+// 首行给人话。没存密码（或宿主无 sshpass）时走 BatchMode（SSH_BG_OPTS），密码认证目标
+// 在此快败，不会吊死请求；存了密码的目标经 sshpass -e 自动应答（sshAuthSpec 剥掉
+// BatchMode），文件端点与密钥目标同体验。
 export function sshUnreachable(stderr: string): HttpError {
   const first = (stderr || '').split('\n')[0]?.trim().slice(0, 200) ?? '';
   return new HttpError(502, `SSH 目标连接失败${first ? `：${first}` : ''}`, 'ssh_unreachable');
+}
+
+// 启动规格（程序/argv/env）：密码目标换 sshpass -e 起手，env 由调用方并进 spawn。
+function spec(t: SshTarget, cmd: string[]): { program: string; argv: string[]; env: Record<string, string> } {
+  return sshAuthSpec(t, SSH_BG_OPTS, cmd.map(shq));
 }
 
 // 收尾型远程执行（整包收 utf8 串；脚本输出量可控：读文件上限 2MB base64 ~2.7MB）。
@@ -39,9 +48,11 @@ export async function sshExec(
   timeoutMs: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await execFileAsync('ssh', sshArgv(t, SSH_BG_OPTS, cmd.map(shq)), {
+    const s = spec(t, cmd);
+    const { stdout, stderr } = await execFileAsync(s.program, s.argv, {
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, ...s.env },
     });
     return { exitCode: 0, stdout, stderr };
   } catch (e) {
@@ -67,7 +78,8 @@ export function sshFeed(
   timeoutMs: number,
 ): Promise<{ exitCode: number; stderr: string }> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const c = spawn('ssh', sshArgv(t, SSH_BG_OPTS, cmd.map(shq)), { stdio: ['pipe', 'ignore', 'pipe'] });
+    const s = spec(t, cmd);
+    const c = spawn(s.program, s.argv, { stdio: ['pipe', 'ignore', 'pipe'], env: { ...process.env, ...s.env } });
     const errs: Buffer[] = [];
     let settled = false;
     const done = (exitCode: number) => {
@@ -100,7 +112,8 @@ export function sshFeed(
 // stdio tuple ['ignore','pipe','pipe']：stdin 恒 null、stdout/stderr 恒在（类型层面锁定，
 // 调用方免 null检查）。
 export function sshSpawn(t: SshTarget, cmd: string[]): ChildProcessByStdio<null, Readable, Readable> {
-  return spawn('ssh', sshArgv(t, SSH_BG_OPTS, cmd.map(shq)), { stdio: ['ignore', 'pipe', 'pipe'] });
+  const s = spec(t, cmd);
+  return spawn(s.program, s.argv, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...s.env } });
 }
 
 // 流式型·stdin 喂入（files.ts 跨面板复制 unpack：pack 的 tar 流经本进程管道进 ssh stdin
@@ -110,7 +123,8 @@ export function sshSpawnIn(
   t: SshTarget,
   cmd: string[],
 ): ChildProcessByStdio<Writable, null, Readable> {
-  return spawn('ssh', sshArgv(t, SSH_BG_OPTS, cmd.map(shq)), { stdio: ['pipe', 'ignore', 'pipe'] });
+  const s = spec(t, cmd);
+  return spawn(s.program, s.argv, { stdio: ['pipe', 'ignore', 'pipe'], env: { ...process.env, ...s.env } });
 }
 
 // 存在性探测（files.ts 跨面板复制的 ssh 侧预检）：脚本 exit 0 = true。⚠️ 必须显式判

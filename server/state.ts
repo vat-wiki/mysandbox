@@ -36,6 +36,8 @@ export interface SshTarget {
   host: string; // ssh 目的地：host / user@host / ~/.ssh/config 别名均可（凭据全走宿主 ssh）
   user?: string;
   port?: number;
+  password?: string; // 可选：密码认证目标（经 sshpass 自动应答；存本文件 0600，不出 API 响应）
+  note?: string; // 可选：备注（纯展示，仅进列表）
   createdAt?: string;
 }
 

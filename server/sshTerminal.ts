@@ -13,7 +13,9 @@
 //     保留（远端 server 自管生命周期，无本地 cgroup 归属问题，也不需要 systemd-run）；
 //   - PTY 链：script(1)（本机，与宿主终端同款）→ ssh client → 远端 tmux attach。
 //     resize：stty 改本机 ssh client 的 pts → ssh 收 SIGWINCH 转发远端，同构成立；
-//   - 凭据全走宿主 ssh（keys / agent / ~/.ssh/config 别名含跳板），零新增存储。
+//   - 凭据缺省全走宿主 ssh（keys / agent / ~/.ssh/config 别名含跳板）。可选存密码
+//     （state.json 0600，仅本机）：宿主有 sshpass 时后台与 attach 都经 `sshpass -e`
+//     自动应答，密码目标获得与密钥目标一致的非交互体验。没存密码/没装 sshpass 时
 //     后台命令（建会话/扫描）带 BatchMode=yes 快败——密码/口令认证的目标后台失败
 //     不挡连接：attach 命令用 `new-session -A` 兜底，在终端里交互应答（输密码）
 //     也能建出会话，只是那条路径来不及注入 tmux 设置（可接受降级，下连即修复——
@@ -21,7 +23,7 @@
 //
 // 注入面：host/user/port 只收无 shell 元字符的白名单字符集（见 SSH_HOST_RE），
 // 会话名经 TERMID_RE 校验，attach 命令串其余全为常量——script -c 单串无注入面。
-import { spawn, execFile } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
@@ -64,6 +66,39 @@ function sshDest(t: SshTarget): string {
   return t.user && !t.host.includes('@') ? `${t.user}@${t.host}` : t.host;
 }
 
+// —— 密码认证目标的自动应答（可选能力，缺省仍全走宿主 ssh 凭据）——
+// 目标存了 password 且宿主有 sshpass 时：程序换成 `sshpass -e ssh …`，SSHPASS 走 env
+// （不进 argv/命令串，ps 不可见）；后台命令必须**去掉 BatchMode=yes**——BatchMode 直接
+// 禁掉密码认证，sshpass 无机可乘。无 sshpass 时忽略密码，行为退回旧版（后台快败、
+// 终端交互输密码）。
+let sshpassBinCache: string | null | undefined;
+function sshpassBin(): string | null {
+  if (sshpassBinCache !== undefined) return sshpassBinCache;
+  const r = spawnSync('sshpass', ['-V'], { timeout: 5_000 });
+  sshpassBinCache = r.error ? null : 'sshpass';
+  return sshpassBinCache;
+}
+
+// 密码自动应答是否生效（attach 侧拼 sshCmd 串也用它决定要不要加 sshpass 前缀）。
+export function sshAuthActive(t: SshTarget): boolean {
+  return !!t.password && sshpassBin() !== null;
+}
+
+// bg 命令的启动规格：程序名/argv/env 三件套（env 供调用方并进 spawn/execFile 的 env）。
+// 导出：sshChannel.ts（文件层通道）同用。
+export function sshAuthSpec(
+  t: SshTarget,
+  opts: string[],
+  cmd: string[],
+): { program: string; argv: string[]; env: Record<string, string> } {
+  if (!sshAuthActive(t)) return { program: 'ssh', argv: sshArgv(t, opts, cmd), env: {} };
+  return {
+    program: 'sshpass',
+    argv: ['-e', 'ssh', ...sshArgv(t, opts.filter((o) => o !== 'BatchMode=yes'), cmd)],
+    env: { SSHPASS: t.password! },
+  };
+}
+
 // tmux target 的远端 shell 引号包裹：ssh 把 argv 以空格拼成命令串交给**远端登录 shell**
 // 解析，`=名字` 在 zsh 里触发 =word 展开（=命令路径查找 → "not found"，本地
 // hostTerminal 靠 SHELL=/bin/sh 压掉的坑在远端原样复现）——必须单引号裹住。
@@ -87,7 +122,8 @@ async function sshRun(
   timeoutMs = 12_000,
 ): Promise<{ ok: boolean; stdout: string; err?: string }> {
   try {
-    const { stdout } = await execFileAsync('ssh', sshArgv(t, SSH_BG_OPTS, cmd), { timeout: timeoutMs });
+    const s = sshAuthSpec(t, SSH_BG_OPTS, cmd);
+    const { stdout } = await execFileAsync(s.program, s.argv, { timeout: timeoutMs, env: { ...process.env, ...s.env } });
     return { ok: true, stdout };
   } catch (e) {
     const err = e as { stderr?: string; message?: string };
@@ -227,11 +263,35 @@ export async function sshConfigCandidates(): Promise<SshConfigHost[]> {
   return [...out.values()];
 }
 
+// API 视图：password 永不出响应（存 state.json 0600 即止），hasPassword 供前端标记。
+export function sshTargetView(t: SshTarget): SshTargetView {
+  return {
+    name: t.name,
+    host: t.host,
+    user: t.user,
+    port: t.port,
+    note: t.note,
+    createdAt: t.createdAt,
+    hasPassword: !!t.password,
+  };
+}
+
+export interface SshTargetView {
+  name: string;
+  host: string;
+  user?: string;
+  port?: number;
+  note?: string;
+  createdAt?: string;
+  hasPassword?: boolean;
+}
+
 export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
   const log = app.log;
 
   // —— 目标 CRUD（存 state.json sidecar；UI 增删，config.yaml 不掺和）——
-  app.get('/api/ssh/targets', async () => ({ targets: await getSshTargets() }));
+  // 响应不回 password（API 层剥掉，只给 hasPassword 供前端标记）。
+  app.get('/api/ssh/targets', async () => ({ targets: (await getSshTargets()).map(sshTargetView) }));
 
   app.post('/api/ssh/targets', async (req) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -239,13 +299,16 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
     const host = String(b.host ?? '').trim();
     const user = b.user === undefined || b.user === null || b.user === '' ? undefined : String(b.user).trim();
     const port = b.port === undefined || b.port === null || b.port === '' ? undefined : Number(b.port);
+    // 密码不 trim（前后空格可能是密码本体）；备注 trim、限长防灌垃圾。
+    const password = typeof b.password === 'string' && b.password ? b.password.slice(0, 512) : undefined;
+    const note = typeof b.note === 'string' && b.note.trim() ? b.note.trim().slice(0, 200) : undefined;
     if (!SSH_NAME_RE.test(name)) throw badRequest('目标名需以字母或数字开头，可含 . _ -，最长 63 字符');
     if (!SSH_HOST_RE.test(host)) throw badRequest('目的地含非法字符（只允许字母数字与 . _ @ % + - [ ] :）');
     if (user !== undefined && !SSH_USER_RE.test(user)) throw badRequest('用户名含非法字符');
     if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw badRequest('端口需为 1-65535 的整数');
-    const t = await addSshTarget({ name, host, user, port, createdAt: new Date().toISOString() });
+    const t = await addSshTarget({ name, host, user, port, password, note, createdAt: new Date().toISOString() });
     if (!t) throw conflict(`SSH 目标 ${name} 已存在`);
-    return { ok: true, target: t };
+    return { ok: true, target: sshTargetView(t) };
   });
 
   app.delete('/api/ssh/targets/:name', async (req) => {
@@ -444,7 +507,12 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       // script 提供 PTY（同 hostTerminal：-f 防缓冲、SHELL 压 /bin/sh 防 zsh =word 展开）。
       // 命令串 = 常量 + 白名单字符集的目的地 + TERMID_RE 校验的会话名，无注入面。
       // attach 用 new-session -A：会话在则 attach，不在则兜底创建（后台建失败的场景）。
+      // 密码目标（sshAuthActive）加 sshpass -e 前缀自动应答——host key 首连确认仍走
+      // 交互（sshpass 只拦 password 提示），密码错误时 ssh 重试几次后照常报 Permission
+      // denied。SSHPASS 经 env 进 ssh，不出现在命令串里。
+      const usePw = sshAuthActive(target);
       const sshCmd = [
+        ...(usePw ? ['sshpass', '-e'] : []),
         'ssh',
         ...SSH_TTY_OPTS,
         ...(target.port ? ['-p', String(target.port)] : []),
@@ -460,7 +528,14 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       child = spawn('script', ['-q', '-f', '-e', '-c', sshCmd, '/dev/null'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         // 不注入 MYSANDBOX_WEB：远端没有容器内 mysandbox CLI，OSC 7677 链路不存在。
-        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', CLAUDE_CODE_TMUX_TRUECOLOR: '1', SHELL: '/bin/sh' },
+        env: {
+          ...process.env,
+          TERM: 'xterm-256color',
+          COLORTERM: 'truecolor',
+          CLAUDE_CODE_TMUX_TRUECOLOR: '1',
+          SHELL: '/bin/sh',
+          ...(usePw ? { SSHPASS: target.password! } : {}),
+        },
       });
       children.add(child);
       child.stdin?.on('error', () => { /* noop */ });
