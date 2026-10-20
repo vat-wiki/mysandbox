@@ -110,6 +110,14 @@ function shq(target: string): string {
   return `'${target}'`;
 }
 
+// 本地 /bin/sh 层的真转义单引号包裹：sshCmd 整串经 script -c 交给**本地** sh 解析，
+// 远端包装命令里含 ; > 引号等元字符，必须裹成单个词——本地 shell 剥一层引号后 ssh
+// 收到完整 argv（词内不含空白），ssh 再以空格拼回命令串交给远端 shell 原样解析。
+// 与 sshChannel.ts 的 shq 同算法（那边给 HTTP 参数用，这边给常量拼装用）。
+function shqLocal(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 // ssh 命令参数（不含程序名本身——execFile('ssh', argv) 另给；之前重复带了导致远端
 // 主机名变成字面量 "ssh" 被 DNS 解析到 fake-ip，实测踩坑）。port 有值才传 -p。
 // 导出：sshFiles.ts / sshChannel.ts（文件层通道）同用。
@@ -552,16 +560,27 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       // 密码目标（sshAuthActive）加 sshpass -e 前缀自动应答——host key 首连确认仍走
       // 交互（sshpass 只拦 password 提示），密码错误时 ssh 重试几次后照常报 Permission
       // denied。SSHPASS 经 env 进 ssh，不出现在命令串里。
+      //
+      // 降级判定有两层：noRemoteTmux 是**认证前**探测（后台 has-session 能跑通才有
+      // 效）；无密钥且没存密码的目标后台全被 auth 挡住（stderr 是 Permission denied
+      // 而非 command not found），探不到——所以 attach 命令本身做成**远端侧包装**：
+      // 认证后在远端登录 shell 里自判 tmux 在不在，在则 attach，不在则打印说明后
+      // exec 登录 shell。一次连接一次认证，持久/降级两条路都通，永不挂死。
       const usePw = sshAuthActive(target);
+      const tmuxAttach = `exec tmux -L ${SSH_SOCKET} new-session -A -s ${shq(session)}`;
+      // 降级说明经 printf 上屏（\033 八进制转义；文本避开单引号）。$SHELL = 远端登录
+      // shell（sshd 注入），-l 保登录环境。session 名过 TERMID_RE，shq 后无注入面。
+      const fallbackShell =
+        "printf '\\033[33m>> 远端未安装 tmux：已降级为直连 shell——断开即结束、会话不保留；装上 tmux 后自动恢复持久会话。\\033[0m\\r\\n'; exec \"${SHELL:-/bin/sh}\" -l";
+      const remoteCmd = `if command -v tmux >/dev/null 2>&1; then ${tmuxAttach}; else ${fallbackShell}; fi`;
       const sshCmd = [
         ...(usePw ? ['sshpass', '-e'] : []),
         'ssh',
         ...SSH_TTY_OPTS,
         ...(target.port ? ['-p', String(target.port)] : []),
         sshDest(target),
-        ...(noRemoteTmux
-          ? [] // 裸登录 shell：ssh 无远端命令 + 强制 pty（-t 在 SSH_TTY_OPTS 里）
-          : ['tmux', '-L', SSH_SOCKET, 'new-session', '-A', '-s', session]),
+        // 远端命令含元字符：经 shqLocal 裹成单个词过本地 sh（script -c），远端拿到原样串
+        ...(noRemoteTmux ? [] : [shqLocal(remoteCmd)]),
       ].join(' ');
       if (noRemoteTmux && socket.readyState === 1) {
         socket.send(
