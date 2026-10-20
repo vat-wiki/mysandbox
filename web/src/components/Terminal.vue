@@ -309,6 +309,9 @@ function recoverOnReturn() {
 }
 
 const el = ref<HTMLDivElement | null>(null)
+// 根容器（带键盘占位 padding 的那层）：软键盘自适应要量它底边到布局视口底的距离，
+// 扣掉布局自带的底部留白（移动端底部 tab 的 pb），见 setupViewportWatch。
+const rootEl = ref<HTMLDivElement | null>(null)
 let term: XTerm | null = null
 // 程序性聚焦抑制标志：refit 的 term.focus() 是「切 tab 恢复/窗口 resize」的附带动作，
 // 不代表用户把焦点落在哪个 pane——DOM focus 事件在 focus() 调用内同步派发，同步开关
@@ -696,16 +699,27 @@ function tbTouchEnd(e: TouchEvent) {
 
 // —— 软键盘自适应（仅手机）——
 // visualViewport 在键盘弹起时收缩（layout viewport 不动），kbH = 布局高 - 可视高 即键盘
-// 占位。把根容器 paddingBottom 撑出 kbH，内层 el 已有 ResizeObserver → 自动走现有 refit，
+// 占位。把根容器 paddingBottom 撑出键盘占位，内层 el 已有 ResizeObserver → 自动走现有 refit，
 // 与 tmux resize 对账心跳（15s）协同，PTY cols/rows 始终正确。
-const kbH = ref(0)
+// ⚠️ 占位不能直接用 kbH：根容器底边不一定贴着布局视口底——移动端主列常态有底部 tab 的
+// pb（3.5rem+safe），容器底边悬在视口底上方一个 tab 高，再把全键盘高 kbH 垫进去，工具条
+// 与系统键盘之间就空出一个 tab 高。实测量根容器底边到布局视口底的距离（gap）扣掉，键盘
+// 收起时 gap 为负（容器底边在视口底之上）钳 0、kbH 为 0 也不启用，popout 无 tab 场景
+// gap≈0 自然退化为垫全 kbH 的原行为。
+const kbPad = ref(0)
 let vvCleanup: (() => void) | null = null
 function setupViewportWatch() {
   const vv = window.visualViewport
   if (!vv) return
   const onVv = () => {
-    const h = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
-    kbH.value = h > 120 ? h : 0 // 透值过滤地址栏小幅伸缩
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
+    if (kb <= 120) {
+      kbPad.value = 0 // 透值过滤地址栏小幅伸缩
+      return
+    }
+    const root = rootEl.value
+    const gap = root ? Math.max(0, window.innerHeight - root.getBoundingClientRect().bottom) : 0
+    kbPad.value = Math.max(0, kb + 8 - gap) // +8：键盘高度顶到按钮会贴死，留一线呼吸
   }
   vv.addEventListener('resize', onVv)
   vv.addEventListener('scroll', onVv)
@@ -1338,9 +1352,9 @@ onBeforeUnmount(() => {
   <!-- bg-black + 内边距放外层：el 自身不带 padding，FitAddon 量到的 clientWidth/clientHeight 才是
        真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
-       手机软键盘弹起时 paddingBottom 撑出键盘高度（kbH），内层 ResizeObserver 自动 refit。 -->
-  <!-- kbH 额外 +8：键盘高度顶到按钮会贴死，留一线呼吸 -->
-  <div class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbH > 0 ? { paddingBottom: kbH + 8 + 'px' } : undefined">
+       手机软键盘弹起时 paddingBottom 撑出键盘占位（kbPad，见 setupViewportWatch），
+       内层 ResizeObserver 自动 refit。 -->
+  <div ref="rootEl" class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbPad > 0 ? { paddingBottom: kbPad + 'px' } : undefined">
     <!-- touch-none（touch-action: none）：触屏滚终端的唯一正解。xterm 的 touchmove 处理是 JS 驱动
          viewport.scrollTop，但只在回滚区边界才 preventDefault——滚动途中浏览器的原生平移同时在跑，
          而触点不在 .xterm-viewport 滚动层内，原生滚动链直接落到 document：上翻历史（手指下划）时
