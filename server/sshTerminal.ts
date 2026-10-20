@@ -164,6 +164,31 @@ export function sshSessionName(termId: string): string {
   return `${SSH_SESSION_PREFIX}${termId}`;
 }
 
+// 降级 shell（远端无 tmux）的 cwd 跟随缓存：fallbackExec 给 bash 挂 PROMPT_COMMAND，
+// 每个提示符发 OSC 7（file:// 路径），attach 中继扫描最新值存这里；sshFiles 的 cwd
+// 端点在 tmux pane 探不到时取它（再退远端 $HOME）。tmux 目标走 pane 直查，不用它。
+// 会话收尾即清。
+export const sshOsc7Cwd = new Map<string, string>();
+
+// OSC 7 扫描（attach 的 stdout 中继处逐块调用）。序列可能被 chunk 切开：尾部留存
+// 与下一块拼接后再扫；只认以 BEL / ST 收尾的完整序列，半截的留在 tail 里等续。
+const OSC7_RE = /\x1b\]7;(?:file:\/\/)?([^\x07\x1b]{1,1024})(?:\x07|\x1b\\)/g;
+function noteOsc7(termId: string, d: Buffer, tail: { s: string }): void {
+  const buf = tail.s + d.toString('utf8');
+  for (const m of buf.matchAll(OSC7_RE)) {
+    let p = m[1];
+    try {
+      p = decodeURIComponent(p);
+    } catch {
+      /* 原样路径里本就有 %（未编码形态）：解码失败按原文用，与 Terminal.vue 同策略 */
+    }
+    if (p.startsWith('/')) sshOsc7Cwd.set(termId, p);
+  }
+  const i = Math.max(buf.lastIndexOf('\x07'), buf.lastIndexOf('\x1b'));
+  tail.s = i >= 0 ? buf.slice(i + 1) : buf;
+  if (tail.s.length > 256) tail.s = tail.s.slice(-256);
+}
+
 // 会话/服务端 tmux 设置链（\; 串成一次 ssh 往返；argv 里的引号由远端 shell 剥离，
 // 语义与 hostTerminal 逐项对齐——逐项依据见那边注释）：
 //   - history-limit / alternate-screen 在 new-session 之前（首个会话即 5 万行，且 pane 内 TUI 不进 alt screen）；
@@ -512,6 +537,7 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       const cleanup = () => {
         if (closed) return;
         closed = true;
+        sshOsc7Cwd.delete(termId);
         if (resizeTimer) clearTimeout(resizeTimer);
         if (child) {
           try { child.kill('SIGTERM'); } catch { /* noop */ }
@@ -584,12 +610,14 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       const tmuxAttach = `exec tmux -L ${SSH_SOCKET} new-session -A -s ${shq(session)}`;
       // 降级 shell 本体：先补登录环境（/etc/profile + ~/.profile，PATH 等以登录语义为
       // 准），再**强制可见提示符**——实测有机器的 PS1 是纯隐形 OSC 序列（远端自己的
-      // shell 配置问题，但降级兜底必须保证有前缀），最后 exec 交互 shell：bash 优先
+      // shell 配置问题，但降级兜底必须保证有前缀），再挂 PROMPT_COMMAND 出提示符发
+      // OSC 7（file://$PWD）——文件面板 cwd 跟随的事件源（前端 Terminal.vue 原生解析，
+      // 后端中继同时缓存，见 sshOsc7Cwd）。最后 exec 交互 shell：bash 优先
       // （--norc 防 rc 链把 PS1 再改坏，登录环境已手动 source 过），$SHELL 可执行则
       // 用它（-l 保持登录语义——passwd 写的 shell 可能没装，exec 会 127 即断，先
       // [ -x ] 再上），否则落 /bin/sh -l（恒存在）。
       const fallbackExec =
-        '. /etc/profile 2>/dev/null; [ -r "${HOME:-}/.profile" ] && . "${HOME:-}/.profile" 2>/dev/null; export PS1=\'\\u@\\h:\\w\\$ \'; if [ -x /bin/bash ]; then exec /bin/bash --norc -i; elif [ -x "${SHELL:-/bin/sh}" ]; then exec "${SHELL:-/bin/sh}" -l; else exec /bin/sh -l; fi';
+        '. /etc/profile 2>/dev/null; [ -r "${HOME:-}/.profile" ] && . "${HOME:-}/.profile" 2>/dev/null; export PS1=\'\\u@\\h:\\w\\$ \'; export PROMPT_COMMAND=\'printf "\\033]7;file://%s\\007" "$PWD"\'; if [ -x /bin/bash ]; then exec /bin/bash --norc -i; elif [ -x "${SHELL:-/bin/sh}" ]; then exec "${SHELL:-/bin/sh}" -l; else exec /bin/sh -l; fi';
       // 降级说明经 printf 上屏（\033 八进制转义；文本避开单引号）——远端侧检测分支用
       // （noRemoteTmux 分支的说明走本地 socket 消息，不重复打印）。
       const fallbackShell =
@@ -613,6 +641,8 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
           ),
         );
       }
+      // OSC 7 半截序列的跨 chunk 尾巴（noteOsc7 用，见其注释）。
+      const osc7Tail = { s: '' };
       child = spawn('script', ['-q', '-f', '-e', '-c', sshCmd, '/dev/null'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         // 不注入 MYSANDBOX_WEB：远端没有容器内 mysandbox CLI，OSC 7677 链路不存在。
@@ -632,6 +662,7 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
 
       child.stdout?.on('data', (d: Buffer) => {
         if (socket.readyState === 1) socket.send(d);
+        noteOsc7(termId, d, osc7Tail);
       });
       child.stderr?.on('data', (d: Buffer) => {
         // ssh 的连接错误/host key 确认/密码提示多走 stderr：必须透传（同宿主终端）。

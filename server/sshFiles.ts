@@ -21,7 +21,7 @@ import type { FastifyInstance } from 'fastify';
 import { getSshTargets, type SshTarget } from './state.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
 import { TERMID_RE } from './terminal.js';
-import { SSH_NAME_RE, SSH_SOCKET, sshSessionName } from './sshTerminal.js';
+import { SSH_NAME_RE, SSH_SOCKET, sshOsc7Cwd, sshSessionName } from './sshTerminal.js';
 import { sshExec, sshFeed, sshSpawn, requireRemoteLinux } from './sshChannel.js';
 import {
   MAX_BYTES,
@@ -93,9 +93,12 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
     const cwd = await remotePaneCwd(t, termId);
     if (cwd) return { cwd };
-    // pane 探不到（降级直连 shell 无 tmux / 会话死了）：回退远端 $HOME——文件面板的
-    // 跟随轮询拿到落点才肯首拉列表（cwd 一直失败 path 一直是空串，面板永远空）。
-    // 降级 shell 无集成链路，跟随停在这里，可手动导航。
+    // tmux pane 探不到（降级直连 shell / 会话死了）：
+    // 1) 降级 shell 的 OSC 7 缓存（fallbackExec 的 PROMPT_COMMAND 每个提示符上报，
+    //    attach 中继缓存）——cd 跟随靠它；拿不到再退远端 $HOME 给面板一个首拉落点
+    //    （cwd 一直失败 path 一直是空串，面板永远空）。
+    const osc = sshOsc7Cwd.get(termId);
+    if (osc) return { cwd: osc };
     const r = await sshExec(t, ['sh', '-c', 'printf %s "$HOME"'], 8_000);
     const home = r.stdout.trim();
     if (r.exitCode === 0 && home.startsWith('/')) return { cwd: home };
