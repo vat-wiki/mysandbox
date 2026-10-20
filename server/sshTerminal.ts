@@ -20,6 +20,9 @@
 //     不挡连接：attach 命令用 `new-session -A` 兜底，在终端里交互应答（输密码）
 //     也能建出会话，只是那条路径来不及注入 tmux 设置（可接受降级，下连即修复——
 //     重建走标准链）。
+//   - 远端 tmux 不是硬前提：has-session 报 command not found（远端没装/装不了）时
+//     整个会话层降级为直连 shell（裸 ssh + pty，无远端命令）——终端照用，断开即
+//     结束，无持久会话/历史回填/cwd 继承/会话找回。装上 tmux 下连自动恢复完整语义。
 //
 // 注入面：host/user/port 只收无 shell 元字符的白名单字符集（见 SSH_HOST_RE），
 // 会话名经 TERMID_RE 校验，attach 命令串其余全为常量——script -c 单串无注入面。
@@ -409,8 +412,12 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       // 建会话 + 注设置（后台 best-effort）：密码认证/无 tmux/老版本等失败一律不挡
       // 连接——attach 用 new-session -A 兜底建（交互应答密码后可建出无设置的会话，
       // 见文件头降级说明）。-e 失败退回无 -e 重试（远端 tmux <3.2 不支持）。
-      const alive = (await sshRun(target, tmuxArgs(['has-session', '-t', shq(`${session}`)]), 10_000)).ok;
-      if (!alive) {
+      // 远端压根没装 tmux（has-session 的 stderr 报 command not found）→ 会话层整体
+      // 降级为直连 shell（裸 ssh + pty）：终端照用，断开即结束——对方机器装不了
+      // tmux 时 SSH 主机仍可用，只是没有持久会话/历史回填/cwd 继承这些 tmux 红利。
+      const aliveRun = await sshRun(target, tmuxArgs(['has-session', '-t', shq(`${session}`)]), 10_000);
+      const noRemoteTmux = !aliveRun.ok && !!aliveRun.err && /tmux/.test(aliveRun.err) && /not found|Unknown command|No such file/.test(aliveRun.err);
+      if (!aliveRun.ok && !noRemoteTmux) {
         let created = await sshRun(target, createChain(session, cols, rows, cwd, true), 20_000);
         if (!created.ok) {
           created = await sshRun(target, createChain(session, cols, rows, cwd, false), 20_000);
@@ -420,48 +427,50 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
         }
       }
 
-      // 历史回填（attach 前 capture，控制帧先发；与 hostTerminal 同款，前端写 scrollback）。
-      // -e 带色 / resume=1 走 history-delta 增量（物理行、含当前屏、只取 -2000），取舍见
-      // terminal.ts 同名注释。会话刚经 -A 兜底创建时无历史可回，失败静默。
-      try {
-        const delta = q.resume === '1';
-        const cap = await sshRun(
-          target,
-          tmuxArgs([
-            'capture-pane',
-            '-p',
-            '-e',
-            ...(delta
-              ? ['-t', shq(`${session}:`), '-S', '-2000']
-              : ['-J', '-t', shq(`${session}:`), '-S', '-10000', '-E', '-1']),
-          ]),
-          15_000,
-        );
-        const text = cap.stdout.trim();
-        if (cap.ok && text) {
-          socket.send(JSON.stringify({ type: delta ? 'history-delta' : 'history', text }));
+      if (!noRemoteTmux) {
+        // 历史回填（attach 前 capture，控制帧先发；与 hostTerminal 同款，前端写 scrollback）。
+        // -e 带色 / resume=1 走 history-delta 增量（物理行、含当前屏、只取 -2000），取舍见
+        // terminal.ts 同名注释。会话刚经 -A 兜底创建时无历史可回，失败静默。
+        try {
+          const delta = q.resume === '1';
+          const cap = await sshRun(
+            target,
+            tmuxArgs([
+              'capture-pane',
+              '-p',
+              '-e',
+              ...(delta
+                ? ['-t', shq(`${session}:`), '-S', '-2000']
+                : ['-J', '-t', shq(`${session}:`), '-S', '-10000', '-E', '-1']),
+            ]),
+            15_000,
+          );
+          const text = cap.stdout.trim();
+          if (cap.ok && text) {
+            socket.send(JSON.stringify({ type: delta ? 'history-delta' : 'history', text }));
+          }
+        } catch {
+          /* 无历史可回填 */
         }
-      } catch {
-        /* 无历史可回填 */
-      }
-      // tab 标题恢复（重连/刷新后 pane title 不随 attach 重发）。
-      try {
-        const t = await sshRun(
-          target,
-          tmuxArgs(['list-panes', '-t', shq(`${session}:`), '-F', shq('#{pane_active} #{pane_title}')]),
-          15_000,
-        );
-        const title = t.stdout
-          .split('\n')
-          .map((l) => l.trim())
-          .find((l) => l.startsWith('1 '))
-          ?.slice(2)
-          .trim() ?? '';
-        if (t.ok && title) {
-          socket.send(JSON.stringify({ type: 'title', text: title }));
+        // tab 标题恢复（重连/刷新后 pane title 不随 attach 重发）。
+        try {
+          const t = await sshRun(
+            target,
+            tmuxArgs(['list-panes', '-t', shq(`${session}:`), '-F', shq('#{pane_active} #{pane_title}')]),
+            15_000,
+          );
+          const title = t.stdout
+            .split('\n')
+            .map((l) => l.trim())
+            .find((l) => l.startsWith('1 '))
+            ?.slice(2)
+            .trim() ?? '';
+          if (t.ok && title) {
+            socket.send(JSON.stringify({ type: 'title', text: title }));
+          }
+        } catch {
+          /* 静默 */
         }
-      } catch {
-        /* 静默 */
       }
 
       // ---- 派生 script（包 ssh attach），提前挂监听（terminal.ts 的教训：不丢帧）----
@@ -538,7 +547,8 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
 
       // script 提供 PTY（同 hostTerminal：-f 防缓冲、SHELL 压 /bin/sh 防 zsh =word 展开）。
       // 命令串 = 常量 + 白名单字符集的目的地 + TERMID_RE 校验的会话名，无注入面。
-      // attach 用 new-session -A：会话在则 attach，不在则兜底创建（后台建失败的场景）。
+      // tmux 在：attach 用 new-session -A（会话在则 attach，不在则兜底创建）；
+      // tmux 不在（noRemoteTmux）：裸 ssh 起远端登录 shell——断开即结束，无持久会话。
       // 密码目标（sshAuthActive）加 sshpass -e 前缀自动应答——host key 首连确认仍走
       // 交互（sshpass 只拦 password 提示），密码错误时 ssh 重试几次后照常报 Permission
       // denied。SSHPASS 经 env 进 ssh，不出现在命令串里。
@@ -549,14 +559,18 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
         ...SSH_TTY_OPTS,
         ...(target.port ? ['-p', String(target.port)] : []),
         sshDest(target),
-        'tmux',
-        '-L',
-        SSH_SOCKET,
-        'new-session',
-        '-A',
-        '-s',
-        session,
+        ...(noRemoteTmux
+          ? [] // 裸登录 shell：ssh 无远端命令 + 强制 pty（-t 在 SSH_TTY_OPTS 里）
+          : ['tmux', '-L', SSH_SOCKET, 'new-session', '-A', '-s', session]),
       ].join(' ');
+      if (noRemoteTmux && socket.readyState === 1) {
+        socket.send(
+          Buffer.from(
+            '\x1b[33m>> 远端未安装 tmux：已降级为直连 shell——断开即结束、会话不保留。\x1b[0m\r\n' +
+              '\x1b[33m>> 能装的话建议装上（sudo apt install tmux），即恢复持久会话与现场恢复。\x1b[0m\r\n',
+          ),
+        );
+      }
       child = spawn('script', ['-q', '-f', '-e', '-c', sshCmd, '/dev/null'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         // 不注入 MYSANDBOX_WEB：远端没有容器内 mysandbox CLI，OSC 7677 链路不存在。
@@ -574,30 +588,11 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       child.stdout?.on('error', () => { /* noop */ });
       child.stderr?.on('error', () => { /* noop */ });
 
-      let tmuxHinted = false;
-      const tmuxMissingHint = (d: Buffer) => {
-        if (tmuxHinted) return;
-        // 远端没装 tmux：attach 命令直接失败，裸报错（"bash: tmux: command not found"）
-        // 难懂——给一句人话 + 安装指引（会话本体在远端 tmux，这是硬前提）。
-        if (/tmux.*command not found|command not found.*tmux/.test(d.toString())) {
-          tmuxHinted = true;
-          if (socket.readyState === 1) {
-            socket.send(
-              Buffer.from(
-                '\x1b[33m>> 远端未安装 tmux，无法建立持久会话。请在远端安装：\r\n' +
-                  '   Debian/Ubuntu: sudo apt install tmux    RHEL/CentOS: sudo yum install tmux\x1b[0m\r\n',
-              ),
-            );
-          }
-        }
-      };
       child.stdout?.on('data', (d: Buffer) => {
-        tmuxMissingHint(d);
         if (socket.readyState === 1) socket.send(d);
       });
       child.stderr?.on('data', (d: Buffer) => {
         // ssh 的连接错误/host key 确认/密码提示多走 stderr：必须透传（同宿主终端）。
-        tmuxMissingHint(d);
         if (socket.readyState === 1) socket.send(d);
       });
       child.on('exit', () => {
