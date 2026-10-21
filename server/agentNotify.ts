@@ -28,6 +28,7 @@ import { allTargets, homeOf, tomlSetTopLevel } from './aiconfig.js';
 import { getEngine, listManaged, subscribeEvents } from './engine/index.js';
 import { gatewayOf } from './network.js';
 import { log } from './logger.js';
+import { forgetPushed, pushAgentWaiting } from './push.js';
 
 // —— 种子脚本（容器与宿主同一份；writeIfChanged 自更新）——
 
@@ -231,6 +232,10 @@ function sweepTtl(now: number): void {
 function remember(key: string, agent: string, event: string, message: string | undefined, now: number): void {
   waiting.set(key, { agent, event, ...(message ? { message } : {}), at: now });
   agentSeen.set(key, { agent, lastAt: now });
+  // Web Push（server/push.ts）：waiting 落表即站外推（fire-and-forget，「在看」抑制
+  // 与同会话去重在那边判）。agent 会话跑在远程容器里、而看控制台的设备是手机时，
+  // 这是唯一能递到的通道。
+  void pushAgentWaiting(key, { agent, event, ...(message ? { message } : {}) });
 }
 
 const NOTIFY_AGENTS = new Set(['claude', 'codex', 'opencode', 'pi']);
@@ -296,6 +301,7 @@ export async function recordAgentNotify(cfg: Config, body: unknown): Promise<voi
 export function noteOutput(key: string, now: number): void {
   const w = waiting.get(key);
   if (w && now - w.at >= OUTPUT_GRACE_MS) waiting.delete(key);
+  forgetPushed(key); // agent 恢复干活：推送去重重置，新回合的完成要能再推
 }
 
 // 会话消失（activity 清理循环）时把两张表一起清，防容器消亡后残留。

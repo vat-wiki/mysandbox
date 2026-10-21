@@ -1978,6 +1978,31 @@ function activateGroupById(gId: string) {
   if (idx >= 0) onTabClick(idx)
 }
 
+// —— 推送通知点击深链（SW notificationclick，web/public/service-worker.js）——
+// 页面没开：SW 带 ?focusTerm=kind|cid|termId 打开控制台；已开：postMessage 同款语义。
+// 落点 = 组里任一叶子命中该会话 key（termSessionKey 同源）→ 激活该组（含隐藏组恢复）。
+function focusTermTarget(kind: 'host' | 'container', cid: string, termId: string): void {
+  const key = termSessionKey(kind, cid || undefined, termId)
+  for (const g of [...groups.value, ...hiddenGroups.value]) {
+    if (leafIds(g.root).some((t) => activityKeyOf(g, t) === key)) {
+      activateGroupById(g.id)
+      return
+    }
+  }
+}
+function handleFocusTermQuery(): void {
+  const v = new URLSearchParams(location.search).get('focusTerm')
+  if (!v) return
+  history.replaceState(null, '', location.pathname)
+  const [kind, cid, termId] = v.split('|')
+  if (termId) focusTermTarget(kind === 'host' ? 'host' : 'container', cid, termId)
+}
+function onFocusTermMessage(e: MessageEvent): void {
+  const d = e.data as { type?: string; focus?: { kind?: string; containerId?: string; termId?: string } } | null
+  if (!d || d.type !== 'msb-focus-term' || !d.focus?.termId) return
+  focusTermTarget(d.focus.kind === 'host' ? 'host' : 'container', d.focus.containerId ?? '', d.focus.termId)
+}
+
 // 会话页：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
 const showSessions = computed({
   get: () => route.name === 'term-sessions',
@@ -3091,6 +3116,9 @@ async function refreshActivity() {
 onMounted(() => {
   refresh()
   void refreshSshTargets()
+  // 推送通知点击深链（SW）：?focusTerm= 落组 + 已开窗口的 postMessage 通道。
+  handleFocusTermQuery()
+  window.addEventListener('message', onFocusTermMessage)
   // 容器/服务状态事件驱动（lxc-monitor / docker events 旁路转发，见 lib/events.ts）：
   // 启停即刷（防抖合并状态风暴），固定轮询只留 30s 对账兜底。
   disposeEvents = onSandboxEvent((e) => {
@@ -3125,6 +3153,7 @@ onUnmounted(() => {
   if (svcPortsTimer) clearInterval(svcPortsTimer)
   if (actTimer) clearInterval(actTimer)
   disposeEvents?.()
+  window.removeEventListener('message', onFocusTermMessage)
   document.removeEventListener('keydown', onEscCloseFile)
   document.removeEventListener('visibilitychange', onVisChange)
   document.removeEventListener('touchstart', edgeSwipeStart, { capture: true })

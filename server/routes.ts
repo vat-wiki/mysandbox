@@ -24,6 +24,7 @@ import { listSshSessions, killSshSession } from './sshTerminal.js';
 import { terminalActivity } from './activity.js';
 import { putTerminalClipboard } from './terminalClipboard.js';
 import { agentKeyOf, agentSeenOf, agentWaitingView } from './agentNotify.js';
+import { pushPublicKey, subscribePush, unsubscribePush, noteWatching } from './push.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
 import { syncSshConfig } from './sshConfigSync.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
@@ -225,6 +226,23 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     })),
     agentWaiting: agentWaitingView(),
   }));
+
+  // —— Web Push（站外推送，server/push.ts）：订阅登记 + 「在看」心跳 ——
+  // 均在全局鉴权 hook 内。推送发送不在路由——agentNotify 的 waiting 落表即推。
+  app.get('/api/push/key', async () => ({ key: pushPublicKey() }));
+  app.post('/api/push/subscribe', async (req) => {
+    subscribePush(req.body);
+    return { ok: true };
+  });
+  app.post('/api/push/unsubscribe', async (req) => {
+    const b = (req.body || {}) as Record<string, unknown>;
+    if (typeof b.endpoint === 'string') unsubscribePush(b.endpoint);
+    return { ok: true };
+  });
+  app.post('/api/push/watching', async () => {
+    noteWatching();
+    return { ok: true };
+  });
 
   app.get('/api/network/ips', async () => ipPoolView(cfg));
 

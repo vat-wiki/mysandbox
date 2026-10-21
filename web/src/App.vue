@@ -5,6 +5,7 @@ import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, sta
 import { gatePoll } from '@/lib/linkQuality'
 import { setEngineInfo } from '@/lib/caps'
 import { loadProxyConfig, proxyPrimary } from '@/lib/proxy'
+import { armWatchingHeartbeat } from '@/lib/pushNotify'
 import { isPhone } from '@/composables/useDevice'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
@@ -146,6 +147,10 @@ const popoutTarget = ref('')
 onMounted(() => {
   popoutTarget.value = new URLSearchParams(location.search).get('popout') ?? ''
   pendingOpen.value = parseOpenHash()
+  // Web Push「在看」心跳（lib/pushNotify）：页面可见期间向服务端报「用户在场」，
+  // 抑制 agent 等待事件的站外推送。无条件挂（与推送开关无关——本机没开推送，
+  // 本机在看也该抑制别的设备的推送）。
+  armWatchingHeartbeat()
   // token 在 localStorage 里直接进主界面的场景（TokenGate 只在无 token/校验失败时出现）
   // 也要补 cookie 会话与代理配置。
   if (token.value) afterAuth()

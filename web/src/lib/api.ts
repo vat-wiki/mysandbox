@@ -719,6 +719,14 @@ export const listTermActivity = () =>
     items: TermActivityView[]
     agentWaiting: AgentWaitingView[]
   }>
+
+// —— Web Push（站外推送，server/push.ts）：订阅登记 + 「在看」心跳 ——
+export const getPushPublicKey = () => api('/api/push/key') as Promise<{ key: string }>
+export const pushSubscribe = (sub: unknown) =>
+  api('/api/push/subscribe', { method: 'POST', body: JSON.stringify(sub) })
+export const pushUnsubscribe = (endpoint: string) =>
+  api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) })
+export const pushWatching = () => api('/api/push/watching', { method: 'POST' })
 // —— 基座（模板容器）——
 // 后端 BaseStatus（server/engine/types.ts）。
 export interface BaseStatus {

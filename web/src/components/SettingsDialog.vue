@@ -40,6 +40,7 @@ import {
   setQuietNotifyEnabled,
   type NotifyPermission,
 } from '@/lib/browserNotify'
+import { pushSupported, pushEnabled, enablePush, disablePush } from '@/lib/pushNotify'
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -88,6 +89,36 @@ const notifySummary = computed(() => {
   if (notifyPerm.value === 'denied') return '权限被拒绝'
   return notifyOn.value ? '已开启' : '关闭'
 })
+
+// —— Web Push（锁屏/页面未开的站外推送，lib/pushNotify）——
+const pushOk = pushSupported()
+const pushOn = ref(pushEnabled())
+const pushBusy = ref(false)
+
+async function togglePush(v: boolean) {
+  if (pushBusy.value) return
+  pushBusy.value = true
+  try {
+    if (!v) {
+      await disablePush()
+      pushOn.value = false
+      return
+    }
+    if (await enablePush()) {
+      pushOn.value = true
+    } else {
+      pushOn.value = false
+      toast.warning('推送开启失败', {
+        description: '通知权限被拒或浏览器不支持——推送需要 https / localhost 访问。',
+      })
+    }
+  } catch (e) {
+    pushOn.value = false
+    toast.error('推送开启失败', { description: e instanceof Error ? e.message : String(e) })
+  } finally {
+    pushBusy.value = false
+  }
+}
 
 const view = ref<TestlensView | null>(null)
 const loading = ref(false)
@@ -359,6 +390,26 @@ onMounted(load)
           </p>
           <p v-else-if="notifyPerm === 'default' && !notifyOn" class="text-xs text-muted-foreground">
             开启时会向浏览器申请通知权限。
+          </p>
+          <div class="my-1 border-t" />
+          <label class="flex cursor-pointer items-center gap-2.5 rounded-md px-1 py-1 hover:bg-accent/50">
+            <Checkbox
+              :model-value="pushOn"
+              :disabled="!pushOk || pushBusy"
+              @update:model-value="(v) => togglePush(v === true)"
+            />
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm">锁屏推送（Web Push）</span>
+              <span class="block text-xs text-muted-foreground">
+                经系统推送通道下发——页面没开 / 手机锁屏也能收到，点击直达对应终端
+              </span>
+            </span>
+          </label>
+          <p v-if="!pushOk" class="text-xs text-muted-foreground">
+            当前浏览器不支持 Web Push（需要 https 访问；iOS Safari 需先添加到主屏幕）。
+          </p>
+          <p v-else class="text-xs text-muted-foreground">
+            只推 agent 等输入的精准事件；任何一台设备的控制台正开着时都不推（琥珀标即可）。
           </p>
         </section>
       </div>
