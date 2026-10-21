@@ -25,6 +25,7 @@ import { SSH_NAME_RE, SSH_SOCKET, sshOsc7Cwd, sshSessionName } from './sshTermin
 import { sshExec, sshFeed, sshSpawn, requireRemoteLinux } from './sshChannel.js';
 import {
   MAX_BYTES,
+  MAX_BINARY_BYTES,
   LIST_SCRIPT,
   MTIME_SNIPPET,
   classifyContent,
@@ -195,11 +196,15 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
     async (req): Promise<{ ok: true; mtime?: number }> => {
       const t = await requireTarget((req.params as { name: string }).name);
       await requireRemoteLinux(t);
-      const body = (req.body as { path?: unknown; content?: unknown; baseMtime?: unknown }) || {};
+      const body =
+        (req.body as { path?: unknown; content?: unknown; encoding?: unknown; baseMtime?: unknown }) || {};
       const path = cleanPath(body.path);
       if (typeof body.content !== 'string') throw badRequest('content (string) required');
       const content = body.content;
-      if (content.length > MAX_BYTES)
+      // encoding:'base64' = 二进制写通道（终端图片粘贴，语义同 files.ts）：解码后按字节算上限。
+      const isB64 = body.encoding === 'base64';
+      const payload = isB64 ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf8');
+      if (payload.length > (isB64 ? MAX_BINARY_BYTES : MAX_BYTES))
         throw new HttpError(413, `content too large (limit ${MAX_BYTES} bytes)`, 'too_large');
       const hasBaseMtime = typeof body.baseMtime === 'number' && body.baseMtime > 0;
       const baseMtime = hasBaseMtime ? (body.baseMtime as number) : undefined;
@@ -229,7 +234,7 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
           'd="${1%/*}"; [ -n "$d" ] || d=/; mkdir -p "$d" && cat > "$1"',
           'sh', path,
         ],
-        Buffer.from(content, 'utf8'),
+        payload,
         30_000,
       );
       if (wr.exitCode !== 0) {

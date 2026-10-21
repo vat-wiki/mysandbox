@@ -16,6 +16,7 @@ import {
   cleanPath,
   parentOf,
   MAX_BYTES,
+  MAX_BINARY_BYTES,
   classifyContent,
   contentDisposition,
   streamProbe,
@@ -243,11 +244,15 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     '/api/host-terminal/file',
     { bodyLimit: 16 * 1024 * 1024 },
     async (req): Promise<{ ok: true; mtime?: number }> => {
-      const body = (req.body as { path?: unknown; content?: unknown; baseMtime?: unknown }) || {};
+      const body =
+        (req.body as { path?: unknown; content?: unknown; encoding?: unknown; baseMtime?: unknown }) || {};
       const path = cleanPath(body.path);
       if (typeof body.content !== 'string') throw badRequest('content (string) required');
       const content = body.content;
-      if (content.length > MAX_BYTES) {
+      // encoding:'base64' = 二进制写通道（终端图片粘贴，语义同 files.ts）：解码后按字节算上限。
+      const isB64 = body.encoding === 'base64';
+      const payload = isB64 ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf8');
+      if (payload.length > (isB64 ? MAX_BINARY_BYTES : MAX_BYTES)) {
         throw new HttpError(413, `content too large (limit ${MAX_BYTES} bytes)`, 'too_large');
       }
       const hasBaseMtime = typeof body.baseMtime === 'number' && body.baseMtime > 0;
@@ -272,7 +277,7 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
 
       try {
         await mkdir(dirname(path), { recursive: true });
-        await writeFile(path, content, 'utf8');
+        await writeFile(path, payload);
       } catch (e) {
         throw mapErr(e, 'write failed');
       }

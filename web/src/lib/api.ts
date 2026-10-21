@@ -1065,6 +1065,13 @@ export const writeFile = (id: string, path: string, content: string, baseMtime?:
     method: 'PUT',
     body: JSON.stringify({ path, content, baseMtime }),
   }) as Promise<{ ok: true; mtime?: number }>
+// 二进制写（encoding:'base64'）：终端图片粘贴用——图片二进制过不了 JSON 字符串，
+// 以 base64 文本走同一端点，服务端解码落盘（上限 12MB 解码后字节，见 server/files.ts）。
+export const writeFileBase64 = (id: string, path: string, base64: string) =>
+  api(`${filesBase(id)}/file`, {
+    method: 'PUT',
+    body: JSON.stringify({ path, content: base64, encoding: 'base64' }),
+  }) as Promise<{ ok: true; mtime?: number }>
 export const getTermCwd = (id: string, termId: string) =>
   api(`${filesBase(id)}/cwd?termId=${encodeURIComponent(termId)}`) as Promise<{ cwd: string }>
 // 终端路径链接解析（Ctrl+点击打开）：raw token（可相对/带 ~）→ 权威绝对路径 + 类型。

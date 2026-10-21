@@ -41,6 +41,10 @@ import {
 // 读/写一致的内容上限：超限返回 413（PUT 的路由级 bodyLimit 放得更宽，因 JSON 转义最坏
 // 膨胀 ~6x：2MB 内容 -> ~12MB body，留余量到 16MB）。hostFiles.ts 复用同一上限。
 export const MAX_BYTES = 2 * 1024 * 1024;
+// 二进制写通道（PUT /file 带 encoding:'base64'，web 终端图片粘贴用）的解码后上限：
+// 截图 PNG 常超文本上限；受路由 bodyLimit 16MB 约束（base64 膨胀 4/3，12MB 解码上限
+// 对应 ~16MB body）。四侧文件端点（files/hostFiles/serviceFiles/sshFiles）共用。
+export const MAX_BINARY_BYTES = 12 * 1024 * 1024;
 
 const execFileAsync = promisify(execFile);
 
@@ -452,11 +456,16 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     { bodyLimit: 16 * 1024 * 1024 },
     async (req): Promise<{ ok: true; mtime?: number }> => {
       const r = await resolveRunning(cfg, (req.params as { id: string }).id);
-      const body = (req.body as { path?: unknown; content?: unknown; baseMtime?: unknown }) || {};
+      const body =
+        (req.body as { path?: unknown; content?: unknown; encoding?: unknown; baseMtime?: unknown }) || {};
       const path = cleanPath(body.path);
       if (typeof body.content !== 'string') throw badRequest('content (string) required');
       const content = body.content;
-      if (content.length > MAX_BYTES)
+      // encoding:'base64' = 二进制写通道（终端图片粘贴）：content 是 base64 文本，解码落盘
+      // ——图片二进制过不了 JSON 字符串（UTF-8 转义损字节）。上限按解码后字节数算。
+      const isB64 = body.encoding === 'base64';
+      const payload = isB64 ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf8');
+      if (payload.length > (isB64 ? MAX_BINARY_BYTES : MAX_BYTES))
         throw new HttpError(413, `content too large (limit ${MAX_BYTES} bytes)`, 'too_large');
       const hasBaseMtime = typeof body.baseMtime === 'number' && body.baseMtime > 0;
       const baseMtime = hasBaseMtime ? (body.baseMtime as number) : undefined;
@@ -499,7 +508,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
           Tty: false,
           timeoutMs: 30_000,
         },
-        Buffer.from(content, 'utf8'),
+        payload,
       );
       if (wr.exitCode !== 0) {
         // 典型：目标归 root / 目录只读。dev(1000) 视角，不提权（沙箱语义）。

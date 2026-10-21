@@ -8,7 +8,7 @@ import { CaseSensitive, ChevronDown, ChevronUp, Regex, WholeWord, X } from 'luci
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { getToken } from '@/lib/api'
+import { getToken, writeFileBase64, resolveTermPath, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { noteTermOutput } from '@/lib/terminalActivity'
 import { isPhone } from '@/composables/useDevice'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
@@ -467,6 +467,25 @@ async function copyText(s: string): Promise<boolean> {
 async function pasteClipboard() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
   if (navigator.clipboard) {
+    // 图片优先：secure context 下 Ctrl+V 在 keydown 被 preventDefault（见
+    // attachCustomKeyEventHandler 注释），原生 paste 事件不再派发——这里唯一能拿到图片的
+    // 通道是 clipboard.read()（Chromium/Safari 支持）。Firefox 无此 API 且 readText 对
+    // 图片剪贴板返回空串 → 落兜底弹框（Firefox + https 的图片粘贴不支持，浏览器能力边界）。
+    if (navigator.clipboard.read) {
+      try {
+        const files: File[] = []
+        for (const item of await navigator.clipboard.read()) {
+          const t = item.types.find((t) => t.startsWith('image/'))
+          if (t) files.push(new File([await item.getType(t)], 'clipboard', { type: t }))
+        }
+        if (files.length) {
+          await pasteImageFiles(files)
+          return
+        }
+      } catch {
+        /* read() 被拒（权限/失焦）：落文本路径 */
+      }
+    }
     try {
       const t = await navigator.clipboard.readText()
       if (t) ws.send(new TextEncoder().encode(t)) // 走和 onData 同一条 stdin 通道
@@ -477,6 +496,72 @@ async function pasteClipboard() {
   }
   pasteFallback.value = true // clipboard 不可用/被拒：弹兜底输入框（textarea 原生粘贴永远可用）
   nextTick(() => fallbackTa.value?.focus())
+}
+
+// —— 图片粘贴（Claude Code 等 AI CLI 的图片输入）——
+// CLI 在 Linux 读剪贴板图片走 xclip/wl-paste，无头容器里不存在；浏览器剪贴板里的图片
+// 二进制也进不了 PTY 字节流。改为「上传落盘 + 粘路径」：图片经文件端点写到目标 home 的
+// .claude-pastes/，再把绝对路径发进终端——CLI 对图片路径是一等公民（拖拽同款），消息
+// 发出即读图。文件端点四侧（容器/宿主/服务/SSH）同形，fileTargetId 按哨兵分发。
+const fileTargetId = computed(() =>
+  props.host
+    ? HOST_ID
+    : props.ssh
+      ? sshGroupId(props.ssh)
+      : props.service
+        ? serviceFileId(props.service)
+        : props.id ?? '',
+)
+function fileToBase64(f: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => {
+      const s = String(r.result)
+      resolve(s.slice(s.indexOf(',') + 1))
+    }
+    r.onerror = () => reject(r.error ?? new Error('read failed'))
+    r.readAsDataURL(f)
+  })
+}
+async function pasteImageFiles(files: File[]) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    toast.error('终端未连接，图片粘贴失败')
+    return
+  }
+  const target = fileTargetId.value
+  if (!target) {
+    toast.error('无法确定粘贴目标，图片粘贴失败')
+    return
+  }
+  try {
+    // home 用 resolve('~') 权威解析（容器 /home/dev、宿主/服务/SSH 各自的 HOME），
+    // 不硬编码——resolve 要求会话在，粘贴场景必然满足。
+    const home = (await resolveTermPath(target, props.termId, '~')).path
+    const extOf = (t: string) =>
+      ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' })[t] ?? 'png'
+    const paths: string[] = []
+    for (const f of files) {
+      const name = `paste-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${extOf(f.type)}`
+      const path = `${home}/.claude-pastes/${name}`
+      await writeFileBase64(target, path, await fileToBase64(f))
+      paths.push(path)
+    }
+    sendRaw(paths.join(' '))
+    toast.success(paths.length === 1 ? `图片已粘贴：${paths[0]}` : `已粘贴 ${paths.length} 张图片到 ${home}/.claude-pastes/`)
+  } catch (e) {
+    toast.error(`图片粘贴失败：${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+// 原生 paste 事件入口（非 https 的 Ctrl+V / 移动端长按）：clipboardData 免权限自带 files。
+// 必须 capture + 命中图片时 stopPropagation——xterm 的 paste handler 注册在 textarea 上且
+// 首行就 stopPropagation（handlePasteEvent），普通冒泡监听永远轮不到我们；反向地，我们不
+// 压掉它的话它会对空 text 再粘一遍（无害但不干净）。纯文本粘贴不拦，xterm 内置通道照走。
+function onTermPaste(e: ClipboardEvent) {
+  const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
+  if (!files.length) return
+  e.preventDefault()
+  e.stopPropagation()
+  void pasteImageFiles(files)
 }
 // 右键：有选区复制（并清选区）、无选区粘贴。.prevent 阻止浏览器原生右键菜单。
 function onContextMenu() {
@@ -522,6 +607,15 @@ function fallbackSend(text: string) {
   pasteFallback.value = false
 }
 function onFallbackPaste(e: ClipboardEvent) {
+  // 图片分支：兜底弹框只在剪贴板 API 不可用时出现，但 paste 事件的 files 依然可用
+  // （Firefox + https 粘图片走这里——readText 对图片剪贴板是空串才落的弹框）。
+  const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
+  if (imgs.length) {
+    e.preventDefault()
+    fallbackSend('')
+    void pasteImageFiles(imgs)
+    return
+  }
   const t = e.clipboardData?.getData('text')
   if (!t) return
   e.preventDefault()
@@ -1259,6 +1353,8 @@ onMounted(async () => {
   // 重建实例的 mount focus 会多出一次老 pane 落焦上抛——ContainerList 的去重窗口按
   // 「分屏新 pane（cwdSourceOf 命中）优先」消解，见 onPaneFocus。
   el.value.addEventListener('focusin', onFocusIn)
+  // 图片粘贴入口（capture，原因见 onTermPaste 注释）。
+  el.value.addEventListener('paste', onTermPaste, { capture: true })
   if (props.active) term.focus()
 
   // 软键盘自适应仅手机启用（桌面 visualViewport 变化无意义，少挂监听）。
@@ -1311,6 +1407,7 @@ onBeforeUnmount(() => {
   vvCleanup?.()
   resizeObs?.disconnect()
   el.value?.removeEventListener('focusin', onFocusIn)
+  el.value?.removeEventListener('paste', onTermPaste, { capture: true })
   try {
     ws?.close()
   } catch {
