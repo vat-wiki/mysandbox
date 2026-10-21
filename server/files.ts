@@ -856,6 +856,42 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     return { cwd };
   });
 
+  // —— 前台命令 + 剪贴板桥可用性（web 终端图片粘贴的路由判据，Terminal.vue）——
+  // 前端 Ctrl+V 读到图片后要二选一：转发 ^V 给前台 CLI（claude 等自己调 xclip shim
+  // 走原生附加）或直接路径粘贴（普通 shell 收 ^V 会变成 quoted-insert，白吃一个键）。
+  // pane_current_command = tmux 眼里的前台进程名，是「这是不是 shell」的权威信号；
+  // bridge = shim 是否已在（老容器没种子时前端自动落路径粘贴）。2.5s TTL 缓存同 /cwd
+  // （图片粘贴是低频操作，缓存只影响连续粘贴的响应速度）。
+  app.get('/api/containers/:id/fg', async (req): Promise<{ command: string; bridge: boolean }> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const termId = q.termId || '';
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    return withPollCache(`fg:c:${r.id}:${termId}`, 2_500, async () => {
+      const res = await execRun(cfg, r.id, {
+        Cmd: [
+          'sh', '-c',
+          // 一次 exec 双探测：tmux 前台命令 + shim 存在性（查固定路径，不吃 PATH——
+          // execRun 的 PATH 与用户交互 shell 不同；CLI 实际调用发生在用户 shell 里，
+          // 那里 ~/.local/bin 必在 PATH 首位，见 container-cli.ts 文件头）。
+          [
+            'tmux list-panes -t "$1" -F "#{pane_active} #{pane_current_command}" 2>/dev/null | sed -n "s/^1 //p"',
+            '[ -x "$HOME/.local/bin/xclip" ] && echo __BRIDGE__',
+          ].join('\n'),
+          'sh', `=${sessionName(r.id, termId)}`,
+        ],
+        User: '1000:1000',
+        Tty: false,
+        timeoutMs: 5_000,
+      });
+      if (res.exitCode !== 0) throw notFound('terminal session not found');
+      const lines = res.stdout.split('\n');
+      const cmd = (lines.find((l) => l && !l.startsWith('__BRIDGE__')) ?? '').trim();
+      if (!cmd) throw notFound('terminal session not found');
+      return { command: cmd, bridge: res.stdout.includes('__BRIDGE__') };
+    });
+  });
+
   // —— 终端路径链接解析（Ctrl+点击打开）——
   // 前端 tokenizer 只认得出「像路径的 token」（可相对、可带字面 ~），权威解析在这：
   // 单次 exec 拿 pane cwd（同 /cwd 路由，必须 list-panes 不能 display-message）+ 展开 +

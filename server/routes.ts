@@ -22,6 +22,7 @@ import { listContainerSessions, killContainerSession, TERMID_RE } from './termin
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
 import { listSshSessions, killSshSession } from './sshTerminal.js';
 import { terminalActivity } from './activity.js';
+import { putTerminalClipboard } from './terminalClipboard.js';
 import { agentKeyOf, agentSeenOf, agentWaitingView } from './agentNotify.js';
 import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js';
 import { syncSshConfig } from './sshConfigSync.js';
@@ -226,6 +227,35 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   }));
 
   app.get('/api/network/ips', async () => ipPoolView(cfg));
+
+  // —— web 终端剪贴板桥（暂存区在 terminalClipboard.ts）——
+  // 前端 Ctrl+V 手势里读浏览器剪贴板推上来；容器内 xclip/wl-paste shim 经 peer
+  // GET /clipboard 取走。bodyLimit 对齐文件端点（图片 base64 ~16MB）。
+  app.post(
+    '/api/terminal-clipboard',
+    { bodyLimit: 16 * 1024 * 1024 },
+    async (req) => {
+      const body = (req.body as { image?: unknown; text?: unknown }) || {};
+      if (body.image !== undefined) {
+        const img = body.image as { mime?: unknown; b64?: unknown };
+        if (typeof img.b64 !== 'string') throw badRequest('image.b64 (string) required');
+        if (img.mime !== 'image/png') throw badRequest('image.mime must be image/png（前端统一转 PNG）');
+      }
+      if (body.text !== undefined && typeof body.text !== 'string') {
+        throw badRequest('text must be string');
+      }
+      if (body.image === undefined && body.text === undefined) {
+        throw badRequest('image or text required');
+      }
+      putTerminalClipboard({
+        ...(body.image !== undefined
+          ? { image: { mime: 'image/png', b64: (body.image as { b64: string }).b64 } }
+          : {}),
+        ...(body.text !== undefined ? { text: body.text } : {}),
+      });
+      return { ok: true };
+    },
+  );
 
   // —— 新建容器 ——
   // SSE 流式：克隆/解包 + 启动分钟级（前端 api() 的 10s 超时撑不住），进度逐条推。

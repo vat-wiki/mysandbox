@@ -35,6 +35,7 @@ import { listManaged, inspectContainer, execRun } from './engine/index.js';
 import { findServiceTarget } from './serviceMeta.js';
 import { listServices } from './services.js';
 import { recordAgentNotify } from './agentNotify.js';
+import { getTerminalClipboard } from './terminalClipboard.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -273,6 +274,17 @@ async function handle(cfg: Config, req: IncomingMessage, res: ServerResponse): P
     sendJson(res, 200, await listTargets(cfg));
     return;
   }
+  if (req.method === 'GET' && path === '/clipboard') {
+    // web 终端剪贴板桥的容器侧出口（clipShim.ts 的 xclip/wl-paste shim 来取）。
+    // 空/过期回 404——shim 按「剪贴板没图/没文本」处理，CLI 自己走降级链。
+    const payload = getTerminalClipboard();
+    if (!payload) {
+      sendJson(res, 404, { error: 'clipboard empty' });
+      return;
+    }
+    sendJson(res, 200, payload);
+    return;
+  }
   if (req.method === 'POST' && path === '/exec') {
     let parsed: PeerExecRequest;
     try {
@@ -304,7 +316,7 @@ async function handle(cfg: Config, req: IncomingMessage, res: ServerResponse): P
     sendJson(res, 200, { ok: true });
     return;
   }
-  sendJson(res, 404, { error: 'not found（routes: GET /targets, POST /exec, POST /notify）' });
+  sendJson(res, 404, { error: 'not found（routes: GET /targets, GET /clipboard, POST /exec, POST /notify）' });
 }
 
 // 每次尝试新建一个 server：listen 失败（EADDRNOTAVAIL 等）后复用同一实例再 listen 的
