@@ -341,13 +341,18 @@ const ctSummary = computed(() => {
   return `${run} 运行中 · ${items.value.length - run} 已停止`
 })
 
-// —— 收起态 hover 子列表 ——
-// rail 只保留三个分组入口：悬停展开对应对象列表，点击弹动作菜单（与展开态卡片同
-// 一份，终端收在首项）。悬停与浮层之间不留缝，移入浮层不闪退；菜单开着时不收浮层
-// （浮层卸载会连菜单一起拆掉），菜单关闭时再收（ContextMenu 的 close-auto-focus）。
+// —— 收起态子列表（悬停预览 + 点击钉住）——
+// rail 只保留三个分组入口：悬停即预览对象列表；点击分区图标把列表钉住（不悬停也
+// 开着，再点同一图标取消）——收起态与展开态同一套语言「点击出列表、列表项点击出
+// 菜单」，展开完整侧栏走底部展开键与 logo（点图标展开侧栏的旧行为已废：一次点击
+// 从快捷列表变成整个布局翻面，太重）。悬停优先于钉住（悬停走了回落到钉住的那区）；
+// 悬停与浮层之间不留缝，移入浮层不闪退；菜单开着时不收浮层（浮层卸载会连菜单一起
+// 拆掉），菜单关闭时再收（ContextMenu 的 close-auto-focus）。
 type RailSection = 'ct' | 'svc' | 'term'
 const railHover = ref<RailSection | null>(null)
+const railPinned = ref<RailSection | null>(null)
 const railMenuOpen = ref(false)
+const railActive = computed<RailSection | null>(() => railHover.value ?? railPinned.value)
 function railSectionEnter(kind: RailSection) {
   railHover.value = kind
 }
@@ -355,8 +360,20 @@ function railSectionLeave() {
   if (railMenuOpen.value) return
   railHover.value = null
 }
+function railPinToggle(kind: RailSection) {
+  railPinned.value = railPinned.value === kind ? null : kind
+}
 function closeRailSection() {
   railHover.value = null
+  railPinned.value = null
+}
+// 钉住后点 rail 分区之外收起（点在分区/浮层内不收；动作菜单门户在分区外，其菜单
+// 开着时 railMenuOpen 守卫先挡——菜单 item 的 pointerdown 落在关闭逻辑之前）。
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', (e) => {
+    if (!railPinned.value || railMenuOpen.value) return
+    if (!(e.target as HTMLElement | null)?.closest?.('[data-rail-section]')) railPinned.value = null
+  })
 }
 
 // —— 卡片拖拽排序（系统容器/应用容器/SSH 主机，桌面 only）——
@@ -582,6 +599,8 @@ function drawerTouchEndHandler() {
 const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
 watch(collapsed, (v) => {
   railHover.value = null
+  railPinned.value = null
+  railMenuOpen.value = false
   try {
     localStorage.setItem('mysandbox:sidebar-collapsed', v ? '1' : '0')
   } catch {
@@ -3009,8 +3028,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @touchend="drawerTouchEndHandler"
       @touchcancel="drawerTouchEndHandler"
     >
-      <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：分组导航 + hover 子列表。
-            rail 保持极窄，具体对象列表浮到主区一侧；手机抽屉仍走完整列表形态。 -->
+      <!-- 收起态（窄边 rail，仅桌面；手机抽屉忽略 collapsed）：分组导航 + 悬停预览/
+            点击钉住子列表。rail 保持极窄，具体对象列表浮到主区一侧；手机抽屉仍走
+            完整列表形态。 -->
       <template v-if="railMode">
         <div class="flex h-10 shrink-0 items-center justify-center border-b border-border">
           <button
@@ -3032,18 +3052,18 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <span class="block size-2 rounded-full" :class="err ? 'bg-destructive' : 'bg-amber-500 animate-pulse'" />
         </button>
         <div class="flex min-h-0 flex-1 flex-col items-center gap-1 py-2">
-          <div class="relative w-full" @mouseenter="railSectionEnter('ct')" @mouseleave="railSectionLeave()">
+          <div class="relative w-full" data-rail-section @mouseenter="railSectionEnter('ct')" @mouseleave="railSectionLeave()">
             <button
               type="button"
               class="flex size-8 w-full items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
-              :class="railHover === 'ct' ? 'bg-accent/40' : ''"
-              title="系统容器 · 悬停查看列表"
-              @click="collapsed = false"
+              :class="railActive === 'ct' ? 'bg-accent/40' : ''"
+              title="系统容器 · 悬停查看 · 点击钉住"
+              @click="railPinToggle('ct')"
             >
               <img src="/lxc.svg" alt="" class="size-4" />
             </button>
             <div
-              v-if="railHover === 'ct'"
+              v-if="railActive === 'ct'"
               class="absolute left-full top-0 z-50 ml-1 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl"
             >
               <div class="mb-1 flex items-center gap-2 px-1">
@@ -3103,18 +3123,18 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </div>
             </div>
           </div>
-          <div class="relative w-full" @mouseenter="railSectionEnter('svc')" @mouseleave="railSectionLeave()">
+          <div class="relative w-full" data-rail-section @mouseenter="railSectionEnter('svc')" @mouseleave="railSectionLeave()">
             <button
               type="button"
               class="flex size-8 w-full items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
-              :class="railHover === 'svc' ? 'bg-accent/40' : ''"
-              :title="`应用容器 · 悬停查看列表（${svcSummary}）`"
-              @click="collapsed = false"
+              :class="railActive === 'svc' ? 'bg-accent/40' : ''"
+              :title="`应用容器 · 悬停查看 · 点击钉住（${svcSummary}）`"
+              @click="railPinToggle('svc')"
             >
               <img src="/docker.svg" alt="" class="size-4" />
             </button>
             <div
-              v-if="railHover === 'svc'"
+              v-if="railActive === 'svc'"
               class="absolute left-full top-0 z-50 ml-1 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl"
             >
               <div class="mb-1 flex items-center gap-2 px-1">
@@ -3161,18 +3181,18 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </div>
             </div>
           </div>
-          <div class="relative w-full" @mouseenter="railSectionEnter('term')" @mouseleave="railSectionLeave()">
+          <div class="relative w-full" data-rail-section @mouseenter="railSectionEnter('term')" @mouseleave="railSectionLeave()">
             <button
               type="button"
               class="flex size-8 w-full items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
-              :class="railHover === 'term' ? 'bg-accent/40' : ''"
-              title="终端 · 悬停查看列表"
-              @click="collapsed = false"
+              :class="railActive === 'term' ? 'bg-accent/40' : ''"
+              title="终端 · 悬停查看 · 点击钉住"
+              @click="railPinToggle('term')"
             >
               <TerminalIcon class="size-4" />
             </button>
             <div
-              v-if="railHover === 'term'"
+              v-if="railActive === 'term'"
               class="absolute left-full top-0 z-50 ml-1 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl"
             >
               <div class="mb-1 flex items-center gap-2 px-1">
