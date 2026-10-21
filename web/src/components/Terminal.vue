@@ -1420,8 +1420,9 @@ onBeforeUnmount(() => {
          快捷短语（一键文本+回车）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
-         参与分页。桌面不渲染。 -->
-    <div v-if="isPhone" class="shrink-0 select-none overflow-hidden border-t border-zinc-800 pt-1 md:hidden" @touchstart="tbTouchStart" @touchend="tbTouchEnd">
+         参与分页。桌面不渲染。随软键盘显隐（kbPad>0 = 键盘弹着）——平时收起不占
+         终端高度，聚焦输入时才跟着键盘一起出来。 -->
+    <div v-if="isPhone && kbPad > 0" class="shrink-0 select-none overflow-hidden border-t border-zinc-800 pt-1 md:hidden" @touchstart="tbTouchStart" @touchend="tbTouchEnd">
       <!-- 分页轨道：每页固定 2 行 × 7 列，横向轻扫翻页（手势见脚本 tbTouchStart/End） -->
       <div
         class="flex transition-transform duration-200 ease-out"

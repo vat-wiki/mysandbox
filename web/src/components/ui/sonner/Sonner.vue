@@ -18,12 +18,23 @@ import 'vue-sonner/style.css'
 </template>
 
 <!-- 长描述（报错截断残留的长 URL/路径）撑破气泡的兜底：允许任意断行 + 限高滚动。
-     vue-sonner 自带样式对 description 是 pre-line，断不了无空格长 token。 -->
+     vue-sonner 自带样式对 description 是 pre-line，断不了无空格长 token。
+     气泡本身是固定宽（--width 356px），手机（<390px 视口）右缘出界——钳到屏宽减边距。 -->
 <style>
 [data-sonner-toast] [data-description] {
   white-space: normal;
   overflow-wrap: anywhere;
   max-height: 7rem;
   overflow-y: auto;
+}
+@media (max-width: 640px) {
+  [data-sonner-toaster] {
+    width: calc(100vw - 2rem) !important;
+    left: 1rem !important;
+    right: auto !important;
+  }
+  [data-sonner-toast] {
+    width: 100% !important;
+  }
 }
 </style>

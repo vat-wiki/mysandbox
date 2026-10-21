@@ -115,7 +115,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -126,6 +126,7 @@ import SshTargetsDialog from '@/components/SshTargetsDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
+import MobileFileSheet from '@/components/MobileFileSheet.vue'
 import TermLayoutNode from '@/components/TermLayoutNode.vue'
 import FilePanel from '@/components/FilePanel.vue'
 import {
@@ -992,6 +993,7 @@ function onPaneFocus(group: TermGroup, termId: string) {
 function onPaneEnter(group: TermGroup, termId: string) {
   if (group.id !== activeGroup.value?.id || termId !== fileTermId.value) return
   filePanelRef.value?.nudgeCwd()
+  sheetPanelRef.value?.nudgeCwd() // 手机 sheet 面板在场时同样吃回车 nudge
 }
 // OSC 7（shell cwd 上报）→ 文件面板直达：zsh precmd 在出提示符时上报 cwd，cd 生效即
 // 到达——免 getTermCwd 一次 exec，事件驱动零轮询。同样只认「active 组且正被跟随的
@@ -999,6 +1001,7 @@ function onPaneEnter(group: TermGroup, termId: string) {
 function onPaneCwd(group: TermGroup, termId: string, path: string) {
   if (group.id !== activeGroup.value?.id || termId !== fileTermId.value) return
   filePanelRef.value?.acceptCwd(path)
+  sheetPanelRef.value?.acceptCwd(path) // 手机 sheet 面板同源跟随
 }
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // —— 文件面板浏览模式（下钻/展开）——
@@ -1104,7 +1107,7 @@ function loadMainView(): 'file' | 'terminal' | 'ai' {
 }
 const mainView = ref<'terminal' | 'ai' | 'file'>(loadMainView())
 const mobileNavTarget = computed<MobileNavTarget>(() => {
-  if (showFiles.value) return 'files'
+  if (showFiles.value || fileSheetOpen.value) return 'files'
   if (mainView.value === 'ai') return 'ai'
   if (mainView.value === 'file') return 'files'
   return 'terminal'
@@ -1118,6 +1121,7 @@ function navigateMobileNav(target: MobileNavTarget) {
   if (target === 'terminal') {
     const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
     showFiles.value = false
+    fileSheetOpen.value = false
     if (aiOpen.value) closeAi()
     mainView.value = 'terminal'
     // 激活态再点 = 弹终端切换 sheet（iOS Safari 标签页同款「再点已激活页签出总览」）——
@@ -1127,7 +1131,14 @@ function navigateMobileNav(target: MobileNavTarget) {
   }
   if (target === 'ai') {
     showFiles.value = false
+    fileSheetOpen.value = false
     openAi()
+    return
+  }
+  // 手机「文件」= 半屏文件 sheet 开/收（叠在终端页上，上半终端继续活着）；全屏 /files
+  // 页保留给深链（showFiles 时 sheet 已被 watch 收掉，走下面原逻辑关页）。
+  if (isPhone.value && !showFiles.value) {
+    fileSheetOpen.value = !fileSheetOpen.value
     return
   }
   if (showFiles.value) {
@@ -1188,6 +1199,78 @@ function openFile(cId: string, cName: string, path: string, opts?: { diff?: { he
 function onFileTabClick(i: number) {
   activeEditorIdx.value = i
   mainView.value = 'file'
+}
+// —— 桌面编辑器+终端同屏分栏 ——
+// 旧语义 mainView 三值互斥换显（点文件 tab 终端整个消失）在「边看文件边盯终端输出」
+// 时只能来回切。分栏：mainView='file' 时编辑器不再独占——左编辑器、右终端（终端层
+// 还是同一棵 TermLayoutNode 树常驻 DOM，只是变窄，不卸载不重连）；「专注」一键收起
+// 终端回到换显语义。比例拖动按像素算、换算成百分比持久化（宽度跟随窗口）；专注态同
+// 样持久化。手机不吃这套（走下面的半屏 sheet），popout 照常受益。
+const EDITOR_SPLIT_PCT_KEY = 'mysandbox:editor-split-pct'
+const EDITOR_FOCUS_KEY = 'mysandbox:editor-focus'
+const editorSplitPct = ref(loadNum(EDITOR_SPLIT_PCT_KEY, 62))
+const editorFocused = ref(loadBool(EDITOR_FOCUS_KEY))
+watch(editorFocused, (v) => {
+  try {
+    localStorage.setItem(EDITOR_FOCUS_KEY, v ? '1' : '0')
+  } catch {
+    /* localStorage 不可用就只留内存态 */
+  }
+})
+// 分栏可见 = 编辑器主区且有 tab、未专注、桌面。终端层 v-show 与编辑器宽度都吃它。
+const showEditorSplit = computed(
+  () => mainView.value === 'file' && editorTabs.value.length > 0 && !editorFocused.value && !isPhone.value,
+)
+let editorSplitStartW = 0
+let editorSplitAvailW = 0
+function onEditorSplitDragStart(parentSize: number) {
+  editorSplitStartW = (editorSplitPct.value / 100) * parentSize
+  editorSplitAvailW = parentSize
+}
+function onEditorSplitDrag(dx: number) {
+  // 编辑器在左：向右拖（正 dx）变宽；两侧各留 240px 底线，谁也别把谁挤没了
+  const w = Math.min(Math.max(editorSplitStartW + dx, 240), editorSplitAvailW - 240)
+  editorSplitPct.value = Math.round((w / editorSplitAvailW) * 100)
+}
+function onEditorSplitDragEnd() {
+  saveNum(EDITOR_SPLIT_PCT_KEY, editorSplitPct.value)
+}
+function toggleEditorFocus() {
+  editorFocused.value = !editorFocused.value
+}
+// —— 手机半屏文件 sheet（终端页同屏看文件）——
+// 底栏「文件」不再整页换走，而是在终端页上拉半屏 sheet：上半终端继续活着（工作区
+// paddingBottom 让位，xterm ResizeObserver 自动 refit），下半浏览/预览。sheet 内点
+// 文件就地只读预览（不切走终端），预览头「编辑」才升格全屏编辑器 tab（sheet 收起）。
+// 与全屏 /files 页并存：深链仍走全屏页（打开时 sheet 自动让位），两处不同时在场。
+const fileSheetOpen = ref(false)
+const fileSheetH = ref(0)
+const sheetFile = ref<{ containerId: string; containerName: string; path: string } | null>(null)
+const sheetPanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
+const sheetTarget = computed(() => (activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID))
+const sheetTargetName = computed(() => fileTargetName(sheetTarget.value))
+watch(fileSheetOpen, (open) => {
+  if (!open) sheetFile.value = null
+})
+// sheet 与全屏页/编辑器/AI 互斥：别处成了主面，sheet 自动让位
+watch(showFiles, (v) => {
+  if (v) fileSheetOpen.value = false
+})
+watch(mainView, (v) => {
+  if (v !== 'terminal') fileSheetOpen.value = false
+})
+// sheet 面板的目标跟随 active 组（切终端 tab 即换目标，与根面板同语义）
+function onSheetOpenFile(p: string, _o?: { diff?: { headPath?: string }; editing?: boolean; line?: number }) {
+  // FilePanel 的 open-file 本含编辑意图（文件行/右键「编辑」都带 editing:true），sheet
+  // 语境不区分——一律就地预览（editing=false 落只读/渲染预览态），编辑意愿走预览头部
+  // 的「编辑」钮升格全屏。
+  sheetFile.value = { containerId: sheetTarget.value, containerName: sheetTargetName.value, path: p }
+}
+function openSheetFileInEditor() {
+  const f = sheetFile.value
+  if (!f) return
+  openFile(f.containerId, f.containerName, f.path, { editing: true })
+  fileSheetOpen.value = false
 }
 // tab X：pane 冲刷后自己 close；这里不直接摘（冲刷失败/冲突要留在原处裁决）
 function closeFileTab(t: EditorTab) {
@@ -4373,10 +4456,20 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            （文件面板原在此行内与终端并列，已提为根级通栏列——见根容器尾部的 FilePanel。）
            两区在交换容器内 absolute inset-0 叠放、v-show 切换（终端组/编辑器面板
            各自全量保活，切回现场不丢）。 -->
-      <div class="relative flex min-h-0 flex-1">
-        <!-- 交换容器：编辑器区 / 终端区在此二选一占位 -->
-        <div class="relative min-h-0 min-w-0 flex-1">
-          <!-- 编辑器区：每个文件 tab 一个 FileEditorPane，全量常驻。
+      <div class="relative flex min-h-0 flex-1" :style="fileSheetOpen ? { paddingBottom: fileSheetH + 'px' } : undefined">
+        <!-- 手机半屏文件 sheet 让位：sheet 开着时终端区腾出下半屏（xterm 的 ResizeObserver
+             自动 refit）。sheet 与编辑器/AI 互斥（开它们的路径都收 sheet），不影响其布局。 -->
+        <!-- AI 工具工作区：绝对铺满（mainView 互斥下 AI 在场时编辑器/终端都隐藏）。全尺寸
+             页面——技能库/provider/工具分配/下发结果这些管理面板体量的内容在这里舒展。 -->
+        <div v-show="mainView === 'ai'" class="absolute inset-0">
+          <AiWorkspace
+            @close="closeAi()"
+            @changed="refresh()"
+            @unauthorized="emit('unauthorized')"
+          />
+        </div>
+        <!-- 编辑器列：桌面分栏时占左份（宽度百分比持久化，PaneDivider 拖动调整），专注/
+             换显/手机整列。每个文件 tab 一个 FileEditorPane，全量常驻。
                非激活面板用 invisible（visibility:hidden）而不是 v-show（display:none）——
                monaco 的 automaticLayout 在容器塌成 0×0 时对带标记（json 校验 squiggle 等
                glyph margin 装饰）的编辑器做 layout 会死循环（实测整页冻结）。visibility
@@ -4386,40 +4479,43 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                editor 容器上写内联 visibility:visible，导致非激活的 diff pane 照样绘制、
                且按 DOM 顺序盖住前面的 pane（实测：多个 git 对比 tab 间切换，高亮动内容
                不动）。所以激活 pane 必须挂 z-10，恒压在所有兄弟 pane（含穿透绘制）之上。 -->
-          <!-- AI 工具工作区：与文件编辑器同区切换（AI tab 激活 = 主区给它）。全尺寸
-               页面——技能库/provider/工具分配/下发结果这些管理面板体量的内容在这里舒展。 -->
-          <div v-show="mainView === 'ai'" class="absolute inset-0">
-            <AiWorkspace
-              @close="closeAi()"
-              @changed="refresh()"
-              @unauthorized="emit('unauthorized')"
-            />
-          </div>
-          <div v-show="mainView === 'file' && editorTabs.length" class="absolute inset-0">
-            <FileEditorPane
-              v-for="(t, i) in editorTabs"
-              :key="tabId(t)"
-              :ref="(el) => setPaneRef(t, el)"
-              class="absolute inset-0"
-              :class="i === activeEditorIdx ? 'z-10' : 'invisible'"
-              :container-id="t.containerId"
-              :container-name="t.containerName"
-              :path="t.path"
-              :diff="t.diff"
-              :line="t.line"
-              :col="t.col"
-              :editing="t.editing === true"
-              :active="mainView === 'file' && i === activeEditorIdx"
-              @close="removeTab(t)"
-              @open-normal="onOpenNormal(t)"
-              @saved="onEditorSaved"
-              @dirty="(v: boolean) => (tabDirty[tabId(t)] = v)"
-              @mode="(m) => (tabMode[tabId(t)] = m)"
-            />
-          </div>
-          <!-- 终端区可见 = 编辑器模式下没有可显示的东西（无文件 tab 且 AI 未激活）；
-               条件必须与上面两个 v-show 互补，否则叠放时终端压住 AI 工作区。 -->
-          <div v-show="mainView === 'terminal'" class="absolute inset-0 bg-zinc-950">
+        <div
+          v-show="mainView === 'file' && editorTabs.length"
+          class="relative min-h-0 min-w-0 shrink-0"
+          :style="{ width: editorFocused || isPhone ? '100%' : editorSplitPct + '%' }"
+        >
+          <FileEditorPane
+            v-for="(t, i) in editorTabs"
+            :key="tabId(t)"
+            :ref="(el) => setPaneRef(t, el)"
+            class="absolute inset-0"
+            :class="i === activeEditorIdx ? 'z-10' : 'invisible'"
+            :container-id="t.containerId"
+            :container-name="t.containerName"
+            :path="t.path"
+            :diff="t.diff"
+            :line="t.line"
+            :col="t.col"
+            :editing="t.editing === true"
+            :active="mainView === 'file' && i === activeEditorIdx"
+            @close="removeTab(t)"
+            @open-normal="onOpenNormal(t)"
+            @saved="onEditorSaved"
+            @dirty="(v: boolean) => (tabDirty[tabId(t)] = v)"
+            @mode="(m) => (tabMode[tabId(t)] = m)"
+          />
+        </div>
+        <!-- 分栏分隔条（只在分栏可见时渲染）：编辑器在左，向右拖变宽 -->
+        <PaneDivider
+          v-if="showEditorSplit"
+          @dragstart="onEditorSplitDragStart"
+          @drag="onEditorSplitDrag"
+          @dragend="onEditorSplitDragEnd"
+        />
+        <!-- 终端列：分栏时占右份（flex-1），其余模式全宽。仍是同一棵常驻 DOM 的组树——
+             分栏只是变宽变窄，不卸载不重连。可见条件与编辑器/AI 两区互补（AI 模式下
+             showEditorSplit 恒 false），否则叠放的 AI 工作区会被终端压住。 -->
+        <div v-show="mainView === 'terminal' || showEditorSplit" class="relative min-h-0 min-w-0 flex-1 bg-zinc-950">
           <div
             v-for="(g, gIdx) in groups"
             :key="g.id"
@@ -4441,7 +4537,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <TerminalIcon class="size-8 opacity-40" />
             <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开菜单，终端在首项' }}</p>
             <p class="text-xs opacity-70">同一容器可分屏（每组最多 {{ MAX_GROUP_PANES }} 块）</p>
-          </div>
           </div>
         </div>
       </div>
@@ -4567,6 +4662,18 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           :actions="editorTabs[activeEditorIdx] ? mobileFileTabActionList(editorTabs[activeEditorIdx], activeEditorIdx) : []"
           @select="editorTabs[activeEditorIdx] && runMobileFileTabAction(editorTabs[activeEditorIdx], $event)"
         />
+        <!-- 分栏/专注切换（桌面 only）：编辑器主区时终端同屏（分栏）还是独占（专注）。
+             收起后编辑器回到整列，再点恢复分栏（比例记忆不变）。 -->
+        <button
+          v-if="editorTabs.length"
+          type="button"
+          class="hidden shrink-0 cursor-pointer items-center justify-center rounded px-2 text-muted-foreground hover:bg-accent/50 hover:text-foreground md:ml-auto md:flex"
+          :title="editorFocused ? '退出专注（右侧同屏终端）' : '专注（收起同屏终端）'"
+          @click="toggleEditorFocus"
+        >
+          <PanelRightOpen v-if="editorFocused" class="size-3.5" />
+          <PanelRightClose v-else class="size-3.5" />
+        </button>
       </div>
 
       <DesktopDialog
@@ -4605,6 +4712,66 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @open-file="onPanelOpenFile"
       @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
     />
+
+    <!-- 手机半屏文件 sheet：终端页同屏看文件（底栏「文件」开/收）。上半终端继续活着
+         （工作区 paddingBottom 让位，xterm ResizeObserver 自动 refit）；sheet 内点文件
+         就地只读预览（不切走终端），预览头「编辑」升格全屏编辑器 tab（sheet 自动收起，
+         见 openSheetFileInEditor）。目标跟随 active 终端组，cwd 跟随三路同源。 -->
+    <MobileFileSheet
+      v-if="isPhone && !props.popout"
+      :open="fileSheetOpen"
+      @update:open="fileSheetOpen = $event"
+      @height="fileSheetH = $event"
+    >
+      <template v-if="sheetFile">
+        <div class="flex h-9 shrink-0 items-center gap-1 border-b border-border px-1.5">
+          <button
+            type="button"
+            class="flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="返回文件列表"
+            @click="sheetFile = null"
+          >
+            <ArrowLeft class="size-4" />
+          </button>
+          <span
+            class="min-w-0 flex-1 truncate font-mono text-xs"
+            :title="`${sheetFile.containerName}:${sheetFile.path}`"
+          >{{ sheetFile.path.slice(sheetFile.path.lastIndexOf('/') + 1) }}</span>
+          <button
+            type="button"
+            class="flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="编辑（全屏编辑器打开）"
+            @click="openSheetFileInEditor"
+          >
+            <Pencil class="size-4" />
+          </button>
+        </div>
+        <FileEditorPane
+          :key="`${sheetFile.containerId}::${sheetFile.path}`"
+          class="min-h-0 flex-1"
+          :container-id="sheetFile.containerId"
+          :container-name="sheetFile.containerName"
+          :path="sheetFile.path"
+          active
+          @close="sheetFile = null"
+        />
+      </template>
+      <FilePanel
+        v-else
+        ref="sheetPanelRef"
+        class="min-h-0 flex-1"
+        :container-id="sheetTarget"
+        :container-name="sheetTargetName"
+        :panes="filePanes"
+        :term-id="fileTermId"
+        :has-terminal="!!activeGroup"
+        :browse-mode="fileBrowseMode"
+        @browse-mode="setFileBrowseMode"
+        @open-file="onSheetOpenFile"
+        @close="fileSheetOpen = false"
+        @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
+      />
+    </MobileFileSheet>
 
     <!-- 手机一级导航：终端 / 文件 / AI / 设置。文件 Tab 条与当前 Tab 动作只处理二级编辑态。
          busy：任一终端组有输出时「终端」图标挂呼吸标（原顶栏 tab 光晕的底栏落点）。 -->
