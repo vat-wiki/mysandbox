@@ -91,6 +91,34 @@ export function justOpened(): boolean {
   return Date.now() - visibleSince < OPEN_GRACE_MS
 }
 
+// 「用户在场」补强判据：部分安卓 Chrome 解冻恢复后 focus 事件迟迟不来、hasFocus()
+// 恒 false（持久性怪态，非恢复瞬间一闪）——宽限一过、用户还在页面上看时，前台闸门
+// 依旧误判成「切走了」，积压/新到的事件在用户正看着时炸响（「每次一打开浏览器就
+// 响」）。两个补强信号把这种状态认出来：
+//   - everFocused：自页面变为可见以来收到过 focus 事件。切走（桌面失焦/换 tab）之前
+//     必然获过焦——「可见但从未获焦」≈ 解冻恢复怪态 ≈ 在场。
+//   - lastGesture：页面上的 pointerdown/keydown/touchstart。刚摸过页面 = 在看
+//     （兜 focus 事件已到但 hasFocus() 说谎的更罕见变体）。
+// 放行条件收敛为：可见 + 失焦 + 获过焦 + 30s 内没摸过——该状态在移动端几乎不存在，
+// 桌面误伤只有「切走前 30s 内刚在控制台点过」≤30s 的发送延迟。
+const GESTURE_RECENT_MS = 30_000
+let everFocused = false
+let lastGesture = 0
+window.addEventListener('focus', () => {
+  everFocused = true
+})
+for (const ev of ['pointerdown', 'keydown', 'touchstart'] as const) {
+  window.addEventListener(ev, () => { lastGesture = Date.now() }, { passive: true, capture: true })
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) everFocused = false
+})
+function userPresent(): boolean {
+  if (document.hidden) return false
+  if (!everFocused) return true // 可见但从未获焦：解冻恢复怪态，人在看
+  return Date.now() - lastGesture < GESTURE_RECENT_MS
+}
+
 // 发一条「无输出」通知。开关关/权限缺/页面在前台/刚打开宽限内都不发（返回 false，
 // 调用方自行决定是否消费，见 justOpened 注释）。
 export function fireQuietNotify(
@@ -102,6 +130,8 @@ export function fireQuietNotify(
   if (!quietNotifyEnabled() || notifyPermission() !== 'granted') return false
   // 前台不发：tab 身份点可见，抢系统通知反而烦。
   if (document.hasFocus() && !document.hidden) return false
+  // 补强判据（userPresent）：可见但从未获焦（解冻怪态）/ 刚摸过页面 = 人在看，不发。
+  if (userPresent()) return false
   if (justOpened()) return false
   ensureFocusDismiss()
   try {
