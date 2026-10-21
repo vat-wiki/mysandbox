@@ -342,14 +342,17 @@ const ctSummary = computed(() => {
 })
 
 // —— 收起态 hover 子列表 ——
-// rail 只保留三个分组入口：悬停展开对应对象列表，点击仍进终端/管理面板。
-// 悬停与浮层之间不留缝，移入浮层不闪退；选中列表项后主动关闭，避免遮住主区。
+// rail 只保留三个分组入口：悬停展开对应对象列表，点击弹动作菜单（与展开态卡片同
+// 一份，终端收在首项）。悬停与浮层之间不留缝，移入浮层不闪退；菜单开着时不收浮层
+// （浮层卸载会连菜单一起拆掉），菜单关闭时再收（ContextMenu 的 close-auto-focus）。
 type RailSection = 'ct' | 'svc' | 'term'
 const railHover = ref<RailSection | null>(null)
+const railMenuOpen = ref(false)
 function railSectionEnter(kind: RailSection) {
   railHover.value = kind
 }
 function railSectionLeave() {
+  if (railMenuOpen.value) return
   railHover.value = null
 }
 function closeRailSection() {
@@ -1664,14 +1667,16 @@ function groupDynamicLabel(g: TermGroup): string {
   }
   return best
 }
-// 手动新开一组（tab 右键菜单「新开一组终端」）：为该 tab 的容器/宿主再开一组全新终端。
-// 侧栏点容器是「聚焦已有组」，这里是「再开一组」——单组分屏满 MAX_GROUP_PANES
+// 手动新开一组（tab 右键菜单「新开一组终端」/ 侧栏菜单「再开一组终端」同语义）：
+// 为该 tab 的容器/宿主再开一组全新终端。
+// 侧栏点「打开终端」是「聚焦已有组」，这里是「再开一组」——单组分屏满 MAX_GROUP_PANES
 // 块后想要更多终端，走这个显式动作。触屏长按 tab 同样能弹菜单。
 function openNewGroup(g: TermGroup) {
   createGroup(g.containerId, g.name, g.kind)
 }
-// 点容器「终端」：该容器已有 group 则聚焦，否则建组（避免重复打开堆积）。
-// 想要同容器多个独立 shell -> 在 pane 头部点左右 / 上下分屏。
+// 菜单「打开终端」/ OSC 深链（locateContainerPath）共用：该容器已有 group 则聚焦，
+// 否则建组（避免重复打开堆积）。
+// 想要同容器多个独立 shell -> 菜单「再开一组终端」，或在 pane 头部点左右 / 上下分屏。
 // 首参为最小结构形状（locateContainerPath 宿主分支复用，见其注释）。
 function openTerm(c: { id: string; name: string; displayName?: string }) {
   if (isPhone.value) drawerOpen.value = false
@@ -1682,7 +1687,7 @@ function openTerm(c: { id: string; name: string; displayName?: string }) {
   }
   createGroup(c.id, c.displayName || c.name)
 }
-// 点侧栏「本机」条目：开本机终端（PTY 由 server 管理，cwd=镜像目录）。全局唯一一个 group。
+// 菜单「打开终端」（本机）：开本机终端（PTY 由 server 管理，cwd=镜像目录），已有组则聚焦。
 function openHostTerm() {
   if (isPhone.value) drawerOpen.value = false
   const i = groups.value.findIndex((g) => g.kind === 'host')
@@ -1693,7 +1698,7 @@ function openHostTerm() {
   createGroup(HOST_ID, '本机', 'host')
 }
 
-// 点 SSH 目标条目：开远程主机终端（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
+// 菜单「打开终端」（SSH 目标）：开远程主机终端（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
 // 同目标唯一 group；containerId 用 'ssh:'+名前缀（api.ts sshGroupId）隔离与容器名撞名。
 function openSshTerm(t: SshTargetView) {
   if (isPhone.value) drawerOpen.value = false
@@ -1706,8 +1711,8 @@ function openSshTerm(t: SshTargetView) {
   createGroup(id, t.name, 'ssh')
 }
 
-// 点服务卡片：进服务终端（docker exec，与容器「点击即进」同一交互语义）。
-// 会话 = 宿主 tmux 上的 docker exec 窗口，跨 mysandbox 重启存活；想看详情走 ⋯ 详情。
+// 菜单「打开终端」（服务）：进服务终端（docker exec，与容器同语义）。
+// 会话 = 宿主 tmux 上的 docker exec 窗口，跨 mysandbox 重启存活；详情走菜单「详情」。
 function openServiceTerm(s: ServiceView) {
   if (isPhone.value) drawerOpen.value = false
   const i = groups.value.findIndex((g) => g.kind === 'service' && g.containerId === s.name)
@@ -1988,6 +1993,32 @@ function cardClickSwallowed(): boolean {
   if (!cardLpFired) return false
   cardLpFired = false
   return true
+}
+// 左键 = 右键：侧栏条目点击不再直接进终端（「点卡片即终端」对面板早期是主循环，
+// 现在终端反而低频、启停/详情/端口这些管理动作才是常客），改为在点击位置弹出与
+// 右键/触屏长按同一份动作菜单——「打开终端」收进菜单首项，三端交互语言统一。
+// 实现与长按合成机制同路：合成 contextmenu 事件，reka 的 ContextMenuTrigger 响应，
+// 菜单落在真实点击坐标上。拖拽排序后的 click 已由 cardClickSwallowed 吞掉，不会误弹。
+function cardClickOpensMenu(e: MouseEvent): boolean {
+  if (cardClickSwallowed()) return true
+  ;(e.currentTarget as HTMLElement).dispatchEvent(
+    new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY }),
+  )
+  return true
+}
+// 侧栏菜单「再开一组终端」：无条件为该目标建全新组（与 tab 右键「新开一组终端」同
+// 语义，入口提前到侧栏）——openTerm 系列是「聚焦已有组」，这里是显式再开一组。
+function openExtraContainerGroup(c: { id: string; name: string; displayName?: string }) {
+  createGroup(c.id, c.displayName || c.name)
+}
+function openExtraServiceGroup(s: { name: string; displayName?: string }) {
+  createGroup(s.name, s.displayName || s.name, 'service')
+}
+function openExtraHostGroup() {
+  createGroup(HOST_ID, '本机', 'host')
+}
+function openExtraSshGroup(t: SshTargetView) {
+  createGroup(sshGroupId(t.name), t.name, 'ssh')
 }
 
 // ---- tab 拖拽排序 ----
@@ -3028,14 +3059,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 </Button>
               </div>
               <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
-                <ContextMenu v-for="c in orderedItems" :key="c.id">
+                <ContextMenu v-for="c in orderedItems" :key="c.id" @update:open="railMenuOpen = $event">
                   <ContextMenuTrigger as-child>
                     <button
                       type="button"
                       class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
                       :class="activeGroup?.containerId === c.id ? 'bg-accent' : ''"
                       :title="`${c.displayName || c.name} · ${stateLabel(c.state)}${c.ip ? ` · ${c.ip}` : ''}`"
-                      @click="((openTerm(c)), closeRailSection())"
+                      @click="cardClickOpensMenu($event)"
                     >
                       <span
                         class="absolute inset-y-1.5 left-0 w-[3px] rounded-full"
@@ -3050,9 +3081,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   </ContextMenuTrigger>
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <template v-if="!c.managed && !c.adopted">
+                      <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+                      <ContextMenuSeparator />
                       <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
                     </template>
                     <template v-else>
+                      <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+                      <ContextMenuItem @click="openExtraContainerGroup(c)">再开一组终端</ContextMenuItem>
+                      <ContextMenuSeparator />
                       <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
                       <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
                       <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
@@ -3089,25 +3125,38 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </div>
               <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
                 <p v-if="svcReachable === false" class="px-2 py-3 text-[11px] text-muted-foreground">运行时不可达</p>
-                <button
-                  v-for="s in orderedSvc"
-                  :key="s.name"
-                  type="button"
-                  class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
-                  :class="activeGroup?.containerId === s.name ? 'bg-accent' : ''"
-                  :title="`${s.displayName || s.name} · ${stateLabel(s.state)}${s.ip ? ` · ${s.ip}` : ''}`"
-                  @click="((openServiceTerm(s)), closeRailSection())"
-                >
-                  <span
-                    class="absolute inset-y-1.5 left-0 w-[3px] rounded-full"
-                    :class="s.running ? '' : 'bg-muted-foreground/30'"
-                    :style="s.running ? { backgroundColor: containerColor(s.name) } : undefined"
-                  />
-                  <span class="min-w-0 flex-1 truncate text-[13px]" :class="s.running ? '' : 'opacity-60'">
-                    {{ s.displayName || s.name }}
-                  </span>
-                  <span class="shrink-0 text-[10px] text-muted-foreground">{{ stateLabel(s.state) }}</span>
-                </button>
+                <ContextMenu v-for="s in orderedSvc" :key="s.name" @update:open="railMenuOpen = $event">
+                  <ContextMenuTrigger as-child>
+                    <button
+                      type="button"
+                      class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
+                      :class="activeGroup?.containerId === s.name ? 'bg-accent' : ''"
+                      :title="`${s.displayName || s.name} · ${stateLabel(s.state)}${s.ip ? ` · ${s.ip}` : ''}`"
+                      @click="cardClickOpensMenu($event)"
+                    >
+                      <span
+                        class="absolute inset-y-1.5 left-0 w-[3px] rounded-full"
+                        :class="s.running ? '' : 'bg-muted-foreground/30'"
+                        :style="s.running ? { backgroundColor: containerColor(s.name) } : undefined"
+                      />
+                      <span class="min-w-0 flex-1 truncate text-[13px]" :class="s.running ? '' : 'opacity-60'">
+                        {{ s.displayName || s.name }}
+                      </span>
+                      <span class="shrink-0 text-[10px] text-muted-foreground">{{ stateLabel(s.state) }}</span>
+                    </button>
+                  </ContextMenuTrigger>
+                  <!-- 精简菜单（展开态卡片菜单的子集——端口二级菜单/删除/收编不进悬停
+                       快捷列表，要全量走卡片或服务抽屉）。 -->
+                  <ContextMenuContent @close-auto-focus="closeRailSection">
+                    <ContextMenuItem @click="openServiceTerm(s)">打开终端</ContextMenuItem>
+                    <ContextMenuItem @click="openExtraServiceGroup(s)">再开一组终端</ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
+                    <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
+                    <ContextMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</ContextMenuItem>
+                    <ContextMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
                 <p v-if="svcReachable !== false && !svcItems.length" class="px-2 py-3 text-[11px] text-muted-foreground">暂无应用容器</p>
               </div>
             </div>
@@ -3133,27 +3182,47 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 </Button>
               </div>
               <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
-                <button
-                  type="button"
-                  class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
-                  :class="activeGroup?.kind === 'host' ? 'bg-accent' : ''"
-                  @click="((openHostTerm()), closeRailSection())"
-                >
-                  <span class="absolute inset-y-1.5 left-0 w-[3px] rounded-full bg-amber-500" />
-                  <span class="min-w-0 flex-1 truncate text-[13px]">本机</span>
-                </button>
-                <button
-                  v-for="t in orderedSsh"
-                  :key="t.name"
-                  type="button"
-                  class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
-                  :class="activeGroup?.containerId === sshGroupId(t.name) ? 'bg-accent' : ''"
-                  :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
-                  @click="((openSshTerm(t)), closeRailSection())"
-                >
-                  <span class="absolute inset-y-1.5 left-0 w-[3px] rounded-full" :style="{ backgroundColor: containerColor(t.name) }" />
-                  <span class="min-w-0 flex-1 truncate text-[13px]">{{ t.name }}</span>
-                </button>
+                <ContextMenu @update:open="railMenuOpen = $event">
+                  <ContextMenuTrigger as-child>
+                    <button
+                      type="button"
+                      class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
+                      :class="activeGroup?.kind === 'host' ? 'bg-accent' : ''"
+                      @click="cardClickOpensMenu($event)"
+                    >
+                      <span class="absolute inset-y-1.5 left-0 w-[3px] rounded-full bg-amber-500" />
+                      <span class="min-w-0 flex-1 truncate text-[13px]">本机</span>
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent @close-auto-focus="closeRailSection">
+                    <ContextMenuItem @click="openHostTerm()">打开终端</ContextMenuItem>
+                    <ContextMenuItem @click="openExtraHostGroup()">再开一组终端</ContextMenuItem>
+                    <ContextMenuItem @click="openPopout(HOST_ID)">在独立窗口打开</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+                <ContextMenu v-for="t in orderedSsh" :key="t.name" @update:open="railMenuOpen = $event">
+                  <ContextMenuTrigger as-child>
+                    <button
+                      type="button"
+                      class="group relative flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pl-3 text-left transition-colors hover:bg-accent/40"
+                      :class="activeGroup?.containerId === sshGroupId(t.name) ? 'bg-accent' : ''"
+                      :title="`SSH 终端：${t.user ? t.user + '@' : ''}${t.host}${t.port ? ':' + t.port : ''}`"
+                      @click="cardClickOpensMenu($event)"
+                    >
+                      <span class="absolute inset-y-1.5 left-0 w-[3px] rounded-full" :style="{ backgroundColor: containerColor(t.name) }" />
+                      <span class="min-w-0 flex-1 truncate text-[13px]">{{ t.name }}</span>
+                    </button>
+                  </ContextMenuTrigger>
+                  <!-- 精简菜单（展开态卡片菜单的子集——会话/管理入口在 tab 栏与展开态都有）。 -->
+                  <ContextMenuContent @close-auto-focus="closeRailSection">
+                    <ContextMenuItem @click="openSshTerm(t)">打开终端</ContextMenuItem>
+                    <ContextMenuItem @click="openExtraSshGroup(t)">再开一组终端</ContextMenuItem>
+                    <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>
+                    <ContextMenuItem @click="((sshEditName = t.name), (showSshTargets = true))">编辑 / 改密码</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
                 <p v-if="!sshTargets.length" class="px-2 py-3 text-[11px] text-muted-foreground">暂无 SSH 主机，点 ＋ 添加</p>
               </div>
             </div>
@@ -3311,7 +3380,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               @dragstart="cardDragStart($event, 'ct', c.id)"
               @dragover="cardDragOver($event, 'ct', c.id)"
               @dragend="cardDragEnd('ct')"
-              @click="cardClickSwallowed() || openTerm(c)"
+              @click="cardClickOpensMenu($event)"
             >
               <!-- 左缘色条：卡片唯一的色彩元素——容器身份色（与 tab 呼应），兼作状态指示：
                    running = 容器色；非 running = 灰条，右侧两行整体降亮度（整卡置灰 =
@@ -3366,14 +3435,20 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </div>
             </div>
           </ContextMenuTrigger>
-          <!-- 右键菜单（触屏长按同款）：低频操作收进来（外部的容器只有「纳入管理」），
-               running 时末尾追加「代理地址」二级菜单。原 ⋯ 按钮退役——卡片右下角不再
-               常驻控件，端口也不再有 hover 浮层，全部收编进这份菜单。 -->
+          <!-- 右键菜单（左键/触屏长按同款——点击卡片即弹，见 cardClickOpensMenu）：
+               低频操作收进来（外部的容器只有「纳入管理」），running 时末尾追加「代理地址」
+               二级菜单。原 ⋯ 按钮退役——卡片右下角不再常驻控件，端口也不再有 hover 浮层，
+               全部收编进这份菜单。终端也在这里：打开（无组则建、有组聚焦）/ 再开一组。 -->
           <ContextMenuContent>
             <template v-if="!c.managed && !c.adopted">
+              <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+              <ContextMenuSeparator />
               <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
             </template>
             <template v-else>
+              <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+              <ContextMenuItem @click="openExtraContainerGroup(c)">再开一组终端</ContextMenuItem>
+              <ContextMenuSeparator />
               <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
               <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
               <ContextMenuItem
@@ -3445,7 +3520,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <Container class="size-5 text-muted-foreground/40" />
           <p class="text-xs text-muted-foreground">暂无容器</p>
-          <p class="text-[11px] text-muted-foreground/60">点上方 ＋ 新建，右键卡片可纳入已有容器</p>
+          <p class="text-[11px] text-muted-foreground/60">点上方 ＋ 新建，点击卡片可纳入已有容器</p>
         </div>
       </div>
 
@@ -3453,8 +3528,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            hash 的身份色，非 running=灰条+整卡降亮度），收在环境区、可整体收起（低频
            配套，默认展开但记忆用户选择）。分区头 = 弱化标签 + 计数（容器分区头同款，
            无状态点），整行点击展开/收起；收起时补一行摘要文案（任务进行中/不可达时
-           要紧，不可达红字）。点击卡片进服务终端（与容器「点击即进」同语义），IP 点击
-             复制，右键菜单收详情（服务抽屉）/连接命令/代理地址二级菜单/启停重启。
+           要紧，不可达红字）。点击卡片弹动作菜单（终端收进菜单首项，与容器卡片同
+           交互），IP 点击复制，菜单收详情（服务抽屉）/连接命令/代理地址二级菜单/启停重启。
             列表高度可拖拽（顶部细把手，maxHeight 上限记忆 localStorage），卡片可拖拽排序。 -->
       <div class="shrink-0 border-t border-border">
         <div
@@ -3534,7 +3609,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   @dragstart="cardDragStart($event, 'svc', s.name)"
                   @dragover="cardDragOver($event, 'svc', s.name)"
                   @dragend="cardDragEnd('svc')"
-                  @click="cardClickSwallowed() || openServiceTerm(s)"
+                  @click="cardClickOpensMenu($event)"
                 >
                   <!-- 左缘色条：与容器卡片同一套状态语言——运行=按服务名 hash 的稳定身份色
                        （containerColor 同一机制，hover 恢复饱和），非 running=灰条；
@@ -3577,10 +3652,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   </div>
                 </div>
               </ContextMenuTrigger>
-              <!-- 右键菜单（触屏长按同款，与容器卡片同款交互）：详情 / 复制连接命令 /
-                   代理地址二级菜单 / 启停重启。原 ⋯ 按钮退役。改配置/追新镜像在服务
-                   抽屉「配置」页（compose 底账编辑 + 应用）。 -->
+              <!-- 右键菜单（左键/触屏长按同款，与容器卡片同款交互）：终端（打开/再开
+                   一组）/ 详情 / 复制连接命令 / 代理地址二级菜单 / 启停重启。原 ⋯ 按钮
+                   退役。改配置/追新镜像在服务抽屉「配置」页（compose 底账编辑 + 应用）。 -->
               <ContextMenuContent>
+                <ContextMenuItem @click="openServiceTerm(s)">打开终端</ContextMenuItem>
+                <ContextMenuItem @click="openExtraServiceGroup(s)">再开一组终端</ContextMenuItem>
+                <ContextMenuSeparator />
                 <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                 <ContextMenuItem @click="svcRenameTarget = s">重命名</ContextMenuItem>
                 <ContextMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</ContextMenuItem>
@@ -3699,7 +3777,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           :style="{ maxHeight: sectionHeights.term + 'px' }"
         >
           <!-- 本机卡片：宿主终端恒可用——色条 amber 恒饱和（与 tab 身份点同色）。
-               右键 / 长按 = 终端动作清单（与容器卡片同交互语言）。 -->
+               点击 / 右键 / 长按 = 终端动作清单（与容器卡片同交互语言）。 -->
           <MobileCard
             v-if="isPhone"
             title="本机"
@@ -3722,7 +3800,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 @pointermove="cardPointerMove"
                 @pointercancel="cardPointerCancel"
                 @pointerup="cardPointerCancel"
-                @click="cardClickSwallowed() || openHostTerm()"
+                @click="cardClickOpensMenu($event)"
               >
                 <span
                   class="absolute inset-y-2.5 left-0 w-[3px] rounded-full bg-amber-500"
@@ -3738,13 +3816,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem @click="openHostTerm()">打开终端</ContextMenuItem>
+              <ContextMenuItem @click="openExtraHostGroup()">再开一组终端</ContextMenuItem>
               <ContextMenuItem @click="openPopout(HOST_ID)">在独立窗口打开</ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem @click="openRoute('term-sessions')">全部终端会话</ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
           <!-- SSH 主机卡片：无运行态概念（连接失败在终端里可见），色条恒用身份色。
-               右键 / 长按 = 终端动作清单（开终端 / 独立窗口 / 复制 ssh 命令 / 会话 / 管理 / 删除）。 -->
+               点击 / 右键 / 长按 = 终端动作清单（开终端 / 再开一组 / 独立窗口 / 复制 ssh 命令 / 会话 / 管理 / 删除）。 -->
           <template v-for="t in orderedSsh" :key="t.name">
             <MobileCard
               v-if="isPhone"
@@ -3778,7 +3857,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   @dragstart="cardDragStart($event, 'ssh', t.name)"
                   @dragover="cardDragOver($event, 'ssh', t.name)"
                   @dragend="cardDragEnd('ssh')"
-                  @click="cardClickSwallowed() || openSshTerm(t)"
+                  @click="cardClickOpensMenu($event)"
                 >
                   <span
                     class="absolute inset-y-2.5 left-0 w-[3px] rounded-full"
@@ -3799,6 +3878,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </ContextMenuTrigger>
               <ContextMenuContent>
                 <ContextMenuItem @click="openSshTerm(t)">打开终端</ContextMenuItem>
+                <ContextMenuItem @click="openExtraSshGroup(t)">再开一组终端</ContextMenuItem>
                 <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>
@@ -4339,7 +4419,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground"
           >
             <TerminalIcon class="size-8 opacity-40" />
-            <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开终端' }}</p>
+            <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开菜单，终端在首项' }}</p>
             <p class="text-xs opacity-70">同一容器可分屏（每组最多 {{ MAX_GROUP_PANES }} 块）</p>
           </div>
           </div>
