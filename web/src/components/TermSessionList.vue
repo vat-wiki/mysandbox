@@ -149,10 +149,10 @@ function relTime(ms: number): string {
   const sec = Math.max(1, Math.floor((Date.now() - ms) / 1000))
   if (sec < 60) return '刚刚'
   const min = Math.floor(sec / 60)
-  if (min < 60) return `${min} 分钟前`
+  if (min < 60) return `${min}分`
   const h = Math.floor(min / 60)
-  if (h < 24) return `${h} 小时前`
-  return `${Math.floor(h / 24)} 天前`
+  if (h < 24) return `${h}时`
+  return `${Math.floor(h / 24)}天`
 }
 
 // ---- 结束会话（孤儿清理）----
@@ -180,7 +180,9 @@ async function doKill() {
     class="mx-2 my-1 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
   >{{ err }}</p>
 
-  <!-- 全部活跃会话（服务端扫描，含本窗口已打开的）＝主体 -->
+  <!-- 全部活跃会话（服务端扫描，含本窗口已打开的）＝主体。
+       行为模型：整行点击 = 接入（组行 = 全部接入），破坏性动作（结束）hover 才浮现——
+       窄栏（侧栏/rail）下常驻按钮会把标题挤成「…」，触屏（对话框 max-md）常显。 -->
   <div class="flex items-center gap-2 px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
     <span>活跃会话</span>
     <span v-if="sessions.length" class="text-[10px] font-normal text-muted-foreground/70">{{ sessions.length }}</span>
@@ -197,55 +199,56 @@ async function doKill() {
   </div>
   <div v-if="loading && !sessions.length" class="px-2 pb-2 text-xs text-muted-foreground/70">扫描中…</div>
   <div v-else-if="!remoteRows.length" class="px-2 pb-2 text-xs text-muted-foreground/70">无</div>
-  <div v-for="row in remoteRows" :key="row.containerId ?? 'host'" class="pb-1">
-    <div class="flex items-center gap-2 px-2 py-1">
-      <span class="h-2 w-2 shrink-0 rounded-full" :style="{ backgroundColor: row.color }" />
-      <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ row.name }}</span>
-      <span class="shrink-0 text-[10px] text-muted-foreground">{{ row.sessions.length }}</span>
-      <Button
+  <div v-for="row in remoteRows" :key="row.containerId ?? 'host'" class="pb-0.5">
+    <!-- 组行：身份色条 + 名字 + 计数（侧栏卡片同款语言）；多会话时整行点击 = 全部接入 -->
+    <button
+      type="button"
+      class="group/grp relative mx-1 flex min-w-0 items-center gap-2 rounded-md py-1 pl-3.5 pr-2 text-left transition-colors"
+      :class="row.sessions.length > 1 ? 'cursor-pointer hover:bg-accent/40' : ''"
+      :title="row.sessions.length > 1 ? '点击全部接入' : row.name"
+      @click="row.sessions.length > 1 && emit('adopt', row.sessions.slice(0, MAX_GROUP_PANES))"
+    >
+      <span class="absolute inset-y-1 left-0 w-[3px] rounded-full" :style="{ backgroundColor: row.color }" />
+      <span class="min-w-0 flex-1 truncate text-[13px] font-medium">{{ row.name }}</span>
+      <span
         v-if="row.sessions.length > 1"
-        variant="ghost"
-        size="xs"
-        class="h-6 shrink-0 text-xs text-muted-foreground"
-        title="合并为一个分屏组"
-        @click="emit('adopt', row.sessions.slice(0, MAX_GROUP_PANES))"
-      >全部接入</Button>
-    </div>
+        class="hidden shrink-0 text-[10px] text-muted-foreground group-hover/grp:inline"
+      >全部接入</span>
+      <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">{{ row.sessions.length }}</span>
+    </button>
     <div
       v-for="s in row.sessions"
       :key="s.termId"
-      class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
+      class="group/srow mx-1 ml-3.5 flex min-w-0 cursor-pointer items-center gap-2 rounded-md py-1 pl-2 pr-1.5 transition-colors hover:bg-accent/40"
+      :title="`点击接入：${s.title || s.cwd || '未命名会话'}`"
+      @click="emit('adopt', [s])"
     >
       <span
-        class="min-w-0 flex-1 truncate pl-4 font-mono text-xs"
+        class="min-w-0 flex-1 truncate font-mono text-xs"
         :class="s.title ? 'text-foreground/75' : 'text-muted-foreground'"
-        :title="s.title || s.cwd"
       >{{ s.title || s.cwd || '…' }}</span>
       <Badge
         v-if="occupied.has(termSessionKey(s.kind, s.containerId, s.termId))"
         variant="outline"
-        class="shrink-0 border-transparent bg-primary/15 text-[10px] text-primary"
+        class="shrink-0 border-transparent bg-primary/15 px-1 text-[10px] text-primary"
       >已打开</Badge>
       <Badge
         v-else-if="s.attached > 0"
         variant="outline"
-        class="shrink-0 border-transparent bg-emerald-500/15 text-[10px] text-emerald-500"
+        class="shrink-0 border-transparent bg-emerald-500/15 px-1 text-[10px] text-emerald-500"
       >使用中</Badge>
-      <span class="shrink-0 text-[10px] text-muted-foreground/70">{{ relTime(s.created) }}</span>
-      <Button variant="outline" size="xs" class="shrink-0" @click="emit('adopt', [s])">接入</Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0 text-muted-foreground hover:text-destructive"
+      <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ relTime(s.created) }}</span>
+      <span
+        class="shrink-0 cursor-pointer text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/srow:opacity-100 max-md:opacity-100"
         title="结束会话"
-        @click="killTarget = s"
+        @click.stop="killTarget = s"
       >
-        <Trash2 />
-      </Button>
+        <Trash2 class="size-3.5" />
+      </span>
     </div>
   </div>
 
-  <!-- 本窗口隐藏的终端组：藏在末尾，空则整块不显示 -->
+  <!-- 本窗口隐藏的终端组：藏在末尾，空则整块不显示；整行点击 = 恢复 -->
   <template v-if="hidden.length">
     <div class="mt-2 border-t border-border px-2 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
       隐藏（{{ hidden.length }}）
@@ -253,16 +256,18 @@ async function doKill() {
     <div
       v-for="g in hidden"
       :key="g.id"
-      class="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
+      class="group/hrow mx-1 flex min-w-0 cursor-pointer items-center gap-2 rounded-md py-1.5 pl-3 pr-2 transition-colors hover:bg-accent/40"
+      :title="`点击恢复：${hiddenLabel(g)}`"
+      @click="emit('restore', g)"
     >
       <span
         class="h-2 w-2 shrink-0 rounded-full"
         :class="props.attentionIds?.has(g.id) && 'ring-2 ring-amber-400 ring-offset-1 ring-offset-popover'"
         :style="{ backgroundColor: g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId) }"
       />
-      <span class="min-w-0 flex-1 truncate font-mono text-sm" :title="hiddenLabel(g)">{{ hiddenLabel(g) }}</span>
+      <span class="min-w-0 flex-1 truncate font-mono text-xs" :title="hiddenLabel(g)">{{ hiddenLabel(g) }}</span>
       <span class="shrink-0 text-[10px] text-muted-foreground">{{ leafCount(g.root) }} 窗格</span>
-      <Button variant="outline" size="xs" class="shrink-0" @click="emit('restore', g)">恢复</Button>
+      <span class="hidden shrink-0 text-[10px] text-muted-foreground group-hover/hrow:inline">恢复</span>
     </div>
   </template>
 
