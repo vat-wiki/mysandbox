@@ -873,9 +873,19 @@ function fileTargetName(id: string): string {
   const c = items.value.find((x) => x.id === id)
   return c ? c.displayName || c.name : id
 }
-const filePanelTarget = computed(() =>
-  showFiles.value ? routeFileTarget.value || (activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID) : '',
-)
+// 面板目标（containerId prop）。路由目标命中活组 = 跟随态：直接取活跃组——fileTermId
+// 随 activeGroup 同步变，目标容器也必须同帧变；原先经 router.replace 追平（异步），
+// 中间那一拍 FilePanel 拿旧容器查新 pane 必 404，之后只能等 5s 兜底轮询（实测切换
+// 到列表更新 2s+ 的根源）。URL 仍由 watch(activeGroup) 的 replace 追平，仅晚一拍。
+// 路由目标不是活组 = 独立深链浏览：保持路由目标不动。
+const filePanelTarget = computed(() => {
+  if (!showFiles.value) return ''
+  const routeTarget = routeFileTarget.value
+  if (!routeTarget || groups.value.some((x) => fileTargetId(x) === routeTarget)) {
+    return activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID
+  }
+  return routeTarget
+})
 const filePanelTargetName = computed(() => (filePanelTarget.value ? fileTargetName(filePanelTarget.value) : ''))
 // 文件面板/编辑器/复制粘贴的目标 id：服务组加 's:' 前缀（api.ts filesBase 切
 // /api/services/<name>/*），SSH 组 containerId 本体即 'ssh:'+名（切 /api/ssh/<name>/*），
@@ -1039,7 +1049,8 @@ function setFileBrowseMode(m: FileBrowseMode) {
 // tab 身份 = containerId+path：diff/普通是同一 tab 的两种形态，重复打开即更新并激活。
 // 主区归属（mainView）：三值互斥——'terminal' | 'file' | 'ai'。所有显示条件都是
 // 对它的等式比较（结构上不可能两区同显），写入点只赋自己的值、不存在「清别人的
-// 标志」。文件 tab 栏在上、终端 tab 栏在下，同区切换——点谁主区给谁；开文件切
+// 标志」。文件 tab 与终端 tab 同居顶部 tab 栏（终端段左、文件段右；手机文件 tab 仍
+// 在底部栏），同区切换——点谁主区给谁；开文件切
 // 'file'，动终端 tab 切 'terminal'，最后一个文件 tab 关掉时回落终端。
 type EditorTab = {
   containerId: string
@@ -4229,6 +4240,133 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           </ContextMenuContent>
         </ContextMenu>
         </div>
+        <!-- 文件 tab 段（2026-10-21 起并入顶栏，原在底部独立一条）：终端段与文件段本质都是
+             「主视图是什么」的切换器，分居屏幕顶底割裂换显——合并后点哪段哪段占主区，行为
+             即隔离；终端段恒左、文件段恒右（主要内容优先 + 位置惯性），border-l 物理分隔。
+             激活语言与终端 tab 统一：下缘色条（顶栏压下边；原底栏形态用上缘）。段内滚动同
+             终端段（浏览器式收缩，max-w 封顶）。手机主窗口顶栏整条隐藏（终端切换下沉底栏的
+             既有设计），文件 tab 在手机仍走底部栏（见下）。 -->
+        <div
+          v-if="editorTabs.length || aiOpen"
+          class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin border-l border-border/60"
+        >
+          <!-- AI 工具 tab（单例，恒在文件 tab 最左，v-if=aiOpen——不挂条件的话 X 关不掉它：
+               aiOpen 已清但页签照画，用户怎么点都"关不掉"）：Bot 钮打开的页面在这里落位，
+               与文件 tab 平级互切；X 关闭整个 AI 工作区。手机由底部导航承担 AI 一级入口。 -->
+          <div
+            v-if="aiOpen"
+            class="flex shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs"
+            :class="
+              mainView === 'ai'
+                ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
+                : 'text-muted-foreground hover:bg-accent/50'
+            "
+            title="AI 工具（技能 / 模型接入）"
+            @click="openAi()"
+          >
+            <Bot class="size-3.5 shrink-0" />
+            <span class="min-w-0 truncate">AI 工具</span>
+            <button
+              class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+              title="关闭 AI 工具页"
+              @click.stop="closeAi()"
+            >
+              <X class="size-3" />
+            </button>
+          </div>
+          <ContextMenu v-for="(t, i) in editorTabs" :key="tabId(t)">
+            <ContextMenuTrigger as-child>
+              <div
+                class="flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs"
+                :class="
+                  i === activeEditorIdx && mainView === 'file'
+                    ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
+                    : 'text-muted-foreground hover:bg-accent/50'
+                "
+                :title="`${t.containerName}:${t.path}`"
+                @click="onFileTabClick(i)"
+              >
+                <span
+                  class="h-1.5 w-1.5 shrink-0 rounded-full"
+                  :style="{ backgroundColor: t.containerId === HOST_ID ? '#f59e0b' : containerColor(t.containerId) }"
+                />
+                <span class="min-w-0 truncate">{{ t.path.slice(t.path.lastIndexOf('/') + 1) }}</span>
+                <span
+                  v-if="t.diff"
+                  class="shrink-0 rounded bg-violet-500/15 px-1 text-[10px] font-medium text-violet-400"
+                  >对比</span
+                >
+                <span
+                  v-if="tabDirty[tabId(t)]"
+                  class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+                  title="有未落盘改动"
+                />
+                <button
+                  class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
+                  title="关闭（未落盘改动会先自动保存）"
+                  @click.stop="closeFileTab(t)"
+                >
+                  <X class="size-3" />
+                </button>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <!-- 形态动作：编辑/预览切换（状态感知——渲染视图/只读态显示「编辑」，
+                   编辑会话中显示「预览」：md/svg 回渲染视图、普通文件锁回只读）；diff 态
+                   「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
+                   音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
+              <ContextMenuItem
+                v-if="!tabMode[tabId(t)] || !tabMode[tabId(t)].editing || tabMode[tabId(t)].preview"
+                @click="tabModeClick(t, i)"
+              >
+                编辑
+              </ContextMenuItem>
+              <ContextMenuItem v-else @click="tabModeClick(t, i)">
+                预览
+              </ContextMenuItem>
+              <ContextMenuItem v-if="t.diff" @click="onOpenNormal(t)">
+                以普通方式打开
+              </ContextMenuItem>
+              <ContextMenuItem v-if="previewKind(t.path)" @click="downloadTab(t)">
+                下载
+              </ContextMenuItem>
+              <template v-if="tabMode[tabId(t)] || t.diff || previewKind(t.path)">
+                <ContextMenuSeparator />
+              </template>
+              <ContextMenuItem @click="copyTabPath(t)">
+                复制容器路径
+              </ContextMenuItem>
+              <ContextMenuItem @click="copyTabHostPath(t)">
+                复制实际路径
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem variant="destructive" @click="closeFileTab(t)">
+                关闭
+              </ContextMenuItem>
+              <ContextMenuItem :disabled="editorTabs.length <= 1" @click="closeFileTabsRange(t, 'other')">
+                关闭其他
+              </ContextMenuItem>
+              <ContextMenuItem :disabled="i === 0" @click="closeFileTabsRange(t, 'left')">
+                关闭左侧
+              </ContextMenuItem>
+              <ContextMenuItem :disabled="i === editorTabs.length - 1" @click="closeFileTabsRange(t, 'right')">
+                关闭右侧
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        </div>
+        <!-- 分栏/专注切换（桌面 only）：编辑器主区时终端同屏（分栏）还是独占（专注）。
+             收起后编辑器回到整列，再点恢复分栏（比例记忆不变）。 -->
+        <button
+          v-if="editorTabs.length"
+          type="button"
+          class="hidden shrink-0 items-center self-stretch border-l border-border/60 px-3 text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
+          :title="editorFocused ? '退出专注（右侧同屏终端）' : '专注（收起同屏终端）'"
+          @click="toggleEditorFocus"
+        >
+          <PanelRightOpen v-if="editorFocused" class="size-3.5" />
+          <PanelRightClose v-else class="size-3.5" />
+        </button>
         <!-- 网络：active group 容器的 IP / 监听端口 / 映射端口收进下拉（原独立信息条）。
              宿主组没有网络信息，禁用置灰。popout 独立窗口同样有此入口。 -->
         <DropdownMenu v-if="activeGroup?.kind !== 'host' && activeGroup?.kind !== 'ssh'" class="max-md:hidden">
@@ -4541,43 +4679,18 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </div>
       </div>
 
-      <!-- 文件 tab 栏（底部，VSCode 式）：每个 tab 一个常驻编辑器面板（v-show 保活）。
-           色点=所属容器色（宿主琥珀），●=有未落盘改动（自动保存窗口内/冲突未决），
-           对比徽章=git diff 只读态。主区同区切换：点文件 tab 主区给编辑器，
-           点顶部终端 tab 主区给终端。主要内容是终端——没开文件时整条不渲染，
-           不占终端区高度；激活样式用上缘色条（栏在底部，压边方向反转）。
-           多 tab 收缩同终端 tab（浏览器式，桌面收缩/手机滚动）；右键菜单承载
-           tab 管理（关闭系）+ 形态动作（编辑⇄预览/下载/普通打开）+ 复制路径。 -->
-      <div v-if="editorTabs.length || aiOpen" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 max-md:min-h-10">
-        <!-- AI 工具 tab（单例，恒在文件 tab 最左，v-if=aiOpen——有文件 tab 时栏仍渲染，
-             不挂条件的话 X 关不掉它：aiOpen 已清但页签照画，用户怎么点都"关不掉"）：
-             Bot 钮打开的页面在这里落位，与文件 tab 平级互切；X 关闭整个 AI 工作区。
-             手机由底部导航承担 AI 一级入口，这条只保留桌面切换形态。 -->
-        <div
-          v-if="aiOpen"
-          class="hidden shrink-0 cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs md:flex"
-          :class="
-            mainView === 'ai'
-              ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
-              : 'text-muted-foreground hover:bg-accent/50'
-          "
-          title="AI 工具（技能 / 模型接入）"
-          @click="openAi()"
-        >
-          <Bot class="size-3.5 shrink-0 max-md:size-4" />
-          <span class="min-w-0">AI 工具</span>
-          <button
-            class="ml-1 flex shrink-0 items-center rounded text-muted-foreground hover:bg-accent hover:text-destructive max-md:px-1 max-md:py-1 pointer-coarse:px-2 pointer-coarse:py-1"
-            title="关闭 AI 工具页"
-            @click.stop="closeAi()"
-          >
-            <X class="size-3 max-md:size-3.5" />
-          </button>
-        </div>
+      <!-- 文件 tab 栏（手机 only，2026-10-21 起——桌面已并入顶部 tab 栏的文件段）：主窗口
+           顶栏在手机整条隐藏（终端切换下沉底栏的既有设计），文件 tab 无处可去，留在底部。
+           每个tab 一个常驻编辑器面板（v-show 保活）。色点=所属容器色（宿主琥珀），
+           ●=有未落盘改动（自动保存窗口内/冲突未决），对比徽章=git diff 只读态。
+           点文件 tab 主区给编辑器，点底栏「终端」回终端。激活样式用上缘色条（栏在底部，
+           压边方向反转；顶栏内是下缘）。popout 手机顶栏可见（无底栏），此条为桌面形态
+           冗余，md:hidden 收掉。 -->
+      <div v-if="editorTabs.length" class="flex min-h-7 items-stretch border-t border-border bg-muted/30 md:hidden max-md:min-h-10">
         <ContextMenu v-for="(t, i) in editorTabs" :key="tabId(t)">
           <ContextMenuTrigger as-child>
             <div
-              class="flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm md:shrink md:max-w-56"
+              class="flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
               :class="
                 i === activeEditorIdx && mainView === 'file'
                   ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
@@ -4611,10 +4724,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <!-- 形态动作：编辑/预览切换（状态感知——渲染视图/只读态显示「编辑」，
-                 编辑会话中显示「预览」：md/svg 回渲染视图、普通文件锁回只读）；diff 态
-                 「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
-                 音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
             <ContextMenuItem
               v-if="!tabMode[tabId(t)] || !tabMode[tabId(t)].editing || tabMode[tabId(t)].preview"
               @click="tabModeClick(t, i)"
@@ -4662,18 +4771,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           :actions="editorTabs[activeEditorIdx] ? mobileFileTabActionList(editorTabs[activeEditorIdx], activeEditorIdx) : []"
           @select="editorTabs[activeEditorIdx] && runMobileFileTabAction(editorTabs[activeEditorIdx], $event)"
         />
-        <!-- 分栏/专注切换（桌面 only）：编辑器主区时终端同屏（分栏）还是独占（专注）。
-             收起后编辑器回到整列，再点恢复分栏（比例记忆不变）。 -->
-        <button
-          v-if="editorTabs.length"
-          type="button"
-          class="hidden shrink-0 cursor-pointer items-center justify-center rounded px-2 text-muted-foreground hover:bg-accent/50 hover:text-foreground md:ml-auto md:flex"
-          :title="editorFocused ? '退出专注（右侧同屏终端）' : '专注（收起同屏终端）'"
-          @click="toggleEditorFocus"
-        >
-          <PanelRightOpen v-if="editorFocused" class="size-3.5" />
-          <PanelRightClose v-else class="size-3.5" />
-        </button>
       </div>
 
       <DesktopDialog
