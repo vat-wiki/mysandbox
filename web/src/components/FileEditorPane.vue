@@ -1195,6 +1195,44 @@ function fmtSize(n: number): string {
   font-size: 12px;
   line-height: 1.6;
 }
+/* 表格：GFM 裸 table 无默认边框会挤成一团——全边框 + 表头 muted 底；
+   宽表 display:block 撑出横向滚动（v-html 内容挂不了全局类，滚动条同 pre 复刻） */
+.md-body :deep(table) {
+  margin: 0.9em 0;
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+.md-body :deep(table::-webkit-scrollbar) {
+  width: 8px;
+  height: 8px;
+}
+.md-body :deep(table::-webkit-scrollbar-track) {
+  background: transparent;
+}
+.md-body :deep(table::-webkit-scrollbar-thumb) {
+  background-color: var(--scroll-thumb);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.md-body :deep(table::-webkit-scrollbar-thumb:hover) {
+  background-color: var(--scroll-thumb-hover);
+}
+.md-body :deep(th),
+.md-body :deep(td) {
+  border: 1px solid var(--color-border);
+  padding: 0.35em 0.75em;
+  text-align: left;
+  vertical-align: top;
+}
+.md-body :deep(thead th) {
+  background: var(--color-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
 /* mermaid 占位块：渲染成功后原地换成 SVG（居中铺放），剥掉代码块的 muted 底；
    解析失败保留源码便于就地改，红框示意 */
 .md-body :deep(.mermaid-view) {
