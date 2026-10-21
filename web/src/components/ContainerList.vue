@@ -116,13 +116,14 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, TerminalSquare, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import DeleteContainerDialog from '@/components/DeleteContainerDialog.vue'
 import TermSessionsDialog from '@/components/TermSessionsDialog.vue'
+import TermSessionList from '@/components/TermSessionList.vue'
 import SshTargetsDialog from '@/components/SshTargetsDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
@@ -350,7 +351,7 @@ const ctSummary = computed(() => {
 // 从快捷列表变成整个布局翻面，太重）。悬停优先于钉住（悬停走了回落到钉住的那区）；
 // 悬停与浮层之间不留缝，移入浮层不闪退；菜单开着时不收浮层（浮层卸载会连菜单一起
 // 拆掉），菜单关闭时再收（ContextMenu 的 close-auto-focus）。
-type RailSection = 'ct' | 'svc' | 'term'
+type RailSection = 'ct' | 'svc' | 'term' | 'sess'
 const railHover = ref<RailSection | null>(null)
 const railPinned = ref<RailSection | null>(null)
 const railMenuOpen = ref(false)
@@ -3366,6 +3367,36 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </div>
             </div>
           </div>
+          <!-- rail「所有终端」分区：全局终端会话（服务端扫描，跨窗口跨浏览器找回现场）
+               + 本窗口隐藏组恢复。列表挂载才扫一轮（跨容器 exec，不做轮询）；接入动作
+               完成即收浮层（新组已落在主列，钉着看它没意义）。 -->
+          <div class="relative w-full" data-rail-section @mouseenter="railSectionEnter('sess')" @mouseleave="railSectionLeave()">
+            <button
+              type="button"
+              class="flex size-8 w-full items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
+              :class="railActive === 'sess' ? 'bg-accent/40' : ''"
+              title="所有终端 · 悬停查看 · 点击钉住"
+              @click="railPinToggle('sess')"
+            >
+              <TerminalSquare class="size-4" />
+            </button>
+            <div
+              v-if="railActive === 'sess'"
+              class="absolute left-full top-0 z-50 ml-1 w-72 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl"
+            >
+              <div class="scroll-thin flex max-h-[min(60vh,360px)] flex-col overflow-y-auto">
+                <TermSessionList
+                  :items="items"
+                  :occupied="occupiedSet"
+                  :hidden="hiddenGroups"
+                  :attention-ids="hiddenAttentionIds"
+                  @adopt="((adoptSessions($event)), closeRailSection())"
+                  @restore="((restoreHidden($event)), closeRailSection())"
+                  @unauthorized="emit('unauthorized')"
+                />
+              </div>
+            </div>
+          </div>
         </div>
         <div class="flex shrink-0 flex-col items-center gap-0.5 border-t border-border py-1.5">
           <!-- 全局面板开关（2026-10-21 起从顶栏归位侧栏）：文件面板/AI/设置是全局开关，
@@ -4066,6 +4097,23 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             暂无 SSH 主机，点 ＋ 添加
           </p>
         </div>
+        <!-- 全局终端会话（桌面）：与对话框同源的 TermSessionList，终端区展开才挂载
+             （挂载即扫一轮，无轮询）。含本窗口隐藏组恢复——主窗口不依赖对话框也有
+             找回入口；手机仍走切换器里的「所有终端」。 -->
+        <div
+          v-if="termExpanded && !isPhone"
+          class="max-h-48 overflow-y-auto scroll-thin border-t border-border/60"
+        >
+          <TermSessionList
+            :items="items"
+            :occupied="occupiedSet"
+            :hidden="hiddenGroups"
+            :attention-ids="hiddenAttentionIds"
+            @adopt="adoptSessions"
+            @restore="restoreHidden"
+            @unauthorized="emit('unauthorized')"
+          />
+        </div>
       </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
@@ -4147,7 +4195,10 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <PanelLeftOpen class="size-3.5 max-md:size-5" />
         </button>
+        <!-- 「所有终端」钮：主窗口已归位侧栏（rail 分区 + 展开态终端区尾部块），
+             顶栏只给 popout（无侧栏，这里仍是其唯一常驻入口）。 -->
         <button
+          v-if="props.popout"
           class="relative hidden shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
           title="所有终端（本机全部活跃会话，含其他窗口 / 浏览器打开的）"
           @click="showSessions = true"
