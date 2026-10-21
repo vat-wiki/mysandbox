@@ -19,10 +19,13 @@ const props = defineProps<{
 }>()
 
 // 选项基线：只读、并排视图、无 minimap——与 CodeEditor 的观感基线对齐。
+// useInlineViewWhenSpaceIsLimited：容器放不下两列时 Monaco 自动切 inline diff
+// （窄屏下并排各 ~250px 不可读，这是官方给的窄屏逃生门）。
 const diffOptions = computed(() => ({
   readOnly: true,
   originalEditable: false,
   renderSideBySide: true,
+  useInlineViewWhenSpaceIsLimited: true,
   minimap: { enabled: false },
   fontSize: 12,
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
