@@ -1354,7 +1354,11 @@ onBeforeUnmount(() => {
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
        手机软键盘弹起时 paddingBottom 撑出键盘占位（kbPad，见 setupViewportWatch），
        内层 ResizeObserver 自动 refit。 -->
-  <div ref="rootEl" class="relative flex h-full flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbPad > 0 ? { paddingBottom: kbPad + 'px' } : undefined">
+  <!-- ⚠️ 根容器必须 flex-1 min-h-0 而不是 h-full：叶子是 flex-col（pane 头部 + 本体），
+       h-full = 100% 叶子高，加头部后恒溢出一个头高——终端底部会盖住下方文件 tab 栏
+       （旧换显布局溢的是黑底看不出来，编辑器+终端分栏后这 22px 正好压住 tab 栏右侧
+       按钮）。flex-1 min-h-0 让本体只占头部之外的剩余空间。 -->
+  <div ref="rootEl" class="relative flex min-h-0 flex-1 flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbPad > 0 ? { paddingBottom: kbPad + 'px' } : undefined">
     <!-- touch-none（touch-action: none）：触屏滚终端的唯一正解。xterm 的 touchmove 处理是 JS 驱动
          viewport.scrollTop，但只在回滚区边界才 preventDefault——滚动途中浏览器的原生平移同时在跑，
          而触点不在 .xterm-viewport 滚动层内，原生滚动链直接落到 document：上翻历史（手指下划）时
