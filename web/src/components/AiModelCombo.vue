@@ -51,7 +51,7 @@ function pick(m: string) {
           <ChevronDown class="size-3.5" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" class="w-80 space-y-1 p-1.5">
+      <PopoverContent align="end" class="w-80 max-w-[calc(100vw-1.5rem)] space-y-1 p-1.5">
         <Input v-model="filter" placeholder="过滤模型…" class="h-7 text-xs" />
         <div class="scroll-thin max-h-56 overflow-y-auto">
           <button

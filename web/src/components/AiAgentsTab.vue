@@ -408,16 +408,17 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
     <template v-else>
       <!-- 单面板页：头顶栏 = 图标 + 工具分段切换（不放与页签重复的标题） -->
       <section class="rounded-md border">
-        <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+        <div class="flex flex-wrap items-center gap-2 border-b bg-muted/30 px-3 py-2">
           <Bot class="size-3.5 shrink-0 text-muted-foreground" />
           <!-- 工具切换：分段控件（选中底色明显，点开即该 CLI 的输入表单）；
-               圆点 = 该工具绑定已启用 -->
-          <div class="flex gap-0.5 rounded-md border bg-background/40 p-0.5">
+               圆点 = 该工具绑定已启用。四个 CLI 标签 ~320px，手机放不下——可横向轻扫，
+               「一键更新」flex-wrap 落到第二行 -->
+          <div class="scroll-thin flex max-w-full gap-0.5 overflow-x-auto rounded-md border bg-background/40 p-0.5">
             <button
               v-for="t in toolTabs"
               :key="t.key"
               type="button"
-              class="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors"
+              class="flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors"
               :class="
                 toolTab === t.key
                   ? 'bg-background font-medium text-foreground shadow-sm'

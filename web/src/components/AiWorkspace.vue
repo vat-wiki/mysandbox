@@ -47,9 +47,10 @@ const tabs = [
       </div>
     </div>
 
-    <!-- 内容：居中限宽（表单可读），下发结果等宽块在限宽内也够用 -->
+    <!-- 内容：居中限宽（表单可读），下发结果等宽块在限宽内也够用。手机收内边距
+         （px-6 在 ~360px 视口吃掉 48px，卡片网格/表单可读宽只剩 ~310px） -->
     <div class="scroll-thin min-h-0 flex-1 overflow-y-auto">
-      <div class="mx-auto w-full max-w-4xl px-6 py-5">
+      <div class="mx-auto w-full max-w-4xl max-md:px-2.5 max-md:py-3 px-6 py-5">
         <SkillsHubTab v-if="tab === 'skills'" @unauthorized="emit('unauthorized')" />
         <AiProvidersTab
           v-else-if="tab === 'providers'"

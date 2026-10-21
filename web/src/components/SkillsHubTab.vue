@@ -803,7 +803,7 @@ async function cleanMissing(r: SkillRuleResult) {
               >·{{ looseTotal }}</span>
             </Button>
           </PopoverTrigger>
-          <PopoverContent side="bottom" align="end" class="w-96">
+          <PopoverContent side="bottom" align="end" class="w-96 max-w-[calc(100vw-1.5rem)]">
             <div class="flex gap-1">
               <button
                 type="button"
@@ -965,8 +965,10 @@ async function cleanMissing(r: SkillRuleResult) {
       </div>
 
       <!-- 技能收藏架：大卡片铺开——名称 + 描述 + 卡脚（右 ⋯ 菜单 / 安装主钮：
-           安装位置 · 更新 · 移除），卡面零杂音 -->
-      <div v-else class="grid gap-3 px-4 py-4 [grid-template-columns:repeat(auto-fill,minmax(340px,1fr))]">
+           安装位置 · 更新 · 移除），卡面零杂音。
+           minmax(min(340px,100%),1fr)：340px 最小列宽在手机（容器 ~310px）会撑破网格——
+           min() 钳到容器宽，窄屏单列、宽屏自动铺多列，两相兼容。 -->
+      <div v-else class="grid gap-3 px-4 py-4 [grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))]">
         <div
           v-for="s in reg"
           :key="s.name"
@@ -1007,7 +1009,7 @@ async function cleanMissing(r: SkillRuleResult) {
                   title="查看失败原因"
                 >检查失败</button>
               </PopoverTrigger>
-              <PopoverContent side="bottom" align="end" class="w-80 p-2">
+              <PopoverContent side="bottom" align="end" class="w-80 max-w-[calc(100vw-1.5rem)] p-2">
                 <p class="px-1 pb-1 text-[10px] text-muted-foreground">检查失败 · {{ s.name }}</p>
                 <p class="scroll-thin max-h-40 overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] px-1 font-mono text-[11px] leading-relaxed text-destructive/90">{{ checkRes[s.name]?.message || '未知错误' }}</p>
               </PopoverContent>
@@ -1027,7 +1029,7 @@ async function cleanMissing(r: SkillRuleResult) {
                   title="安装位置——点范围 chip 切换，✕ 卸载该处"
                 >{{ installedCount(s) }} 处</button>
               </PopoverTrigger>
-              <PopoverContent side="bottom" align="end" class="w-80 p-2">
+              <PopoverContent side="bottom" align="end" class="w-80 max-w-[calc(100vw-1.5rem)] p-2">
                 <div
                   v-for="r in rulesOf(s.name)"
                   :key="r.id"
