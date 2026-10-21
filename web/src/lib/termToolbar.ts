@@ -23,6 +23,18 @@ export interface PoolEntry {
 
 export const KEY_POOL: Record<string, PoolEntry> = {
   esc: { label: 'Esc', title: '发送 Esc（中断 agent / 关闭菜单）', act: { kind: 'seq', seq: '\x1b' } },
+  // 常用 Ctrl 控制键：触屏敲软键盘 + 粘滞 Ctrl 要两步，高频组合一键直发。
+  // 覆盖面：中断（^C）/ EOF（^D）/ 挂起（^Z）/ 清屏（^L）/ 行首行尾与删行（^A ^E ^U ^K）/ 历史搜索（^R）。
+  ctrlc: { label: '^C', title: '发送 Ctrl+C（中断当前命令 / 退出程序）', act: { kind: 'seq', seq: '\x03' } },
+  ctrld: { label: '^D', title: '发送 Ctrl+D（EOF：退出 shell / 结束输入）', act: { kind: 'seq', seq: '\x04' } },
+  ctrlz: { label: '^Z', title: '发送 Ctrl+Z（挂起当前任务，bg/fg 恢复）', act: { kind: 'seq', seq: '\x1a' } },
+  ctrll: { label: '^L', title: '发送 Ctrl+L（清屏重绘）', act: { kind: 'seq', seq: '\x0c' } },
+  ctrla: { label: '^A', title: '发送 Ctrl+A（跳到行首；tmux 前缀键）', act: { kind: 'seq', seq: '\x01' } },
+  ctrle: { label: '^E', title: '发送 Ctrl+E（跳到行尾）', act: { kind: 'seq', seq: '\x05' } },
+  ctrlu: { label: '^U', title: '发送 Ctrl+U（删除整行：光标前全部）', act: { kind: 'seq', seq: '\x15' } },
+  ctrlw: { label: '^W', title: '发送 Ctrl+W（删除前一个词）', act: { kind: 'seq', seq: '\x17' } },
+  ctrlk: { label: '^K', title: '发送 Ctrl+K（删到行尾）', act: { kind: 'seq', seq: '\x0b' } },
+  ctrlr: { label: '^R', title: '发送 Ctrl+R（反向搜索历史）', act: { kind: 'seq', seq: '\x12' } },
   stab: { label: '⇥', title: '发送 Shift+Tab（切换权限模式）', act: { kind: 'seq', seq: '\x1b[Z' } },
   up: { label: '↑', title: '上方向键：选菜单项 / 翻输入历史（长按连发）', act: { kind: 'repeat', seq: '\x1b[A' } },
   down: { label: '↓', title: '下方向键：选菜单项 / 翻输入历史（长按连发）', act: { kind: 'repeat', seq: '\x1b[B' } },
@@ -32,6 +44,7 @@ export const KEY_POOL: Record<string, PoolEntry> = {
   tab: { label: 'Tab', title: '发送 Tab（补全）', act: { kind: 'seq', seq: '\t' } },
   home: { label: 'Home', title: '发送 Home（跳到行首）', act: { kind: 'seq', seq: '\x1b[H' } },
   endk: { label: 'End', title: '发送 End（跳到行尾）', act: { kind: 'seq', seq: '\x1b[F' } },
+  delk: { label: 'Del', title: '发送 Delete（向后删除，软键盘普遍没有）', act: { kind: 'seq', seq: '\x1b[3~' } },
   slash: { label: '/', title: '发送斜杠（路径 / 参数）', act: { kind: 'seq', seq: '/' } },
   dash: { label: '-', title: '发送连字符（命令行选项）', act: { kind: 'seq', seq: '-' } },
   pgup: { label: '上页', title: '上翻一页（只滚本地回滚区，不进 PTY）', act: { kind: 'scroll', pages: -1 } },
@@ -58,11 +71,13 @@ export const TOOLBAR_MAX = 24
 // Terminal.vue 的分页渲染与 ToolbarSettingsDialog 的按页分区共用这个常数。
 export const TB_PER_PAGE = 14
 
-// 预置布局 = Termux 默认 extra-keys 两行（各 7 键）逐位对齐：第一行 ESC / - HOME UP END PGUP，
+// 预置布局 = Termux 默认 extra-keys 两行（各 7 键）逐位对齐：第一行 ESC / ^C / - HOME UP END PGUP，
 // 第二行 TAB CTRL ALT LEFT DOWN RIGHT PGDN（Ctrl/Alt 都是粘滞修饰键，交互见 Terminal.vue）。
 // 另补 Shift+Tab（切 agent 权限模式）与 ⏎（系统键盘收起时也能确认）。
+// ^C 一键直发（中断 agent / 杀进程是这个场景的最高频动作）——比「粘滞 Ctrl + 软键盘 c」省两步。
 const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'esc' },
+  { t: 'key', id: 'ctrlc' },
   { t: 'key', id: 'slash' },
   { t: 'key', id: 'dash' },
   { t: 'key', id: 'home' },
