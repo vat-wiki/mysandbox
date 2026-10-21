@@ -3368,11 +3368,40 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           </div>
         </div>
         <div class="flex shrink-0 flex-col items-center gap-0.5 border-t border-border py-1.5">
-          <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部；
-               设置已收敛到顶栏右上角，不再重复占侧栏底部位。 -->
+          <!-- 全局面板开关（2026-10-21 起从顶栏归位侧栏）：文件面板/AI/设置是全局开关，
+               与容器分区同族——收起态（rail）也是它们的家，侧栏全收不损失任何能力。
+               激活态用背景高亮（48px 宽度下下缘色条没有施展空间）。popout 无侧栏，
+               这三钮仍留在顶栏。 -->
+          <button
+            type="button"
+            class="flex size-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
+            :class="showFiles ? 'bg-accent/40 text-foreground' : 'text-muted-foreground hover:text-foreground'"
+            :title="showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
+            @click="showFiles = !showFiles"
+          >
+            <FolderOpen class="size-4" />
+          </button>
+          <button
+            type="button"
+            class="flex size-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
+            :class="mainView === 'ai' ? 'bg-accent/40 text-foreground' : 'text-muted-foreground hover:text-foreground'"
+            title="AI 工具（技能 / 模型接入）"
+            @click="openAi()"
+          >
+            <Bot class="size-4" />
+          </button>
           <button
             type="button"
             class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="设置"
+            @click="showSettings = true"
+          >
+            <Settings class="size-4" />
+          </button>
+          <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部。 -->
+          <button
+            type="button"
+            class="mt-0.5 flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             title="展开侧栏"
             @click="collapsed = false"
           >
@@ -4040,7 +4069,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
-           与收缩态 rail 底部的展开键互为镜像；设置入口由顶栏统一承载。 -->
+           与收缩态 rail 底部的展开键互为镜像。右端是全局面板开关（文件面板/AI/设置，
+           与 rail 底部同款同激活态）——开关的家在侧栏，展开态也不例外面板入口。 -->
       <div class="flex shrink-0 items-stretch border-t border-border">
         <button
           type="button"
@@ -4051,6 +4081,34 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <PanelLeftClose class="size-3.5 shrink-0" />
           <span class="min-w-0 truncate text-xs">{{ isPhone ? '关闭环境选择' : '收起侧栏' }}</span>
         </button>
+        <template v-if="!isPhone">
+          <button
+            type="button"
+            class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            :class="showFiles ? 'bg-accent/40 text-foreground' : ''"
+            :title="showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
+            @click="showFiles = !showFiles"
+          >
+            <FolderOpen class="size-3.5" />
+          </button>
+          <button
+            type="button"
+            class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            :class="mainView === 'ai' ? 'bg-accent/40 text-foreground' : ''"
+            title="AI 工具（技能 / 模型接入）"
+            @click="openAi()"
+          >
+            <Bot class="size-3.5" />
+          </button>
+          <button
+            type="button"
+            class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            title="设置"
+            @click="showSettings = true"
+          >
+            <Settings class="size-3.5" />
+          </button>
+        </template>
       </div>
       </template>
     </aside>
@@ -4166,11 +4224,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           :actions="mobileGroupActionList(activeGroup)"
           @select="runMobileGroupAction(activeGroup, $event)"
         />
-        <!-- AI 工具入口：环境级全局面板（技能中心/模型供应商/智能体配置），与「所有终端」
-             同为常驻全局钮——不挂任何分区（从容器分区头挪出，全局功能不借容器菜单位）。
-             AI 占主列时钮上亮激活态（原文件段 AI tab 的激活指示职责，AI 页签退役后归位
-             到入口钮本体）。 -->
+        <!-- AI 工具入口：环境级全局面板（技能中心/模型供应商/智能体配置）。主窗口归侧栏
+             （rail 底部/展开态收起行，2026-10-21 起），顶栏只服务终端会话；popout 无侧栏，
+             此钮是 popout 的唯一 AI 入口。AI 占主列时钮上亮激活态。 -->
         <button
+          v-if="props.popout"
           class="hidden shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs md:flex"
           :class="
             mainView === 'ai'
@@ -4382,6 +4440,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <Network class="size-3.5 max-md:size-5" />
         </button>
         <button
+          v-if="props.popout"
           class="hidden items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs md:flex"
           :class="showFiles ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'"
           :title="showFiles ? '关闭文件面板（跟随终端目录）' : '打开文件面板（跟随终端目录）'"
@@ -4389,9 +4448,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
         </button>
-        <!-- 设置：右上角常驻全局入口，与侧栏底部入口同开一个弹框；桌面独立图标，
-             手机并入右侧「更多」。 -->
+        <!-- 设置：主窗口归侧栏（rail 底部/展开态收起行）；popout 无侧栏，顶栏保留。 -->
         <button
+          v-if="props.popout"
           class="hidden items-center self-stretch border-l border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
           title="设置"
           @click="showSettings = true"
