@@ -1084,6 +1084,14 @@ export const writeFileBase64 = (id: string, path: string, base64: string) =>
   }) as Promise<{ ok: true; mtime?: number }>
 export const getTermCwd = (id: string, termId: string) =>
   api(`${filesBase(id)}/cwd?termId=${encodeURIComponent(termId)}`) as Promise<{ cwd: string }>
+// 前台命令 + 剪贴板桥可用性（仅容器侧实现了 /fg）：图片粘贴分流判据——
+// command 是 shell → 路径粘贴；bridge 且前台是 CLI → 转发 ^V 走原生附加（shim 取图）。
+export const getTermFg = (id: string, termId: string) =>
+  api(`/api/containers/${id}/fg?termId=${encodeURIComponent(termId)}`) as Promise<{ command: string; bridge: boolean }>
+// web 终端剪贴板桥推送：图片（canvas 已统一转 PNG 的 base64）+ 文本，容器内 xclip/wl-paste
+// shim 经 peer GET /clipboard 取走（server/terminalClipboard.ts 暂存，120s TTL）。
+export const pushTerminalClipboard = (payload: { image?: { b64: string }; text?: string }) =>
+  postJson('/api/terminal-clipboard', payload, 15_000) as Promise<{ ok: true }>
 // 终端路径链接解析（Ctrl+点击打开）：raw token（可相对/带 ~）→ 权威绝对路径 + 类型。
 // HOST_ID 哨兵天然切宿主端点。missing 前端按 file 走编辑器新建态。
 export interface ResolveView {

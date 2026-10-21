@@ -8,7 +8,7 @@ import { CaseSensitive, ChevronDown, ChevronUp, Regex, WholeWord, X } from 'luci
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { getToken, writeFileBase64, resolveTermPath, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
+import { getToken, writeFileBase64, resolveTermPath, pushTerminalClipboard, getTermFg, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { noteTermOutput } from '@/lib/terminalActivity'
 import { isPhone } from '@/composables/useDevice'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
@@ -479,6 +479,9 @@ async function pasteClipboard() {
           if (t) files.push(new File([await item.getType(t)], 'clipboard', { type: t }))
         }
         if (files.length) {
+          // 桥优先（100% 原生体验）：推剪贴板 + 转发 ^V，前台 CLI（claude 等）自己调
+          // xclip shim 走原生附加；没桥/前台是 shell → 落路径粘贴。
+          if (await tryBridgePaste(files[0])) return
           await pasteImageFiles(files)
           return
         }
@@ -522,6 +525,43 @@ function fileToBase64(f: Blob): Promise<string> {
     r.onerror = () => reject(r.error ?? new Error('read failed'))
     r.readAsDataURL(f)
   })
+}
+// —— 剪贴板桥（100% 原生体验的那条路）——
+// 浏览器剪贴板 → /api/terminal-clipboard 暂存 → 容器内 xclip/wl-paste shim（经 peer
+// GET /clipboard 取）→ 前台 AI CLI 调它自己的原生剪贴板读取（xclip 链）→ [Image #1]
+// 内联附加。只对容器终端成立：shim 靠宿主种子铺进 LXC 容器 home，宿主/服务/SSH 没有
+// 种子机制（宿主终端里 CC 读的是宿主自己的剪贴板，本地访问时本来就和浏览器同源）。
+const SHELL_COMMANDS = new Set(['zsh', 'bash', 'sh', 'dash', 'ash', 'fish', 'sudo', 'su'])
+async function imageToPngB64(f: Blob): Promise<string> {
+  // 浏览器剪贴板可能是 jpeg/webp；CC 的取图链只认 png/bmp——canvas 统一转 PNG。
+  const bmp = await createImageBitmap(f)
+  const c = document.createElement('canvas')
+  c.width = bmp.width
+  c.height = bmp.height
+  c.getContext('2d')!.drawImage(bmp, 0, 0)
+  const blob = await new Promise<Blob>((resolve, reject) =>
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('png encode failed'))), 'image/png'),
+  )
+  bmp.close()
+  return fileToBase64(blob)
+}
+// 返回 true = 桥已送达（^V 已转发，别再路径粘贴）；false = 落路径粘贴。
+async function tryBridgePaste(first: File): Promise<boolean> {
+  if (props.host || props.ssh || props.service || !props.id) return false
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false
+  try {
+    const b64 = await imageToPngB64(first)
+    await pushTerminalClipboard({ image: { b64 } })
+    const fg = await getTermFg(props.id, props.termId)
+    // 前台是普通 shell：^V 会被解释成 quoted-insert 白吃一个键，粘贴落空 → 路径粘贴。
+    // 老容器没补种（bridge=false）：^V 后 CLI 找不到 xclip，无事发生 → 路径粘贴。
+    if (!fg.bridge || SHELL_COMMANDS.has(fg.command)) return false
+    sendRaw('\x16')
+    return true
+  } catch {
+    // 桥链路任何一环失败（读图/编码/推送/fg 查询）：粘贴不因桥失败而丢。
+    return false
+  }
 }
 async function pasteImageFiles(files: File[]) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {

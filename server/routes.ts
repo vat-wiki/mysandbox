@@ -239,7 +239,10 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
       if (body.image !== undefined) {
         const img = body.image as { mime?: unknown; b64?: unknown };
         if (typeof img.b64 !== 'string') throw badRequest('image.b64 (string) required');
-        if (img.mime !== 'image/png') throw badRequest('image.mime must be image/png（前端统一转 PNG）');
+        // mime 由服务端钉死 image/png：前端 canvas 统一转 PNG 再推，字段根本不用传。
+        if (img.mime !== undefined && img.mime !== 'image/png') {
+          throw badRequest('image.mime must be image/png（前端统一转 PNG）');
+        }
       }
       if (body.text !== undefined && typeof body.text !== 'string') {
         throw badRequest('text must be string');

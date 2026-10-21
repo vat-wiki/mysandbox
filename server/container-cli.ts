@@ -19,6 +19,7 @@ import { getAllMeta } from './state.js';
 import { log } from './logger.js';
 import { peerSeedInfo, type PeerSeedInfo } from './peer.js';
 import { AGENT_NOTIFY_SCRIPT } from './agentNotify.js';
+import { CLIP_CORE_SCRIPT, XCLIP_SHIM_SCRIPT, WLPASTE_SHIM_SCRIPT } from './clipShim.js';
 
 // 容器内路径（= 宿主侧 home 目录 + 此相对路径）。
 export const CONTAINER_CLI_PATH = '/home/dev/.local/bin/mysandbox';
@@ -200,6 +201,11 @@ export function seedContainerCli(home: string, peer?: PeerSeedInfo): void {
     mkdirSync(conf, { recursive: true, mode: 0o700 });
     writeIfChanged(join(conf, 'peer-exec.mjs'), PEER_EXEC_SCRIPT, 0o755);
     writeIfChanged(join(conf, 'agent-notify.mjs'), AGENT_NOTIFY_SCRIPT, 0o755);
+    // 剪贴板桥（clipShim.ts）：xclip/wl-paste shim 铺进 PATH 首位，AI CLI 读剪贴板
+    // 时转发宿主浏览器剪贴板。老容器随启动扫描补种，无需重建。
+    writeIfChanged(join(conf, 'clip.mjs'), CLIP_CORE_SCRIPT, 0o755);
+    writeIfChanged(join(bin, 'xclip'), XCLIP_SHIM_SCRIPT, 0o755);
+    writeIfChanged(join(bin, 'wl-paste'), WLPASTE_SHIM_SCRIPT, 0o755);
     if (peer) writeIfChanged(join(conf, 'peer.json'), JSON.stringify(peer), 0o600);
   } catch (e) {
     log.warn({ home, err: String(e) }, 'container cli seed failed');
