@@ -4242,13 +4242,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </div>
         <!-- 文件 tab 段（2026-10-21 起并入顶栏，原在底部独立一条）：终端段与文件段本质都是
              「主视图是什么」的切换器，分居屏幕顶底割裂换显——合并后点哪段哪段占主区，行为
-             即隔离；终端段恒左、文件段恒右（主要内容优先 + 位置惯性），border-l 物理分隔。
-             激活语言与终端 tab 统一：下缘色条（顶栏压下边；原底栏形态用上缘）。段内滚动同
-             终端段（浏览器式收缩，max-w 封顶）。手机主窗口顶栏整条隐藏（终端切换下沉底栏的
-             既有设计），文件 tab 在手机仍走底部栏（见下）。 -->
+             即隔离；终端段恒左、文件段贴最右——正下方就是文件面板列顶，「浏览在右列、
+             打开的文件页签在其正上方」动线闭环，border-l 物理分隔。终端段 flex-1 吃掉剩余
+             空间把文件段推到右缘；文件段收缩到内容宽、tab 多时 45% 封顶内滚动。激活语言
+             与终端 tab 统一：下缘色条（顶栏压下边；原底栏形态用上缘）。手机主窗口顶栏整条
+             隐藏（终端切换下沉底栏的既有设计），文件 tab 在手机仍走底部栏（见下）。 -->
         <div
           v-if="editorTabs.length || aiOpen"
-          class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin border-l border-border/60"
+          class="flex min-w-0 shrink-0 max-w-[45%] items-stretch overflow-x-auto scroll-thin border-l border-border/60"
         >
           <!-- AI 工具 tab（单例，恒在文件 tab 最左，v-if=aiOpen——不挂条件的话 X 关不掉它：
                aiOpen 已清但页签照画，用户怎么点都"关不掉"）：Bot 钮打开的页面在这里落位，
