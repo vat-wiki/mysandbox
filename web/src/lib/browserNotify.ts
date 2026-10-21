@@ -76,7 +76,23 @@ function ensureFocusDismiss(): void {
   })
 }
 
-// 发一条「无输出」通知。开关关/权限缺/页面在前台都不发（返回 false，调用方无需关心）。
+// 「刚打开」宽限：移动端 Chrome 会冻结/节流后台 tab，冻结期间积下的等待事件，会在
+// 点开浏览器的瞬间随补跑的轮询落地——而这一拍经常赶在 focus 事件之前，此刻页面已在
+// 渲染、hasFocus() 却还是 false，前台闸门拦不住 → 用户正看着屏幕时炸出系统通知
+// （「一打开就通知」）。页面刚变为可见的几秒内不发：用户在场，琥珀标就是即时信号；
+// 宽限期内拦下的调用方**不消费**（见 ContainerList refreshActivity），积压事件留到
+// 真正离场后的那一拍再发——不错过，只是不当场炸。
+const OPEN_GRACE_MS = 10_000
+let visibleSince = Date.now()
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) visibleSince = Date.now()
+})
+export function justOpened(): boolean {
+  return Date.now() - visibleSince < OPEN_GRACE_MS
+}
+
+// 发一条「无输出」通知。开关关/权限缺/页面在前台/刚打开宽限内都不发（返回 false，
+// 调用方自行决定是否消费，见 justOpened 注释）。
 export function fireQuietNotify(
   title: string,
   body: string,
@@ -86,6 +102,7 @@ export function fireQuietNotify(
   if (!quietNotifyEnabled() || notifyPermission() !== 'granted') return false
   // 前台不发：tab 身份点可见，抢系统通知反而烦。
   if (document.hasFocus() && !document.hidden) return false
+  if (justOpened()) return false
   ensureFocusDismiss()
   try {
     const n = new Notification(title, {

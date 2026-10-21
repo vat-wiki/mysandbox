@@ -59,7 +59,7 @@ import {
   SUSTAIN_MS,
 } from '@/lib/terminalActivity'
 import { setFaviconBusy } from '@/lib/faviconStatus'
-import { fireQuietNotify } from '@/lib/browserNotify'
+import { fireQuietNotify, justOpened } from '@/lib/browserNotify'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
@@ -2846,6 +2846,10 @@ const quietAttention = ref<Map<string, number>>(new Map())
 // agent 精准提醒的文案信息（agent/事件/message）：组内任一叶子被 agentWaiting 命中时
 // 记下，attentionTitle 与浏览器通知用它出针对性文案；与 quietAttention 同步整体重算。
 const agentAttentionInfo = ref<Map<string, { agent: string; event: string; message?: string }>>(new Map())
+// 通知被「刚打开宽限」拦下的组（lib/browserNotify justOpened）：页面刚打开/恢复的
+// 几秒里积压的等待事件不当场炸成系统通知，也不消费——记在这里，离场后的那一拍重发。
+// 发出成功或用户在场被前台闸门拦下（标已看见）即移除；markWatch（点进组看了）同清。
+const notifyDeferred = new Set<string>()
 function attentionTitle(gId: string): string {
   const info = agentAttentionInfo.value.get(gId)
   if (info) {
@@ -2866,6 +2870,7 @@ function markWatch(g: TermGroup) {
     for (const t of leafIds(g.root)) resetTermRun(t)
   }
   agentAttentionInfo.value.delete(g.id)
+  notifyDeferred.delete(g.id)
 }
 function markLeft(g: TermGroup) {
   const now = Date.now()
@@ -2882,7 +2887,8 @@ const hiddenAttentionIds = computed(() => {
   return s
 })
 // 激活组 / 主区形态变化 = 「在看」关系变化。首跑（页面加载恢复的 tabs）统一落基线：
-// 激活组在看，其余组从加载起就没看过（它们常驻挂载、此后有输出就能积资格）。
+// 激活组在看，其余组从加载起就没看过（它们常驻挂载、此后有输出就能积资格）。隐藏组
+// 也要落——否则恢复后 leftAt 落空成 WATCHING，隐藏组刷新后就永远够不着提醒了。
 watch(
   () => [groups.value[activeIdx.value]?.id ?? '', mainView.value] as const,
   ([gid, mode], prev) => {
@@ -2891,6 +2897,9 @@ watch(
       for (const g of groups.value) {
         const watching = g.id === gid && mode === 'terminal'
         for (const t of leafIds(g.root)) leftAtByTerm.set(t, watching ? WATCHING : now)
+      }
+      for (const g of hiddenGroups.value) {
+        for (const t of leafIds(g.root)) leftAtByTerm.set(t, now)
       }
       return
     }
@@ -3035,20 +3044,31 @@ async function refreshActivity() {
   quietAttention.value = nextAttention
   agentAttentionInfo.value = nextAgentInfo
   // 浏览器通知（站外延伸，lib/browserNotify）：只对「新挂标」的组发——状态制重算
-  // 每拍整体替换，diff 出本轮新进的才发，不重发；页面在前台时 lib 内部拦下（tab
-  // 身份点就是即时信号）。点击 = 聚焦窗口并切到该组。开关在设置弹框（授权需用户
-  // 手势，per 组的「无输出时提醒」开关只管琥珀标，这里吃全局开关）。
+  // 每拍整体替换，diff 出本轮新进的才发，不重发（被「刚打开宽限」拦下的除外，见
+  // notifyDeferred）；页面在前台时 lib 内部拦下（tab 身份点就是即时信号）。点击 =
+  // 聚焦窗口并切到该组。开关在设置弹框（授权需用户手势，per 组的「无输出时提醒」
+  // 开关只管琥珀标，这里吃全局开关）。
   if (nextAttention.size) {
     for (const [gId] of nextAttention) {
-      if (prevAttention.has(gId)) continue
+      if (prevAttention.has(gId) && !notifyDeferred.has(gId)) continue
       const g = groups.value.find((x) => x.id === gId) ?? hiddenGroups.value.find((x) => x.id === gId)
       if (!g) continue
-      fireQuietNotify(
-        agentAttentionInfo.value.has(gId) ? `终端提醒：${groupLabel(g)}` : `终端无输出：${groupLabel(g)}`,
-        attentionTitle(gId),
-        `msb-quiet-${gId}`,
-        () => activateGroupById(gId),
-      )
+      if (
+        fireQuietNotify(
+          agentAttentionInfo.value.has(gId) ? `终端提醒：${groupLabel(g)}` : `终端无输出：${groupLabel(g)}`,
+          attentionTitle(gId),
+          `msb-quiet-${gId}`,
+          () => activateGroupById(gId),
+        )
+      ) {
+        notifyDeferred.delete(gId)
+      } else if (justOpened()) {
+        // 刚打开/恢复：积压事件不当场炸（用户正看着），记入宽限，离场那一拍再发。
+        notifyDeferred.add(gId)
+      } else {
+        // 用户在场（前台被拦）：标已看见，消费——「看过结果再走的人不被打扰」。
+        notifyDeferred.delete(gId)
+      }
     }
   }
   // 修剪已不存在的叶子登记（组关了 / 开关关了）：两张表同步清，防无界增长
@@ -3061,6 +3081,10 @@ async function refreshActivity() {
       leftAtByTerm.delete(t)
       forgetTerm(t)
     }
+  }
+  const groupIds = new Set([...groups.value, ...hiddenGroups.value].map((g) => g.id))
+  for (const gId of [...notifyDeferred]) {
+    if (!groupIds.has(gId)) notifyDeferred.delete(gId)
   }
 }
 
