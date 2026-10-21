@@ -112,6 +112,10 @@ mysandbox base status                         # 在不在、STOPPED 与否、大
 克隆要求模板 STOPPED（`lxc-copy` 对运行中的源静默失败）。模板需满足的容器契约
 （uid 1000 `dev`、seed 规则等）以 `scripts/lxc-template.sh` 为参考实现。
 
+> ⚠️ 分发模板包（`base export`）前自查内容：AI 网关的凭据会由「AI 工具」面板写进模板
+> rootfs（`~/.claude/settings.json`、`~/.codex/.env`、pi/opencode 配置等），hosts 里可能
+> 有你的自定义条目——对外分享前先清掉这些文件再导出（可克隆一个副本清理后 `--from` 导出）。
+
 ## 开发
 
 ```bash
