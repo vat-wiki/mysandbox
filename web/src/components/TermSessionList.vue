@@ -7,8 +7,8 @@
 // 窗口里它就断了）。挂载即扫一轮、无轮询（扫描是跨容器 exec 风暴）——刷新走手动。
 // 布局恢复的取舍：同容器多会话「全部接入」合并成一个 row 分屏组（≤4 块）；跨窗口拿不回
 // 原分屏树——布局是各窗口自己的 localStorage 状态，不是服务端状态。
-import { ref, computed, onMounted } from 'vue'
-import { RefreshCw, Trash2 } from 'lucide-vue-next'
+import { ref, computed, onMounted, watch } from 'vue'
+import { ChevronDown, RefreshCw, Trash2 } from 'lucide-vue-next'
 import {
   listTermSessions,
   killTermSession,
@@ -76,12 +76,14 @@ function sessionWhere(s: TermSessionView): string {
 // ---- 远端会话按容器/宿主/服务/SSH 主机分组 ----
 interface RemoteRow {
   host: boolean
+  key: string
   service?: boolean
   containerId?: string
   name: string
   color: string
   sessions: TermSessionView[]
 }
+
 const remoteRows = computed<RemoteRow[]>(() => {
   // 不做排除：服务端扫到的会话全列。本窗口已打开的标「已打开」（接入按钮同时保留——
   // 重复接入会在同 tmux 会话上多挂一个 attach 客户端，合法且现场一致）。
@@ -99,11 +101,12 @@ const remoteRows = computed<RemoteRow[]>(() => {
     let r = rows.get(k)
     if (!r) {
       if (s.kind === 'host') {
-        r = { host: true, name: '本机', color: '#f59e0b', sessions: [] }
+        r = { host: true, key: k, name: '本机', color: '#f59e0b', sessions: [] }
       } else if (s.kind === 'ssh') {
         // SSH 会话本体在远端 tmux（server/sshTerminal.ts）：目标名即身份，色沿用名字 hash。
         r = {
           host: false,
+          key: k,
           containerId: s.containerId,
           name: s.containerId || 'SSH 主机',
           color: containerColor(s.containerId ?? ''),
@@ -112,6 +115,7 @@ const remoteRows = computed<RemoteRow[]>(() => {
       } else if (s.kind === 'service') {
         r = {
           host: false,
+          key: k,
           service: true,
           containerId: s.containerId,
           name: s.containerId || '服务',
@@ -122,6 +126,7 @@ const remoteRows = computed<RemoteRow[]>(() => {
         const c = props.items.find((x) => x.id === s.containerId)
         r = {
           host: false,
+          key: k,
           containerId: s.containerId,
           name: c ? c.displayName || c.name : s.containerId || '?',
           color: containerColor(s.containerId ?? ''),
@@ -143,6 +148,24 @@ const remoteRows = computed<RemoteRow[]>(() => {
   for (const s of list) if (s.kind === 'service') rowFor(s).sessions.push(s)
   return [...rows.values()]
 })
+
+// ---- 组折叠：同组大量无标题 shell（dev@dev:~ 刷屏）平铺没有信息量——组行可折叠，
+// 首次出现 ≤3 个会话自动展开、更多默认收起（对话框/侧栏/rail 同规则）----
+const GROUP_AUTO_OPEN = 3
+const openGroups = ref(new Set<string>())
+const knownGroups = new Set<string>()
+watch(remoteRows, (rows) => {
+  for (const r of rows) {
+    if (!knownGroups.has(r.key)) {
+      knownGroups.add(r.key)
+      if (r.sessions.length <= GROUP_AUTO_OPEN) openGroups.value.add(r.key)
+    }
+  }
+}, { immediate: true })
+function groupToggle(key: string) {
+  if (openGroups.value.has(key)) openGroups.value.delete(key)
+  else openGroups.value.add(key)
+}
 
 function relTime(ms: number): string {
   if (!ms) return ''
@@ -200,52 +223,64 @@ async function doKill() {
   <div v-if="loading && !sessions.length" class="px-2 pb-2 text-xs text-muted-foreground/70">扫描中…</div>
   <div v-else-if="!remoteRows.length" class="px-2 pb-2 text-xs text-muted-foreground/70">无</div>
   <div v-for="row in remoteRows" :key="row.containerId ?? 'host'" class="pb-0.5">
-    <!-- 组行：身份色条 + 名字 + 计数（侧栏卡片同款语言）；多会话时整行点击 = 全部接入 -->
-    <button
-      type="button"
-      class="group/grp relative mx-1 flex min-w-0 items-center gap-2 rounded-md py-1 pl-3.5 pr-2 text-left transition-colors"
-      :class="row.sessions.length > 1 ? 'cursor-pointer hover:bg-accent/40' : ''"
-      :title="row.sessions.length > 1 ? '点击全部接入' : row.name"
-      @click="row.sessions.length > 1 && emit('adopt', row.sessions.slice(0, MAX_GROUP_PANES))"
-    >
+    <!-- 组行：身份色条 + 名字 + 折叠 chevron + 计数（侧栏卡片同款语言）。
+         多会话组：点名字/箭头 = 展开收起，hover 浮现「全部接入」；单会话组：整行 = 接入。 -->
+    <div class="group/grp relative mx-1 flex min-w-0 items-center gap-1 rounded-md py-1 pl-3.5 pr-2 transition-colors hover:bg-accent/40">
       <span class="absolute inset-y-1 left-0 w-[3px] rounded-full" :style="{ backgroundColor: row.color }" />
-      <span class="min-w-0 flex-1 truncate text-[13px] font-medium">{{ row.name }}</span>
-      <span
-        v-if="row.sessions.length > 1"
-        class="hidden shrink-0 text-[10px] text-muted-foreground group-hover/grp:inline"
-      >全部接入</span>
-      <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">{{ row.sessions.length }}</span>
-    </button>
-    <div
-      v-for="s in row.sessions"
-      :key="s.termId"
-      class="group/srow mx-1 ml-3.5 flex min-w-0 cursor-pointer items-center gap-2 rounded-md py-1 pl-2 pr-1.5 transition-colors hover:bg-accent/40"
-      :title="`点击接入：${s.title || s.cwd || '未命名会话'}`"
-      @click="emit('adopt', [s])"
-    >
-      <span
-        class="min-w-0 flex-1 truncate font-mono text-xs"
-        :class="s.title ? 'text-foreground/75' : 'text-muted-foreground'"
-      >{{ s.title || s.cwd || '…' }}</span>
-      <Badge
-        v-if="occupied.has(termSessionKey(s.kind, s.containerId, s.termId))"
-        variant="outline"
-        class="shrink-0 border-transparent bg-primary/15 px-1 text-[10px] text-primary"
-      >已打开</Badge>
-      <Badge
-        v-else-if="s.attached > 0"
-        variant="outline"
-        class="shrink-0 border-transparent bg-emerald-500/15 px-1 text-[10px] text-emerald-500"
-      >使用中</Badge>
-      <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ relTime(s.created) }}</span>
-      <span
-        class="shrink-0 cursor-pointer text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/srow:opacity-100 max-md:opacity-100"
-        title="结束会话"
-        @click.stop="killTarget = s"
+      <button
+        type="button"
+        class="flex min-w-0 flex-1 items-center gap-1 text-left"
+        :title="row.sessions.length > 1 ? (openGroups.has(row.key) ? '收起' : '展开') : '点击接入'"
+        @click="row.sessions.length > 1 ? groupToggle(row.key) : emit('adopt', row.sessions)"
       >
-        <Trash2 class="size-3.5" />
-      </span>
+        <ChevronDown
+          v-if="row.sessions.length > 1"
+          class="size-3 shrink-0 text-muted-foreground transition-transform"
+          :class="openGroups.has(row.key) ? 'rotate-180' : ''"
+        />
+        <span class="min-w-0 flex-1 truncate text-[13px] font-medium">{{ row.name }}</span>
+      </button>
+      <button
+        v-if="row.sessions.length > 1"
+        type="button"
+        class="hidden shrink-0 text-[10px] text-muted-foreground hover:text-foreground group-hover/grp:inline"
+        title="合并为一个分屏组"
+        @click="emit('adopt', row.sessions.slice(0, MAX_GROUP_PANES))"
+      >全部接入</button>
+      <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/70">{{ row.sessions.length }}</span>
     </div>
+    <template v-if="openGroups.has(row.key)">
+      <div
+        v-for="s in row.sessions"
+        :key="s.termId"
+        class="group/srow mx-1 ml-3.5 flex min-w-0 cursor-pointer items-center gap-2 rounded-md py-1 pl-2 pr-1.5 transition-colors hover:bg-accent/40"
+        :title="`点击接入：${s.title || s.cwd || '未命名会话'}`"
+        @click="emit('adopt', [s])"
+      >
+        <span
+          class="min-w-0 flex-1 truncate font-mono text-xs"
+          :class="s.title ? 'text-foreground/75' : 'text-muted-foreground'"
+        >{{ s.title || s.cwd || '…' }}</span>
+        <Badge
+          v-if="occupied.has(termSessionKey(s.kind, s.containerId, s.termId))"
+          variant="outline"
+          class="shrink-0 border-transparent bg-primary/15 px-1 text-[10px] text-primary"
+        >已打开</Badge>
+        <Badge
+          v-else-if="s.attached > 0"
+          variant="outline"
+          class="shrink-0 border-transparent bg-emerald-500/15 px-1 text-[10px] text-emerald-500"
+        >使用中</Badge>
+        <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">{{ relTime(s.created) }}</span>
+        <span
+          class="shrink-0 cursor-pointer text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/srow:opacity-100 max-md:opacity-100"
+          title="结束会话"
+          @click.stop="killTarget = s"
+        >
+          <Trash2 class="size-3.5" />
+        </span>
+      </div>
+    </template>
   </div>
 
   <!-- 本窗口隐藏的终端组：藏在末尾，空则整块不显示；整行点击 = 恢复 -->
