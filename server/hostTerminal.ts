@@ -26,6 +26,7 @@
 // token 本就等价宿主 leon 用户（uid 1000 直通，见 AGENTS.md 安全模型），宿主终端不扩大
 // 权限面，只是把它摆上 UI。
 import { spawn, execFile } from 'node:child_process';
+import { pumpToWs } from './wsPump.js';
 import { promisify } from 'node:util';
 import { homedir, platform } from 'node:os';
 import { stat } from 'node:fs/promises';
@@ -810,12 +811,9 @@ async function windowsPane(
       child.stdout?.on('error', () => { /* noop */ });
       child.stderr?.on('error', () => { /* noop */ });
 
-      child.stdout?.on('data', (d: Buffer) => {
-        if (socket.readyState === 1) socket.send(d);
-      });
-      child.stderr?.on('data', (d: Buffer) => {
-        if (socket.readyState === 1) socket.send(d);
-      });
+      // stdout+stderr 共用同一份背压预算（见 wsPump.ts——裸 send 会把进程内存灌爆）
+      const pumpStreams = [child.stdout, child.stderr].filter((s) => !!s);
+      if (pumpStreams.length) pumpToWs(socket, pumpStreams);
       child.on('exit', () => {
         children.delete(child!);
         // script 先退 = detach（C-b d / 会话被杀 / shell exit）：以 1000 关 socket。

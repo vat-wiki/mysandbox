@@ -16,6 +16,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Duplex } from 'node:stream';
 import type { Config } from './config.js';
 import { execRun, execStream as execStreamRaw, inspectContainer } from './engine/index.js';
+import { pumpToWs } from './wsPump.js';
 
 // 控制帧：resize 调 PTY 尺寸、kill 杀整条会话（真关）。
 interface ControlMsg {
@@ -653,9 +654,8 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       }
 
       // 容器 -> 浏览器：单流（Tty）。tmux attach 时这里先收到整屏重绘，所以历史输出可见。
-      stream.on('data', (d: Buffer) => {
-        if (socket.readyState === 1 /* OPEN */) socket.send(d);
-      });
+      // 背压封装见 wsPump.ts——裸 send 在对端收不动时会把进程内存无界灌爆（实测 2.7GB）。
+      pumpToWs(socket, [stream]);
       stream.on('end', () => {
         try {
           socket.close(1000);

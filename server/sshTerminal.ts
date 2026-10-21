@@ -27,6 +27,7 @@
 // 注入面：host/user/port 只收无 shell 元字符的白名单字符集（见 SSH_HOST_RE），
 // 会话名经 TERMID_RE 校验，attach 命令串其余全为常量——script -c 单串无注入面。
 import { spawn, spawnSync, execFile } from 'node:child_process';
+import { pumpToWs } from './wsPump.js';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
@@ -660,14 +661,10 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       child.stdout?.on('error', () => { /* noop */ });
       child.stderr?.on('error', () => { /* noop */ });
 
-      child.stdout?.on('data', (d: Buffer) => {
-        if (socket.readyState === 1) socket.send(d);
-        noteOsc7(termId, d, osc7Tail);
-      });
-      child.stderr?.on('data', (d: Buffer) => {
-        // ssh 的连接错误/host key 确认/密码提示多走 stderr：必须透传（同宿主终端）。
-        if (socket.readyState === 1) socket.send(d);
-      });
+      // stdout+stderr 共用同一份背压预算（见 wsPump.ts——裸 send 会把进程内存灌爆）。
+      // onChunk 挂 OSC 7 探测:背压暂停期间探测断流可接受(对端收不动时深链无意义)。
+      const pumpStreams = [child.stdout, child.stderr].filter((s) => !!s);
+      if (pumpStreams.length) pumpToWs(socket, pumpStreams, { onChunk: (d) => noteOsc7(termId, d, osc7Tail) });
       child.on('exit', () => {
         children.delete(child!);
         try { socket.close(1000); } catch { /* noop */ }

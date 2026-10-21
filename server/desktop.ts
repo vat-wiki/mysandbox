@@ -22,6 +22,7 @@ import type { FastifyInstance } from 'fastify';
 import { connect as tcpConnect } from 'node:net';
 import type { Config } from './config.js';
 import { execRun, listManaged } from './engine/index.js';
+import { pumpToWs } from './wsPump.js';
 
 // 桌面服务常量：X display 编号与 RFB 端口。容器内独占、无多桌面并存（v1）。
 const X_DISPLAY = ':10';
@@ -242,9 +243,8 @@ export async function registerDesktop(app: FastifyInstance, cfg: Config): Promis
         /* noop */
       }
     });
-    vnc.on('data', (chunk) => {
-      if (socket.readyState === socket.OPEN) socket.send(chunk);
-    });
+    // 背压封装见 wsPump.ts(RFB 流丢/积压都会卡协议,暂停源头等对端跟上)
+    pumpToWs(socket, [vnc]);
     socket.on('message', (data: Buffer) => {
       if (vnc.writable) vnc.write(data);
     });
