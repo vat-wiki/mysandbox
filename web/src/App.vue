@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, startAuthSession, Unauthorized } from '@/lib/api'
+import { gatePoll } from '@/lib/linkQuality'
 import { setEngineInfo } from '@/lib/caps'
 import { loadProxyConfig, proxyPrimary } from '@/lib/proxy'
 import { isPhone } from '@/composables/useDevice'
@@ -149,7 +150,7 @@ onMounted(() => {
   // 也要补 cookie 会话与代理配置。
   if (token.value) afterAuth()
   refreshBaseStatus()
-  baseTimer = setInterval(refreshBaseStatus, 15000)
+  baseTimer = setInterval(gatePoll(refreshBaseStatus, 15_000, { hidden: true }), 15000)
 })
 onUnmounted(() => {
   if (baseTimer) clearInterval(baseTimer)

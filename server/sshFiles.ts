@@ -20,6 +20,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getSshTargets, type SshTarget } from './state.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
+import { withPollCache } from './cache.js';
 import { TERMID_RE } from './terminal.js';
 import { SSH_NAME_RE, SSH_SOCKET, sshOsc7Cwd, sshSessionName } from './sshTerminal.js';
 import { sshExec, sshFeed, sshSpawn, requireRemoteLinux } from './sshChannel.js';
@@ -92,6 +93,8 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
     const q = (req.query as Record<string, string | undefined>) || {};
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    // TTL 缓存同 files.ts /cwd（双 poller 收敛；远端 exec 成本更高，收益更大）
+    return withPollCache(`cwd:ssh:${t.name}:${termId}`, 2_500, async (): Promise<{ cwd: string }> => {
     const cwd = await remotePaneCwd(t, termId);
     if (cwd) return { cwd };
     // tmux pane 探不到（降级直连 shell / 会话死了）：
@@ -104,6 +107,7 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
     const home = r.stdout.trim();
     if (r.exitCode === 0 && home.startsWith('/')) return { cwd: home };
     throw notFound('terminal session not found');
+    });
   });
 
   // —— 列目录 ——（脚本单源 files.ts LIST_SCRIPT（busybox 兜底）；hostPath 恒 null：

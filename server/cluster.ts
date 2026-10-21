@@ -1,5 +1,5 @@
 // 集群管理：peer 加入/退出、gossip 发现、心跳、状态维护。
-import { readFile, writeFile, mkdir, chmod, copyFile, appendFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, copyFile, appendFile, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, hostname as osHostname } from 'node:os';
@@ -41,13 +41,23 @@ export interface ClusterState {
 export async function loadClusterState(): Promise<ClusterState | null> {
   if (!existsSync(CLUSTER_FILE)) return null;
   const raw = await readFile(CLUSTER_FILE, 'utf8');
-  return JSON.parse(raw) as ClusterState;
+  // 容错读：半截文件（写入中断/磁盘满）不再 500——实测过「Unexpected end of JSON input」。
+  // 按未配置集群降级（功能静默缺席），保留坏文件供排查，不自动覆盖。
+  try {
+    return JSON.parse(raw) as ClusterState;
+  } catch (e) {
+    log.warn({ err: String(e), file: CLUSTER_FILE }, 'cluster: state file unreadable, treating as unconfigured');
+    return null;
+  }
 }
 
 export async function saveClusterState(state: ClusterState): Promise<void> {
   await mkdir(CLUSTER_DIR, { recursive: true, mode: 0o700 });
-  await writeFile(CLUSTER_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
-  await chmod(CLUSTER_FILE, 0o600);
+  // 原子写：tmp + rename，断电/中断不会留下半截 JSON
+  const tmp = `${CLUSTER_FILE}.tmp`;
+  await writeFile(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
+  await chmod(tmp, 0o600);
+  await rename(tmp, CLUSTER_FILE);
 }
 
 // —— 集群 peer 之间的 HTTP 调用 ——

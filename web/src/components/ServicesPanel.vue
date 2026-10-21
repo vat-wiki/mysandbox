@@ -35,6 +35,7 @@ import {
   type ServiceJobView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
+import { gatePoll } from '@/lib/linkQuality'
 import { serviceUrl } from '@/lib/proxy'
 import { stateLabel } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -441,13 +442,13 @@ onMounted(() => {
   refresh()
   refreshJobs()
   void refreshListen()
-  jobsTimer = setInterval(() => {
+  jobsTimer = setInterval(gatePoll(() => {
     void refreshJobs()
     void refresh() // 服务状态跟着轮询：抽屉开着时外部启停（docker CLI 等）也即时反映
     void refreshListen() // 监听端口跟着轮询：容器内新起的应用端口自动出现
     // 日志只在「日志层展开」时跟刷；展开中的任务日志跟着拉。
     if (openLog.value && selService.value) void fetchLog(selService.value)
-  }, 3000)
+    }, 3_000, { hidden: true }), 3_000)
 })
 onUnmounted(() => {
   if (jobsTimer) clearInterval(jobsTimer)

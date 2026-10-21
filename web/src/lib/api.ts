@@ -1,5 +1,6 @@
 // API 客户端：token 存 localStorage，请求带 X-Sandbox-Token。
 import { PREVIEW_MAX_BYTES } from './preview'
+import { noteRequest } from './linkQuality'
 
 const TOKEN_KEY = 'mysandbox.token'
 
@@ -82,20 +83,29 @@ export class ApiError extends Error {
 }
 
 async function api(path: string, init: RequestInit = {}): Promise<any> {
-  const res = await fetch(path, {
-    ...init,
-    // 10s 超时默认：后端挂死（TCP 半开不断连）时 fetch 会无限等待，UI 卡在「刷新中…」。
-    // 普通请求都应在秒级返回；SSE 流式（streamBaseAction）不走这条路径，不受影响。
-    // 耗时请求（跨面板复制等）可通过 init.signal 传入更宽的超时覆盖默认值。
-    signal: init.signal ?? AbortSignal.timeout(10_000),
-    headers: {
-      'x-sandbox-token': getToken() ?? '',
-      // content-type 只在有 body 时带：无 body 的请求（GET、无参 POST）带 JSON
-      // content-type 会被 Fastify 拒收（FST_ERR_CTP_EMPTY_JSON_BODY）。
-      ...(init.body ? { 'content-type': 'application/json' } : {}),
-      ...(init.headers || {}),
-    },
-  })
+  const t0 = performance.now()
+  let res: Response
+  try {
+    res = await fetch(path, {
+      ...init,
+      // 10s 超时默认：后端挂死（TCP 半开不断连）时 fetch 会无限等待，UI 卡在「刷新中…」。
+      // 普通请求都应在秒级返回；SSE 流式（streamBaseAction）不走这条路径，不受影响。
+      // 耗时请求（跨面板复制等）可通过 init.signal 传入更宽的超时覆盖默认值。
+      signal: init.signal ?? AbortSignal.timeout(10_000),
+      headers: {
+        'x-sandbox-token': getToken() ?? '',
+        // content-type 只在有 body 时带：无 body 的请求（GET、无参 POST）带 JSON
+        // content-type 会被 Fastify 拒收（FST_ERR_CTP_EMPTY_JSON_BODY）。
+        ...(init.body ? { 'content-type': 'application/json' } : {}),
+        ...(init.headers || {}),
+      },
+    })
+  } catch (e) {
+    // 网络层失败（断网/超时）给弱网判定记账；401/4xx 是服务端正常回应，不算链路问题
+    noteRequest(performance.now() - t0, false)
+    throw e
+  }
+  noteRequest(performance.now() - t0, res.ok || res.status < 500)
   if (res.status === 401) throw new Unauthorized()
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))

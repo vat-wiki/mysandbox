@@ -43,6 +43,7 @@ import {
   type AgentWaitingView,
 } from '@/lib/api'
 import { trackServiceJobs } from '@/lib/serviceJobs'
+import { gatePoll } from '@/lib/linkQuality'
 import { openCodeServer } from '@/lib/codeserver'
 import { onSandboxEvent } from '@/lib/events'
 import { directUrl, originIpish, serviceUrl } from '@/lib/proxy'
@@ -1505,7 +1506,7 @@ watch(
     // 轮询随容器状态启停：running 持续刷，切走/停止即停，不空转。
     const running = activeContainer.value?.state === 'running'
     if (running && !listenTimer) {
-      listenTimer = setInterval(() => void loadListenPorts(), 5_000)
+      listenTimer = setInterval(gatePoll(() => void loadListenPorts(), 5_000, { hidden: true }), 5_000)
     } else if (!running && listenTimer) {
       clearInterval(listenTimer)
       listenTimer = null
@@ -2687,7 +2688,9 @@ const SVC_ACTIVE_MS = 3000
 let svcIntervalMs = SVC_IDLE_MS
 function armSvcTimer() {
   if (svcTimer) clearInterval(svcTimer)
-  svcTimer = setInterval(() => void refreshServices(), svcIntervalMs)
+  // gate 基准取 active 档 3s：任务进行中的跟刷不因 gate 变慢（正常档 interval 本就
+  // ≥5s，gate 只在弱网时拉长实际请求频率）；启停的即时性由事件通道兜底。
+  svcTimer = setInterval(gatePoll(() => void refreshServices(), SVC_ACTIVE_MS, { hidden: true }), svcIntervalMs)
 }
 async function refreshServices() {
   try {
@@ -3048,18 +3051,19 @@ onMounted(() => {
     if (e.type === 'container-state') scheduleEventRefresh('ct')
     else if (e.type === 'service-state' && !props.popout) scheduleEventRefresh('svc')
   })
-  timer = setInterval(() => refresh(true), 30_000)
+  timer = setInterval(gatePoll(() => refresh(true), 30_000, { hidden: true }), 30_000)
   // 无输出提醒：popout 独立窗口也有自己的终端组，同样参与轮询。
   void refreshActivity()
-  actTimer = setInterval(() => void refreshActivity(), ACTIVITY_MS)
+  // ⚠️ 这一路不 gate hidden——agent 等输入的浏览器通知依赖隐藏窗口下的轮询。
+  actTimer = setInterval(gatePoll(() => void refreshActivity(), ACTIVITY_MS), ACTIVITY_MS)
   document.addEventListener('keydown', onEscCloseFile) // Esc 关闭当前文件 tab（见函数注释）
   if (!props.popout) {
     void refreshServices()
     armSvcTimer()
     void refreshAllPorts() // 首刷不等 15s：首屏卡片就有端口图标
-    portsTimer = setInterval(() => void refreshAllPorts(), 15_000)
+    portsTimer = setInterval(gatePoll(() => void refreshAllPorts(), 15_000, { hidden: true }), 15_000)
     void refreshSvcPorts()
-    svcPortsTimer = setInterval(() => void refreshSvcPorts(), 15_000)
+    svcPortsTimer = setInterval(gatePoll(() => void refreshSvcPorts(), 15_000, { hidden: true }), 15_000)
     document.addEventListener('visibilitychange', onVisChange)
   }
   // 手机左缘右滑开环境抽屉（capture，理由见 edgeSwipeStart 注释）。

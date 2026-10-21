@@ -3,7 +3,7 @@
 // label 不可变，所以这些走 JSON。容器名作 key。
 // AI 板块（技能 + 模型接入）的状态不在这里——独居 ai/ 专用目录（server/aiState.ts），
 // 本文件只在 load 时把存量旧键抽过去（takeLegacyAiKeys）。
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { STATE_FILE, STATE_DIR } from './config.js';
 import { takeLegacyAiKeys } from './aiState.js';
@@ -81,7 +81,10 @@ async function load(): Promise<StateShape> {
 
 async function persist(s: StateShape): Promise<void> {
   await mkdir(STATE_DIR, { recursive: true });
-  await writeFile(STATE_FILE, JSON.stringify(s, null, 2), { mode: 0o600 });
+  // 原子写：tmp + rename（state.json 承载 sshTargets/技能规则等，半截文件会连环炸）
+  const tmp = `${STATE_FILE}.tmp`;
+  await writeFile(tmp, JSON.stringify(s, null, 2), { mode: 0o600 });
+  await rename(tmp, STATE_FILE);
   cache = s;
 }
 

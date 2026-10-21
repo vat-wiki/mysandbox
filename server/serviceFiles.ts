@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
+import { withPollCache } from './cache.js';
 import { TERMID_RE } from './terminal.js';
 import { findServiceTarget } from './serviceMeta.js';
 import {
@@ -181,10 +182,14 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
     name = await requireServiceRunning(name);
-    const res = await svcExec(name, ['sh', '-c', CWD_SCAN, 'sh', termId], 5_000);
-    if (res.exitCode !== 0) throw notFound('terminal session not found');
-    const cwd = res.stdout.trim();
-    if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
+    // TTL 缓存同 files.ts /cwd（双 poller 收敛）
+    const cwd = await withPollCache(`cwd:s:${name}:${termId}`, 2_500, async (): Promise<string> => {
+      const res = await svcExec(name, ['sh', '-c', CWD_SCAN, 'sh', termId], 5_000);
+      if (res.exitCode !== 0) throw notFound('terminal session not found');
+      const v = res.stdout.trim();
+      if (!v || !v.startsWith('/')) throw notFound('terminal session not found');
+      return v;
+    });
     return { cwd };
   });
 

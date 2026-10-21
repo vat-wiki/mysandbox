@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/context-menu'
 import NameDialog from '@/components/NameDialog.vue'
 import { onSandboxEvent, setWatchDirs, type SandboxEvent } from '@/lib/events'
+import { gatePoll } from '@/lib/linkQuality'
 import { openCodeServer } from '@/lib/codeserver'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
@@ -731,8 +732,9 @@ onMounted(() => {
   // 事件驱动为主（file-changed → 即时静默刷新），30s 对账兜底（watcher 断链/事件丢失/
   // s:/ssh 这类 watch 不了的目标）；cwd 跟随的 1s 轮询降为 5s——容器有 OSC 7 事件与
   // 回车 nudge 直达，慢轮询只剩无集成环境（宿主/SSH/老容器）的兜底职责。
-  pollTimer = setInterval(tick, 30_000)
-  followTimer = setInterval(() => void followCheck(), 5_000)
+  pollTimer = setInterval(gatePoll(tick, 30_000, { hidden: true }), 30_000)
+  // 弱网/隐藏拉长实际频率；跟随的即时性靠 OSC 7 + 回车 nudge，此 timer 是兜底
+  followTimer = setInterval(gatePoll(() => void followCheck(), 5_000, { hidden: true }), 5_000)
   disposeEvents = onSandboxEvent(onFileEvent)
 })
 onUnmounted(() => {

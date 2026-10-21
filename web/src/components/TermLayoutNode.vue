@@ -8,6 +8,7 @@ import { SquareSplitHorizontal, SquareSplitVertical, X } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { containerColor } from '@/lib/utils'
 import { getTermCwd, serviceFileId, sshTargetName } from '@/lib/api'
+import { gatePoll } from '@/lib/linkQuality'
 import {
   TERM_OPS,
   MAX_GROUP_PANES,
@@ -127,7 +128,9 @@ async function pollCwd() {
 if (leaf.value) {
   onMounted(() => {
     pollCwd()
-    cwdTimer = setInterval(() => void pollCwd(), 5000)
+    // gate：弱网/页面隐藏时拉长实际频率（pane 标题非关键路径）；cwd 跟随的即时性
+    // 由 OSC 7 / 回车 nudge 两条事件链路承担，这个 timer 只是兜底。
+    cwdTimer = setInterval(gatePoll(() => void pollCwd(), 5_000, { hidden: true }), 5000)
   })
   onBeforeUnmount(() => {
     if (cwdTimer) clearInterval(cwdTimer)

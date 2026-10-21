@@ -16,6 +16,7 @@ import type { Config } from './config.js';
 import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
 import { HttpError, notFound, conflict, badRequest } from './errors.js';
+import { withPollCache } from './cache.js';
 import { listServiceContainers } from './docker.js';
 import { getSshTargets, type SshTarget } from './state.js';
 import { findServiceTarget } from './serviceMeta.js';
@@ -832,19 +833,26 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const q = (req.query as Record<string, string | undefined>) || {};
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
-    const res = await execRun(cfg, r.id, {
-      Cmd: [
-        'sh', '-c',
-        'tmux list-panes -t "$1" -F "#{pane_active} #{pane_current_path}" 2>/dev/null | sed -n "s/^1 //p"',
-        'sh', `=${sessionName(r.id, termId)}`,
-      ],
-      User: '1000:1000',
-      Tty: false,
-      timeoutMs: 5_000,
+    // TTL 缓存 + in-flight 去重：文件面板跟随（FilePanel followCheck）与 pane 标题
+    // （TermLayoutNode pollCwd）各 5s 一拍打同一 termId，实际是同一个 exec——缓存把
+    // 双 poller 收敛为每 termId 每 2.5s 至多一次真实执行。cwd 本身 5s 粒度消费，
+    // 2.5s 内的复用无感。
+    const cwd = await withPollCache(`cwd:c:${r.id}:${termId}`, 2_500, async (): Promise<string> => {
+      const res = await execRun(cfg, r.id, {
+        Cmd: [
+          'sh', '-c',
+          'tmux list-panes -t "$1" -F "#{pane_active} #{pane_current_path}" 2>/dev/null | sed -n "s/^1 //p"',
+          'sh', `=${sessionName(r.id, termId)}`,
+        ],
+        User: '1000:1000',
+        Tty: false,
+        timeoutMs: 5_000,
+      });
+      if (res.exitCode !== 0) throw notFound('terminal session not found');
+      const v = res.stdout.trim();
+      if (!v || !v.startsWith('/')) throw notFound('terminal session not found');
+      return v;
     });
-    if (res.exitCode !== 0) throw notFound('terminal session not found');
-    const cwd = res.stdout.trim();
-    if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
     return { cwd };
   });
 

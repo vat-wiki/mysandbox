@@ -20,6 +20,7 @@ import { registerBaseRoutes } from './base.js';
 import { registerServices } from './services.js';
 import { registerServiceFileRoutes } from './serviceFiles.js';
 import { makeRewriteUrl, registerProxy, proxyUnauthorizedHtml } from './proxy.js';
+import { registerMetrics } from './metrics.js';
 import { startActivityPoller } from './activity.js';
 import { startCodeServerIdleSweeper } from './codeserver.js';
 import { ensureTlsMaterial } from './tls.js';
@@ -94,6 +95,7 @@ export async function buildServer(cfg: Config) {
     return reply.code(500).send({ error: { code: 'internal', message: mapped.message } });
   });
 
+  await registerMetrics(app);
   await registerRoutes(app, cfg);
   await registerFileRoutes(app, cfg);
   await registerTerminal(app, cfg);

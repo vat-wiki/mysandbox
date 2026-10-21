@@ -31,6 +31,7 @@ import {
 } from '@/lib/api'
 import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
+import { gatePoll } from '@/lib/linkQuality'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
 import { toast } from 'vue-sonner'
@@ -125,7 +126,7 @@ function refresh() {
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   void fetchStatus()
-  timer = setInterval(fetchStatus, 8000) // 比 cwd 的 3s 慢一档：变更状态低频变化
+  timer = setInterval(gatePoll(fetchStatus, 8_000, { hidden: true }), 8000) // 比 cwd 的 3s 慢一档：变更状态低频变化；弱网/隐藏拉长
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)

@@ -37,6 +37,7 @@ import type { ChildProcess } from 'node:child_process';
 import { TERMID_RE, LIST_FMT, type TermSessionView } from './terminal.js';
 import { spawnPty, type PtyTerm } from './pty.js';
 import { notFound, badRequest, HttpError } from './errors.js';
+import { withPollCache } from './cache.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -363,16 +364,20 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     // Windows：宿主侧没有 tmux，pane_current_path 无从谈起，cwd 的来源只剩「宿主 home」
     // 这个起点（真实跟随靠 shell 打出的 OSC 7，见容器的 files.ts/前端 FilePanel 同款链路）。
     if (platform() === 'win32') return { cwd: homedir() };
-    const r = await hostTmux([
-      'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
-    ]);
-    if (!r.ok) throw notFound('terminal session not found');
-    const cwd = r.stdout
-      .split('\n')
-      .map((l) => l.trim())
-      .find((l) => l.startsWith('1 '))
-      ?.slice(2) ?? '';
-    if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
+    // TTL 缓存同 files.ts /cwd：前端双 poller（跟随 + pane 标题）共用，2.5s 内收敛为一次 tmux 查询
+    const cwd = await withPollCache(`cwd:h:${termId}`, 2_500, async (): Promise<string> => {
+      const r = await hostTmux([
+        'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
+      ]);
+      if (!r.ok) throw notFound('terminal session not found');
+      const v = r.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l.startsWith('1 '))
+        ?.slice(2) ?? '';
+      if (!v || !v.startsWith('/')) throw notFound('terminal session not found');
+      return v;
+    });
     return { cwd };
   });
 

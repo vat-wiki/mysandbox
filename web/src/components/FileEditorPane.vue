@@ -19,6 +19,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { langForFilename, monaco } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
 import { onSandboxEvent, setWatchDirs } from '@/lib/events'
+import { gatePoll } from '@/lib/linkQuality'
 import { previewKind, previewMime, extOf } from '@/lib/preview'
 import { hydrateMermaid } from '@/lib/mermaid'
 import {
@@ -689,9 +690,9 @@ function setPollBase(mtime: number | null | undefined, size: number) {
 let pollTimer: ReturnType<typeof setInterval> | null = null
 function startPoll() {
   if (pollTimer) return
-  pollTimer = setInterval(() => {
+  pollTimer = setInterval(gatePoll(() => {
     if (!document.hidden) void checkExternal()
-  }, POLL_MS)
+  }, POLL_MS, { hidden: true }), POLL_MS)
 }
 function stopPoll() {
   if (pollTimer) {

@@ -27,6 +27,7 @@ import { createContainer, deleteManaged, type CreateInput } from './lifecycle.js
 import { syncSshConfig } from './sshConfigSync.js';
 import type { CreateSource, BaseProgress } from './engine/index.js';
 import { beginSse } from './sse.js';
+import { withPollCache } from './cache.js';
 import { registerEventsRoute } from './events.js';
 import { declareFileWatches } from './fileWatch.js';
 import { ipPoolView } from './network.js';
@@ -879,6 +880,10 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   // busybox awk 无 strtonum，手写 hex->dec。dev(1000) 可读 /proc/net。
   app.get('/api/containers/:id/listen', async (req): Promise<{ ports: number[]; web: number[] }> => {
     const id = (req.params as { id: string }).id;
+    // TTL 缓存 + in-flight 去重：前端 5s 一拍轮询（多个文件面板共享容器级结果），
+    // 底层是整 exec + 全端口 HTML 探测（p50 ~850ms），缓存把每日数万次执行收敛到
+    // 每容器每 3s 至多一次。端口集合在 3s 内变化用户无感。
+    return withPollCache(`listen:${id}`, 3_000, async (): Promise<{ ports: number[]; web: number[] }> => {
     const r = await resolve(cfg, id);
     requireControlled(r);
     if (!r.running) throw conflict('container not running');
@@ -904,6 +909,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const marks = await Promise.all(ports.map((p) => probeHtmlPort(r.ip as string, p)));
     const web = ports.filter((_, i) => marks[i]);
     return { ports, web };
+    });
   });
 
   // —— 全局事件通道（server/events.ts）+ 文件 watch 声明（server/fileWatch.ts）——
