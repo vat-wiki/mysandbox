@@ -17,6 +17,7 @@ import {
   registryAddSkill,
   searchFiles,
   Unauthorized,
+  ApiError,
   HOST_ID,
   SVC_FILE_PREFIX,
   SSH_ID_PREFIX,
@@ -621,14 +622,43 @@ function followGuard(): string | null {
 // 负载/容器忙）时固定间隔会无界叠加出请求雪崩——attach 进程越积越多、服务被打满、
 // 页面所有 API pending 整体假死。跳过本拍即可：间隔自动退化为「最慢一拍」，物理上
 // 叠不起来。tick/nudgeCwd 共用同闸（同一时刻至多一个 cwd 查询在飞）。
+// 在途期间又来了检查诉求（切换终端/nudge/轮询撞车）：不丢，记 pending 闸释放后补跑
+// ——切换那一拍的检查若被丢掉，新目标要等 5s 兜底轮询才被看见（实测秒级延迟主源）。
 let followBusy = false
+let followPending = false
 async function followCheck() {
-  if (followBusy) return
+  if (followBusy) {
+    followPending = true
+    return
+  }
   if (menuOpen.value || nameDialog.value || delTarget.value) return
   if (!follow.value || !props.termId || !props.containerId) return
   followBusy = true
   try {
-    const r = await getTermCwd(props.containerId, props.termId)
+    // 发请求瞬间锚定 props 快照：切换刚落地时两组 props 可能还没到齐（termId 先行、
+    // 目标容器后到），拿旧容器查新 pane 的 not_found 是错配拍——props 已变的立即用
+    // 当前 props 重查一次，仍 404 才算会话真没就绪；期间 props 变了的结果一律作废
+    // （pending 补跑自会用新 props 重来）。
+    const at = `${props.containerId}|${props.termId}`
+    let r
+    try {
+      r = await getTermCwd(props.containerId, props.termId)
+    } catch (e) {
+      if (e instanceof Unauthorized) {
+        emit('close')
+        return
+      }
+      if (
+        e instanceof ApiError &&
+        e.code === 'not_found' &&
+        `${props.containerId}|${props.termId}` !== at
+      ) {
+        r = await getTermCwd(props.containerId, props.termId)
+      } else {
+        throw e
+      }
+    }
+    if (`${props.containerId}|${props.termId}` !== at) return
     noSession.value = false
     if (r.cwd !== path.value) {
       void loadDir(r.cwd)
@@ -643,6 +673,10 @@ async function followCheck() {
     noSession.value = true
   } finally {
     followBusy = false
+    if (followPending) {
+      followPending = false
+      void followCheck()
+    }
   }
 }
 // 回车驱动的即时检查（终端 onData 的 \r 上抛 → ContainerList 转发到这里）：cd 提交后
@@ -667,7 +701,10 @@ function acceptCwd(p: string) {
   void loadDir(p)
 }
 async function tick() {
-  if (tickBusy) return // 上一拍没跑完（followCheck 在途）：跳过本拍，同 followCheck 的雪崩防护
+  if (tickBusy) {
+    tickPending = true // 上一拍在途：不丢，跑完补一拍（同 followCheck 的 pending）
+    return
+  }
   tickBusy = true
   try {
     await followCheck()
@@ -678,9 +715,14 @@ async function tick() {
     }
   } finally {
     tickBusy = false
+    if (tickPending) {
+      tickPending = false
+      void tick()
+    }
   }
 }
 let tickBusy = false
+let tickPending = false
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let followTimer: ReturnType<typeof setInterval> | null = null
@@ -721,8 +763,8 @@ function onFileEvent(e: SandboxEvent) {
   else if (expanded.get(e.dir)?.open) void loadExpanded(e.dir, true)
 }
 
-// 切容器（props 变）：无论之前是否手动，都回到跟随态、由下一次轮询定位新容器 cwd。
-// 切 pane（termId 变）：跟随态下立刻拉一次新 pane 的 cwd。
+// 切容器（props 变）：无论之前是否手动，都回到跟随态，立刻查新 pane 的 cwd 定位目录
+// （tick 里的静默刷新因 path 已清自然跳过，等效一次 followCheck）。
 watch(
   () => props.containerId,
   () => {
@@ -739,10 +781,12 @@ watch(
     tick()
   },
 )
+// 切 pane（termId 变）：只需重查 cwd（cwd 变了 loadDir 自会拉列表；cwd 没变列表同目
+// 录无需刷新），不必走整个 tick。followCheck 自带在途 pending，不会被丢拍。
 watch(
   () => props.termId,
   () => {
-    if (follow.value) tick()
+    if (follow.value) void followCheck()
   },
 )
 // 路径变化（跟随跳转/手动导航/面包屑）：下钻模式 = 树展开整体收起（展开是「当前目录
