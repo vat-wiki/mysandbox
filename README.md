@@ -1,6 +1,10 @@
 # mysandbox
 
-<!-- TODO: 补两张截图/一段 GIF——①容器列表+网页终端 ②文件面板/桌面。UI 产品第一屏说服力主要靠这个。 -->
+![控制台总览](docs/screenshots/01-console.png)
+
+| 网页终端 | 文件面板 |
+|---|---|
+| ![网页终端](docs/screenshots/02-terminal.png) | ![文件面板](docs/screenshots/03-files.png) |
 
 **浏览器里的 AI 开发容器机**。在一台 Linux 宿主机上跑一摞互相隔离的 dev 容器（每个跑一个
 claude / codex / opencode …），终端、文件编辑、git、桌面、端口出口全收进同一个网页面板。
@@ -24,7 +28,7 @@ claude / codex / opencode …），终端、文件编辑、git、桌面、端口
 ## 快速开始（Linux）
 
 ```bash
-git clone <repo> mysandbox && cd mysandbox
+git clone https://github.com/vat-wiki/mysandbox mysandbox && cd mysandbox
 sudo ./scripts/install.sh        # 唯一需要 sudo 的一步：装 LXC 工具链、建桥、注册 systemd 自启、构建
 sudo -u $USER scripts/lxc-template.sh ms-template   # 制作模板容器（10–20 分钟，一次性）
 ```
