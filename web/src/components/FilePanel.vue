@@ -661,6 +661,9 @@ async function followCheck() {
     }
     if (`${props.containerId}|${props.termId}` !== at) return
     noSession.value = false
+    // 查询在途期间跟随被关掉（手动导航/locate/reveal）：这份 cwd 是旧跟随目标的遗物，
+    // 回写会把刚定位好的面板拽走——与 loadSeq/sig 同类的过期响应守卫
+    if (!follow.value) return
     if (r.cwd !== path.value) {
       void loadDir(r.cwd)
       return // 新目录的列表由这次 loadDir 拉，不必再重查一遍
@@ -931,7 +934,51 @@ function locate(containerId: string, p: string) {
   follow.value = containerId !== props.containerId // 同容器也暂停（用户明确要看这个目录）
   loadDir(p)
 }
-defineExpose({ locate, refresh, nudgeCwd, acceptCwd })
+
+// 外部定位（文件形态）：跟随「当前看的文件」——定位到所在目录 + 树内展开到该文件 +
+// 行闪烁高亮。展开模式且文件在当前树内 = 原位展开祖先链（浏览上下文不动）；树外/下钻
+// 模式 = 导航到所在目录（与 locate 同语义）。reveal 是一次明确的外部定位，暂停 cwd
+// 跟随（同 locate——否则轮询会把面板拽回终端 cwd，与编辑器互相打架）。
+const revealPath = ref('')
+let revealTimer: ReturnType<typeof setTimeout> | null = null
+async function revealFile(containerId: string, filePath: string) {
+  const dir = filePath.slice(0, filePath.lastIndexOf('/')) || '/'
+  manualContainerId.value = containerId
+  // 恒暂停跟随（不像 locate 靠「容器不同=组即将切换」回跟随态）：reveal 的目标就是
+  // 这个文件目录，不是新 pane 的 cwd——不能给在途 followCheck 任何回写 cwd 的机会
+  follow.value = false
+  // 搜索态会把目标行过滤/排走（内容搜索更是整体接管列表区）：reveal 换的是浏览上下文，
+  // 顺带清掉搜索态，保证目标行可见。
+  q.value = ''
+  searchMode.value = 'name'
+  resetSearchState()
+  revealPath.value = filePath
+  if (revealTimer) clearTimeout(revealTimer)
+  revealTimer = setTimeout(() => (revealPath.value = ''), 2400)
+  // 展开模式的树内文件：把根到所在目录的祖先链逐层展开（已展开的跳过，别的不收起，
+  // 用户自己展开的结构是浏览上下文）；否则导航到所在目录，文件即顶层条目。
+  const prefix = path.value === '/' ? '/' : `${path.value}/`
+  if (props.browseMode === 'expand' && path.value && (dir === path.value || dir.startsWith(prefix))) {
+    const rel = dir === path.value ? '' : dir.slice(prefix.length)
+    let cur = path.value
+    const need: string[] = []
+    for (const seg of rel ? rel.split('/') : []) {
+      cur = cur === '/' ? `/${seg}` : `${cur}/${seg}`
+      if (!expanded.get(cur)?.open) {
+        expanded.set(cur, { open: true, loading: true, entries: [], err: '', sig: '' })
+        need.push(cur)
+      }
+    }
+    await Promise.all(need.map((p) => loadExpanded(p, false)))
+  } else {
+    await loadDir(dir)
+  }
+  await nextTick()
+  rootEl.value
+    ?.querySelector(`[data-path="${CSS.escape(filePath)}"]`)
+    ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+defineExpose({ locate, revealFile, refresh, nudgeCwd, acceptCwd })
 
 // git 变更区块的 ref（refresh 链透传用）
 const gitRef = ref<InstanceType<typeof FilePanelGit> | null>(null)
@@ -1757,6 +1804,9 @@ function fmtSize(n: number): string {
                 :class="[
                   selected.has(row.path) ? 'bg-accent hover:bg-accent/70' : 'hover:bg-accent/50',
                   dragOverDir === row.path ? 'bg-primary/15 ring-1 ring-inset ring-primary/50' : '',
+                  // reveal 高亮（跟随当前看的文件）：与选中（accent）区分开的 primary 淡底，
+                  // 出现即定位反馈，2.4s 后 revealPath 清空自动退场
+                  revealPath === row.path ? 'bg-primary/15 ring-1 ring-inset ring-primary/30' : '',
                 ]"
                 :style="{ paddingLeft: `${ROW_BASE + row.depth * ROW_INDENT}px` }"
                 @click="onRowClick(row, $event)"
