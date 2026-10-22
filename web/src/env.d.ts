@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+// 产品版本号（vite.config.ts define 注入，源自根 package.json 的 version）。
+declare const __APP_VERSION__: string
+
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
   const component: DefineComponent<Record<string, never>, Record<string, never>, unknown>

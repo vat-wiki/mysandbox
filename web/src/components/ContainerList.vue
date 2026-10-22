@@ -600,6 +600,8 @@ function drawerTouchEndHandler() {
 // 收起态只留导航骨架：展开键 / ＋ 新建 / 容器首字图标列（title 带全名与状态）/ 底部环境区。
 // loadBool 为 function 声明（提升），此处可安全前置调用。
 const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
+// 产品版本号（vite define 注入，根 package.json）：品牌块展示 + rail 展开键 tooltip。
+const appVersion = __APP_VERSION__
 watch(collapsed, (v) => {
   railHover.value = null
   railPinned.value = null
@@ -3209,7 +3211,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <button
             type="button"
             class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
-            title="展开侧栏"
+            :title="`展开侧栏 · v${appVersion}`"
             @click="collapsed = false"
           >
             <img src="/logo.svg" alt="" class="size-5" />
@@ -3510,6 +3512,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </Button>
         <img v-if="!isPhone" src="/logo.svg" alt="" class="size-5" />
         <span class="text-sm font-semibold tracking-tight">{{ isPhone ? '选择环境' : 'MySandbox' }}</span>
+        <span v-if="!isPhone" class="text-[10px] tabular-nums text-muted-foreground/80">v{{ appVersion }}</span>
       </div>
 
       <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题

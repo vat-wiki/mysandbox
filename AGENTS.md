@@ -189,6 +189,7 @@ docker 引擎移除后 docker 的新角色：**配套服务层**（界面名词�
 - 业务组件在 `src/components/`（ContainerList、Terminal、BatchDialog 等），API 封装在 `src/lib/api.ts`。 api() 的每次请求向 `lib/linkQuality.ts` 回报耗时/成败，**弱网自适应轮询**：各定时器经 `gatePoll(fn, baseMs, {hidden})` 包装（timer 结构不变，实际请求频率 = 基础间隔 × 链路档位 1/3/5；`hidden: true` 的 poller 页面隐藏也拉长 4×）。⚠️ 终端活动轮询（`lib/terminalActivity.ts`、ContainerList 的 refreshActivity）**不得 gate hidden**——agent 等输入的浏览器通知依赖隐藏窗口下的轮询。
 - 终端：xterm + fit/web-links/webgl 插件，WebSocket 到 `/ws/terminal`（容器）或 `/ws/host-terminal`（宿主，`Terminal.vue` 的 `host` prop 切换）；桌面是 `DesktopDialog.vue`（noVNC canvas，行菜单「桌面」）。
 - **Monaco 是离线精简接法**（见 `vite.config.ts` 注释与 `src/lib/monaco.ts`）：只引 `editor.api`（通过 vite alias 深路径绕过 exports map），自定义词法高亮，worker 用相对路径 `?worker`，不引 `editor.main`。给 web 加 Monaco 相关功能时沿用此方案，不要引全量。
+- **产品版本号**：唯一真相源 = 根 `package.json` 的 `version`（**手动 semver bump**）。build 时 vite `define` 注入 `__APP_VERSION__`（`env.d.ts` 声明），侧栏品牌块展示 `v<版本>`，rail 收起态挂在展开键 tooltip——零请求，与 `/api/health` 的 `getVersion()` 同源。发版记得改 package.json，界面不会自己变。
 - dev 模式 vite 代理 `/api` `/ws` 到 7321；build 后 `web/dist` 由后端 `@fastify/static` 同源服务，无 CORS——部署形态决定了前后端接口无需处理跨域。
 
 ## 环境备注

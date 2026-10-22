@@ -4,6 +4,11 @@ import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 import { networkInterfaces } from 'node:os'
 import { readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+
+// 产品版本号：唯一真相源是根 package.json 的 version（手动 semver bump，/api/health 报同值）。
+// build 时固化进 bundle（__APP_VERSION__，env.d.ts 有声明），侧栏品牌块展示——零请求。
+const APP_VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }).version ?? '0.0.0'
 
 // dev: vite 5173，/api 与 /ws 代理到后端 7321。
 // build: 产物到 web/dist（root 后端 @fastify/static 同源服务，无 CORS）。
@@ -55,6 +60,9 @@ const backendInfo = await backendHost()
 const backend = `${backendInfo.tls ? 'https' : 'http'}://${backendInfo.host}:${process.env.MYSANDBOX_DEV_PORT ?? 7321}`
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
