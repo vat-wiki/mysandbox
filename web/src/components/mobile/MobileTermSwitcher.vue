@@ -30,6 +30,9 @@ const emit = defineEmits<{
   environments: []
   network: []
 }>()
+
+// 产品版本号（vite define 注入，根 package.json）：手机端品牌块不占顶部的对位——钉在 sheet 最底。
+const appVersion = __APP_VERSION__
 </script>
 
 <template>
@@ -126,6 +129,8 @@ const emit = defineEmits<{
             <span class="ml-auto text-xs text-muted-foreground">当前组容器</span>
           </button>
         </div>
+        <!-- 版本号钉 sheet 最底：弱化居中，与全局动作块同区不另开分隔 -->
+        <p class="pb-0.5 text-center text-[10px] tabular-nums text-muted-foreground/70">v{{ appVersion }}</p>
       </DialogContent>
     </DialogPortal>
   </DialogRoot>
