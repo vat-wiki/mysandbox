@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePageRoute } from '@/composables/usePageRoute'
+import { pageRouteNames } from '@/router'
 import {
   listContainers,
   startContainer,
@@ -818,15 +819,6 @@ const routeFilePath = computed(() =>
 )
 // 这些路由还只是“壳层状态路由化”：内容组件保持现有 Dialog/Page 实现。先统一历史栈，
 // 再逐步把内容抽成 PC/移动共享组件。
-const pageRouteNames = new Set([
-  'ssh-targets',
-  'term-sessions',
-  'container-create',
-  'container-batch',
-  'container-export',
-  'container-desktop',
-  'service-adopt',
-])
 function openRoute(name: string, params?: Record<string, string>) {
   if (route.name === name) return
   void router.push({ name, params })
@@ -838,17 +830,12 @@ function closePageRoute() {
 }
 // 主区切离 AI 的统一出口。路由是 AI 开合的唯一真相（aiOpen），只动 mainView 不收 /ai
 // 的话刷新会经 aiOpen immediate watcher 把 mainView 拽回 'ai'——终端/文件切了白切
-// （AI 配置「回魂」）。in-flight 标记防 closePageRoute 的 back 语义在路由落地前被连发
-// （连 back 两次会穿回上上个历史项）；路由落地（route.name 变化）即复位。
-let aiCloseInFlight = false
-watch(
-  () => String(route.name),
-  () => (aiCloseInFlight = false),
-)
+// （AI 配置「回魂」）。不走 closePageRoute 的 back 语义：调用方可能同 tick 连发两次
+// （activateGroupById 先收一次、落组的 onTabClick 再试一次），back 不幂等会穿历史项；
+// replace 到同一 location 会被 vue-router 去重，天然幂等。
 function leaveAi(): void {
-  if (String(route.name) !== 'ai' || aiCloseInFlight) return
-  aiCloseInFlight = true
-  closePageRoute()
+  if (String(route.name) !== 'ai') return
+  void router.replace({ name: 'workspace' })
 }
 // mainView 写入的统一入口（'ai' 归 aiOpen watcher 管，不走这里）：主区切到终端/文件
 // 时顺手收掉还开着的 /ai 路由——各写点旧注释「桌面：关 AI」承诺的就是这件事。
@@ -1899,6 +1886,7 @@ function openTerm(c: { id: string; name: string; displayName?: string }) {
   const i = groups.value.findIndex((g) => g.containerId === c.id)
   if (i >= 0) {
     activeIdx.value = i
+    setMainView('terminal') // 已有组只聚焦也要切主区/收 /ai（createGroup 路径由 setMainView 覆盖）
     return
   }
   createGroup(c.id, c.displayName || c.name)
@@ -1909,6 +1897,7 @@ function openHostTerm() {
   const i = groups.value.findIndex((g) => g.kind === 'host')
   if (i >= 0) {
     activeIdx.value = i
+    setMainView('terminal')
     return
   }
   createGroup(HOST_ID, '本机', 'host')
@@ -1922,6 +1911,7 @@ function openSshTerm(t: SshTargetView) {
   const i = groups.value.findIndex((g) => g.containerId === id)
   if (i >= 0) {
     activeIdx.value = i
+    setMainView('terminal')
     return
   }
   createGroup(id, t.name, 'ssh')
@@ -1934,6 +1924,7 @@ function openServiceTerm(s: ServiceView) {
   const i = groups.value.findIndex((g) => g.kind === 'service' && g.containerId === s.name)
   if (i >= 0) {
     activeIdx.value = i
+    setMainView('terminal')
     return
   }
   createGroup(s.name, s.displayName || s.name, 'service')

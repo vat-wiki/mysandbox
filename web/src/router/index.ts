@@ -106,6 +106,13 @@ export const routes: RouteRecordRaw[] = [
   ...pageRoutes,
 ]
 
+// 页面路由名集合，由路由表派生（单一真相，随 pageRoutes 增删自动跟）。「是页面路由才收」
+// 的判定（closePageRoute 等）都消费它——曾在 ContainerList 手工镜像这份名单，/ai 等后来
+// 新增的路由漏掉 → 关闭逻辑静默 no-op，主区切走了路由留在原处，刷新「回魂」。
+export const pageRouteNames = new Set<string>(
+  pageRoutes.map((r) => r.name as string),
+)
+
 export const router = createRouter({
   history: createWebHistory(),
   routes,
