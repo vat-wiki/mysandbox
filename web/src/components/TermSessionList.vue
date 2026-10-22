@@ -31,11 +31,18 @@ const props = defineProps<{
   // 本窗口已占用的会话 key（可见 + 隐藏组的全部叶子）：列表里标「已打开」，不排除任何会话
   occupied: Set<string>
   items: ContainerView[]
+  // bare：不渲染内部「活跃会话」头——侧栏把本组件升格为独立分区、自带同款分区头，
+  // 内部头只服务对话框 / rail popover 两个形态。
+  bare?: boolean
+  // scanKey：外部触发重新扫描（侧栏分区头的 ⟳），计数变化即扫一轮。
+  scanKey?: number
 }>()
 const emit = defineEmits<{
   (e: 'restore', g: TermGroup): void
   (e: 'adopt', sessions: TermSessionView[]): void
   (e: 'unauthorized'): void
+  // 会话总数上报：侧栏分区头显示计数用（对话框 / rail 不订阅）。
+  (e: 'count', n: number): void
 }>()
 
 // ---- 服务端会话扫描 ----
@@ -58,6 +65,13 @@ async function load() {
   }
 }
 onMounted(load)
+watch(
+  () => props.scanKey,
+  () => {
+    if (props.scanKey !== undefined) void load()
+  },
+)
+watch(sessions, (s) => emit('count', s.length), { immediate: true })
 
 // 隐藏组的显示名：隐藏列表里没有「同容器还有几组」的上下文，序号直接带上（隐藏的组
 // 多半本来就带着 dev·2 这类序号）。
@@ -206,7 +220,7 @@ async function doKill() {
   <!-- 全部活跃会话（服务端扫描，含本窗口已打开的）＝主体。
        行为模型：整行点击 = 接入（组行 = 全部接入），破坏性动作（结束）hover 才浮现——
        窄栏（侧栏/rail）下常驻按钮会把标题挤成「…」，触屏（对话框 max-md）常显。 -->
-  <div class="flex items-center gap-2 px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
+  <div v-if="!bare" class="flex items-center gap-2 px-2 pb-1 pt-1 text-xs font-semibold text-muted-foreground">
     <span>活跃会话</span>
     <span v-if="sessions.length" class="text-[10px] font-normal text-muted-foreground/70">{{ sessions.length }}</span>
     <Button

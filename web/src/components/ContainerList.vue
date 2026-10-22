@@ -116,7 +116,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, TerminalSquare, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, TerminalSquare, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, History } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -338,6 +338,18 @@ watch(termExpanded, (v) => {
     /* localStorage 不可用就跳过 */
   }
 })
+// 活跃会话分区（桌面）：与上面三区同一收展语言。计数由 TermSessionList 扫描后上报
+// （收起时不挂载、不扫描）；sessScan 只是递增触发器——变化即让列表重扫一轮。
+const sessExpanded = ref(loadBool('mysandbox:term-sess-open') || !('mysandbox:term-sess-open' in localStorage))
+watch(sessExpanded, (v) => {
+  try {
+    localStorage.setItem('mysandbox:term-sess-open', v ? '1' : '0')
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+})
+const sessCount = ref(0)
+const sessScan = ref(0)
 // 收起时的容器摘要：M 运行中（err 时交给上方错误条，摘要不重复）。
 const ctSummary = computed(() => {
   const run = items.value.filter((c) => c.state === 'running').length
@@ -3596,6 +3608,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            信息密度低——改两行卡片平铺「看一眼就该知道」的状态（状态文字、IP、描述），
            低频操作仍收 ⋯。色条与 tab 栏同色呼应。卡片可拖拽排序（桌面，localStorage 记忆），
            FLIP 补间让被 cross 让位的卡实时滑移（flipCapture/flipPlay）。 -->
+      <!-- 容器分区是侧栏唯一的 flex-1 弹性块：常驻包裹（分区收起时只收内部列表），
+           保证底部「收起侧栏」行恒钉在侧栏最底，不随分区收展浮沉。 -->
+      <div class="flex min-h-0 flex-1 flex-col">
       <div v-if="ctExpanded" data-flip="ct" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto scroll-thin p-2">
         <!-- 首屏加载骨架：只在列表还没数据时占位（轮询静默刷新不打这里） -->
         <template v-if="loading && !items.length">
@@ -3777,6 +3792,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <p class="text-xs text-muted-foreground">暂无容器</p>
           <p class="text-[11px] text-muted-foreground/60">点上方 ＋ 新建，点击卡片可纳入已有容器</p>
         </div>
+      </div>
       </div>
 
       <!-- docker 服务分区：与系统容器同形态、同一套状态语言的卡片组（色条=按服务名
@@ -4153,18 +4169,46 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             暂无 SSH 主机，点 ＋ 添加
           </p>
         </div>
-        <!-- 全局终端会话（桌面）：与对话框同源的 TermSessionList，终端区展开才挂载
-             （挂载即扫一轮，无轮询）。含本窗口隐藏组恢复——主窗口不依赖对话框也有
-             找回入口；手机仍走切换器里的「所有终端」。 -->
-        <div
-          v-if="termExpanded && !isPhone"
-          class="max-h-48 overflow-y-auto scroll-thin border-t border-border/60"
-        >
+      </div>
+
+      <!-- 活跃会话分区（桌面）：与系统容器/应用容器/终端分区同款语言——图标 + 计数 +
+           整行收展（⟳ 重扫收进分区头右端）。收起时不挂载 TermSessionList（挂载即
+           跨容器 exec 扫描，无轮询），展开才扫一轮。含本窗口隐藏组恢复——主窗口不依赖
+           对话框也有找回入口；手机不显示，会话找回走切换器里的「所有终端」。 -->
+      <div v-if="!isPhone" class="shrink-0 border-t border-border">
+        <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-2 text-left"
+            :title="sessExpanded ? '收起活跃会话列表' : '展开活跃会话列表'"
+            @click="sessExpanded = !sessExpanded"
+          >
+            <History class="size-3.5 shrink-0 text-muted-foreground" />
+            <span class="text-xs font-medium text-muted-foreground">活跃会话</span>
+            <span class="text-[10px] text-muted-foreground/70">{{ sessCount }}</span>
+            <ChevronDown
+              class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
+              :class="sessExpanded ? 'rotate-180' : ''"
+            />
+          </button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :title="sessExpanded ? '重新扫描' : '展开并扫描'"
+            @click="sessExpanded ? sessScan++ : (sessExpanded = true)"
+          >
+            <RefreshCw />
+          </Button>
+        </div>
+        <div v-if="sessExpanded" class="max-h-48 overflow-y-auto scroll-thin pb-2">
           <TermSessionList
             :items="items"
             :occupied="occupiedSet"
             :hidden="hiddenGroups"
             :attention-ids="hiddenAttentionIds"
+            :bare="true"
+            :scan-key="sessScan"
+            @count="sessCount = $event"
             @adopt="adoptSessions"
             @restore="restoreHidden"
             @unauthorized="emit('unauthorized')"
