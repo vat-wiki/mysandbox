@@ -118,7 +118,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History, Users, KeyRound } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings, Network, ArrowRightLeft, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History, KeyRound } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -745,6 +745,12 @@ const aiOpen = computed({
 function openAi() {
   openRoute('ai')
   mainView.value = 'ai'
+}
+// 批量配置入口（设置 popup 的管理组）：没有受管理容器时给 toast 而不是死按钮——
+// 设置菜单是共享组件，禁用态带原因的旧做法（⋯ 菜单）迁不过来。
+function openBatch() {
+  if (!selectableItems.value.length) return toast.error('没有受管理的容器可批量配置')
+  showBatch.value = true
 }
 function closeAi() {
   closePageRoute()
@@ -3633,7 +3639,15 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           >
             <FolderOpen class="size-4" />
           </button>
-          <SettingsMenu side="right" align="end" @open-ai="openAi()" @open-section="settingsSection = $event">
+          <SettingsMenu
+            side="right"
+            align="end"
+            @open-ai="openAi()"
+            @open-section="settingsSection = $event"
+            @open-base="emit('open-base')"
+            @open-accounts="emit('open-accounts')"
+            @open-batch="openBatch()"
+          >
             <button
               type="button"
               class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
@@ -3708,29 +3722,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           >
             <Plus />
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button variant="ghost" size="icon-xs" title="容器环境配置">
-                <MoreHorizontal />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem @click="emit('open-base')">
-                <Settings2 /> {{ baseLabel }}管理
-              </DropdownMenuItem>
-              <DropdownMenuItem @click="emit('open-accounts')">
-                <Users /> 账户管理
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                :disabled="!selectableItems.length"
-                :title="selectableItems.length ? '' : '没有受管理的容器'"
-                @click="showBatch = true"
-              >
-                <ListChecks /> 批量配置
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <!-- 管理动作（模板/账户/批量配置）2026-10-22 起统一收进设置 popup——分区头
+               只留刷新/新建两个高频直连钮，路口单一（用户负担最小化）。 -->
         </div>
       </div>
 
@@ -4394,7 +4387,15 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           >
             <FolderOpen class="size-3.5" />
           </button>
-          <SettingsMenu side="top" align="end" @open-ai="openAi()" @open-section="settingsSection = $event">
+          <SettingsMenu
+            side="top"
+            align="end"
+            @open-ai="openAi()"
+            @open-section="settingsSection = $event"
+            @open-base="emit('open-base')"
+            @open-accounts="emit('open-accounts')"
+            @open-batch="openBatch()"
+          >
             <button
               type="button"
               class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
@@ -4691,6 +4692,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           v-if="props.popout"
           side="bottom"
           align="end"
+          :show-manage="false"
           @open-ai="openAi()"
           @open-section="settingsSection = $event"
         >
@@ -5114,6 +5116,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       :active="mobileNavTarget"
       :busy="busyGroupIds.size > 0"
       @navigate="navigateMobileNav"
+      @open-ai="openAi()"
+      @open-section="settingsSection = $event"
+      @open-base="emit('open-base')"
+      @open-accounts="emit('open-accounts')"
+      @open-batch="openBatch()"
     />
 
     <!-- 手机终端切换 sheet：底栏「终端」激活态再点弹出（组列表 + 组动作 + 网络信息 +

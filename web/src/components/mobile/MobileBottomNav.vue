@@ -10,9 +10,12 @@ defineProps<{
 
 const emit = defineEmits<{
   navigate: [target: MobileNavTarget]
-  // 设置 popup 的菜单事件原样上抛（ContainerList 统一处理：openAi / 开详情弹框）
+  // 设置 popup 的菜单事件原样上抛（ContainerList 统一处理：openAi / 开详情弹框 / 管理组）
   'open-ai': []
   'open-section': ['testlens' | 'cluster' | 'notify']
+  'open-base': []
+  'open-accounts': []
+  'open-batch': []
 }>()
 
 // settings 是动作不是视图（SettingsMenu popup 就地弹出，永不处于激活态），
@@ -36,6 +39,9 @@ const items: { target: MobileNavTarget; label: string; icon: typeof Terminal }[]
         class="flex min-w-0 flex-1"
         @open-ai="emit('open-ai')"
         @open-section="(s) => emit('open-section', s)"
+        @open-base="emit('open-base')"
+        @open-accounts="emit('open-accounts')"
+        @open-batch="emit('open-batch')"
       >
         <button
           type="button"
