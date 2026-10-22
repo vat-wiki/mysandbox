@@ -120,21 +120,31 @@ body {
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.28);
 }
-/* Firefox */
+/* Firefox：走标准属性（Firefox 不认 ::-webkit-scrollbar，标准属性是它唯一的定制通道）。
+   @supports 门是刻意的——Chrome 121+ 起标准属性一旦生效就整体架空 ::-webkit-scrollbar
+   精修样式，退化成 UA 原生细条（thumb 满宽、无圆角内缩、按 color-scheme 亮色画法），
+   深色主题下观感发白；用 -moz-appearance 探测把 Chromium/Safari 挡在门外，
+   让它们继续走上面的 webkit 规则。 */
+@supports (-moz-appearance: none) {
+  .xterm-viewport {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  }
+}
 .xterm-viewport {
   overscroll-behavior-y: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
 }
 
 /* 面板滚动条（文件面板 / git 变更面板等非终端滚动区）：与 xterm 的暗色细条同款观感，
    但 thumb 颜色走主题变量（这些面板底色跟随 bg-card，深浅主题都可能）。
    thumb 用 border + background-clip 内缩，比 track 窄一截，hover 时更亮。 */
 :root {
+  color-scheme: light;
   --scroll-thumb: oklch(0.556 0 0 / 35%);
   --scroll-thumb-hover: oklch(0.556 0 0 / 60%);
 }
 .dark {
+  color-scheme: dark;
   --scroll-thumb: oklch(1 0 0 / 16%);
   --scroll-thumb-hover: oklch(1 0 0 / 30%);
 }
@@ -154,10 +164,13 @@ body {
 .scroll-thin::-webkit-scrollbar-thumb:hover {
   background-color: var(--scroll-thumb-hover);
 }
-/* Firefox */
-.scroll-thin {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scroll-thumb) transparent;
+/* Firefox：同 .xterm-viewport 的道理——@supports 门挡住 Chromium/Safari，
+   保住上面的 webkit 精修 pill 样式不被标准属性架空。 */
+@supports (-moz-appearance: none) {
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
 }
 
 /* 终端 tab 身份点的「运行中」呼吸光晕（term-busy-halo / term-busy-dot + --dot 颜色变量）。
