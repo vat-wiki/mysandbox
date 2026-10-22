@@ -16,6 +16,14 @@ let tail: Promise<void> = Promise.resolve()
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+// mermaid 渲染时会在 body 末尾 append 一个 .mermaidTooltip（flowchart renderer 的
+// 链接提示容器）：opacity:0 看不见，但 position:absolute + padding/border 让它有 6px
+// 实高、挂在文档流末尾——整个窗口因此多出滚动条、预览一开页面就跳。预览不用 tooltip
+// （securityLevel: 'strict'，无链接交互），每次 run 后直接摘掉。
+function sweepMermaidTooltip() {
+  for (const el of document.querySelectorAll('body > .mermaidTooltip')) el.remove()
+}
+
 async function loadApi(): Promise<typeof import('mermaid')['default'] | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -68,6 +76,7 @@ export function hydrateMermaid(nodes: HTMLElement[], cancelled: () => boolean = 
       if (cancelled()) return
       if (runnable.length) {
         await api.run({ nodes: runnable, suppressErrors: true }).catch(() => {})
+        sweepMermaidTooltip()
         for (const n of runnable) {
           if (cancelled()) return
           if (!n.querySelector('svg')) {
