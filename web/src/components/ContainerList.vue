@@ -1557,6 +1557,29 @@ function ensureActivePorts() {
   const c = activeContainer.value
   if (c && c.state === 'running') void ensureContainerPorts(c.id)
 }
+// tab 右键菜单「网络信息」段的数据（原 tab 栏右侧「网络」图标的落点）：容器组才
+// 有——web/other 来自懒加载缓存（右键打开菜单时 ensureContainerPorts 拉取），
+// map 来自容器列表自带字段；宿主/SSH/服务组与停着的容器返回 null（整段不渲染）。
+type TabNetInfo = {
+  c: ContainerView
+  web: number[]
+  other: number[]
+  mapped: { pub: number; priv: number }[]
+}
+function tabNetInfo(g: TermGroup): TabNetInfo | null {
+  if (g.kind) return null
+  const c = items.value.find((x) => x.id === g.containerId)
+  if (!c || c.state !== 'running') return null
+  const v = portsById.value[c.id]
+  const web = v?.web ?? []
+  const other = (v?.ports ?? []).filter((p) => !web.includes(p))
+  return { c, web, other, mapped: mappedPortsOf(c) }
+}
+function onTabMenuOpen(open: boolean, g: TermGroup) {
+  if (!open || g.kind) return
+  const c = items.value.find((x) => x.id === g.containerId)
+  if (c && c.state === 'running') void ensureContainerPorts(g.containerId)
+}
 // docker 映射端口（去重：ipv4/ipv6 两条同名映射）。hostPort 在宿主侧可访问。
 // 抽成函数：tab 下拉的 mappedPorts 与侧栏卡片端口浮层（cardPortRows）共用。
 function mappedPortsOf(c: ContainerView): { pub: number; priv: number }[] {
@@ -3221,7 +3244,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 </Button>
               </div>
               <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
-                <ContextMenu v-for="c in orderedItems" :key="c.id" @update:open="railMenuOpen = $event">
+                <ContextMenu v-for="c in orderedItems" :key="c.id" @update:open="railMenuOpen = $event; onCardMenuOpen($event, c.id)">
                   <ContextMenuTrigger as-child>
                     <button
                       type="button"
@@ -3254,6 +3277,33 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                       <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
                       <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
                       <ContextMenuItem @click="onPower(c, 'restart')">重启</ContextMenuItem>
+                      <!-- 监听端口：与展开态卡片菜单同款懒加载二级菜单（rail 收起态的冗余
+                           入口，方便不开侧栏时快速看/开端口）。 -->
+                      <template v-if="c.state === 'running'">
+                        <ContextMenuSub>
+                          <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                          <ContextMenuSubContent class="w-40">
+                            <ContextMenuItem v-if="!cardPortRows(c.id).length && portsLoading.has(c.id)" disabled class="text-muted-foreground">
+                              加载中…
+                            </ContextMenuItem>
+                            <template v-else-if="cardPortRows(c.id).length">
+                              <template v-for="r in cardPortRows(c.id)" :key="'rail' + r.kind + r.port">
+                                <ContextMenuItem v-if="r.kind === 'map'" :title="portRowTitle(c, r)" @click="openUrl(`http://127.0.0.1:${r.port}`)">
+                                  <ArrowRightLeft class="size-3 shrink-0" />
+                                  <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }} → {{ r.priv }}</span>
+                                  <span class="shrink-0 text-[10px] text-muted-foreground">宿主</span>
+                                </ContextMenuItem>
+                                <ContextMenuItem v-else :title="portRowTitle(c, r)" @click="openUrl(portRowTarget(c, r))">
+                                  <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                                  <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                                  <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                                </ContextMenuItem>
+                              </template>
+                            </template>
+                            <ContextMenuItem v-else disabled class="text-muted-foreground">暂无监听端口</ContextMenuItem>
+                          </ContextMenuSubContent>
+                        </ContextMenuSub>
+                      </template>
                       <ContextMenuItem @click="onRename(c)">重命名</ContextMenuItem>
                       <ContextMenuItem v-if="c.managed" class="text-destructive" @click="onDelete(c)">删除</ContextMenuItem>
                     </template>
@@ -3287,7 +3337,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </div>
               <div class="scroll-thin flex max-h-[min(60vh,320px)] flex-col gap-0.5 overflow-y-auto">
                 <p v-if="svcReachable === false" class="px-2 py-3 text-[11px] text-muted-foreground">运行时不可达</p>
-                <ContextMenu v-for="s in orderedSvc" :key="s.name" @update:open="railMenuOpen = $event">
+                <ContextMenu v-for="s in orderedSvc" :key="s.name" @update:open="railMenuOpen = $event; onSvcCardMenuOpen($event, s.name)">
                   <ContextMenuTrigger as-child>
                     <button
                       type="button"
@@ -3307,8 +3357,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                       <span class="shrink-0 text-[10px] text-muted-foreground">{{ stateLabel(s.state) }}</span>
                     </button>
                   </ContextMenuTrigger>
-                  <!-- 精简菜单（展开态卡片菜单的子集——端口二级菜单/删除/收编不进悬停
-                       快捷列表，要全量走卡片或服务抽屉）。 -->
+                  <!-- 精简菜单（展开态卡片菜单的子集——删除/收编不进悬停快捷列表，要
+                       全量走卡片或服务抽屉；监听端口保留——rail 收起态的冗余入口）。 -->
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <ContextMenuItem @click="openServiceTerm(s)">打开终端</ContextMenuItem>
                     <ContextMenuItem @click="openExtraServiceGroup(s)">再开一组终端</ContextMenuItem>
@@ -3316,6 +3366,26 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                     <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                     <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
                     <ContextMenuItem v-if="s.running" @click="svcOp(s.name, () => stopService(s.name))">停止</ContextMenuItem>
+                    <template v-if="s.running">
+                      <ContextMenuSub>
+                        <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
+                        <ContextMenuSubContent class="w-40">
+                          <ContextMenuItem v-if="!svcPortRows(s).length && svcPortsLoading.has(s.name)" disabled class="text-muted-foreground">
+                            加载中…
+                          </ContextMenuItem>
+                          <template v-else-if="svcPortRows(s).length">
+                            <template v-for="r in svcPortRows(s)" :key="'rail' + r.kind + r.port">
+                              <ContextMenuItem :title="svcPortRowTitle(s, r)" @click="openUrl(svcPortRowTarget(s, r))">
+                                <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                                <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                                <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                              </ContextMenuItem>
+                            </template>
+                          </template>
+                          <ContextMenuItem v-else disabled class="text-muted-foreground">暂无监听端口</ContextMenuItem>
+                        </ContextMenuSubContent>
+                      </ContextMenuSub>
+                    </template>
                     <ContextMenuItem @click="svcOp(s.name, () => restartService(s.name))">重启</ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>
@@ -3333,7 +3403,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             >
               <!-- rail 图标与展开态分区头同源（终端=Monitor、活跃会话=History）：同一分区
                    收起/展开两态不换图标，活跃会话也不再与终端项撞终端图形 -->
-              <Monitor class="size-4" />
+              <Monitor class="size-4 text-amber-500" />
             </button>
             <div
               v-if="railActive === 'term'"
@@ -3402,7 +3472,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               title="所有终端 · 悬停查看 · 点击钉住"
               @click="railPinToggle('sess')"
             >
-              <History class="size-4" />
+              <History class="size-4 text-violet-500" />
             </button>
             <div
               v-if="railActive === 'sess'"
@@ -4147,7 +4217,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             :title="sessExpanded ? '收起活跃会话列表' : '展开活跃会话列表'"
             @click="sessExpanded = !sessExpanded"
           >
-            <History class="size-3.5 shrink-0 text-muted-foreground" />
+            <History class="size-3.5 shrink-0 text-violet-500" />
             <span class="text-xs font-medium text-muted-foreground">活跃会话</span>
             <!-- 0 不显示：收起态没扫描过，0 是「未知」不是「没有」 -->
             <span v-if="sessCount" class="text-[10px] text-muted-foreground/70">{{ sessCount }}</span>
@@ -4355,7 +4425,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <Bot class="size-3.5 max-md:size-5" />
         </button>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin max-md:hidden">
-        <ContextMenu v-for="(g, idx) in groups" :key="g.id">
+        <ContextMenu v-for="(g, idx) in groups" :key="g.id" @update:open="onTabMenuOpen($event, g)">
           <ContextMenuTrigger as-child>
             <div
               :draggable="!isPhone"
@@ -4434,6 +4504,66 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             >
               在独立窗口打开
             </ContextMenuItem>
+            <!-- 网络信息（容器组）：原 tab 栏右侧「网络」图标退役，收进右键菜单。
+                 IP 复制 / web 端口打开 / 监听端口打开 / docker 映射——与侧栏卡片、
+                 rail 菜单同一份懒加载缓存，打开菜单时拉取，数据到位行自动补上。 -->
+            <template v-if="tabNetInfo(g)">
+              <ContextMenuSeparator />
+              <ContextMenuSub>
+                <ContextMenuSubTrigger>网络信息</ContextMenuSubTrigger>
+                <ContextMenuSubContent class="w-48">
+                  <ContextMenuItem
+                    v-if="tabNetInfo(g)?.c.ip"
+                    class="font-mono text-xs"
+                    :title="copiedIp === tabNetInfo(g)?.c.ip ? '已复制' : '点击复制 IP'"
+                    @click="copyIpOf(tabNetInfo(g)?.c.ip ?? '')"
+                  >
+                    <Network class="size-3.5" />
+                    <span class="flex-1">{{ tabNetInfo(g)?.c.ip }}</span>
+                    <span class="text-[10px] text-muted-foreground">{{ copiedIp === tabNetInfo(g)?.c.ip ? '已复制' : '复制' }}</span>
+                  </ContextMenuItem>
+                  <template v-for="p in tabNetInfo(g)?.web ?? []" :key="'tw' + p">
+                    <ContextMenuItem
+                      class="font-mono text-xs"
+                      :title="`已验证返回网页，点击打开 ${serviceUrl('c', tabNetInfo(g)?.c.name ?? '', p, tabNetInfo(g)?.c.ip)}`"
+                      @click="openUrl(serviceUrl('c', tabNetInfo(g)?.c.name ?? '', p, tabNetInfo(g)?.c.ip))"
+                    >
+                      <Globe class="size-3.5 !text-emerald-500" />
+                      <span class="flex-1">{{ p }}</span>
+                      <span class="text-[10px] text-emerald-500">网页</span>
+                    </ContextMenuItem>
+                  </template>
+                  <template v-for="p in tabNetInfo(g)?.other ?? []" :key="'to' + p">
+                    <ContextMenuItem
+                      class="font-mono text-xs"
+                      :title="`容器内监听 ${p}，点击打开 ${serviceUrl('c', tabNetInfo(g)?.c.name ?? '', p, tabNetInfo(g)?.c.ip)}`"
+                      @click="openUrl(serviceUrl('c', tabNetInfo(g)?.c.name ?? '', p, tabNetInfo(g)?.c.ip))"
+                    >
+                      <span class="size-3.5 text-center text-muted-foreground">:</span>
+                      <span class="flex-1">{{ p }}</span>
+                    </ContextMenuItem>
+                  </template>
+                  <ContextMenuItem
+                    v-for="m in tabNetInfo(g)?.mapped ?? []"
+                    :key="'tm' + m.pub"
+                    class="font-mono text-xs"
+                    :title="`宿主端口 ${m.pub} → 容器 ${m.priv}，点击打开`"
+                    @click="openUrl(`http://127.0.0.1:${m.pub}`)"
+                  >
+                    <ArrowRightLeft class="size-3.5" />
+                    <span class="flex-1">{{ m.pub }} → {{ m.priv }}</span>
+                    <span class="text-[10px] text-muted-foreground">宿主</span>
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    v-if="!tabNetInfo(g)?.web.length && !tabNetInfo(g)?.other.length && !tabNetInfo(g)?.mapped.length"
+                    disabled
+                    class="text-muted-foreground"
+                  >
+                    暂无监听端口
+                  </ContextMenuItem>
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            </template>
             <ContextMenuSeparator />
             <ContextMenuItem @click="hideGroupById(g.id)">
               隐藏
@@ -4445,119 +4575,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           </ContextMenuContent>
         </ContextMenu>
         </div>
-        <!-- 网络：active group 容器的 IP / 监听端口 / 映射端口收进下拉（原独立信息条）。
-             监听端口打开时懒拉（ensureActivePorts），宿主组没有网络信息，禁用置灰。
-             popout 独立窗口同样有此入口。 -->
-        <DropdownMenu
-          v-if="activeGroup?.kind !== 'host' && activeGroup?.kind !== 'ssh'"
-          class="max-md:hidden"
-          @update:open="(v: boolean) => v && ensureActivePorts()"
-        >
-          <DropdownMenuTrigger as-child>
-            <button
-              class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
-              :class="
-                activeContainer
-                  ? 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-                  : 'pointer-events-none opacity-30'
-              "
-              :title="`网络信息（${activeContainer?.displayName || activeContainer?.name || ''}）`"
-            >
-              <Network class="size-3.5 max-md:size-5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <template v-if="activeContainer && activeContainer.state === 'running'">
-              <DropdownMenuLabel class="text-xs font-normal text-muted-foreground">
-                {{ activeContainer.displayName || activeContainer.name }}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                v-if="activeContainer.ip"
-                class="font-mono text-xs"
-                :title="copiedIp === activeContainer.ip ? '已复制' : '点击复制 IP'"
-                @click="copyIp"
-              >
-                <Network class="size-3.5" />
-                <span class="flex-1">{{ activeContainer.ip }}</span>
-                <span class="text-[10px] text-muted-foreground">{{ copiedIp === activeContainer.ip ? '已复制' : '复制' }}</span>
-              </DropdownMenuItem>
-              <!-- web 端口：后端实测返回 HTML，Globe 标记，点击按口径直连/经代理打开；
-                   域名口径下附「直连 IP:端口」第二打开方式（IP 口径主点击已是直连） -->
-              <template v-for="p in webPorts" :key="'w' + p">
-                <DropdownMenuItem
-                  class="font-mono text-xs"
-                  :title="`已验证返回网页，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
-                  @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
-                >
-                  <Globe class="size-3.5 !text-emerald-500" />
-                  <span class="flex-1">{{ p }}</span>
-                  <span class="text-[10px] text-emerald-500">网页</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  v-if="directOpenExtra && directPortUrl(activeContainer, p)"
-                  class="pl-8 font-mono text-xs text-muted-foreground"
-                  :title="`直连打开 ${directPortUrl(activeContainer, p)}`"
-                  @click="openUrl(directPortUrl(activeContainer, p))"
-                >
-                  <span class="size-3.5 text-center text-[10px]">↳</span>
-                  <span class="flex-1">直连 {{ activeContainer.ip }}:{{ p }}</span>
-                </DropdownMenuItem>
-              </template>
-              <!-- 非 web 监听端口（ssh/db 等）：同样可点开，标记弱化 -->
-              <template v-for="p in otherListenPorts" :key="'o' + p">
-                <DropdownMenuItem
-                  class="font-mono text-xs"
-                  :title="`容器内监听 ${p}，点击打开 ${serviceUrl('c', activeContainer.name, p, activeContainer.ip)}`"
-                  @click="openUrl(serviceUrl('c', activeContainer.name, p, activeContainer.ip))"
-                >
-                  <span class="size-3.5 text-center text-muted-foreground">:</span>
-                  <span class="flex-1">{{ p }}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  v-if="directOpenExtra && directPortUrl(activeContainer, p)"
-                  class="pl-8 font-mono text-xs text-muted-foreground"
-                  :title="`直连打开 ${directPortUrl(activeContainer, p)}`"
-                  @click="openUrl(directPortUrl(activeContainer, p))"
-                >
-                  <span class="size-3.5 text-center text-[10px]">↳</span>
-                  <span class="flex-1">直连 {{ activeContainer.ip }}:{{ p }}</span>
-                </DropdownMenuItem>
-              </template>
-              <!-- docker 映射端口（宿主侧访问） -->
-              <DropdownMenuItem
-                v-for="m in mappedPorts"
-                :key="'m' + m.pub"
-                class="font-mono text-xs"
-                :title="`宿主端口 ${m.pub} → 容器 ${m.priv}，点击打开`"
-                @click="openUrl(`http://127.0.0.1:${m.pub}`)"
-              >
-                <ArrowRightLeft class="size-3.5" />
-                <span class="flex-1">{{ m.pub }} → {{ m.priv }}</span>
-                <span class="text-[10px] text-muted-foreground">宿主</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                v-if="!activeContainer.ip && !webPorts.length && !otherListenPorts.length && !mappedPorts.length"
-                class="text-xs text-muted-foreground"
-                disabled
-              >
-                暂无网络信息
-              </DropdownMenuItem>
-            </template>
-            <template v-else>
-              <DropdownMenuItem class="text-xs text-muted-foreground" disabled>
-                容器未运行
-              </DropdownMenuItem>
-            </template>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <button
-          v-else
-          class="hidden items-center self-stretch border-l border-border/60 px-3 text-xs pointer-events-none opacity-30 md:flex"
-          title="本机 / SSH 终端无网络信息"
-        >
-          <Network class="size-3.5 max-md:size-5" />
-        </button>
         <button
           v-if="props.popout"
           class="hidden items-center gap-1 self-stretch border-l border-border/60 px-3 text-xs md:flex"
