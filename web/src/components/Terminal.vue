@@ -10,7 +10,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { authToken, writeFileBase64, resolveTermPath, pushTerminalClipboard, getTermFg, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { noteTermOutput } from '@/lib/terminalActivity'
-import { isPhone } from '@/composables/useDevice'
+import { isCoarse, isPhone } from '@/composables/useDevice'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
 import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
 
@@ -434,7 +434,9 @@ function refit() {
       vp?.syncScrollArea?.(true)
       // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
       // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
-      if (!pasteFallback.value) {
+      // 触摸设备恒不程序性聚焦：切 tab / resize 的自动 focus 会直接弹系统键盘，
+      // 键盘交给用户点终端区域时 xterm 自己的落焦（那是显式手势）。
+      if (!pasteFallback.value && !isCoarse.value) {
         suppressFocusEmit = true
         try {
           term?.focus()
@@ -887,7 +889,7 @@ function tbTouchEnd(e: TouchEvent) {
 // 占位。把根容器 paddingBottom 撑出键盘占位，内层 el 已有 ResizeObserver → 自动走现有 refit，
 // 与 tmux resize 对账心跳（15s）协同，PTY cols/rows 始终正确。
 // ⚠️ 占位不能直接用 kbH：根容器底边不一定贴着布局视口底——移动端主列常态有底部 tab 的
-// pb（3.5rem+safe），容器底边悬在视口底上方一个 tab 高，再把全键盘高 kbH 垫进去，工具条
+// pb（2.5rem+safe，随 MobileBottomNav h-10），容器底边悬在视口底上方一个 tab 高，再把全键盘高 kbH 垫进去，工具条
 // 与系统键盘之间就空出一个 tab 高。实测量根容器底边到布局视口底的距离（gap）扣掉，键盘
 // 收起时 gap 为负（容器底边在视口底之上）钳 0、kbH 为 0 也不启用，popout 无 tab 场景
 // gap≈0 自然退化为垫全 kbH 的原行为。
@@ -1350,9 +1352,9 @@ onMounted(async () => {
   //    TUI 框只渲染左半 + 字形错位，缓冲区数据完好所以复制出的文本是完整的）。addon 用
   //    devicePixelContentBoxSize 修正舍入，但 Firefox 不支持该 API，修正直接失效。
   //    DOM 渲染器逐字符独立定位，不受影响；性能差异在千行 scrollback 级别才可感。
-  const isCoarse = window.matchMedia?.('(pointer: coarse)')?.matches ?? false
+  const coarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches ?? false
   const fractionalDpr = window.devicePixelRatio % 1 !== 0
-  if (!isCoarse && !fractionalDpr) {
+  if (!coarsePointer && !fractionalDpr) {
     try {
       const webgl = new WebglAddon()
       webgl.onContextLoss(() => {
@@ -1447,7 +1449,8 @@ onMounted(async () => {
   el.value.addEventListener('focusin', onFocusIn)
   // 图片粘贴入口（capture，原因见 onTermPaste 注释）。
   el.value.addEventListener('paste', onTermPaste, { capture: true })
-  if (props.active) term.focus()
+  // 触摸设备不 mount 聚焦（弹系统键盘）：同 refit，键盘只由用户点终端触发。
+  if (props.active && !isCoarse.value) term.focus()
 
   // 软键盘自适应仅手机启用（桌面 visualViewport 变化无意义，少挂监听）。
   if (isPhone.value) setupViewportWatch()

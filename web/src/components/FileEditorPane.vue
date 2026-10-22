@@ -20,6 +20,7 @@ import DOMPurify from 'dompurify'
 import { langForFilename, monaco } from '@/lib/monaco' // 具名导入本身会执行 monaco 副作用
 import { onSandboxEvent, setWatchDirs } from '@/lib/events'
 import { gatePoll } from '@/lib/linkQuality'
+import { isCoarse } from '@/composables/useDevice'
 import { previewKind, previewMime, extOf } from '@/lib/preview'
 import { hydrateMermaid } from '@/lib/mermaid'
 import {
@@ -504,6 +505,12 @@ onMounted(load)
 // mount 事件在编辑器以初始 value 创建后触发，此时 reveal 已有效；binary/新建态（空内容）
 // 钳到第 1 行无害。同一 tab（key 未变）换行号不重建面板，watch 重新定位。
 const editorRef = ref<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null)
+// 程序性落焦统一走这里：触摸设备不自动聚焦——切 tab/打开文件/定位行号都别弹系统键盘，
+// 键盘只由用户点编辑器区域（Monaco 自己的落焦）触发；桌面保留原自动聚焦体验。
+function focusEditor() {
+  if (isCoarse.value) return
+  editorRef.value?.focus()
+}
 function revealTarget() {
   const ed = editorRef.value
   if (!ed || props.line === undefined || props.diff) return
@@ -526,7 +533,7 @@ function revealTarget() {
     return true
   }
   if (apply()) {
-    ed.focus()
+    focusEditor()
     return
   }
   let settled = false
@@ -536,7 +543,7 @@ function revealTarget() {
     off.dispose()
     clearTimeout(timer)
     apply()
-    ed.focus()
+    focusEditor()
   }
   const off = ed.onDidContentSizeChange(settle)
   const timer = setTimeout(settle, 3000)
@@ -609,7 +616,7 @@ watch([editing, editorRef], ([v, ed]) => {
   // 拿焦点弹系统键盘（预览态读文件最烦）。domReadOnly 让 textarea 带上 readonly 属性，
   // 移动浏览器对 readonly 输入框不弹键盘；进编辑时一并摘掉，不影响输入与 IME。
   ed.updateOptions({ readOnly: !v, domReadOnly: !v })
-  if (v) ed.focus()
+  if (v) focusEditor()
 })
 // 注意：不要在 active 变化时手动 editor.layout()——面板以 visibility:hidden 隐藏（布局盒
 // 恒定，父级 ContainerList 有说明），automaticLayout 自会跟进真实尺寸变化；在 0×0/

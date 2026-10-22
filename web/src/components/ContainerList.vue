@@ -1152,6 +1152,11 @@ function navigateMobileNav(target: MobileNavTarget) {
   // settings 不再走到这里：MobileBottomNav 把它包进 SettingsMenu popup 就地弹出
   // （菜单事件直接上抛），navigate 只服务三个视图项；守卫防误落 files 分支。
   if (target === 'settings') return
+  // 切视图先收键盘：Monaco/xterm 的 textarea 焦点在 visibility:hidden 下不自动释放，
+  // 不 blur 的话软键盘会跨视图吊着（点文件 tab 却挂着终端键盘就是它）。
+  // 触摸设备上不再有程序性 refocus（Terminal/FileEditorPane 均按 isCoarse 跳过），
+  // 需要键盘时用户点一下终端/编辑器即可。
+  ;(document.activeElement as HTMLElement | null)?.blur?.()
   if (target === 'terminal') {
     const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
     showFiles.value = false
@@ -4398,7 +4403,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
 
     <!-- 右侧终端主区：tab 栏 + 分屏，占满剩余空间。编辑器专注时整列让位藏起
          （v-show 在外层——内层藏的话 tab 栏/工作区容器仍占 flex-1 平分宽度）。 -->
-    <div v-show="!editorFocused" class="flex min-w-0 flex-1 flex-col max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
+    <div v-show="!editorFocused" class="flex min-w-0 flex-1 flex-col max-md:pb-[calc(2.5rem+env(safe-area-inset-bottom))]">
       <div
         v-if="!props.popout && baseReady === false"
         class="flex items-center gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
@@ -4869,7 +4874,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            不动）。所以激活 pane 必须挂 z-10，恒压在所有兄弟 pane（含穿透绘制）之上。 -->
     <div
       v-show="editorTabs.length && (!isPhone || mainView === 'file')"
-      class="relative flex min-h-0 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-r-0 max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]"
+      class="relative flex min-h-0 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-r-0 max-md:pb-[calc(2.5rem+env(safe-area-inset-bottom))]"
       :style="isPhone || editorFocused ? undefined : { width: editorSplitPct + '%' }"
       :class="!isPhone && editorFocused ? 'flex-1' : ''"
     >
@@ -5025,7 +5030,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     <FilePanel
       v-if="showFiles"
       ref="filePanelRef"
-      class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:static"
+      class="shrink-0 border-l border-border max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-l-0 max-md:pt-safe max-md:pb-[calc(2.5rem+env(safe-area-inset-bottom))] md:static"
       :style="isPhone ? undefined : { width: filesW + 'px' }"
       :container-id="filePanelTarget"
       :container-name="filePanelTargetName"
