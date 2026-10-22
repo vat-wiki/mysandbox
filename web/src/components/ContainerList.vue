@@ -4942,12 +4942,16 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <ContextMenu v-for="(t, i) in editorTabs" :key="tabId(t)">
             <ContextMenuTrigger as-child>
               <div
-                class="flex shrink-0 min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm"
-                :class="
+                :class="[
+                  // 多 tab 逐个收缩（浏览器式，终端 tab 栏同款）：桌面 flex 收缩 + truncate
+                  // + max-w 封顶（长文件名不撑爆栏），min-w-0 是 truncate 生效前提——压缩到
+                  // 只剩身份点+关闭钮也不出滚动条。手机不收缩（shrink-0），横向滚动——窄屏
+                  // 压到几十像素不可读。
+                  'flex min-w-0 overflow-hidden cursor-pointer select-none items-center gap-2 border-r border-border/60 px-3 py-1.5 text-xs max-md:py-2.5 max-md:text-sm relative md:shrink md:max-w-44 max-md:shrink-0',
                   i === activeEditorIdx
                     ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
-                    : 'text-muted-foreground hover:bg-accent/50'
-                "
+                    : 'text-muted-foreground hover:bg-accent/50',
+                ]"
                 :title="`${t.containerName}:${t.path}`"
                 @click="onFileTabClick(i)"
               >
