@@ -1,12 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="55 55 130 130" role="img">
   <title>BoxHub Logo</title>
-  <!-- 悬浮的顶盖 -->
-  <polygon points="120,56 174,83 120,110 66,83" fill="#FFC53D"/>
-  <polygon points="66,83 120,110 120,124 66,97" fill="#FF9E2C"/>
-  <polygon points="120,110 174,83 174,97 120,124" fill="#EF7215"/>
-  <!-- 缝隙阴影 -->
-  <polygon points="66,97 120,124 120,134 66,107" fill="#B8860B"/>
-  <polygon points="120,124 174,97 174,107 120,134" fill="#B8860B"/>
+  <style>
+    /* 顶盖周期性掀起露出缝隙暗影再落下——「打开沙盒」。
+       动画内嵌于 SVG，<link rel="icon"> 永不重建；Chromium/Firefox 标签页生效，
+       Safari 不支持 SVG favicon 动画，首帧 = 静态原样（通知图标 browserNotify 同样取首帧）。 */
+    .lid { animation: lid-hop 2.6s ease-in-out infinite; }
+    @keyframes lid-hop {
+      0%, 62%, 100% { transform: translateY(0); }
+      74% { transform: translateY(-10px); }
+      86% { transform: translateY(0); }
+    }
+  </style>
   <!-- 盒身 -->
   <polygon points="66,107 120,134 120,184 66,157" fill="#FF9E2C"/>
   <polygon points="120,134 174,107 174,157 120,184" fill="#EF7215"/>
@@ -18,5 +22,14 @@
     <line x1="133.5" y1="127" x2="133.5" y2="177"/>
     <line x1="147" y1="120.5" x2="147" y2="170.5"/>
     <line x1="160.5" y1="114" x2="160.5" y2="164"/>
+  </g>
+  <!-- 缝隙阴影（挂在盒身上不动，盖子抬起时露出，成为「开口」的暗缝） -->
+  <polygon points="66,97 120,124 120,134 66,107" fill="#B8860B"/>
+  <polygon points="120,124 174,97 174,107 120,134" fill="#B8860B"/>
+  <!-- 悬浮的顶盖（动画层） -->
+  <g class="lid">
+    <polygon points="120,56 174,83 120,110 66,83" fill="#FFC53D"/>
+    <polygon points="66,83 120,110 120,124 66,97" fill="#FF9E2C"/>
+    <polygon points="120,110 174,83 174,97 120,124" fill="#EF7215"/>
   </g>
 </svg>

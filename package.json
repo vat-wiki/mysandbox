@@ -1,6 +1,6 @@
 {
   "name": "mysandbox",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Web control panel for dev containers - terminal, lifecycle, batch config.",
   "type": "module",
   "bin": {
