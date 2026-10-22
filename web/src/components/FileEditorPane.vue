@@ -114,14 +114,15 @@ const svgUrl = computed(() => {
 // 相对路径的 <img> 换成 fetchFileBlob 的 objectURL：相对段相对 md 所在目录、`/` 开头
 // 按容器路径原样，`..` 逐段归一化；同图只取一次流。
 marked.setOptions({ gfm: true, breaks: true })
-// mermaid 代码块 → wrapper + pre.mermaid 占位（hydrateMdMermaid 懒加载渲染成 SVG）；
-// wrapper 承载缩放工具与缩放变量；其余语言 return false 落回 marked 默认渲染。
+// mermaid 代码块 → wrapper + stage + pre.mermaid 占位（hydrateMdMermaid 懒加载渲染成 SVG）；
+// wrapper 承载缩放工具与缩放变量，stage 是固定视口滚动层——渲染出的 SVG 放多大都只在
+// 视口内滚，不撑高 Markdown 文档；其余语言 return false 落回 marked 默认渲染。
 // 源码做 HTML 转义进 text，pre/class 都在 DOMPurify 白名单内
 marked.use({
   renderer: {
     code({ text, lang }) {
       if ((lang ?? '').trim().toLowerCase() !== 'mermaid') return false
-      return `<div class="mermaid-view"><pre class="mermaid">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></div>`
+      return `<div class="mermaid-view"><div class="mermaid-stage"><pre class="mermaid">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></div></div>`
     },
   },
 })
@@ -212,26 +213,28 @@ function onMermaidWheel(event: WheelEvent) {
   zoomMermaidView(view, event.deltaY < 0 ? 0.2 : -0.2)
 }
 
-// 只拖图表，不劫持 Markdown 其他区域；工具条按钮仍走 click。
-// 缩放后的横向溢出由 pre.mermaid 自己的 overflow-x 承载（md-body 不出横向滚动），
-// 纵向溢出在 md-body——两个滚动面都要喂，只滚 md-body 的话横向拖拽永远无效。
+// 只拖图表视口，不劫持 Markdown 其他区域；工具条按钮仍走 click。
+// 视口固定后缩放溢出全部收在 stage（mermaid-stage）里滚——横纵都平移 stage 自己，
+// 不再借道 md-body（那是文档级滚动，图表视口一固定就跟它无关了）。
+// 视口无溢出时不动 preventDefault，坏块的源码还能正常选中复制。
 function onMermaidPointerDown(event: PointerEvent) {
   const view = event.currentTarget as HTMLElement
-  const container = mdBody.value
-  if (event.button !== 0 || !container) return
+  if (event.button !== 0) return
   if ((event.target as HTMLElement).closest('.mermaid-toolbar')) return
+  const stage = view.querySelector<HTMLElement>('.mermaid-stage')
+  if (!stage) return
+  if (stage.scrollWidth <= stage.clientWidth && stage.scrollHeight <= stage.clientHeight) return
   event.preventDefault()
   view.setPointerCapture(event.pointerId)
-  const pre = view.querySelector('pre.mermaid')
   const startX = event.clientX
   const startY = event.clientY
-  const startLeft = pre?.scrollLeft ?? 0
-  const startTop = container.scrollTop
+  const startLeft = stage.scrollLeft
+  const startTop = stage.scrollTop
   view.style.cursor = 'grabbing'
 
   const onMove = (moveEvent: PointerEvent) => {
-    if (pre) pre.scrollLeft = startLeft - (moveEvent.clientX - startX)
-    container.scrollTop = startTop - (moveEvent.clientY - startY)
+    stage.scrollLeft = startLeft - (moveEvent.clientX - startX)
+    stage.scrollTop = startTop - (moveEvent.clientY - startY)
   }
   const onStop = () => {
     view.style.cursor = ''
@@ -245,7 +248,9 @@ function onMermaidPointerDown(event: PointerEvent) {
 }
 
 function zoomMermaidViewer(delta: number) {
-  mermaidViewerScale.value = clampMermaidZoom(mermaidViewerScale.value + delta)
+  // 全屏查看器缩放不设上下限（全屏就是看细节的，放大/缩小到哪都由用户自己定），
+  // 只防 0/负值——宽度为负是无效 CSS，图像消失且 + 按钮救不回来；0.05 只是防呆底
+  mermaidViewerScale.value = Math.max(0.05, Math.round((mermaidViewerScale.value + delta) * 100) / 100)
 }
 
 // 全屏层里 Ctrl + 滚轮跟内嵌图保持同一手势；普通滚轮仍交给全屏滚动容器。
@@ -333,7 +338,19 @@ async function hydrateMdMermaid() {
   await hydrateMermaid(nodes, () => seq !== mdMmdSeq)
   for (const view of Array.from(root.querySelectorAll<HTMLElement>('.mermaid-view'))) {
     const svg = view.querySelector<SVGSVGElement>('svg')
-    if (svg) svg.style.maxWidth = 'none'
+    if (!svg) continue
+    svg.style.maxWidth = 'none'
+    // 视口宽高比锁死 stage 高度（超 70vh 封顶），之后缩放只改变内容尺寸、视口恒定，
+    // 文档高度不再随缩放变化。优先用 pre 的盒尺寸（offset 含 padding+border，stage 宽
+    // 与 pre 宽相等 → 高度按比例换算后严丝合缝，zoom 1 无多余滚动）；面板隐藏中量不到
+    // （offset 为 0）时退回 viewBox 比例（差一个 pre padding 的余量，可接受）。
+    const pre = view.querySelector<HTMLElement>('pre.mermaid')
+    const vb = svg.viewBox.baseVal
+    if (pre && pre.offsetWidth > 0 && pre.offsetHeight > 0) {
+      view.style.setProperty('--mmd-ar', `${pre.offsetWidth} / ${pre.offsetHeight}`)
+    } else if (vb.width > 0 && vb.height > 0) {
+      view.style.setProperty('--mmd-ar', `${vb.width} / ${vb.height}`)
+    }
   }
 }
 watch(
@@ -1242,11 +1259,46 @@ function fmtSize(n: number): string {
 .md-body :deep(.mermaid-view) {
   position: relative;
 }
+/* 固定视口滚动层：高度按 viewBox 宽高比锁死（超 70vh 封顶），缩放后的溢出全部
+   在视口内滚——文档高度不随缩放变化，拖拽/滚动条都只动视口内部。
+   --mmd-ar 渲染完成后由 hydrateMdMermaid 从 viewBox 设入；坏块无 SVG 时变量缺席，
+   aspect-ratio 落回 auto，视口高度 = 源码自然高度。 */
+.md-body :deep(.mermaid-stage) {
+  /* 上下间距在这里扛（原 pre.mermaid 的 margin 挪过来）：margin 若留在 pre 上会进
+     stage 的 scrollHeight，zoom 1 时平白多出一条纵向滚动 */
+  margin: 0.9em 0;
+  overflow: auto;
+  aspect-ratio: var(--mmd-ar, auto);
+  max-height: 70vh;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+.md-body :deep(.mermaid-stage::-webkit-scrollbar) {
+  width: 8px;
+  height: 8px;
+}
+.md-body :deep(.mermaid-stage::-webkit-scrollbar-track) {
+  background: transparent;
+}
+.md-body :deep(.mermaid-stage::-webkit-scrollbar-thumb) {
+  background-color: var(--scroll-thumb);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.md-body :deep(.mermaid-stage::-webkit-scrollbar-thumb:hover) {
+  background-color: var(--scroll-thumb-hover);
+}
 .md-body :deep(pre.mermaid) {
   display: flex;
   justify-content: safe center;
   background: transparent;
   padding: 1em 0.5em;
+  /* margin 挪去 stage（见上），--mmd-ar 按 offset 量尺寸时不含 margin 才严丝合缝 */
+  margin: 0;
+  /* 通用 pre 的 overflow-x: auto 在这里撤掉——溢出的唯一滚动面是上面的 stage，
+     pre 自己不滚（两个滚动面会让拖拽与滚轮行为分叉） */
+  overflow: visible;
 }
 /* mermaid 渲染期间会往 pre 里塞一个临时包裹 div（svg 先在它里面量尺寸），gantt 等
    图型按 parentElement.offsetWidth 取排版宽度——flex 容器下这个临时 div shrink-to-fit，
