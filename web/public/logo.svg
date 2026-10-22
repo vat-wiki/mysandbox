@@ -1,22 +1,111 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="48 48 144 144" role="img">
-  <title>BoxHub Logo</title>
-  <!-- 悬浮的顶盖 -->
-  <polygon points="120,56 174,83 120,110 66,83" fill="#FFC53D"/>
-  <polygon points="66,83 120,110 120,124 66,97" fill="#FF9E2C"/>
-  <polygon points="120,110 174,83 174,97 120,124" fill="#EF7215"/>
-  <!-- 缝隙阴影 -->
-  <polygon points="66,97 120,124 120,134 66,107" fill="#B8860B"/>
-  <polygon points="120,124 174,97 174,107 120,134" fill="#B8860B"/>
-  <!-- 盒身 -->
-  <polygon points="66,107 120,134 120,184 66,157" fill="#FF9E2C"/>
-  <polygon points="120,134 174,107 174,157 120,184" fill="#EF7215"/>
-  <!-- 瓦楞纹 -->
-  <g stroke="#FFDE8F" stroke-width="4" stroke-linecap="round" opacity="0.45" fill="none">
-    <line x1="79.5" y1="114" x2="79.5" y2="164"/>
-    <line x1="93" y1="120.5" x2="93" y2="170.5"/>
-    <line x1="106.5" y1="127" x2="106.5" y2="177"/>
-    <line x1="133.5" y1="127" x2="133.5" y2="177"/>
-    <line x1="147" y1="120.5" x2="147" y2="170.5"/>
-    <line x1="160.5" y1="114" x2="160.5" y2="164"/>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 128 128"
+     role="img"
+     aria-labelledby="boxhub-title">
+
+  <title id="boxhub-title">BoxHub Logo</title>
+
+  <defs>
+    <!-- 顶盖渐变 -->
+    <linearGradient id="lidTop"
+                    x1="0" y1="0"
+                    x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFD65A"/>
+      <stop offset="100%" stop-color="#FFBB2E"/>
+    </linearGradient>
+
+    <!-- 盒身左侧 -->
+    <linearGradient id="leftPanel"
+                    x1="0" y1="0"
+                    x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFAD37"/>
+      <stop offset="100%" stop-color="#F98A22"/>
+    </linearGradient>
+
+    <!-- 盒身右侧 -->
+    <linearGradient id="rightPanel"
+                    x1="0" y1="0"
+                    x2="1" y2="1">
+      <stop offset="0%" stop-color="#F78A23"/>
+      <stop offset="100%" stop-color="#E96213"/>
+    </linearGradient>
+
+    <!-- 左右纹理裁切区域 -->
+    <clipPath id="leftFace">
+      <polygon points="29,45 64,62.5 64,95 29,77.5"/>
+    </clipPath>
+
+    <clipPath id="rightFace">
+      <polygon points="64,62.5 99,45 99,77.5 64,95"/>
+    </clipPath>
+  </defs>
+
+  <!-- 顶盖顶部 -->
+  <polygon
+    points="64,12 99,29.5 64,47 29,29.5"
+    fill="url(#lidTop)"/>
+
+  <!-- 顶盖左侧 -->
+  <polygon
+    points="29,29.5 64,47 64,56 29,38.5"
+    fill="#FFA12F"/>
+
+  <!-- 顶盖右侧 -->
+  <polygon
+    points="64,47 99,29.5 99,38.5 64,56"
+    fill="#F17A1B"/>
+
+  <!-- 顶盖接缝阴影 -->
+  <polygon
+    points="29,38.5 64,56 64,62.5 29,45"
+    fill="#C9861B"/>
+
+  <polygon
+    points="64,56 99,38.5 99,45 64,62.5"
+    fill="#BD7118"/>
+
+  <!-- 盒身左面 -->
+  <polygon
+    points="29,45 64,62.5 64,95 29,77.5"
+    fill="url(#leftPanel)"/>
+
+  <!-- 盒身右面 -->
+  <polygon
+    points="64,62.5 99,45 99,77.5 64,95"
+    fill="url(#rightPanel)"/>
+
+  <!-- 左侧瓦楞纹理 -->
+  <g clip-path="url(#leftFace)"
+     fill="none"
+     stroke="#FFE8B0"
+     stroke-width="2.4"
+     stroke-linecap="round"
+     opacity="0.48">
+
+    <path d="M37.8 44 V97"/>
+    <path d="M46.5 44 V97"/>
+    <path d="M55.2 44 V97"/>
   </g>
+
+  <!-- 右侧瓦楞纹理 -->
+  <g clip-path="url(#rightFace)"
+     fill="none"
+     stroke="#FFD69A"
+     stroke-width="2.4"
+     stroke-linecap="round"
+     opacity="0.4">
+
+    <path d="M72.8 44 V97"/>
+    <path d="M81.5 44 V97"/>
+    <path d="M90.2 44 V97"/>
+  </g>
+
+  <!-- 中央结构线 -->
+  <path
+    d="M64 62.5 V95"
+    fill="none"
+    stroke="#C95A12"
+    stroke-width="0.8"
+    opacity="0.45"/>
+
 </svg>
