@@ -213,6 +213,8 @@ function onMermaidWheel(event: WheelEvent) {
 }
 
 // 只拖图表，不劫持 Markdown 其他区域；工具条按钮仍走 click。
+// 缩放后的横向溢出由 pre.mermaid 自己的 overflow-x 承载（md-body 不出横向滚动），
+// 纵向溢出在 md-body——两个滚动面都要喂，只滚 md-body 的话横向拖拽永远无效。
 function onMermaidPointerDown(event: PointerEvent) {
   const view = event.currentTarget as HTMLElement
   const container = mdBody.value
@@ -220,14 +222,15 @@ function onMermaidPointerDown(event: PointerEvent) {
   if ((event.target as HTMLElement).closest('.mermaid-toolbar')) return
   event.preventDefault()
   view.setPointerCapture(event.pointerId)
+  const pre = view.querySelector('pre.mermaid')
   const startX = event.clientX
   const startY = event.clientY
-  const startLeft = container.scrollLeft
+  const startLeft = pre?.scrollLeft ?? 0
   const startTop = container.scrollTop
   view.style.cursor = 'grabbing'
 
   const onMove = (moveEvent: PointerEvent) => {
-    container.scrollLeft = startLeft - (moveEvent.clientX - startX)
+    if (pre) pre.scrollLeft = startLeft - (moveEvent.clientX - startX)
     container.scrollTop = startTop - (moveEvent.clientY - startY)
   }
   const onStop = () => {
@@ -1244,6 +1247,13 @@ function fmtSize(n: number): string {
   justify-content: safe center;
   background: transparent;
   padding: 1em 0.5em;
+}
+/* mermaid 渲染期间会往 pre 里塞一个临时包裹 div（svg 先在它里面量尺寸），gantt 等
+   图型按 parentElement.offsetWidth 取排版宽度——flex 容器下这个临时 div shrink-to-fit，
+   塌到空 svg 的默认固有宽 300px → 整图按 300px 排版再被拉宽，文字/刻度全部叠字。
+   撑满宽度让测量拿到真实容器宽（渲染完临时 div 即被 svg 顶替，此规则平时无匹配）。 */
+.md-body :deep(pre.mermaid > div) {
+  width: 100%;
 }
 .md-body :deep(.mermaid-toolbar) {
   position: absolute;
