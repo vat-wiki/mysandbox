@@ -18,6 +18,7 @@ import { registerSshFileRoutes } from './sshFiles.js';
 import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
 import { registerAiRoutes } from './ai.js';
+import { registerSkillRoutes } from './skills.js';
 import { registerServices } from './services.js';
 import { registerServiceFileRoutes } from './serviceFiles.js';
 import { makeRewriteUrl, registerProxy, proxyUnauthorizedHtml } from './proxy.js';
@@ -110,6 +111,8 @@ export async function buildServer(cfg: Config) {
   registerServices(app, cfg);
   // AI 路由（server/ai.ts）：AI 工具与技能中心（/api/ai/* + /api/testlens/*）。
   await registerAiRoutes(app, cfg);
+  // 技能中心路由（server/skills.ts）：技能库/分发规则/已装清单（/api/skills/*）。
+  await registerSkillRoutes(app, cfg);
   // 服务文件端点（server/serviceFiles.ts）：docker 服务容器的文件面板/编辑器/git 套件，
   // 前端 's:' 前缀 id（api.ts filesBase）切到这里。
   await registerServiceFileRoutes(app);
