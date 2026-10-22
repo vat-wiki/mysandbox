@@ -17,9 +17,16 @@ defineProps<{
 const emit = defineEmits<{
   select: [action: CardAction]
   meta: []
+  /** 动作面板即将弹出（点卡片/回车）：父组件借此做打开时的按需加载（端口懒拉等） */
+  open: []
 }>()
 
 const sheetOpen = ref(false)
+function openSheet() {
+  if (sheetOpen.value) return
+  sheetOpen.value = true
+  emit('open')
+}
 </script>
 
 <template>
@@ -28,8 +35,8 @@ const sheetOpen = ref(false)
     :class="active ? 'border-border/60 bg-accent' : 'border-transparent hover:bg-accent/40'"
     role="button"
     tabindex="0"
-    @click="sheetOpen = true"
-    @keydown.enter.prevent="sheetOpen = true"
+    @click="openSheet"
+    @keydown.enter.prevent="openSheet"
   >
     <span
       class="absolute left-0 rounded-full transition-all"

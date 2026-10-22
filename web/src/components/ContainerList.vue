@@ -116,7 +116,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, TerminalSquare, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, History } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, TerminalSquare, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -1462,17 +1462,43 @@ function closeDesktop() {
 
 // ---- 容器网络信息（tab 栏右侧「网络」下拉的数据源）----
 // active group 容器的 IP（点击复制）· 容器内监听端口（点击打开）· docker 映射端口。
-// 监听端口进 5s 轮询（active 容器 running 期间）：容器内新起服务监听新端口无需刷新页面，
-// 下拉自动跟上。每 tick 一次 lxc-attach + 少量并发 TCP 探测，仅针对当前容器，成本可忽略。
+// 监听端口**按需懒加载**：曾经三条常驻轮询（active 容器 5s + 全部容器/服务各 15s）
+// 为「用户点开菜单看一眼」24h 不间断打 exec，不值——改为菜单/下拉打开时对单个目标
+// 拉一次 + 30s 客户端缓存（反复开关不重复打），空闲时零请求。容器卡片右键 / tab 网络
+// 下拉 / 手机网络 sheet / 手机动作面板四路入口共用同一份缓存；服务走 svcPortsById 同款。
 const activeContainer = computed(
   () => items.value.find((x) => x.id === activeGroup.value?.containerId) ?? null,
 )
-// 监听端口分组：web 端口（后端实测返回 HTML）标 Globe 可点开；其余（ssh/db/redis
-// 等非网页）平铺弱化展示——下拉空间有限，不再做「其他 N」折叠。
-const listenPorts = ref<number[]>([])
-const webPorts = ref<number[]>([])
-let listenSeq = 0 // 竞态：切 group 时丢弃慢响应
-let listenTimer: ReturnType<typeof setInterval> | null = null
+const PORTS_TTL_MS = 30_000
+type PortTable = { ports: number[]; web: number[]; at: number }
+const portsById = ref<Record<string, PortTable>>({})
+const svcPortsById = ref<Record<string, PortTable>>({})
+// 进行中去重 + 加载态（菜单渲染「加载中…」行用）：ref 包 Set，add/delete 触发响应。
+const portsLoading = ref(new Set<string>())
+const svcPortsLoading = ref(new Set<string>())
+// TTL 内复用缓存；进行中去重；失败静默保留旧表（刚停容器等瞬时失败下菜单还有得看），
+// 过期后下次打开重试。菜单/下拉在打开事件里调 ensure*，数据到了 reactive 补渲染。
+async function ensurePortTable(
+  cache: { value: Record<string, PortTable> },
+  loading: { value: Set<string> },
+  key: string,
+  fetcher: () => Promise<{ ports: number[]; web: number[] }>,
+) {
+  const cur = cache.value[key]
+  if (cur && Date.now() - cur.at < PORTS_TTL_MS) return
+  if (loading.value.has(key)) return
+  loading.value.add(key)
+  try {
+    const r = await fetcher()
+    cache.value = { ...cache.value, [key]: { ports: r.ports, web: r.web ?? [], at: Date.now() } }
+  } catch {
+    /* 静默：有旧表留着，没有则菜单自会显示「暂无」 */
+  } finally {
+    loading.value.delete(key)
+  }
+}
+const ensureContainerPorts = (id: string) => ensurePortTable(portsById, portsLoading, id, () => getListenPorts(id))
+const ensureSvcPorts = (name: string) => ensurePortTable(svcPortsById, svcPortsLoading, name, () => getServiceListenPorts(name))
 // 复制成功的 IP（null=无）：精确存值而非全局 bool——多容器下只回显点过的那张卡。
 const copiedIp = ref<string | null>(null)
 let ipCopyTimer: ReturnType<typeof setTimeout> | null = null
@@ -1513,49 +1539,24 @@ async function copyIpOf(ip: string) {
     ipCopyTimer = setTimeout(() => (copiedIp.value = null), 1200)
   }
 }
-const otherListenPorts = computed(() => listenPorts.value.filter((p) => !webPorts.value.includes(p)))
-async function loadListenPorts() {
+// active 容器的端口视图（tab 下拉 / 手机网络 sheet 消费）：web 端口（后端实测返回
+// HTML）标 Globe 可点开；其余（ssh/db/redis 等非网页）平铺弱化展示——下拉空间有限，
+// 不再做「其他 N」折叠。数据来自懒加载缓存，见 ensureActivePorts。
+const webPorts = computed(() => {
   const c = activeContainer.value
-  const seq = ++listenSeq
-  if (!c || c.state !== 'running') {
-    listenPorts.value = []
-    webPorts.value = []
-    return
-  }
-  try {
-    const r = await getListenPorts(c.id)
-    if (seq !== listenSeq) return
-    listenPorts.value = r.ports
-    webPorts.value = r.web ?? []
-    // 同步进卡片端口表：active 容器的图标 5s 跟新（慢轮询 15s 之外更及时）
-    portsById.value = { ...portsById.value, [c.id]: { ports: r.ports, web: r.web ?? [] } }
-  } catch {
-    if (seq !== listenSeq) return
-    listenPorts.value = [] // 容器刚停/权限等：静默置空
-    webPorts.value = []
-  }
-}
-watch(
-  () => [activeGroup.value?.containerId, activeContainer.value?.state],
-  () => {
-    void loadListenPorts()
-    // 轮询随容器状态启停：running 持续刷，切走/停止即停，不空转。
-    const running = activeContainer.value?.state === 'running'
-    if (running && !listenTimer) {
-      listenTimer = setInterval(gatePoll(() => void loadListenPorts(), 5_000, { hidden: true }), 5_000)
-    } else if (!running && listenTimer) {
-      clearInterval(listenTimer)
-      listenTimer = null
-    }
-  },
-  { immediate: true },
-)
-onUnmounted(() => {
-  if (listenTimer) {
-    clearInterval(listenTimer)
-    listenTimer = null
-  }
+  return (c && portsById.value[c.id]?.web) ?? []
 })
+const otherListenPorts = computed(() => {
+  const c = activeContainer.value
+  const v = c ? portsById.value[c.id] : null
+  if (!v) return []
+  return v.ports.filter((p) => !v.web.includes(p))
+})
+// 下拉/网络 sheet 打开时的拉取入口：running 才拉，非 running 显示「容器未运行」。
+function ensureActivePorts() {
+  const c = activeContainer.value
+  if (c && c.state === 'running') void ensureContainerPorts(c.id)
+}
 // docker 映射端口（去重：ipv4/ipv6 两条同名映射）。hostPort 在宿主侧可访问。
 // 抽成函数：tab 下拉的 mappedPorts 与侧栏卡片端口浮层（cardPortRows）共用。
 function mappedPortsOf(c: ContainerView): { pub: number; priv: number }[] {
@@ -1578,47 +1579,35 @@ function openUrl(url: string) {
   window.open(url, '_blank', 'noopener')
 }
 
-// ---- 侧栏卡片端口图标：全部运行中容器的监听端口 ----
-// active 容器已有 5s 精刷（tab 下拉用，loadListenPorts 顺手同步进来）；这里补一个 15s
-// 慢轮询覆盖所有 running 容器——每容器一次 awk 读 /proc/net/tcp（无 ss 依赖）+ 内网
-// 毫秒级 TCP 探测，个人 sandbox 个位数容器，成本可忽略。页面隐藏时跳过、回前台立即补刷；
-// 失败静默（容器刚停/重启中等），下次轮询自愈。结果整表重建：已删/已停的条目自然消失。
-const portsById = ref<Record<string, { ports: number[]; web: number[] }>>({})
-let portsTimer: ReturnType<typeof setInterval> | null = null
-let portsSeq = 0 // 竞态：慢轮询响应乱序时丢弃旧表
-async function refreshAllPorts() {
-  if (props.popout || document.hidden) return
-  const running = items.value.filter((c) => c.state === 'running')
-  if (!running.length) {
-    portsById.value = {}
-    return
-  }
-  const seq = ++portsSeq
-  const rs = await Promise.allSettled(running.map((c) => getListenPorts(c.id)))
-  if (seq !== portsSeq) return
-  const next: Record<string, { ports: number[]; web: number[] }> = {}
-  running.forEach((c, i) => {
-    if (rs[i].status === 'fulfilled') next[c.id] = rs[i].value
-  })
-  portsById.value = next
-}
-function onVisChange() {
-  if (!document.hidden) void refreshAllPorts()
-}
 // 卡片右键菜单「监听端口」二级菜单的行：web（实测返回 HTML）/ other（其余监听）/
 // map（docker 宿主映射）三态合一，渲染与点击行为按 kind 分支——与 tab 栏网络下拉
-// 同信息结构（原卡片端口浮层已收编进菜单）。
+// 同信息结构（原卡片端口浮层已收编进菜单）。监听数据来自按需懒加载缓存 portsById
+// （卡片右键菜单打开时 ensureContainerPorts 拉取），map 行来自容器列表自带字段。
 type PortRow = { kind: 'web' | 'other' | 'map'; port: number; priv?: number }
 function cardPortRows(id: string): PortRow[] {
   const v = portsById.value[id]
-  if (!v) return []
-  const rows: PortRow[] = v.web.map((p) => ({ kind: 'web' as const, port: p }))
-  for (const p of v.ports) {
-    if (!v.web.includes(p)) rows.push({ kind: 'other' as const, port: p })
+  const rows: PortRow[] = []
+  if (v) {
+    for (const p of v.web) rows.push({ kind: 'web' as const, port: p })
+    for (const p of v.ports) {
+      if (!v.web.includes(p)) rows.push({ kind: 'other' as const, port: p })
+    }
   }
+  // map 行来自容器列表自带字段，不依赖监听扫描——懒加载期间也照常展示。
   const c = items.value.find((x) => x.id === id)
   if (c) for (const m of mappedPortsOf(c)) rows.push({ kind: 'map' as const, port: m.pub, priv: m.priv })
   return rows
+}
+// 卡片右键菜单打开时的懒拉入口（容器/服务各一份）：菜单是打开即渲染的 reactive
+// 内容，数据到位后行自动补上；菜单内「加载中…/暂无监听端口」两态由此驱动。
+function onCardMenuOpen(open: boolean, id: string) {
+  if (!open) return
+  const c = items.value.find((x) => x.id === id)
+  if (c && c.state === 'running') void ensureContainerPorts(id)
+}
+function onSvcCardMenuOpen(open: boolean, name: string) {
+  if (!open) return
+  if (svcItems.value.find((x) => x.name === name)?.running) void ensureSvcPorts(name)
 }
 // 端口点击目标跟随控制台访问口径（web/src/lib/proxy.ts）：IP/localhost 打开控制台 →
 // 直连容器 IP（代理上线前的原形式，宿主/tailscale 子网路由下可达）；经基域名打开 →
@@ -2286,11 +2275,6 @@ async function refresh(silent = false) {
     itemsReady.value = true
     lastOkAt.value = Date.now()
     connLost.value = false
-    // 卡片端口表还空着且存在运行中容器（首屏 / 全停过后又启动）→ 立即补刷一次，
-    // 不等 15s 慢轮询——表非空时跳过，不会叠加成 5s 高频轮询。
-    if (!Object.keys(portsById.value).length && r.items.some((c) => c.state === 'running')) {
-      void refreshAllPorts()
-    }
     const valid = new Set(r.items.map((c) => c.id))
     // 关闭已消失容器的终端 group（容器已删，会话随容器消失，只从 UI 移除、不调 kill）。
     // 宿主/服务 group 不依赖容器存在，豁免（服务组的修剪在 refreshServices 里按服务表做）。
@@ -2417,7 +2401,7 @@ function mobileGroupActionList(group: TermGroup) {
 
 // —— 手机终端切换 sheet（底栏「终端」再点弹出）——
 // 顶栏取消后终端切换/组管理/网络信息的落点。组动作复用 groupActions 清单（CardActionSheet）；
-// 网络信息沿用原顶栏下拉的数据源（activeContainer 的轮询探测），仅当前组有意义，放全局区。
+// 网络信息沿用 tab 栏下拉的数据源（activeContainer 的懒加载缓存），仅当前组有意义，放全局区。
 const termSwitcherOpen = ref(false)
 const switcherRows = computed<TermSwitcherRow[]>(() =>
   groups.value.map((g) => ({
@@ -2448,9 +2432,14 @@ function onSwitcherActions(id: string) {
 function onSwitcherGroupAction(action: CardAction) {
   if (switcherActionGroup.value) runMobileGroupAction(switcherActionGroup.value, action)
 }
-// 网络信息 sheet：IP 复制 / web 端口打开 / 监听端口打开 / docker 映射端口——与原顶栏
-// 下拉同源（webPorts 等是 activeContainer 的 5s 探测），所以只在当前组有数据。
+// 网络信息 sheet：IP 复制 / web 端口打开 / 监听端口打开 / docker 映射端口——与 tab 栏
+// 下拉同源（webPorts 等是 activeContainer 的懒加载缓存），打开时拉取，仅当前组有数据。
 const networkSheetOpen = ref(false)
+function openNetworkSheet() {
+  termSwitcherOpen.value = false
+  networkSheetOpen.value = true
+  ensureActivePorts()
+}
 const networkSheetActions = computed<CardAction[]>(() => {
   const c = activeContainer.value
   if (!c || c.state !== 'running') return [{ id: 'down', label: c ? '容器未运行' : '暂无终端', disabled: true }]
@@ -2759,12 +2748,6 @@ async function refreshServices() {
     svcItems.value = v.items
     svcReachable.value = v.status?.reachable ?? null
     svcJobsRunning.value = trackServiceJobs(jobsR.jobs)
-    // running 集变化（启停/新建/更新完成）→ 立即补刷端口表，不等 15s 慢轮询
-    const sig = v.items.filter((s) => s.running).map((s) => s.name).join(',')
-    if (sig !== svcRunningSig) {
-      svcRunningSig = sig
-      void refreshSvcPorts()
-    }
     // 服务已删的终端 group：会话随容器消亡，只从 UI 移除、不调 kill（容器侧同款语义）。
     // docker 不可达（false）时服务表是旧数据，不修组；首拉前（null）svcItems 不可信，同样跳过。
     if (
@@ -2801,32 +2784,12 @@ const svcSummary = computed(() => {
 
 // —— 服务卡片右键菜单的「监听端口」——
 // 应用容器监听端口走独立端点（宿主 /proc/<pid>/net 读容器网络命名空间，免 exec 的
-// 镜像内依赖），15s 慢轮询覆盖全部 running 服务；refreshServices 发现 running 集
-// 变化（启停/新建/更新完成）时立即补刷。web 端口（实测返回 HTML）标绿可点开，其余
-// 平铺——postgres/redis 的 5432/6379 照展示：端口的意义是「看得见」，浏览器打不开无妨。
-const svcPortsById = ref<Record<string, { ports: number[]; web: number[] }>>({})
-let svcPortsTimer: ReturnType<typeof setInterval> | null = null
-let svcPortsSeq = 0 // 竞态：慢轮询响应乱序时丢弃旧表
-let svcRunningSig = '' // running 集签名：变化才触发即时补刷
-async function refreshSvcPorts() {
-  if (document.hidden) return
-  const running = svcItems.value.filter((s) => s.running)
-  if (!running.length) {
-    svcPortsById.value = {}
-    return
-  }
-  const seq = ++svcPortsSeq
-  const rs = await Promise.allSettled(running.map((s) => getServiceListenPorts(s.name)))
-  if (seq !== svcPortsSeq) return
-  const next: Record<string, { ports: number[]; web: number[] }> = {}
-  running.forEach((s, i) => {
-    if (rs[i].status === 'fulfilled') next[s.name] = rs[i].value
-  })
-  svcPortsById.value = next
-}
+// 镜像内依赖），与容器卡片同一套按需懒加载（svcPortsById / ensureSvcPorts，见文件
+// 头部「容器网络信息」段）。web 端口（实测返回 HTML）标绿可点开，其余平铺——
+// postgres/redis 的 5432/6379 照展示：端口的意义是「看得见」，浏览器打不开无妨。
 // 服务端口菜单行：只有 web / other 两态（服务不发布端口到宿主，无 map 行）。实测
-// 监听优先（全预设通用）；扫描未回（刚启动等）回退手工登记的声明端口（custom 在
-// state.json 手填 ports 的旧路径），声明端口没有 web 实测，一律按 other 展示。
+// 监听优先（全预设通用）；扫描未回（刚打开菜单等）回退手工登记的声明端口（custom
+// 在 state.json 手填 ports 的旧路径），声明端口没有 web 实测，一律按 other 展示。
 type SvcPortRow = { kind: 'web' | 'other'; port: number }
 function svcPortRows(s: ServiceView): SvcPortRow[] {
   const v = svcPortsById.value[s.name]
@@ -3148,11 +3111,6 @@ onMounted(() => {
   if (!props.popout) {
     void refreshServices()
     armSvcTimer()
-    void refreshAllPorts() // 首刷不等 15s：首屏卡片就有端口图标
-    portsTimer = setInterval(gatePoll(() => void refreshAllPorts(), 15_000, { hidden: true }), 15_000)
-    void refreshSvcPorts()
-    svcPortsTimer = setInterval(gatePoll(() => void refreshSvcPorts(), 15_000, { hidden: true }), 15_000)
-    document.addEventListener('visibilitychange', onVisChange)
   }
   // 手机左缘右滑开环境抽屉（capture，理由见 edgeSwipeStart 注释）。
   document.addEventListener('touchstart', edgeSwipeStart, { capture: true, passive: true })
@@ -3163,13 +3121,10 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (svcTimer) clearInterval(svcTimer)
-  if (portsTimer) clearInterval(portsTimer)
-  if (svcPortsTimer) clearInterval(svcPortsTimer)
   if (actTimer) clearInterval(actTimer)
   disposeEvents?.()
   window.removeEventListener('message', onFocusTermMessage)
   document.removeEventListener('keydown', onEscCloseFile)
-  document.removeEventListener('visibilitychange', onVisChange)
   document.removeEventListener('touchstart', edgeSwipeStart, { capture: true })
   document.removeEventListener('touchmove', edgeSwipeMove, { capture: true })
   document.removeEventListener('touchend', edgeSwipeEnd, { capture: true })
@@ -3376,7 +3331,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               title="终端 · 悬停查看 · 点击钉住"
               @click="railPinToggle('term')"
             >
-              <TerminalIcon class="size-4" />
+              <!-- rail 图标与展开态分区头同源（终端=Monitor、活跃会话=History）：同一分区
+                   收起/展开两态不换图标，活跃会话也不再与终端项撞终端图形 -->
+              <Monitor class="size-4" />
             </button>
             <div
               v-if="railActive === 'term'"
@@ -3540,10 +3497,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <img src="/lxc.svg" alt="" class="size-3.5" /><span class="text-xs font-medium text-muted-foreground">系统容器</span>
           <span class="text-[10px] text-muted-foreground/70">{{ items.length }}</span>
           <span v-if="!ctExpanded" class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70">{{ ctSummary }}</span>
-          <ChevronDown
-            class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
-            :class="ctExpanded ? 'rotate-180' : ''"
-          />
+          <!-- 分区头 chevron 四区统一恒用展开态朝向（不随收展旋转）——收/展状态由
+               内容在否与摘要文案表达，相邻分区不再出现一上一下两套朝向 -->
+          <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
         </button>
         <div class="ml-auto flex items-center gap-0.5">
           <Button
@@ -3628,11 +3584,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             :running="c.state === 'running'"
             :color="containerColor(c.id)"
             :actions="containerActions(c, cardPortRows(c.id), directOpenExtra)"
-            @open="openTerm(c)"
+            @open="void ensureContainerPorts(c.id)"
             @meta="c.ip && copyIpOf(c.ip)"
             @select="runMobileContainerAction(c, $event)"
           />
-          <ContextMenu v-else>
+          <ContextMenu v-else @update:open="onCardMenuOpen($event, c.id)">
             <ContextMenuTrigger as-child>
             <div
               class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border px-2.5 py-2 pl-3.5 transition-colors active:bg-accent"
@@ -3737,12 +3693,18 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                  域名口径下每个端口再展开一级（代理打开 / IP 直连）；IP 口径没有代理
                  一路，端口本身就是直连、保持单层直点。web（实测返回 HTML）标绿；
                  docker 宿主映射（历史形态）本身即宿主直连，维持单项。 -->
-            <template v-if="c.state === 'running' && cardPortRows(c.id).length">
+            <template v-if="c.state === 'running'">
               <ContextMenuSeparator />
+              <!-- 监听端口数据是懒加载的（菜单打开时拉取）：有行渲染行，拉取中给
+                   「加载中…」，拉完为空给「暂无监听端口」——菜单开着时数据到位自动补行。 -->
               <ContextMenuSub>
                 <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
                 <ContextMenuSubContent class="w-40">
-                  <template v-for="r in cardPortRows(c.id)" :key="r.kind + r.port">
+                  <ContextMenuItem v-if="!cardPortRows(c.id).length && portsLoading.has(c.id)" disabled class="text-muted-foreground">
+                    加载中…
+                  </ContextMenuItem>
+                  <template v-else-if="cardPortRows(c.id).length">
+                    <template v-for="r in cardPortRows(c.id)" :key="r.kind + r.port">
                     <ContextMenuItem
                       v-if="r.kind === 'map'"
                       :title="portRowTitle(c, r)"
@@ -3777,7 +3739,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                       <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
                       <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
                     </ContextMenuItem>
+                    </template>
                   </template>
+                  <ContextMenuItem v-else disabled class="text-muted-foreground">暂无监听端口</ContextMenuItem>
                 </ContextMenuSubContent>
               </ContextMenuSub>
             </template>
@@ -3828,10 +3792,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               :class="svcReachable === false ? 'text-destructive' : 'text-muted-foreground/70'"
               >{{ svcSummary }}</span
             >
-            <ChevronDown
-              class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
-              :class="svcExpanded ? 'rotate-180' : ''"
-            />
+            <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
           </button>
           <Button
             variant="ghost"
@@ -3862,11 +3823,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 :running="s.running"
                 :color="containerColor(s.name)"
                 :actions="serviceActions(s, svcPortRows(s), directOpenExtra)"
-                @open="openServiceTerm(s)"
+                @open="void ensureSvcPorts(s.name)"
                 @meta="s.ip && copyIpOf(s.ip)"
                 @select="runMobileServiceAction(s, $event)"
               />
-              <ContextMenu v-else>
+              <ContextMenu v-else @update:open="onSvcCardMenuOpen($event, s.name)">
                 <ContextMenuTrigger as-child>
                 <div
                   class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-transparent px-2.5 py-2 pl-3.5 transition-colors hover:bg-accent/40 active:bg-accent"
@@ -3935,40 +3896,46 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                 <ContextMenuItem v-if="s.connect.length" @click="copySvcConnect(s)">复制连接命令</ContextMenuItem>
                 <!-- 监听端口（三级菜单）：与容器卡片同构——端口列表 → 每个端口的打开
                      方式（域名口径：代理打开 / IP 直连；IP 口径单层直点）。实测监听扫描
-                     （15s 慢轮询 + running 集变化即时补刷），扫描未回回退 custom 手工
-                     登记端口。 -->
-                <template v-if="s.running && svcPortRows(s).length">
+                     是懒加载（菜单打开时拉取，见 ensureSvcPorts），拉取中给「加载中…」，
+                     custom 手工登记端口在扫描未回时先行展示。 -->
+                <template v-if="s.running">
                   <ContextMenuSeparator />
                   <ContextMenuSub>
                     <ContextMenuSubTrigger>监听端口</ContextMenuSubTrigger>
                     <ContextMenuSubContent class="w-40">
-                      <template v-for="r in svcPortRows(s)" :key="r.kind + r.port">
-                        <ContextMenuSub v-if="directOpenExtra">
-                          <ContextMenuSubTrigger>
+                      <ContextMenuItem v-if="!svcPortRows(s).length && svcPortsLoading.has(s.name)" disabled class="text-muted-foreground">
+                        加载中…
+                      </ContextMenuItem>
+                      <template v-else-if="svcPortRows(s).length">
+                        <template v-for="r in svcPortRows(s)" :key="r.kind + r.port">
+                          <ContextMenuSub v-if="directOpenExtra">
+                            <ContextMenuSubTrigger>
+                              <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
+                              <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
+                              <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
+                            </ContextMenuSubTrigger>
+                            <ContextMenuSubContent class="w-36">
+                              <ContextMenuItem
+                                :title="`代理打开 ${serviceUrl('s', s.name, r.port, s.ip)}`"
+                                @click="openUrl(serviceUrl('s', s.name, r.port, s.ip))"
+                                >代理打开</ContextMenuItem
+                              >
+                              <ContextMenuItem
+                                v-if="svcDirectPortUrl(s, r.port)"
+                                :title="`IP 直连 ${svcDirectPortUrl(s, r.port)}`"
+                                @click="openUrl(svcDirectPortUrl(s, r.port))"
+                                >IP 直连</ContextMenuItem
+                              >
+                            </ContextMenuSubContent>
+                          </ContextMenuSub>
+                          <ContextMenuItem v-else :title="svcPortRowTitle(s, r)" @click="openUrl(svcPortRowTarget(s, r))">
                             <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
                             <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
                             <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
-                          </ContextMenuSubTrigger>
-                          <ContextMenuSubContent class="w-36">
-                            <ContextMenuItem
-                              :title="`代理打开 ${serviceUrl('s', s.name, r.port, s.ip)}`"
-                              @click="openUrl(serviceUrl('s', s.name, r.port, s.ip))"
-                              >代理打开</ContextMenuItem
-                            >
-                            <ContextMenuItem
-                              v-if="svcDirectPortUrl(s, r.port)"
-                              :title="`IP 直连 ${svcDirectPortUrl(s, r.port)}`"
-                              @click="openUrl(svcDirectPortUrl(s, r.port))"
-                              >IP 直连</ContextMenuItem
-                            >
-                          </ContextMenuSubContent>
-                        </ContextMenuSub>
-                        <ContextMenuItem v-else :title="svcPortRowTitle(s, r)" @click="openUrl(svcPortRowTarget(s, r))">
-                          <Globe v-if="r.kind === 'web'" class="size-3 shrink-0 text-emerald-500" />
-                          <span class="min-w-0 flex-1 font-mono tabular-nums">{{ r.port }}</span>
-                          <span v-if="r.kind === 'web'" class="shrink-0 text-[10px] text-emerald-500">网页</span>
-                        </ContextMenuItem>
+                          </ContextMenuItem>
+                        </template>
                       </template>
+                      <ContextMenuItem v-else disabled class="text-muted-foreground">暂无监听端口</ContextMenuItem>
                     </ContextMenuSubContent>
                   </ContextMenuSub>
                 </template>
@@ -4027,10 +3994,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <span v-if="!termExpanded" class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70">
               {{ sshTargets.length ? `${sshTargets.length} 台主机` : '添加 SSH 主机' }}
             </span>
-            <ChevronDown
-              class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
-              :class="termExpanded ? 'rotate-180' : ''"
-            />
+            <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
           </button>
           <Button
             variant="ghost"
@@ -4187,10 +4151,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <span class="text-xs font-medium text-muted-foreground">活跃会话</span>
             <!-- 0 不显示：收起态没扫描过，0 是「未知」不是「没有」 -->
             <span v-if="sessCount" class="text-[10px] text-muted-foreground/70">{{ sessCount }}</span>
-            <ChevronDown
-              class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
-              :class="sessExpanded ? 'rotate-180' : ''"
-            />
+            <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
           </button>
           <Button
             variant="ghost"
@@ -4485,8 +4446,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </ContextMenu>
         </div>
         <!-- 网络：active group 容器的 IP / 监听端口 / 映射端口收进下拉（原独立信息条）。
-             宿主组没有网络信息，禁用置灰。popout 独立窗口同样有此入口。 -->
-        <DropdownMenu v-if="activeGroup?.kind !== 'host' && activeGroup?.kind !== 'ssh'" class="max-md:hidden">
+             监听端口打开时懒拉（ensureActivePorts），宿主组没有网络信息，禁用置灰。
+             popout 独立窗口同样有此入口。 -->
+        <DropdownMenu
+          v-if="activeGroup?.kind !== 'host' && activeGroup?.kind !== 'ssh'"
+          class="max-md:hidden"
+          @update:open="(v: boolean) => v && ensureActivePorts()"
+        >
           <DropdownMenuTrigger as-child>
             <button
               class="flex items-center self-stretch border-l border-border/60 px-3 text-xs max-md:px-5"
@@ -5034,7 +5000,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @actions="onSwitcherActions"
       @sessions="termSwitcherOpen = false; showSessions = true"
       @environments="termSwitcherOpen = false; drawerOpen = true"
-      @network="termSwitcherOpen = false; networkSheetOpen = true"
+      @network="openNetworkSheet"
     />
     <CardActionSheet
       v-model:open="switcherActionOpen"
