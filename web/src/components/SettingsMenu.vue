@@ -17,13 +17,18 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { baseLabel } from '@/lib/caps'
 
-defineProps<{
-  // 弹出方向随锚点不同：侧栏底部向上（top）、rail/手机向右/上、顶栏向下（bottom）
-  side?: 'top' | 'bottom' | 'left' | 'right'
-  align?: 'start' | 'center' | 'end'
-  // popout 是纯终端工作区：管理组（模板/账户/批量）对它无意义，隐藏防死项
-  showManage?: boolean
-}>()
+// ⚠️ showManage 的默认值必须显式给 true——Vue 对缺省的 Boolean prop 运行时按
+// false 处理，「!== false 当开关」的写法会让管理组永远不渲染（实测踩过）。
+withDefaults(
+  defineProps<{
+    // 弹出方向随锚点不同：侧栏底部向上（top）、rail/手机向右/上、顶栏向下（bottom）
+    side?: 'top' | 'bottom' | 'left' | 'right'
+    align?: 'start' | 'center' | 'end'
+    // popout 是纯终端工作区：管理组（模板/账户/批量）对它无意义，隐藏防死项
+    showManage?: boolean
+  }>(),
+  { showManage: true },
+)
 
 const emit = defineEmits<{
   (e: 'open-ai'): void
