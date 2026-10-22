@@ -23,6 +23,7 @@ import {
   unadoptService,
   updateServiceMeta,
   listTermActivity,
+  listTermSessions,
   termSessionKey,
   HOST_ID,
   SVC_FILE_PREFIX,
@@ -58,7 +59,7 @@ import {
   QUIET_CONFIRM_MS,
   SUSTAIN_MS,
 } from '@/lib/terminalActivity'
-import { setFaviconBusy } from '@/lib/faviconStatus'
+import { setTabBusy, setTabBaseTitle } from '@/lib/tabStatus'
 import { fireQuietNotify, justOpened } from '@/lib/browserNotify'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
@@ -1230,6 +1231,39 @@ function onFileTabClick(i: number) {
   const t = editorTabs.value[i]
   if (t) revealPanelFollow(t.containerId, t.path)
 }
+// 活跃文件 tab ↔ /files 路由 query ?file=<containerId>::<path>（tabId 同源）：与 ?term=
+// 同一哲学——URL 记录「正在看哪个文件」，owner 仍是 localStorage 的 editorTabs/
+// activeEditorIdx。value 带 containerId 所以深链完整定位一个 tab（文件本体可以不属于
+// 路由 target——target 只管面板，?file= 只管编辑器列）。diff 形态不可表达，深链落成
+// 普通预览 tab。
+const activeTabId = computed(() => {
+  const t = editorTabs.value[activeEditorIdx.value]
+  return t ? tabId(t) : ''
+})
+watch([activeTabId, () => route.name], ([id, name]) => {
+  if (name !== 'files' || (route.query.file ?? '') === id) return
+  const q = { ...route.query }
+  if (id) q.file = id
+  else delete q.file
+  void router.replace({ query: q })
+})
+watch(
+  () => (route.name === 'files' ? route.query.file : ''),
+  (v) => {
+    if (typeof v !== 'string' || !v || v === activeTabId.value) return
+    const i = editorTabs.value.findIndex((t) => tabId(t) === v)
+    if (i >= 0) {
+      onFileTabClick(i)
+      return
+    }
+    const sep = v.indexOf('::')
+    const cId = sep > 0 ? v.slice(0, sep) : ''
+    const path = sep > 0 ? v.slice(sep + 2) : ''
+    if (!path.startsWith('/')) return
+    openFile(cId, fileTargetName(cId) || cId, path)
+  },
+  { immediate: true }, // 刷新落在 /files/...?file= 上时也要应用（写侧否则会用 localStorage 覆盖深链）
+)
 // 焦点即上下文：文件面板跟随「当前看的文件」，与切终端 tab 同一条规则——终端落焦
 // 面板跟 cwd，文件落焦面板跟文件。跨容器时激活该容器的既有终端组（面板目标由活跃组
 // 派生，不切组面板换不了容器——这正是「和切终端一样」的对称面：文件落焦同样换组）；
@@ -1919,13 +1953,14 @@ watch(
 )
 // popout 无 header，窗口标题是唯一身份标识：跟随当前组动态标题（popout 是单容器窗口，
 // 动态标题不产生归属混淆——跑命令/CC 时浏览器 tab 实时变化），无动态标题回落组名。
+// 经 setTabBaseTitle 落地：tab 标题运行状态（🔄/✅ 前缀）在同一处合成，两路不互踩。
 const activeTitle = computed(() =>
   activeGroup.value ? groupDynamicLabel(activeGroup.value) || groupLabel(activeGroup.value) : '',
 )
 watch(
   () => activeTitle.value,
   (name) => {
-    if (props.popout && name) document.title = `${name} · mysandbox`
+    if (props.popout && name) setTabBaseTitle(`${name} · mysandbox`)
   },
   { immediate: true },
 )
@@ -1994,6 +2029,9 @@ function restoreHidden(g: TermGroup) {
 // 与 onTabClick 同语义），可见组直接激活。
 function activateGroupById(gId: string) {
   window.focus()
+  // 深链/通知点击落在 /files 等页面路由上：先退回 workspace 再激活组，否则终端在
+  // 覆盖层下面切了用户也看不见。
+  if (String(route.name) !== 'workspace') closePageRoute()
   const hidden = hiddenGroups.value.find((x) => x.id === gId)
   if (hidden) {
     restoreHidden(hidden)
@@ -2004,29 +2042,78 @@ function activateGroupById(gId: string) {
   if (idx >= 0) onTabClick(idx)
 }
 
-// —— 推送通知点击深链（SW notificationclick，web/public/service-worker.js）——
-// 页面没开：SW 带 ?focusTerm=kind|cid|termId 打开控制台；已开：postMessage 同款语义。
-// 落点 = 组里任一叶子命中该会话 key（termSessionKey 同源）→ 激活该组（含隐藏组恢复）。
-function focusTermTarget(kind: 'host' | 'container', cid: string, termId: string): void {
-  const key = termSessionKey(kind, cid || undefined, termId)
+// —— 终端会话深链（SW notificationclick / 直接贴 URL）——
+// ?term=<termSessionKey>（c:<cid>:<termId> / host:<termId> / s:<名>:<termId> /
+// x:<名>:<termId>）记录「焦点会话」，与 /files 的 ?path=/?file= 同一哲学：URL 是
+// 焦点变化的记录者不是 owner——布局/激活的真相仍是 localStorage 的 groups/activeIdx。
+// 落点 = 组里任一叶子命中该 key → 激活该组（含隐藏组恢复）；本窗口没有这个组 → 服务端
+// 扫描确认会话还活着就接入建组（termId 不变，后端 new-session -A attach 回原会话，
+// 链接发到别的窗口/浏览器也能用）；会话真没了 → 提示并摘掉死链。
+function focusTermTarget(key: string): void {
   for (const g of [...groups.value, ...hiddenGroups.value]) {
     if (leafIds(g.root).some((t) => activityKeyOf(g, t) === key)) {
       activateGroupById(g.id)
       return
     }
   }
+  void (async () => {
+    try {
+      const sessions = (await listTermSessions()).sessions
+      const hit = sessions.find((s) => termSessionKey(s.kind, s.containerId, s.termId) === key)
+      if (hit) adoptSessions([hit])
+      else toast.error('深链指向的终端会话已结束')
+    } catch {
+      /* 扫描失败（网络/鉴权）不打断用户，?term= 留着下次触发再试 */
+    }
+  })()
 }
 function handleFocusTermQuery(): void {
-  const v = new URLSearchParams(location.search).get('focusTerm')
-  if (!v) return
-  history.replaceState(null, '', location.pathname)
-  const [kind, cid, termId] = v.split('|')
-  if (termId) focusTermTarget(kind === 'host' ? 'host' : 'container', cid, termId)
+  const term = route.query.term
+  if (typeof term === 'string' && term) return focusTermTarget(term)
+  // 旧版 SW 的 ?focusTerm=kind|cid|termId（更新前的存量通知还可能被点开）：换算成 key
+  // 兼容一轮，并把旧参数从地址栏摘掉。
+  const legacy = route.query.focusTerm
+  if (typeof legacy !== 'string' || !legacy) return
+  void router.replace({ query: { ...route.query, focusTerm: undefined } })
+  const [kind, cid, termId] = legacy.split('|')
+  if (termId) focusTermTarget(kind === 'host' ? `host:${termId}` : `c:${cid}:${termId}`)
 }
+// 焦点会话 ↔ URL 双向：activeGroup 变 → replace ?term（不进历史）；query 变（贴 URL /
+// 前进后退）→ 落组。写侧无路由守卫（files 页开着也能切终端 tab，参数随 query 带走）。
+// 回环安全：写 → 读侧命中 activeTermKey 即跳过，不二次激活。
+const activeTermKey = computed(() => {
+  const g = activeGroup.value
+  if (!g) return ''
+  const leaves = leafIds(g.root)
+  return leaves.length ? activityKeyOf(g, leaves[0]!) : ''
+})
+watch(activeTermKey, (key) => {
+  if ((route.query.term ?? '') === key) return
+  const q = { ...route.query }
+  if (key) q.term = key
+  else delete q.term
+  void router.replace({ query: q })
+})
+watch(
+  () => route.query.term,
+  (v) => {
+    if (typeof v === 'string' && v && v !== activeTermKey.value) focusTermTarget(v)
+  },
+)
+// 已开窗口的 postMessage 通道（SW 对已开控制台不换 URL，直接投递同款语义）。
 function onFocusTermMessage(e: MessageEvent): void {
   const d = e.data as { type?: string; focus?: { kind?: string; containerId?: string; termId?: string } } | null
   if (!d || d.type !== 'msb-focus-term' || !d.focus?.termId) return
-  focusTermTarget(d.focus.kind === 'host' ? 'host' : 'container', d.focus.containerId ?? '', d.focus.termId)
+  const f = d.focus
+  focusTermTarget(
+    f.kind === 'host'
+      ? `host:${f.termId}`
+      : f.kind === 'service'
+        ? `s:${f.containerId ?? ''}:${f.termId}`
+        : f.kind === 'ssh'
+          ? `x:${f.containerId ?? ''}:${f.termId}`
+          : `c:${f.containerId ?? ''}:${f.termId}`,
+  )
 }
 
 // 会话页：恢复隐藏 + 接入其他窗口/浏览器的活跃会话（服务端扫描）。
@@ -2961,10 +3048,10 @@ const busyGroupIds = computed(() => {
 let actTimer: ReturnType<typeof setInterval> | null = null
 const ACTIVITY_MS = 5000
 
-// favicon 运行状态：tab 身份点之外把「有工具在跑/跑完了」带到浏览器标签图标上——
-// 切去别的浏览器 tab 也能瞄到。三态在 lib/faviconStatus（idle/busy蓝点/done绿点，
-// 回到本页即熄）；这里只投影：任一组有输出流即 busy，本轮输出已成段（termRunSpanMs
-// ≥ SUSTAIN_MS，秒级命令不算）再带 sustained 标记，绿点资格由那边确认窗把关。
+// tab 标题运行状态：tab 身份点之外把「有工具在跑/跑完了」带到浏览器标签标题上——
+// 切去别的浏览器 tab 也能瞄到。三态在 lib/tabStatus（idle/🔄busy/✅done，回到本页
+// 即熄）；这里只投影：任一组有输出流即 busy，本轮输出已成段（termRunSpanMs
+// ≥ SUSTAIN_MS，秒级命令不算）再带 sustained 标记，done 资格由那边确认窗把关。
 watch(
   () => {
     const active = busyGroupIds.value
@@ -2976,7 +3063,7 @@ watch(
     }
     return 'busy' as const
   },
-  (mode) => setFaviconBusy(mode),
+  (mode) => setTabBusy(mode),
 )
 async function refreshActivity() {
   if (!groups.value.length && !hiddenGroups.value.length) return
@@ -3108,7 +3195,7 @@ async function refreshActivity() {
 onMounted(() => {
   refresh()
   void refreshSshTargets()
-  // 推送通知点击深链（SW）：?focusTerm= 落组 + 已开窗口的 postMessage 通道。
+  // 终端会话深链（SW）：?term= 落组（本窗口没有该组则接入）+ 已开窗口的 postMessage 通道。
   handleFocusTermQuery()
   window.addEventListener('message', onFocusTermMessage)
   // 容器/服务状态事件驱动（lxc-monitor / docker events / jobs 任务注册表旁路转发，
