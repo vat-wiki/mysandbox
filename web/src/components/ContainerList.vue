@@ -3608,10 +3608,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            信息密度低——改两行卡片平铺「看一眼就该知道」的状态（状态文字、IP、描述），
            低频操作仍收 ⋯。色条与 tab 栏同色呼应。卡片可拖拽排序（桌面，localStorage 记忆），
            FLIP 补间让被 cross 让位的卡实时滑移（flipCapture/flipPlay）。 -->
-      <!-- 容器分区是侧栏唯一的 flex-1 弹性块：常驻包裹（分区收起时只收内部列表），
-           保证底部「收起侧栏」行恒钉在侧栏最底，不随分区收展浮沉。 -->
-      <div class="flex min-h-0 flex-1 flex-col">
-      <div v-if="ctExpanded" data-flip="ct" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto scroll-thin p-2">
+      <!-- 环境区主体：系统容器/应用容器/终端/活跃会话四个分区地位等同，按序从顶部
+           顺排（系统容器不再独占弹性高度把下面几区压到底部），整体随内容增长滚动；
+           弹性留白沉到主体末尾——只有「收起侧栏」行钉在侧栏最底。 -->
+      <div class="min-h-0 flex-1 overflow-y-auto scroll-thin">
+      <div v-if="ctExpanded" data-flip="ct" class="flex flex-col gap-0.5 p-2">
         <!-- 首屏加载骨架：只在列表还没数据时占位（轮询静默刷新不打这里） -->
         <template v-if="loading && !items.length">
           <Skeleton v-for="i in 3" :key="i" class="h-12 w-full rounded-lg" />
@@ -3792,7 +3793,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <p class="text-xs text-muted-foreground">暂无容器</p>
           <p class="text-[11px] text-muted-foreground/60">点上方 ＋ 新建，点击卡片可纳入已有容器</p>
         </div>
-      </div>
       </div>
 
       <!-- docker 服务分区：与系统容器同形态、同一套状态语言的卡片组（色条=按服务名
@@ -4185,7 +4185,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           >
             <History class="size-3.5 shrink-0 text-muted-foreground" />
             <span class="text-xs font-medium text-muted-foreground">活跃会话</span>
-            <span class="text-[10px] text-muted-foreground/70">{{ sessCount }}</span>
+            <!-- 0 不显示：收起态没扫描过，0 是「未知」不是「没有」 -->
+            <span v-if="sessCount" class="text-[10px] text-muted-foreground/70">{{ sessCount }}</span>
             <ChevronDown
               class="ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform"
               :class="sessExpanded ? 'rotate-180' : ''"
@@ -4214,6 +4215,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             @unauthorized="emit('unauthorized')"
           />
         </div>
+      </div>
       </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
