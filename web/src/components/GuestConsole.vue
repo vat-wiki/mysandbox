@@ -12,6 +12,7 @@ import {
   type ContainerView,
 } from '@/lib/api'
 import { gatePoll } from '@/lib/linkQuality'
+import { newId } from '@/lib/id'
 import { containerColor } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import Terminal from '@/components/Terminal.vue'
@@ -94,7 +95,7 @@ function openContainer(id: string) {
   terms.value.push({
     containerId: id,
     containerName: c?.displayName || id,
-    termId: crypto.randomUUID(),
+    termId: newId(), // crypto.randomUUID 只在 secure context 有——IP 口径 http 访问走 newId 兜底（lib/id.ts）
   })
   activeIdx.value = terms.value.length - 1
 }

@@ -118,7 +118,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History, Users } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History, Users, KeyRound } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
