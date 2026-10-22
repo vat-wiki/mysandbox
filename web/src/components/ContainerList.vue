@@ -836,6 +836,26 @@ function closePageRoute() {
   if (typeof history.state?.back === 'string') void router.back()
   else void router.replace({ name: 'workspace' })
 }
+// 主区切离 AI 的统一出口。路由是 AI 开合的唯一真相（aiOpen），只动 mainView 不收 /ai
+// 的话刷新会经 aiOpen immediate watcher 把 mainView 拽回 'ai'——终端/文件切了白切
+// （AI 配置「回魂」）。in-flight 标记防 closePageRoute 的 back 语义在路由落地前被连发
+// （连 back 两次会穿回上上个历史项）；路由落地（route.name 变化）即复位。
+let aiCloseInFlight = false
+watch(
+  () => String(route.name),
+  () => (aiCloseInFlight = false),
+)
+function leaveAi(): void {
+  if (String(route.name) !== 'ai' || aiCloseInFlight) return
+  aiCloseInFlight = true
+  closePageRoute()
+}
+// mainView 写入的统一入口（'ai' 归 aiOpen watcher 管，不走这里）：主区切到终端/文件
+// 时顺手收掉还开着的 /ai 路由——各写点旧注释「桌面：关 AI」承诺的就是这件事。
+function setMainView(v: 'terminal' | 'file'): void {
+  mainView.value = v
+  leaveAi()
+}
 function onFilesPathChange(path: string) {
   if (route.name !== 'files' || !path || route.query.path === path) return
   void router.replace({ name: 'files', params: route.params, query: { ...route.query, path } })
@@ -1222,12 +1242,12 @@ function openFile(cId: string, cName: string, path: string, opts?: { diff?: { he
     editorTabs.value.push({ containerId: cId, containerName: cName, path, diff: opts?.diff, line: opts?.line, col: opts?.col, editing: opts?.editing === true ? true : undefined })
     activeEditorIdx.value = editorTabs.value.length - 1
   }
-  mainView.value = 'file'
+  setMainView('file')
   revealPanelFollow(cId, path)
 }
 function onFileTabClick(i: number) {
   activeEditorIdx.value = i
-  mainView.value = 'file'
+  setMainView('file')
   const t = editorTabs.value[i]
   if (t) revealPanelFollow(t.containerId, t.path)
 }
@@ -1455,7 +1475,7 @@ function removeTab(t: EditorTab) {
   delete tabDirty.value[tabId(t)]
   delete tabMode.value[tabId(t)]
   editorTabs.value.splice(i, 1)
-  if (!editorTabs.value.length) mainView.value = 'terminal' // 最后一个文件 tab 关掉，主区还给终端
+  if (!editorTabs.value.length) setMainView('terminal') // 最后一个文件 tab 关掉，主区还给终端
 }
 // tab 右键「编辑/预览」（状态感知项，pane 右下角按钮的第二入口）：先激活该 tab，
 // 再按当前形态调 pane——渲染视图/只读进编辑，md/svg 源码态回预览。
@@ -1836,7 +1856,7 @@ function createGroup(containerId: string, name: string, kind?: 'host' | 'service
   }
   groups.value.splice(at, 0, g)
   activeIdx.value = groups.value.indexOf(g)
-  mainView.value = 'terminal' // 手机：收起覆盖主列的编辑器列；桌面：关 AI（编辑器列不受影响）
+  setMainView('terminal') // 手机：收起覆盖主列的编辑器列；桌面：关 AI（编辑器列不受影响）
   return g
 }
 // 组显示名：同容器多组并存时带稳定序号（dev·1 / dev·2 …），单一组就是原名。
@@ -2030,12 +2050,13 @@ function restoreHidden(g: TermGroup) {
 function activateGroupById(gId: string) {
   window.focus()
   // 深链/通知点击落在 /files 等页面路由上：先退回 workspace 再激活组，否则终端在
-  // 覆盖层下面切了用户也看不见。
-  if (String(route.name) !== 'workspace') closePageRoute()
+  // 覆盖层下面切了用户也看不见。/ai 走 leaveAi（幂等——落组的 onTabClick 还会试一次）。
+  if (String(route.name) === 'ai') leaveAi()
+  else if (String(route.name) !== 'workspace') closePageRoute()
   const hidden = hiddenGroups.value.find((x) => x.id === gId)
   if (hidden) {
     restoreHidden(hidden)
-    mainView.value = 'terminal'
+    setMainView('terminal')
     return
   }
   const idx = groups.value.findIndex((x) => x.id === gId)
@@ -2225,7 +2246,7 @@ function onTabClick(idx: number) {
     return
   }
   activeIdx.value = idx
-  mainView.value = 'terminal' // 手机：点终端 tab 收起覆盖主列的编辑器列；桌面：关 AI（编辑器列不受影响）
+  setMainView('terminal') // 手机：点终端 tab 收起覆盖主列的编辑器列；桌面：收掉还开着的 /ai 路由
 }
 
 // —— 卡片长按（触屏）= 右键 ——
