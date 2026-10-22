@@ -3699,11 +3699,18 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <img src="/lxc.svg" alt="" class="size-3.5" /><span class="text-xs font-medium text-muted-foreground">系统容器</span>
           <span class="text-[10px] text-muted-foreground/70">{{ items.length }}</span>
           <span v-if="!ctExpanded" class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70">{{ ctSummary }}</span>
-          <!-- 分区头 chevron 四区统一恒用展开态朝向（不随收展旋转）——收/展状态由
-               内容在否与摘要文案表达，相邻分区不再出现一上一下两套朝向 -->
-          <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
         </button>
+        <!-- 分区头 chevron 四区统一：作为右侧图标组第一个 icon-xs 按钮（与 ⟳/＋ 同形态），
+             恒用展开态朝向（不随收展旋转）——收/展状态由内容在否与摘要文案表达 -->
         <div class="ml-auto flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :title="ctExpanded ? '收起容器列表' : '展开容器列表'"
+            @click="ctExpanded = !ctExpanded"
+          >
+            <ChevronUp />
+          </Button>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -3976,16 +3983,25 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               :class="svcReachable === false ? 'text-destructive' : 'text-muted-foreground/70'"
               >{{ svcSummary }}</span
             >
-            <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
           </button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            title="收编外部容器（接入现有 docker 服务）"
-            @click="showSvcAdopt = true"
-          >
-            <Plus />
-          </Button>
+          <div class="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              :title="svcExpanded ? '收起服务列表' : '展开服务列表'"
+              @click="svcExpanded = !svcExpanded"
+            >
+              <ChevronUp />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              title="收编外部容器（接入现有 docker 服务）"
+              @click="showSvcAdopt = true"
+            >
+              <Plus />
+            </Button>
+          </div>
         </div>
         <div
           v-if="svcExpanded"
@@ -4178,16 +4194,25 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <span v-if="!termExpanded" class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/70">
               {{ sshTargets.length ? `${sshTargets.length} 台主机` : '添加 SSH 主机' }}
             </span>
-            <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
           </button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            title="添加 SSH 主机 / 管理已有目标"
-            @click="showSshTargets = true"
-          >
-            <Plus />
-          </Button>
+          <div class="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              :title="termExpanded ? '收起终端列表' : '展开终端列表'"
+              @click="termExpanded = !termExpanded"
+            >
+              <ChevronUp />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              title="添加 SSH 主机 / 管理已有目标"
+              @click="showSshTargets = true"
+            >
+              <Plus />
+            </Button>
+          </div>
         </div>
         <div
           v-if="termExpanded"
@@ -4335,16 +4360,25 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <span class="text-xs font-medium text-muted-foreground">活跃会话</span>
             <!-- 0 不显示：收起态没扫描过，0 是「未知」不是「没有」 -->
             <span v-if="sessCount" class="text-[10px] text-muted-foreground/70">{{ sessCount }}</span>
-            <ChevronUp class="ml-auto size-3.5 shrink-0 text-muted-foreground" />
           </button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            :title="sessExpanded ? '重新扫描' : '展开并扫描'"
-            @click="sessExpanded ? sessScan++ : (sessExpanded = true)"
-          >
-            <RefreshCw />
-          </Button>
+          <div class="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              :title="sessExpanded ? '收起活跃会话列表' : '展开活跃会话列表'"
+              @click="sessExpanded = !sessExpanded"
+            >
+              <ChevronUp />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              :title="sessExpanded ? '重新扫描' : '展开并扫描'"
+              @click="sessExpanded ? sessScan++ : (sessExpanded = true)"
+            >
+              <RefreshCw />
+            </Button>
+          </div>
         </div>
         <div v-if="sessExpanded" class="max-h-48 overflow-y-auto scroll-thin pb-2">
           <TermSessionList
