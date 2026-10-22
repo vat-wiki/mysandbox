@@ -59,7 +59,7 @@ import {
   QUIET_CONFIRM_MS,
   SUSTAIN_MS,
 } from '@/lib/terminalActivity'
-import { setTabBusy, setTabBaseTitle } from '@/lib/tabStatus'
+import { setTabBusy, setTabTasks, setTabBaseTitle } from '@/lib/tabStatus'
 import { fireQuietNotify, justOpened } from '@/lib/browserNotify'
 import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
@@ -1973,7 +1973,8 @@ watch(
 )
 // popout 无 header，窗口标题是唯一身份标识：跟随当前组动态标题（popout 是单容器窗口，
 // 动态标题不产生归属混淆——跑命令/CC 时浏览器 tab 实时变化），无动态标题回落组名。
-// 经 setTabBaseTitle 落地：tab 标题运行状态（🔄/✅ 前缀）在同一处合成，两路不互踩。
+// 经 setTabBaseTitle 落地：tab 标题运行状态（busy 任务轮换 / ✅ 前缀）在同一处合成，
+// 两路不互踩。
 const activeTitle = computed(() =>
   activeGroup.value ? groupDynamicLabel(activeGroup.value) || groupLabel(activeGroup.value) : '',
 )
@@ -2940,8 +2941,9 @@ function svcDirectPortUrl(s: ServiceView, port: number): string {
 
 // —— 终端无输出提醒（agent 干完活/等输入）——
 // 服务端（server/activity.ts）已在周期扫 tmux 输出，这里 5s 拉一次快照做提醒决策。
-// 「在不在看」前端自判：可见 tab 是 v-show 常驻（WS 恒 attach），tmux 的 attached 完全
-// 不代表用户在看——只有「当前激活 tab + 终端区」才算看。可见叶子的提醒资格 = 四道门槛
+// 「在不在看」前端自判：可见 tab 是 v-show 常驻，但 WS 只挂在激活 tab（懒挂载，切走即
+// detach——服务端 activity 扫描不依赖前端流，非激活 tab 的 quiet 判定照常由服务端给），
+// tmux 的 attached 完全不代表用户在看——只有「当前激活 tab + 终端区」才算看。可见叶子的提醒资格 = 四道门槛
 // 同时过（宁缺勿滥——误标比漏标烦人）：
 //   - 在看：leftAt=WATCHING（正看着）永不命中；看过结果再走的人不被打扰（否则「看着
 //     它跑完→切走」每次都误报）；
@@ -3055,14 +3057,28 @@ function activityKeyOf(g: TermGroup, t: string): string {
 function tabDotColor(g: TermGroup): string {
   return g.kind === 'host' ? '#f59e0b' : containerColor(g.containerId)
 }
-// 有输出在流的组（任一叶子 4s 内收到过帧）：tab 身份点呼吸光晕。
-// 帧登记在 lib/terminalActivity（1s 低频投影成响应式集合），agent 干活时长亮、
-// 停手/等输入 ~4s 熄灭——「运行中」的即时视觉状态，与安静提醒（离开后）互补。
+// 服务端扫描的「在出输出」会话 key 集（state=active）：懒挂载后非激活 tab 的 WS 已
+// detach、没有前端流，busy 光晕/标题投影由服务端 tmux 扫描兜底（activity.ts 不依赖
+// 前端流）。粒度 = quietSeconds 档（输出停了 15s 才摘 vs 前端流的 4s），且只覆盖
+// host/container——ssh/service 会话不在服务端扫描范围（无兜底，回到激活 tab 才有流）。
+// key 空间与 activityKeyOf 对齐（termSessionKey），别与 termActiveIds 的裸 termId 混用。
+const activityRows = ref<TermActivityView[]>([])
+const serverBusyKeys = computed(() => {
+  const s = new Set<string>()
+  for (const r of activityRows.value) {
+    if (r.state === 'active') s.add(termSessionKey(r.kind, r.containerId, r.termId))
+  }
+  return s
+})
+// 有输出在流的组（任一叶子：前端流 4s 内收到过帧，或服务端扫描判定 active）：tab 身份
+// 点呼吸光晕。帧登记在 lib/terminalActivity（1s 低频投影成响应式集合），agent 干活时
+// 长亮、停手/等输入 ~4s 熄灭——「运行中」的即时视觉状态，与安静提醒（离开后）互补。
 const busyGroupIds = computed(() => {
   const active = termActiveIds()
   const s = new Set<string>()
   for (const g of groups.value) {
-    if (leafIds(g.root).some((t) => active.has(t))) s.add(g.id)
+    if (leafIds(g.root).some((t) => active.has(t) || serverBusyKeys.value.has(activityKeyOf(g, t))))
+      s.add(g.id)
   }
   return s
 })
@@ -3070,21 +3086,37 @@ let actTimer: ReturnType<typeof setInterval> | null = null
 const ACTIVITY_MS = 5000
 
 // tab 标题运行状态：tab 身份点之外把「有工具在跑/跑完了」带到浏览器标签标题上——
-// 切去别的浏览器 tab 也能瞄到。三态在 lib/tabStatus（idle/🔄busy/✅done，回到本页
-// 即熄）；这里只投影：任一组有输出流即 busy，本轮输出已成段（termRunSpanMs
+// 切去别的浏览器 tab 也能瞄到。三态在 lib/tabStatus（idle/任务轮换busy/✅done，
+// 回到本页即熄）；这里只投影：任一终端有输出流即 busy，本轮输出已成段（termRunSpanMs
 // ≥ SUSTAIN_MS，秒级命令不算）再带 sustained 标记，done 资格由那边确认窗把关。
+// 「有输出流」= 前端帧流（激活 tab，帧级粒度）∪ 服务端扫描 active（懒挂载兜底，见
+// serverBusyKeys——非激活 tab 的 agent 任务靠它进轮换；服务端信号本身带 quietSeconds
+// 迟滞，思考停顿不闪标，但只在 active 态给 busy，不参与 sustained 判定）。
+// 任务标题按「输出在谁身上」取：出输出的 pane 用它自己的标题（无则回落组身份标签），
+// 多个 busy pane 各占一条轮换。不能用 groupDynamicLabel——它比的是标题到达时间，
+// 谁最后设过标题显示谁，跟谁在实际干活无关（shell 敲一下命令就压过 agent 的标题）。
 watch(
   () => {
-    const active = busyGroupIds.value
-    if (!active.size) return false as const
+    const active = termActiveIds()
+    const svr = serverBusyKeys.value
+    const tasks = new Set<string>()
+    let sustained = false
     for (const g of groups.value) {
-      if (active.has(g.id) && leafIds(g.root).some((t) => termRunSpanMs(t) >= SUSTAIN_MS)) {
-        return 'sustained' as const
+      for (const t of leafIds(g.root)) {
+        const client = active.has(t)
+        const server = svr.has(activityKeyOf(g, t))
+        if (!client && !server) continue
+        if (client && termRunSpanMs(t) >= SUSTAIN_MS) sustained = true
+        tasks.add(termTitles.value[t]?.text || groupLabel(g))
       }
     }
-    return 'busy' as const
+    const mode: false | 'busy' | 'sustained' = tasks.size ? (sustained ? 'sustained' : 'busy') : false
+    return { mode, tasks: [...tasks] }
   },
-  (mode) => setTabBusy(mode),
+  ({ mode, tasks }) => {
+    setTabBusy(mode)
+    setTabTasks(tasks)
+  },
 )
 async function refreshActivity() {
   if (!groups.value.length && !hiddenGroups.value.length) return
@@ -3100,6 +3132,8 @@ async function refreshActivity() {
     if (e instanceof Unauthorized) emit('unauthorized')
     return // 轮询失败静默（服务重启窗口期常见），下拍再试
   }
+  // 存给 busy 投影（busyGroupIds / tab 标题任务轮换）做懒挂载兜底（见 serverBusyKeys）。
+  activityRows.value = rows
   const rowByKey = new Map(rows.map((r) => [termSessionKey(r.kind, r.containerId, r.termId), r]))
   // agent 精准等待事件（agent hook/插件经 peer /notify 上报，agentNotify.ts）：key
   // 对齐 termSessionKey，隐藏组/可见组统一吃——服务端信号不依赖前端流，隐藏组反而

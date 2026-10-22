@@ -193,9 +193,12 @@ function closeSearch() {
   search?.clearDecorations()
   term?.focus()
 }
-// 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）与首连共用。
-// termId 不变 -> 后端 attach 回同一 tmux 会话（无限期保留，直到显式 ✕ 或 shell 退出）。
-function connectWs() {
+// 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）、tab 激活懒挂载与
+// 首连共用。termId 不变 -> 后端 attach 回同一 tmux 会话（无限期保留，直到显式 ✕ 或 shell 退出）。
+// quiet：程序性连接/断开（tab 切换的 detach/attach）不打 banner——每次切 tab 都写
+// 「>> 连接/>> 已断开」两行会把 scrollback 刷成切换日志；意外断线路径照常提示。
+function connectWs(quiet = false) {
+  wsQuiet = quiet
   const token = getToken() ?? ''
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const shell = props.shell || 'zsh'
@@ -216,11 +219,12 @@ function connectWs() {
     // 而不是把整个历史重写一遍（scrollback 里已有内容，全量回填会整体重复）。
     (backfilled ? '&resume=1' : '')
   ws = new WebSocket(url)
+  const sock = ws
   ws.binaryType = 'arraybuffer'
 
   ws.onopen = () => {
     connState.value = 'ok'
-    term?.writeln(`\x1b[2m>> 连接 ${props.name}${props.ssh ? '' : ` (${shell})`}\x1b[0m`)
+    if (!wsQuiet) term?.writeln(`\x1b[2m>> 连接 ${props.name}${props.ssh ? '' : ` (${shell})`}\x1b[0m`)
   }
   ws.onmessage = (ev) => {
     // 文本帧 = 服务端控制帧（二进制才是终端流）。目前只有 history：tmux pane 历史回填
@@ -247,20 +251,23 @@ function connectWs() {
       return
     }
     // 终端数据帧 = 有输出：登记最后输出时刻（「无输出提醒」用，见 lib/terminalActivity）。
-    // 常驻 tab（v-show 非激活）也在收流，登记对所有可见组生效；历史回填（文本帧）不算。
-    // prime 窗口内的帧只点亮光晕、不进提醒资格（attach 重绘/初始 prompt 是打开自带画面）。
+    // 非激活 tab 已 detach（懒挂载）不再收流，登记只对当前激活 tab 生效；历史回填（文本帧）
+    // 不算。prime 窗口内的帧只点亮光晕、不进提醒资格（attach 重绘/初始 prompt 是打开自带画面）。
     noteTermOutput(props.termId)
     const bytes = new Uint8Array(ev.data as ArrayBuffer)
     term?.write(bytes)
   }
   // 非正常关闭（非 1000/1001）视为意外断线，置 lost 徽标；点「重连」条或刷新恢复。
   ws.onclose = (ev) => {
+    // 陈旧关闭守卫：detach/重连已把 ws 换成新连接后，旧 socket 的 onclose 才迟到——
+    // 不能碰新连接的 hbTimer/状态（否则新连接的心跳被清掉，半开探测从此失灵）。
+    if (ws !== sock) return
     if (hbTimer) {
       clearInterval(hbTimer)
       hbTimer = null
     }
     if (ev.code !== 1000 && ev.code !== 1001) connState.value = 'lost'
-    term?.writeln(`\x1b[2m>> 已断开 (${ev.code})\x1b[0m`)
+    if (!wsQuiet) term?.writeln(`\x1b[2m>> 已断开 (${ev.code})\x1b[0m`)
   }
   ws.onerror = () => term?.writeln('\x1b[31m>> socket 错误\x1b[0m')
 
@@ -300,6 +307,26 @@ function reconnect() {
 }
 defineExpose({ kill, reconnect, screenHash })
 
+// 非激活 tab 的懒挂载（detach）：终端组全部常驻 DOM（v-show 切换、组件不卸载），但
+// WS 只留给激活 tab——非激活 tab 不再吃输出流，省掉三样：xterm 对不可见输出的 VT 解析
+// CPU（输出风暴时是真成本）、服务端每个 attach client 的输出扇出、心跳/半开探测。代价
+// 是切回该 tab 时一拍重连（resume=1 增量回填，锚点去重零重复，~100ms）。组件与 buffer
+// 原样保留，tmux 会话在服务端不受影响（会话只被显式 kill 或 shell 退出终结）。
+function detachWs() {
+  if (!ws) return
+  wsQuiet = true // 程序性断开不打 banner；陈旧 onclose 守卫保证不碰后续连接的状态
+  try {
+    ws.close()
+  } catch {
+    /* noop */
+  }
+  ws = null
+  if (hbTimer) {
+    clearInterval(hbTimer)
+    hbTimer = null
+  }
+}
+
 // 页面回到前台/窗口重新聚焦/网络恢复/任意用户交互时，意外断线的终端立即自愈。离开期间
 // 浏览器、系统休眠或网络切换可能已把 WebSocket 关掉；用户切回来就是要看，不该再等一次
 // 手动点击。有些回前台路径 visibilitychange/focus 都不触发（手机息屏唤醒、页面一直
@@ -322,6 +349,10 @@ const onFocusIn = () => {
 }
 let fit: FitAddon | null = null
 let ws: WebSocket | null = null
+// 当前连接是否程序性静默（tab 切换的 detach/attach 路径）：onopen/onclose 不写 banner。
+// 共享可变量而非闭包捕获：detach 要让「已存在连接」的 onclose 也静默，只能事后改标记
+// （同一时刻至多一条活连接，事件读到的值必然对应当前连接）。
+let wsQuiet = false
 let resizeObs: ResizeObserver | null = null
 let rafId = 0
 let webglAddon: WebglAddon | null = null
@@ -417,11 +448,31 @@ function refit() {
   })
 }
 
-// 切到本 tab：等 display 生效后重算尺寸并聚焦。
+// 切到本 tab：等 display 生效后重算尺寸并聚焦；非激活期间 WS 已 detach（懒挂载，见
+// detachWs），这里重连，resume=1 增量回填补上断开窗口的输出（buffer 零重复）。
 watch(
   () => props.active,
   (a) => {
-    if (a) nextTick(refit)
+    if (a) {
+      nextTick(() => {
+        // 等 display 生效后先同步 fit 拿真实 cols/rows 再连——恢复时非激活组是
+        // display:none 挂载、term 停在 80x24 默认值，URL 带垃圾值会让后端先缩后撑
+        // （shrink-then-grow，见 onMounted 同步 fit 注释）；refit 本体推 rAF 异步，
+        // 这里不能只靠它。
+        try {
+          if (el.value?.clientWidth) fit?.fit()
+        } catch {
+          /* noop */
+        }
+        if (!ws || ws.readyState > WebSocket.OPEN) {
+          connState.value = 'ok'
+          connectWs(true)
+        }
+        refit()
+      })
+    } else {
+      detachWs()
+    }
   },
 )
 
@@ -1350,8 +1401,9 @@ onMounted(async () => {
     /* noop */
   }
 
-  // 构建 WS（见下方模块级 connectWs）。
-  connectWs()
+  // 构建 WS（见下方模块级 connectWs）。懒挂载：非激活 tab（会话恢复时 display:none
+  // 挂载）不连，等切到该 tab 时由 active watcher 重连——那时才同步 fit + 拿真实尺寸。
+  if (props.active) connectWs()
 
   term.onData((data) => {
     // 回车即提交命令：上抛给文件面板做即时的 cwd 跟随检查（cd 提交后壳立即改目录，
