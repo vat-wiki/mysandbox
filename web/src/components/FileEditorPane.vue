@@ -605,7 +605,10 @@ defineExpose({
 })
 watch([editing, editorRef], ([v, ed]) => {
   if (!ed) return
-  ed.updateOptions({ readOnly: !v })
+  // domReadOnly：readOnly 只挡编辑不改 DOM——移动端点/滑编辑器区仍会让隐藏 textarea
+  // 拿焦点弹系统键盘（预览态读文件最烦）。domReadOnly 让 textarea 带上 readonly 属性，
+  // 移动浏览器对 readonly 输入框不弹键盘；进编辑时一并摘掉，不影响输入与 IME。
+  ed.updateOptions({ readOnly: !v, domReadOnly: !v })
   if (v) ed.focus()
 })
 // 注意：不要在 active 变化时手动 editor.layout()——面板以 visibility:hidden 隐藏（布局盒
@@ -835,7 +838,8 @@ async function checkExternal() {
 
 // :options 稳定引用：computed 缓存对象，只在 editing 变化时换新。内联字面量每次渲染发
 // 新对象，wrapper 对 options 做 deep watch → 反复 updateOptions 同步重算，纯属浪费。
-const editorOptions = computed(() => ({ readOnly: !editing.value }))
+// domReadOnly 与 readOnly 同步（移动端预览态防弹键盘，见上方 watch 处的说明）。
+const editorOptions = computed(() => ({ readOnly: !editing.value, domReadOnly: !editing.value }))
 
 // 外部内容换入：**只更新 v-model，编辑器交给 wrapper 的 flush 时序**——CodeEditor 的
 // value watcher 在组件更新 flush 中做 editor.setValue。实测矩阵：

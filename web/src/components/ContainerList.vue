@@ -118,7 +118,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings, Network, ArrowRightLeft, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History, KeyRound } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings, Network, ArrowRightLeft, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ChevronDown, ChevronUp, History, KeyRound } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -131,7 +131,6 @@ import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
 import SettingsMenu from '@/components/SettingsMenu.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
-import MobileFileSheet from '@/components/MobileFileSheet.vue'
 import TermLayoutNode from '@/components/TermLayoutNode.vue'
 import FilePanel from '@/components/FilePanel.vue'
 import {
@@ -1031,7 +1030,6 @@ function onPaneFocus(group: TermGroup, termId: string) {
 function onPaneEnter(group: TermGroup, termId: string) {
   if (group.id !== activeGroup.value?.id || termId !== fileTermId.value) return
   filePanelRef.value?.nudgeCwd()
-  sheetPanelRef.value?.nudgeCwd() // 手机 sheet 面板在场时同样吃回车 nudge
 }
 // OSC 7（shell cwd 上报）→ 文件面板直达：zsh precmd 在出提示符时上报 cwd，cd 生效即
 // 到达——免 getTermCwd 一次 exec，事件驱动零轮询。同样只认「active 组且正被跟随的
@@ -1039,7 +1037,6 @@ function onPaneEnter(group: TermGroup, termId: string) {
 function onPaneCwd(group: TermGroup, termId: string, path: string) {
   if (group.id !== activeGroup.value?.id || termId !== fileTermId.value) return
   filePanelRef.value?.acceptCwd(path)
-  sheetPanelRef.value?.acceptCwd(path) // 手机 sheet 面板同源跟随
 }
 const filePanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
 // —— 文件面板浏览模式（下钻/展开）——
@@ -1146,7 +1143,7 @@ function loadMainView(): 'file' | 'terminal' | 'ai' {
 }
 const mainView = ref<'terminal' | 'ai' | 'file'>(loadMainView())
 const mobileNavTarget = computed<MobileNavTarget>(() => {
-  if (showFiles.value || fileSheetOpen.value) return 'files'
+  if (showFiles.value) return 'files'
   if (mainView.value === 'ai') return 'ai'
   if (mainView.value === 'file') return 'files'
   return 'terminal'
@@ -1158,7 +1155,6 @@ function navigateMobileNav(target: MobileNavTarget) {
   if (target === 'terminal') {
     const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
     showFiles.value = false
-    fileSheetOpen.value = false
     if (aiOpen.value) closeAi()
     mainView.value = 'terminal'
     // 激活态再点 = 弹终端切换 sheet（iOS Safari 标签页同款「再点已激活页签出总览」）——
@@ -1168,16 +1164,11 @@ function navigateMobileNav(target: MobileNavTarget) {
   }
   if (target === 'ai') {
     showFiles.value = false
-    fileSheetOpen.value = false
     openAi()
     return
   }
-  // 手机「文件」= 半屏文件 sheet 开/收（叠在终端页上，上半终端继续活着）；全屏 /files
-  // 页保留给深链（showFiles 时 sheet 已被 watch 收掉，走下面原逻辑关页）。
-  if (isPhone.value && !showFiles.value) {
-    fileSheetOpen.value = !fileSheetOpen.value
-    return
-  }
+  // 手机与桌面同路径：文件 = 全屏面板开/收（手机上 FilePanel 是 absolute inset-0 覆盖层）。
+  // 点文件 openFile 即走编辑器 tab（面板随手收起），浏览上下文由 FilePanel 自身保留。
   if (showFiles.value) {
     showFiles.value = false
     if (aiOpen.value) closeAi()
@@ -1327,39 +1318,6 @@ function toggleEditorFocus() {
   editorFocused.value = !editorFocused.value
 }
 // —— 手机半屏文件 sheet（终端页同屏看文件）——
-// 底栏「文件」不再整页换走，而是在终端页上拉半屏 sheet：上半终端继续活着（工作区
-// paddingBottom 让位，xterm ResizeObserver 自动 refit），下半浏览/预览。sheet 内点
-// 文件就地只读预览（不切走终端），预览头「编辑」才升格全屏编辑器 tab（sheet 收起）。
-// 与全屏 /files 页并存：深链仍走全屏页（打开时 sheet 自动让位），两处不同时在场。
-const fileSheetOpen = ref(false)
-const fileSheetH = ref(0)
-const sheetFile = ref<{ containerId: string; containerName: string; path: string } | null>(null)
-const sheetPanelRef = ref<InstanceType<typeof FilePanel> | null>(null)
-const sheetTarget = computed(() => (activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID))
-const sheetTargetName = computed(() => fileTargetName(sheetTarget.value))
-watch(fileSheetOpen, (open) => {
-  if (!open) sheetFile.value = null
-})
-// sheet 与全屏页/编辑器/AI 互斥：别处成了主面，sheet 自动让位
-watch(showFiles, (v) => {
-  if (v) fileSheetOpen.value = false
-})
-watch(mainView, (v) => {
-  if (v !== 'terminal') fileSheetOpen.value = false
-})
-// sheet 面板的目标跟随 active 组（切终端 tab 即换目标，与根面板同语义）
-function onSheetOpenFile(p: string, _o?: { diff?: { headPath?: string }; editing?: boolean; line?: number }) {
-  // FilePanel 的 open-file 本含编辑意图（文件行/右键「编辑」都带 editing:true），sheet
-  // 语境不区分——一律就地预览（editing=false 落只读/渲染预览态），编辑意愿走预览头部
-  // 的「编辑」钮升格全屏。
-  sheetFile.value = { containerId: sheetTarget.value, containerName: sheetTargetName.value, path: p }
-}
-function openSheetFileInEditor() {
-  const f = sheetFile.value
-  if (!f) return
-  openFile(f.containerId, f.containerName, f.path, { editing: true })
-  fileSheetOpen.value = false
-}
 // tab X：pane 冲刷后自己 close；这里不直接摘（冲刷失败/冲突要留在原处裁决）
 function closeFileTab(t: EditorTab) {
   paneRefs.get(tabId(t))?.requestClose()
@@ -4833,9 +4791,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       <!-- 工作区：主列自己的内容区——终端 + AI 两区叠放换显（编辑器已提为根级通栏列，
            见主列之前的编辑器列；文件面板见根容器尾部的 FilePanel）。AI 打开时占满主列，
            编辑器列与终端都还在（编辑器列是根级兄弟，不受此换显影响）。 -->
-      <div class="relative flex min-h-0 flex-1" :style="fileSheetOpen ? { paddingBottom: fileSheetH + 'px' } : undefined">
-        <!-- 手机半屏文件 sheet 让位：sheet 开着时终端区腾出下半屏（xterm 的 ResizeObserver
-             自动 refit）。sheet 与编辑器/AI 互斥（开它们的路径都收 sheet），不影响其布局。 -->
+      <div class="relative flex min-h-0 flex-1">
         <!-- AI 工具工作区：绝对铺满主列（编辑器列是根级兄弟列，AI 不占它）。全尺寸
              页面——技能库/provider/工具分配/下发结果这些管理面板体量的内容在这里舒展。 -->
         <div v-show="mainView === 'ai'" class="absolute inset-0">
@@ -5083,66 +5039,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @open-file="onPanelOpenFile"
       @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
     />
-
-    <!-- 手机半屏文件 sheet：终端页同屏看文件（底栏「文件」开/收）。上半终端继续活着
-         （工作区 paddingBottom 让位，xterm ResizeObserver 自动 refit）；sheet 内点文件
-         就地只读预览（不切走终端），预览头「编辑」升格全屏编辑器 tab（sheet 自动收起，
-         见 openSheetFileInEditor）。目标跟随 active 终端组，cwd 跟随三路同源。 -->
-    <MobileFileSheet
-      v-if="isPhone && !props.popout"
-      :open="fileSheetOpen"
-      @update:open="fileSheetOpen = $event"
-      @height="fileSheetH = $event"
-    >
-      <template v-if="sheetFile">
-        <div class="flex h-9 shrink-0 items-center gap-1 border-b border-border px-1.5">
-          <button
-            type="button"
-            class="flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            title="返回文件列表"
-            @click="sheetFile = null"
-          >
-            <ArrowLeft class="size-4" />
-          </button>
-          <span
-            class="min-w-0 flex-1 truncate font-mono text-xs"
-            :title="`${sheetFile.containerName}:${sheetFile.path}`"
-          >{{ sheetFile.path.slice(sheetFile.path.lastIndexOf('/') + 1) }}</span>
-          <button
-            type="button"
-            class="flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            title="编辑（全屏编辑器打开）"
-            @click="openSheetFileInEditor"
-          >
-            <Pencil class="size-4" />
-          </button>
-        </div>
-        <FileEditorPane
-          :key="`${sheetFile.containerId}::${sheetFile.path}`"
-          class="min-h-0 flex-1"
-          :container-id="sheetFile.containerId"
-          :container-name="sheetFile.containerName"
-          :path="sheetFile.path"
-          active
-          @close="sheetFile = null"
-        />
-      </template>
-      <FilePanel
-        v-else
-        ref="sheetPanelRef"
-        class="min-h-0 flex-1"
-        :container-id="sheetTarget"
-        :container-name="sheetTargetName"
-        :panes="filePanes"
-        :term-id="fileTermId"
-        :has-terminal="!!activeGroup"
-        :browse-mode="fileBrowseMode"
-        @browse-mode="setFileBrowseMode"
-        @open-file="onSheetOpenFile"
-        @close="fileSheetOpen = false"
-        @pane-pick="(t: string) => (filePaneIdx = filePanes.findIndex((x) => x.termId === t))"
-      />
-    </MobileFileSheet>
 
     <!-- 手机一级导航：终端 / 文件 / AI / 设置。文件 Tab 条与当前 Tab 动作只处理二级编辑态。
          busy：任一终端组有输出时「终端」图标挂呼吸标（原顶栏 tab 光晕的底栏落点）。 -->
