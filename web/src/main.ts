@@ -3,6 +3,7 @@ import '@fontsource-variable/cascadia-code' // 内置终端字体（woff2 打包
 import './index.css'
 import App from './App.vue'
 import { router } from './router'
+import { startAnimatedFavicon } from './lib/animatedFavicon'
 
 // 懒加载 chunk 拉取失败自动重载一次：页面壳是开着的旧构建时（mysandbox 重建 dist 期间
 // 常态发生），点开懒加载面板按旧 hash 拉 chunk 必 404——旧 hash 文件已被新构建删掉。
@@ -17,3 +18,4 @@ window.addEventListener('vite:preloadError', () => {
 })
 
 createApp(App).use(router).mount('#app')
+startAnimatedFavicon()

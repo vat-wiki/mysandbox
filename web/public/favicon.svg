@@ -2,8 +2,9 @@
   <title>BoxHub Logo</title>
   <style>
     /* 顶盖周期性掀起露出缝隙暗影再落下——「打开沙盒」。
-       动画内嵌于 SVG，<link rel="icon"> 永不重建；Chromium/Firefox 标签页生效，
-       Safari 不支持 SVG favicon 动画，首帧 = 静态原样（通知图标 browserNotify 同样取首帧）。 */
+       这份内嵌动画只有 Firefox 原生播放；Chromium 把 SVG favicon 栅格化成静态图，
+       挂载后由 lib/animatedFavicon.ts 换 data URL 帧接管（同节奏，见该文件头注释）。
+       Safari 无 SVG favicon，走 apple-touch-icon 静态兜底；通知图标取首帧 = 静态原样。 */
     .lid { animation: lid-hop 2.6s ease-in-out infinite; }
     @keyframes lid-hop {
       0%, 62%, 100% { transform: translateY(0); }
