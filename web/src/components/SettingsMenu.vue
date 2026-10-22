@@ -1,0 +1,55 @@
+<script setup lang="ts">
+// 设置弹出菜单（侧栏底行 / rail 底列 / popout 顶栏 / 手机底栏共用的唯一设置入口）。
+// 目录层从弹框降格为锚定按钮的 popup 列表——模态目录页给轻量配置不值得：
+// AI 配置只给跳转（主区 AI 工作区页签，openAi 语义在 ContainerList）；
+// TestLens / 集群 / 浏览器通知开 SettingsDialog 直落对应分区（大体量详情仍住弹框）。
+// 版本号收编在列表末行（2026-10-22 起，品牌块 / rail 展开键 tooltip / 手机抽屉底
+// 不再重复展示）。触发按钮由使用方以默认插槽传入（各处样式不同，as-child 接管）。
+import { Bell, Bot, Globe, Network } from 'lucide-vue-next'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+
+defineProps<{
+  // 弹出方向随锚点不同：侧栏底部向上（top）、rail/手机向右/上、顶栏向下（bottom）
+  side?: 'top' | 'bottom' | 'left' | 'right'
+  align?: 'start' | 'center' | 'end'
+}>()
+
+const emit = defineEmits<{
+  (e: 'open-ai'): void
+  (e: 'open-section', s: 'testlens' | 'cluster' | 'notify'): void
+}>()
+
+const appVersion = __APP_VERSION__
+</script>
+
+<template>
+  <DropdownMenu>
+    <DropdownMenuTrigger as-child><slot /></DropdownMenuTrigger>
+    <DropdownMenuContent :side="side" :align="align" class="w-56">
+      <DropdownMenuItem @click="emit('open-ai')">
+        <Bot class="size-4" /> AI 配置
+      </DropdownMenuItem>
+      <DropdownMenuItem @click="emit('open-section', 'testlens')">
+        <Globe class="size-4" /> TestLens
+      </DropdownMenuItem>
+      <DropdownMenuItem @click="emit('open-section', 'cluster')">
+        <Network class="size-4" /> 集群
+      </DropdownMenuItem>
+      <DropdownMenuItem @click="emit('open-section', 'notify')">
+        <Bell class="size-4" /> 浏览器通知
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
+      <!-- 版本行：纯展示（非菜单项，点不出动作） -->
+      <div class="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
+        <img src="/logo.svg" alt="" class="size-3.5" />
+        <span>版本 v{{ appVersion }}</span>
+      </div>
+    </DropdownMenuContent>
+  </DropdownMenu>
+</template>

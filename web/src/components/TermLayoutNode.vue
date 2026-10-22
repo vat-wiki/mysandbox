@@ -26,6 +26,8 @@ const props = defineProps<{
   node: LayoutNode
   group: TermGroup
   active?: boolean
+  /** 终端列对人是否可见（AI 视图打开/编辑器专注/手机编辑器覆盖时为 false）：cwd 轮询的懒加载门 */
+  visible?: boolean
 }>()
 
 const ops = inject(TERM_OPS)!
@@ -97,8 +99,10 @@ function onDividerStart(idx: number, parentSize: number) {
 // —— pane 自己的 cwd（头部标题旁展示）——
 // 每叶子一份轮询：容器侧 tmux list-panes、宿主侧同款端点（HOST_ID 哨兵分流）、SSH 组走
 // /api/ssh/<name>/cwd（远端 tmux 的 pane_current_path 就是远端真实路径）。
-// 5s 节奏与旧整行信息条一致；会话未建/已收（404）显示占位而非报错。组切走
-// （active=false）继续轮——切回来立即是新鲜值，代价是后台组也每 5s 一个轻请求。
+// 5s 节奏与旧整行信息条一致；会话未建/已收（404）显示占位而非报错。
+// 懒轮询：只有「激活组（active）且终端列对人可见（visible）」才轮——切 tab/AI 视图/
+// 编辑器专注下零请求，恢复可见时立即拉一次补新鲜值。cwd 跟随的即时性由 OSC 7 /
+// 回车 nudge 两条事件链路承担，这个 timer 只是兜底。
 const cwd = ref('')
 // pane 动态标题（OSC 链路，ContainerList 内存态）：跑命令/CC·opencode 任务时替代
 // cwd 显示位（每 pane 各自可见，分屏时逐 pane 有标题；tab 标签恒为容器名做身份定位）。
@@ -126,16 +130,22 @@ async function pollCwd() {
   }
 }
 if (leaf.value) {
-  onMounted(() => {
+  function stopCwdPoll() {
+    if (cwdTimer) {
+      clearInterval(cwdTimer)
+      cwdTimer = null
+    }
+  }
+  function startCwdPoll() {
+    if (cwdTimer) return
     pollCwd()
-    // gate：弱网/页面隐藏时拉长实际频率（pane 标题非关键路径）；cwd 跟随的即时性
-    // 由 OSC 7 / 回车 nudge 两条事件链路承担，这个 timer 只是兜底。
+    // gate：弱网/页面隐藏时拉长实际频率（pane 标题非关键路径）。
     cwdTimer = setInterval(gatePoll(() => void pollCwd(), 5_000, { hidden: true }), 5000)
-  })
-  onBeforeUnmount(() => {
-    if (cwdTimer) clearInterval(cwdTimer)
-  })
-  // 组被隐藏/恢复会重建叶子组件（groups ↔ hiddenGroups 换数组），挂载即重启轮询，
+  }
+  const cwdVisible = computed(() => (props.active ?? true) && (props.visible ?? true))
+  watch(cwdVisible, (v) => (v ? startCwdPoll() : stopCwdPoll()), { immediate: true })
+  onBeforeUnmount(stopCwdPoll)
+  // 组被隐藏/恢复会重建叶子组件（groups ↔ hiddenGroups 换数组），重建即按可见性重开，
   // 这里不需要额外 watch。
 }
 </script>

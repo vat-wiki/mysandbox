@@ -1,9 +1,9 @@
 <script setup lang="ts">
-// 设置弹框（侧栏底部「设置」入口）：全局性配置的目录页——两层结构：
-// 列表层给各配置的入口行（行尾带状态摘要，一眼看全）；轻量配置（TestLens）点进
-// 弹框内就地操作，大体量配置（AI 工具）只给跳转入口——主区工作区页签（AiWorkspace，
-// VSCode 设置页模式）才是它的家，弹框不复制内容免得双载体同步维护。就地/上下文
-// 配置（文件面板 ✨、容器右键覆盖、Inbox 收编）是 pull 语义，不进这里。
+// 设置详情弹框（SettingsMenu popup 各分区的落点）：本体只承载大体量配置详情——
+// TestLens（就地操作）/ 集群（ClusterPanel）/ 浏览器通知（开关与推送）。
+// 目录层已升格为锚定按钮的 SettingsMenu popup（2026-10-22），AI 配置也只从那里
+// 跳主区工作区页签；本弹框按 section prop 直落对应分区，不再有内部导航。
+// 就地/上下文配置（文件面板 ✨、容器右键覆盖、Inbox 收编）是 pull 语义，不进这里。
 //
 // TestLens 分区：往所选目标（本机 + 受管容器）的 home 写两份种子文件（agent-browser
 // 的 cdp + testlens CLI 的 host）。约定地址 http://testlens:10004（容器内走 hosts
@@ -11,7 +11,7 @@
 // 天然优先于 home 种子，不被这里破坏。
 import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { Bell, Bot, ChevronLeft, ChevronRight, Globe, Loader2, Network } from 'lucide-vue-next'
+import { Bell, Loader2 } from 'lucide-vue-next'
 import {
   Dialog,
   DialogContent,
@@ -42,18 +42,27 @@ import {
 } from '@/lib/browserNotify'
 import { pushSupported, pushEnabled, enablePush, disablePush } from '@/lib/pushNotify'
 
+const props = defineProps<{
+  section: 'testlens' | 'cluster' | 'notify'
+}>()
+
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'unauthorized'): void
-  // AI 配置入口行：跳转主区 AI 工具页签（ContainerList 的 openAi()），弹框随之关闭
-  (e: 'open-ai'): void
 }>()
 
-const DEFAULT_HOST = 'http://testlens:10004'
+const SECTION_TITLE: Record<typeof props.section, string> = {
+  testlens: 'TestLens',
+  cluster: '集群',
+  notify: '浏览器通知',
+}
+const SECTION_DESC: Record<typeof props.section, string> = {
+  testlens: 'TestLens 配置批量下发',
+  cluster: '跨机组网与资源互通',
+  notify: '无输出提醒的系统通知出口',
+}
 
-// 两层导航：'list' 目录页 / 'testlens' TestLens 详情。将来加分区 = 加一个 section 值
-// + 一条入口行。
-const section = ref<'list' | 'testlens' | 'cluster' | 'notify'>('list')
+const DEFAULT_HOST = 'http://testlens:10004'
 
 // —— 浏览器通知（「无输出提醒」的站外延伸，lib/browserNotify）——
 // 弹框每次打开都重建：开关/权限状态从浏览器现场回填，不存本地副本。
@@ -210,95 +219,20 @@ async function apply() {
   }
 }
 
-onMounted(load)
+// TestLens 状态只有该分区用得到；集群/通知分区打开时不打这趟 API。
+if (props.section === 'testlens') onMounted(load)
 </script>
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
     <DialogContent class="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe sm:max-w-lg">
       <div class="flex items-center border-b px-5 py-3 pr-10">
-        <!-- TestLens 详情层给返回键回目录页 -->
-        <button
-          v-if="section !== 'list'"
-          type="button"
-          class="mr-1 -ml-1 rounded p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="返回"
-          @click="section = 'list'"
-        >
-          <ChevronLeft class="size-4" />
-        </button>
-        <DialogTitle class="text-lg font-semibold">
-          {{ section === 'list' ? '设置' : section === 'cluster' ? '集群' : section === 'notify' ? '浏览器通知' : 'TestLens' }}
-        </DialogTitle>
-        <DialogDescription class="sr-only">
-          {{ section === 'list' ? '全局性配置的入口目录' : section === 'cluster' ? '跨机组网与资源互通' : section === 'notify' ? '无输出提醒的系统通知出口' : 'TestLens 配置批量下发' }}
-        </DialogDescription>
-      </div>
-
-      <!-- 目录页：各全局配置的入口行 -->
-      <div v-if="section === 'list'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 py-2">
-        <button
-          type="button"
-          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
-          @click="emit('open-ai')"
-        >
-          <Bot class="size-4 shrink-0 text-muted-foreground" />
-          <span class="min-w-0 flex-1">
-            <span class="block text-sm font-medium">AI 配置</span>
-            <span class="block truncate text-xs text-muted-foreground">
-              技能中心 · 模型供应商 · Agent 工具——在主区「AI 工具」页签管理
-            </span>
-          </span>
-          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
-        </button>
-        <button
-          type="button"
-          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
-          @click="section = 'testlens'"
-        >
-          <Globe class="size-4 shrink-0 text-muted-foreground" />
-          <span class="min-w-0 flex-1">
-            <span class="block text-sm font-medium">TestLens</span>
-            <span class="block truncate text-xs text-muted-foreground">
-              云端浏览器 · 会话录制 · 业务自测——种子文件批量下发
-            </span>
-          </span>
-          <span class="shrink-0 text-xs text-muted-foreground">{{ testlensSummary }}</span>
-          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
-        </button>
-        <button
-          type="button"
-          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
-          @click="section = 'cluster'"
-        >
-          <Network class="size-4 shrink-0 text-muted-foreground" />
-          <span class="min-w-0 flex-1">
-            <span class="block text-sm font-medium">集群</span>
-            <span class="block truncate text-xs text-muted-foreground">
-              跨机组网 · 容器互通 · 模板与技能分发
-            </span>
-          </span>
-          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
-        </button>
-        <button
-          type="button"
-          class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-accent/50"
-          @click="section = 'notify'"
-        >
-          <Bell class="size-4 shrink-0 text-muted-foreground" />
-          <span class="min-w-0 flex-1">
-            <span class="block text-sm font-medium">浏览器通知</span>
-            <span class="block truncate text-xs text-muted-foreground">
-              终端无输出时发系统通知——切走也能收到「agent 干完了」
-            </span>
-          </span>
-          <span class="shrink-0 text-xs text-muted-foreground">{{ notifySummary }}</span>
-          <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
-        </button>
+        <DialogTitle class="text-lg font-semibold">{{ SECTION_TITLE[props.section] }}</DialogTitle>
+        <DialogDescription class="sr-only">{{ SECTION_DESC[props.section] }}</DialogDescription>
       </div>
 
       <!-- TestLens 详情层 -->
-      <div v-else-if="section === 'testlens'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div v-if="props.section === 'testlens'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <section class="space-y-3">
           <div class="flex items-center gap-1.5">
             <p class="text-xs leading-relaxed text-muted-foreground">往所选目标的 home 写入 agent-browser 与 testlens 两份配置。</p>
@@ -363,12 +297,12 @@ onMounted(load)
       </div>
 
       <!-- 集群分区 -->
-      <div v-else-if="section === 'cluster'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div v-else-if="props.section === 'cluster'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <ClusterPanel @unauthorized="emit('unauthorized')" />
       </div>
 
       <!-- 浏览器通知详情层 -->
-      <div v-else-if="section === 'notify'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div v-else-if="props.section === 'notify'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <section class="space-y-4">
           <p class="text-xs leading-relaxed text-muted-foreground">
             终端在你看不见的地方安静下来（agent 干完活 / 等你输入）时发一条系统通知，点击直达对应终端。

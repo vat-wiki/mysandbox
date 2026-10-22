@@ -116,7 +116,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Bot, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -127,6 +127,7 @@ import TermSessionList from '@/components/TermSessionList.vue'
 import SshTargetsDialog from '@/components/SshTargetsDialog.vue'
 import AdoptServiceDialog from '@/components/AdoptServiceDialog.vue'
 import SettingsDialog from '@/components/SettingsDialog.vue'
+import SettingsMenu from '@/components/SettingsMenu.vue'
 import PaneDivider from '@/components/PaneDivider.vue'
 import MobileFileSheet from '@/components/MobileFileSheet.vue'
 import TermLayoutNode from '@/components/TermLayoutNode.vue'
@@ -566,7 +567,9 @@ watch(hiddenGroups, saveHidden, { deep: true })
 // 手机侧栏环境选择页：overlay 形态（绝对定位 + 遮罩），终端区宽度不变——不选 push 是刻意的：
 // push 会改终端容器宽度 → 触发 refit / tmux resize，打断正在跑的 TUI/vim。
 const { isOpen: drawerOpen } = usePageRoute('environments')
-const { isOpen: showSettings } = usePageRoute('settings')
+// 设置目录已降格为 SettingsMenu popup（不再占 /settings 路由）；本状态只承载
+// popup 落点的详情弹框（TestLens/集群/浏览器通知），非路由瞬态。
+const settingsSection = ref<'testlens' | 'cluster' | 'notify' | null>(null)
 
 // 手机环境选择页支持「向左拖动关闭」。横向意图确认后接管触摸（阻止列表纵向滚动），
 // 跟手位移；松手超过阈值、或短时间内的快速轻扫，都按系统级页面关闭处理。
@@ -613,7 +616,6 @@ function drawerTouchEndHandler() {
 // loadBool 为 function 声明（提升），此处可安全前置调用。
 const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
 // 产品版本号（vite define 注入，根 package.json）：品牌块展示 + rail 展开键 tooltip。
-const appVersion = __APP_VERSION__
 watch(collapsed, (v) => {
   railHover.value = null
   railPinned.value = null
@@ -1140,11 +1142,9 @@ const mobileNavTarget = computed<MobileNavTarget>(() => {
   return 'terminal'
 })
 function navigateMobileNav(target: MobileNavTarget) {
-  // settings 是动作不是视图：弹设置框即返回，mobileNavTarget 永不等于它（按钮无激活态）。
-  if (target === 'settings') {
-    showSettings.value = true
-    return
-  }
+  // settings 不再走到这里：MobileBottomNav 把它包进 SettingsMenu popup 就地弹出
+  // （菜单事件直接上抛），navigate 只服务三个视图项；守卫防误落 files 分支。
+  if (target === 'settings') return
   if (target === 'terminal') {
     const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
     showFiles.value = false
@@ -3201,7 +3201,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <button
             type="button"
             class="flex size-8 items-center justify-center rounded-lg hover:bg-accent/50"
-            :title="`展开侧栏 · v${appVersion}`"
+            title="展开侧栏"
             @click="collapsed = false"
           >
             <img src="/logo.svg" alt="" class="size-5" />
@@ -3493,10 +3493,10 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           </div>
         </div>
         <div class="flex shrink-0 flex-col items-center gap-0.5 border-t border-border py-1.5">
-          <!-- 全局面板开关（2026-10-21 起从顶栏归位侧栏）：文件面板/AI/设置是全局开关，
+          <!-- 全局面板开关（2026-10-21 起从顶栏归位侧栏）：文件面板/设置是全局开关，
                与容器分区同族——收起态（rail）也是它们的家，侧栏全收不损失任何能力。
-               激活态用背景高亮（48px 宽度下下缘色条没有施展空间）。popout 无侧栏，
-               这三钮仍留在顶栏。 -->
+               激活态用背景高亮（48px 宽度下下缘色条没有施展空间）。AI 入口已收编进
+               设置 popup（2026-10-22），popout 从顶栏设置进。 -->
           <button
             type="button"
             class="flex size-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
@@ -3506,23 +3506,15 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           >
             <FolderOpen class="size-4" />
           </button>
-          <button
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg transition-colors hover:bg-accent/50"
-            :class="mainView === 'ai' ? 'bg-accent/40 text-foreground' : 'text-muted-foreground hover:text-foreground'"
-            title="AI 工具（技能 / 模型接入）"
-            @click="openAi()"
-          >
-            <Bot class="size-4" />
-          </button>
-          <button
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            title="设置"
-            @click="showSettings = true"
-          >
-            <Settings class="size-4" />
-          </button>
+          <SettingsMenu side="right" align="end" @open-ai="openAi()" @open-section="settingsSection = $event">
+            <button
+              type="button"
+              class="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              title="设置"
+            >
+              <Settings class="size-4" />
+            </button>
+          </SettingsMenu>
           <!-- 伸缩键钉在环境区最底（与服务行同列）——顶部只留品牌，收/展动作统一放底部。 -->
           <button
             type="button"
@@ -3551,7 +3543,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </Button>
         <img v-if="!isPhone" src="/logo.svg" alt="" class="size-5" />
         <span class="text-sm font-semibold tracking-tight">{{ isPhone ? '选择环境' : 'MySandbox' }}</span>
-        <span v-if="!isPhone" class="text-[10px] tabular-nums text-muted-foreground/80">v{{ appVersion }}</span>
       </div>
 
       <!-- 容器分区标题：弱化为分组小标签——品牌块已是全侧栏唯一强标题，两个同字重标题
@@ -4250,8 +4241,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       </div>
 
       <!-- 侧栏收起行：环境区最底（docker 服务分区之下）——收/展动作统一钉在这个位置，
-           与收缩态 rail 底部的展开键互为镜像。右端是全局面板开关（文件面板/AI/设置，
-           与 rail 底部同款同激活态）——开关的家在侧栏，展开态也不例外面板入口。 -->
+           与收缩态 rail 底部的展开键互为镜像。右端是全局面板开关（文件面板/设置，
+           与 rail 底部同款同激活态）——开关的家在侧栏，展开态也不例外面板入口；
+           AI 入口收编进设置 popup。 -->
       <div class="flex shrink-0 items-stretch border-t border-border">
         <button
           type="button"
@@ -4272,23 +4264,15 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           >
             <FolderOpen class="size-3.5" />
           </button>
-          <button
-            type="button"
-            class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            :class="mainView === 'ai' ? 'bg-accent/40 text-foreground' : ''"
-            title="AI 工具（技能 / 模型接入）"
-            @click="openAi()"
-          >
-            <Bot class="size-3.5" />
-          </button>
-          <button
-            type="button"
-            class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-            title="设置"
-            @click="showSettings = true"
-          >
-            <Settings class="size-3.5" />
-          </button>
+          <SettingsMenu side="top" align="end" @open-ai="openAi()" @open-section="settingsSection = $event">
+            <button
+              type="button"
+              class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              title="设置"
+            >
+              <Settings class="size-3.5" />
+            </button>
+          </SettingsMenu>
         </template>
       </div>
       </template>
@@ -4408,22 +4392,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           :actions="mobileGroupActionList(activeGroup)"
           @select="runMobileGroupAction(activeGroup, $event)"
         />
-        <!-- AI 工具入口：环境级全局面板（技能中心/模型供应商/智能体配置）。主窗口归侧栏
-             （rail 底部/展开态收起行，2026-10-21 起），顶栏只服务终端会话；popout 无侧栏，
-             此钮是 popout 的唯一 AI 入口。AI 占主列时钮上亮激活态。 -->
-        <button
-          v-if="props.popout"
-          class="hidden shrink-0 items-center self-stretch border-r border-border/60 px-3 text-xs md:flex"
-          :class="
-            mainView === 'ai'
-              ? 'bg-card text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
-              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-          "
-          title="AI 工具（技能 / 模型接入）"
-          @click="openAi()"
-        >
-          <Bot class="size-3.5 max-md:size-5" />
-        </button>
+        <!-- AI 工具入口已收编进设置 popup（2026-10-22）——popout 顶栏不再单设 AI 钮，
+             AI 配置从顶栏设置菜单进。 -->
+
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto scroll-thin max-md:hidden">
         <ContextMenu v-for="(g, idx) in groups" :key="g.id" @update:open="onTabMenuOpen($event, g)">
           <ContextMenuTrigger as-child>
@@ -4584,15 +4555,22 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <FolderOpen class="size-3.5 max-md:size-5" />
         </button>
-        <!-- 设置：主窗口归侧栏（rail 底部/展开态收起行）；popout 无侧栏，顶栏保留。 -->
-        <button
+        <!-- 设置：主窗口归侧栏（rail 底部/展开态收起行）；popout 无侧栏，顶栏保留。
+             popout 唯一设置/AI 入口，菜单向下弹。 -->
+        <SettingsMenu
           v-if="props.popout"
-          class="hidden items-center self-stretch border-l border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
-          title="设置"
-          @click="showSettings = true"
+          side="bottom"
+          align="end"
+          @open-ai="openAi()"
+          @open-section="settingsSection = $event"
         >
-          <Settings class="size-3.5" />
-        </button>
+          <button
+            class="hidden items-center self-stretch border-l border-border/60 px-3 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground md:flex"
+            title="设置"
+          >
+            <Settings class="size-3.5" />
+          </button>
+        </SettingsMenu>
         <!-- 手机全局动作：会话与网络信息、当前终端管理收进一个入口。一级任务（终端/文件/AI）
              已由底部导航承载、设置也进了底栏——这里刻意不再重复，避免同一动作两处入口。 -->
         <DropdownMenu @update:open="(v: boolean) => v && ensureActivePorts()">
@@ -4720,6 +4698,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               :node="g.root"
               :group="g"
               :active="gIdx === activeIdx"
+              :visible="mainView !== 'ai' && !editorFocused && (!isPhone || mainView === 'terminal')"
               class="min-h-0 min-w-0 flex-1"
             />
           </div>
@@ -5167,12 +5146,12 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     @unauthorized="emit('unauthorized')"
   />
 
-  <!-- 设置（顶栏右上角入口）：全局性配置目录页——AI 行跳主区工作区页签（openAi 先行、
-       弹框随后关），TestLens 等轻量分区弹框内就地操作 -->
+  <!-- 设置详情弹框：SettingsMenu popup 各分区的落点（目录层已是 popup，弹框直落
+       分区、无内部导航） -->
   <SettingsDialog
-    v-if="showSettings"
-    @close="showSettings = false"
-    @open-ai="openAi(); showSettings = false"
+    v-if="settingsSection"
+    :section="settingsSection"
+    @close="settingsSection = null"
     @unauthorized="emit('unauthorized')"
   />
 </template>
