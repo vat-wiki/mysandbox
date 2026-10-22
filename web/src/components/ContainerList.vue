@@ -4595,7 +4595,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </button>
         <!-- 手机全局动作：会话与网络信息、当前终端管理收进一个入口。一级任务（终端/文件/AI）
              已由底部导航承载、设置也进了底栏——这里刻意不再重复，避免同一动作两处入口。 -->
-        <DropdownMenu>
+        <DropdownMenu @update:open="(v: boolean) => v && ensureActivePorts()">
           <DropdownMenuTrigger as-child>
             <button
               class="flex items-center self-stretch border-l border-border/60 px-4 text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:flex md:hidden"
