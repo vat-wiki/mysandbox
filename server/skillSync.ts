@@ -1100,6 +1100,7 @@ export interface SkillRegistryItem {
   from: string; // 导入来源（元数据；缺失 = 空串）
   importedAt: string;
   exists: boolean; // 目录还在（false = 元数据残留，展示为缺失）
+  path: string; // 库内目录绝对路径（面板「查看源文件」/ 文件面板深链用——前端不猜 STATE_DIR）
 }
 
 // 库列表：readdir registry + 每技能读 SKILL.md frontmatter，合并 sidecar 元数据。
@@ -1126,6 +1127,7 @@ export async function registryList(): Promise<SkillRegistryItem[]> {
       from: meta[name]?.from ?? '',
       importedAt: meta[name]?.importedAt ?? '',
       exists: true,
+      path: join(REGISTRY_DIR, name),
     });
   }
   // 元数据残留（目录被外部删了）：列出但 exists=false，用户可顺手清掉。
@@ -1137,6 +1139,7 @@ export async function registryList(): Promise<SkillRegistryItem[]> {
         from: meta[name].from,
         importedAt: meta[name].importedAt,
         exists: false,
+        path: join(REGISTRY_DIR, name),
       });
     }
   }

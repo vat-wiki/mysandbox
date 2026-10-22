@@ -291,6 +291,7 @@ export interface SkillRegistryItem {
   from: string // 导入来源（<容器>:<路径> / 宿主路径 / git URL#子路径）
   importedAt: string
   exists: boolean // false = 目录被外部删了（元数据残留）
+  path: string // 库内目录绝对路径（源文件查看器 / 文件面板深链定位用）
 }
 export interface SkillGitCandidate {
   path: string // repo 内子路径（'.' = repo 根即是技能）

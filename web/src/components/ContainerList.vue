@@ -1728,6 +1728,13 @@ async function locateContainerPath(
   }
 }
 
+// 技能库「在文件面板打开」（AiWorkspace → SkillsHubTab → SkillSourceDialog 深链）：
+// AI 工作区盖着主区，先切回终端列（setMainView 顺带收 /ai 路由），再走宿主深链定位。
+function locateSkillDir(path: string) {
+  setMainView('terminal')
+  void locateContainerPath({ id: HOST_ID, name: '本机' }, path, 'dir')
+}
+
 // 文件面板 open-file 汇聚点：目录列表点文件（无 opts）、Git 变更条目点击（opts.diff
 // = 对比形态）与内容搜索命中行（opts.line = 编辑器跳行）共用。写成函数而非模板内联
 // 箭头——对象类型字面量在模板表达式里编不过。
@@ -4804,6 +4811,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             @close="closeAi()"
             @changed="refresh()"
             @unauthorized="emit('unauthorized')"
+            @locate="locateSkillDir"
           />
         </div>
         <!-- 终端列：主列内唯一常驻内容（AI 打开时隐藏，编辑器列是根级兄弟不受影响；

@@ -18,6 +18,7 @@ const emit = defineEmits<{
   (e: 'close'): void
   (e: 'unauthorized'): void
   (e: 'changed'): void // 配置保存（父级可刷新）
+  (e: 'locate', path: string): void // 跳宿主文件面板（技能库「在文件面板打开」深链）
 }>()
 
 const tab = ref<'skills' | 'providers' | 'agents'>('skills')
@@ -51,7 +52,7 @@ const tabs = [
          （px-6 在 ~360px 视口吃掉 48px，卡片网格/表单可读宽只剩 ~310px） -->
     <div class="scroll-thin min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto w-full max-w-4xl max-md:px-2.5 max-md:py-3 px-6 py-5">
-        <SkillsHubTab v-if="tab === 'skills'" @unauthorized="emit('unauthorized')" />
+        <SkillsHubTab v-if="tab === 'skills'" @unauthorized="emit('unauthorized')" @locate="(p: string) => emit('locate', p)" />
         <AiProvidersTab
           v-else-if="tab === 'providers'"
           @unauthorized="emit('unauthorized')"

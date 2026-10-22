@@ -73,15 +73,20 @@ import {
   MoreHorizontal,
   Check,
   X,
+  FileText,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import SkillPickList from '@/components/SkillPickList.vue'
+import SkillSourceDialog from '@/components/SkillSourceDialog.vue'
 import InfoHint from '@/components/InfoHint.vue'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from 'vue-sonner'
 
 const emit = defineEmits<{
   (e: 'unauthorized'): void
+  // 跳宿主文件面板定位到库目录（SkillSourceDialog「在文件面板打开」）——本组件
+  // 不持有跳转能力，沿 AiWorkspace 上抛给 ContainerList 落 locateContainerPath。
+  (e: 'locate', path: string): void
 }>()
 
 // 全局位置（铺本机 + 全部受管容器）的 canonical 落点——~/.claude/skills 孪生跟铺
@@ -171,6 +176,10 @@ function ruleMissing(r: SkillRuleResult): number {
 }
 
 // —— 卡面状态 ——
+
+// 源文件查看器（⋯ 菜单「源文件」）。只读——库是静态快照，编辑走查看器里的
+// 「在文件面板打开」深链跳宿主面板。
+const viewing = ref<SkillRegistryItem | null>(null)
 
 // 装到几处（= 含它的规则数）。
 function installedCount(s: SkillRegistryItem): number {
@@ -1076,6 +1085,13 @@ async function cleanMissing(r: SkillRuleResult) {
               </DropdownMenuTrigger>
               <DropdownMenuContent side="bottom" align="end">
                 <DropdownMenuItem
+                  :disabled="!s.exists"
+                  title="查看库内源文件（只读）——SKILL.md 与配套脚本"
+                  @click="viewing = s"
+                >
+                  <FileText /> 源文件
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   :disabled="!!updatingSkill"
                   :title="!s.exists ? '从来源重拉快照恢复' : '从来源重拉快照并全量分发——唯一更新通道'"
                   @click="updateSkill(s)"
@@ -1284,6 +1300,14 @@ async function cleanMissing(r: SkillRuleResult) {
       variant="destructive"
       @confirm="doDeleteReg"
       @close="delReg = null"
+    />
+
+    <!-- 源文件查看器：库条目的文件树 + 只读预览；「在文件面板打开」沿 locate 上抛 -->
+    <SkillSourceDialog
+      :skill="viewing"
+      @close="viewing = null"
+      @locate="(p: string) => emit('locate', p)"
+      @unauthorized="emit('unauthorized')"
     />
   </div>
 </template>
