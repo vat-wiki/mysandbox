@@ -141,11 +141,17 @@ export async function buildServer(cfg: Config) {
     const identity = await resolveIdentity(req, cfg);
     const isProxy = u.startsWith('/proxy/');
     if (!identity) {
-      if (isProxy && req.method === 'GET' && !tokenOk(req, cfg, true)) {
-        return reply
-          .code(401)
-          .type('text/html; charset=utf-8')
-          .send(proxyUnauthorizedHtml());
+      if (isProxy) {
+        // /proxy 门面：proxy session cookie 是这里唯一的浏览器凭证（/api、/ws 不认
+        // cookie），有效即放行——resolveIdentity 只认 header/query，不能代表 cookie。
+        if (tokenOk(req, cfg, true)) return;
+        if (req.method === 'GET') {
+          // 没有任何凭证的浏览器导航回 HTML 引导页而不是一行 JSON。
+          return reply
+            .code(401)
+            .type('text/html; charset=utf-8')
+            .send(proxyUnauthorizedHtml());
+        }
       }
       if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
         return reply.code(401).send({
