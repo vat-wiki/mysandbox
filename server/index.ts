@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import type { Config } from './config.js';
 import type { SandboxIdentity } from './auth.js';
 import { resolveIdentity, tokenOk } from './auth.js';
+import { shareDownloadAllows } from './shareLink.js';
 import { registerAccounts } from './accounts.js';
 import { registerRoutes } from './routes.js';
 import { registerFileRoutes } from './files.js';
@@ -59,6 +60,9 @@ function accountPathVerdict(
   // 跨面板复制：两侧容器 id 在 body 里，hook 拿不到——'pass' 后由 handler 内对账户
   // 身份做双侧白名单判定（files.ts copyAccountOk）。
   if (pathname === '/api/files/copy' && method === 'POST') return 'pass';
+  // 分享链接签发（files.ts share-link）：target 在 body 里，同上——'pass' 后由
+  // handler 收口（账户仅可对白名单内的裸容器名签发，宿主/服务/SSH 侧 403）。
+  if (pathname === '/api/files/share-link' && method === 'POST') return 'pass';
   // 容器文件面板 + 终端支撑端点（fg/cwd/resolve/git）：全部对 :id 判白名单。
   const m = /^\/api\/containers\/([^/]+)(\/.*)?$/.exec(pathname);
   if (m) {
@@ -126,6 +130,9 @@ export async function buildServer(cfg: Config) {
     ) return;
     // 账户登录本身公开（用户名+密码换账户 token，server/accounts.ts）。
     if (u === '/api/account/login' && req.method === 'POST') return;
+    // 文件分享链接（server/shareLink.ts）：短期单路径下载，链接自带 HMAC 签名而不带
+    // 任何 token——收链接的人没有凭证，验签通过即放行（后续由 download handler 出流）。
+    if (shareDownloadAllows(req, cfg)) return;
     if (trustedNetworkRequest(req, cfg)) {
       // 内网互信 = owner（既有语义：trustLan 开着时私网来源免 token 全权）。
       req.sandboxIdentity = { kind: 'owner' };

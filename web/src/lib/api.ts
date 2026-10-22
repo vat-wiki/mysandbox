@@ -1216,6 +1216,26 @@ export async function downloadEntry(id: string, path: string, name: string, isDi
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
+// 分享链接（文件 tab「复制链接」）：向服务端要一枚对 (target, path, exp) 的 HMAC
+// 签名（server/shareLink.ts），拼出可被 web 直接导航的下载 URL——**不含任何 token**，
+// 链接只对这一个路径有效、到期即失效（默认 10min，上限 1h）。目录路径返回 tar.gz 流；
+// 文件名由服务端 Content-Disposition 带出，浏览器直接导航即正确落盘。
+export async function createShareLink(
+  id: string,
+  path: string,
+  ttlMinutes?: number,
+): Promise<{ url: string; expiresAt: number }> {
+  const r = (await postJson('/api/files/share-link', { target: id, path, ttlMinutes })) as {
+    share: string
+    expiresAt: number
+    path: string
+  }
+  // 用服务端回的规范 path 拼 URL（签的与带的一致）；share 本体是 base64url+'.'，
+  // encodeURIComponent 恒等，仍裹一层防意外。
+  const url = `${location.origin}${filesBase(id)}/download?path=${encodeURIComponent(r.path)}&share=${encodeURIComponent(r.share)}`
+  return { url, expiresAt: r.expiresAt }
+}
+
 // 在线预览取流：与 downloadEntry 同一端点（二进制安全、无 2MB 文本上限），但不落盘。
 // mime 由调用方按扩展名给出（服务端统一 octet-stream，浏览器对 blob URL 靠 MIME 解码）。
 // Content-Length 先查后读：超过 PREVIEW_MAX_BYTES 直接拒（整文件进内存的硬顶）。

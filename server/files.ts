@@ -21,6 +21,7 @@ import { listServiceContainers } from './docker.js';
 import { getSshTargets, type SshTarget } from './state.js';
 import { findServiceTarget } from './serviceMeta.js';
 import { sshExec, sshSpawn, sshSpawnIn, sshTest } from './sshChannel.js';
+import { mintShareToken } from './shareLink.js';
 import { TERMID_RE, sessionName } from './terminal.js';
 import {
   parsePorcelainZ,
@@ -599,6 +600,24 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (res.exitCode !== 0)
       throw new HttpError(400, res.stderr.trim() || `delete failed (exit ${res.exitCode})`, 'delete_failed');
     return { ok: true };
+  });
+
+  // —— 分享链接签发（web 文件 tab「复制链接」）——
+  // 机制见 server/shareLink.ts 文件头：返回的 share 参数是对 (target, path, exp) 的
+  // HMAC 签名，链接 = 四侧 /download?path&share，**不含任何 token**。返回 path 取
+  // cleanPath 后的规范形——前端用它拼 URL，保证「签的」与「URL 里带的」逐字节一致。
+  // 账户签发收口在此：仅白名单内的**裸容器名**（宿主/服务/SSH 侧 403，同 copy 的口径）。
+  app.post('/api/files/share-link', async (req) => {
+    const body = (req.body as Record<string, unknown>) || {};
+    const target = typeof body.target === 'string' ? body.target : '';
+    const path = cleanPath(body.path);
+    if (!target) throw badRequest('target is required');
+    const ttlMin = typeof body.ttlMinutes === 'number' && Number.isFinite(body.ttlMinutes) ? body.ttlMinutes : 10;
+    const ident = req.sandboxIdentity;
+    if (ident?.kind === 'account' && !ident.containers.has(target))
+      throw forbidden('container is not in this account allowlist');
+    const { share, expiresAt } = mintShareToken(cfg, target, path, ttlMin * 60_000);
+    return { share, expiresAt, path };
   });
 
   // —— 跨面板复制粘贴（容器↔宿主↔容器↔服务↔SSH 主机，文件/目录通用）——

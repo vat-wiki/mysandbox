@@ -45,7 +45,6 @@ export interface FileTabActionInput {
   tab: MobileEditorTab
   editing: boolean
   preview: boolean
-  previewable: boolean
   hasDiff: boolean
   isFirst: boolean
   isLast: boolean
@@ -60,23 +59,29 @@ export interface FileTabActionDeps {
   openInCodeServer: (tab: MobileEditorTab) => void
   copyPath: (tab: MobileEditorTab) => void
   copyHostPath: (tab: MobileEditorTab) => void
+  copyLink: (tab: MobileEditorTab) => void
   close: (tab: MobileEditorTab) => void
   closeRange: (tab: MobileEditorTab, range: 'other' | 'left' | 'right') => void
 }
 
 export function fileTabActions(input: FileTabActionInput): CardAction[] {
-  const { tab, editing, preview, previewable, hasDiff, isFirst, isLast, single, codeServerable } = input
+  const { tab, editing, preview, hasDiff, isFirst, isLast, single, codeServerable } = input
   const actions: CardAction[] = [
     { id: 'toggle', label: editing && !preview ? '预览' : '编辑' },
   ]
   if (hasDiff) actions.push({ id: 'normal', label: '以普通方式打开' })
-  if (previewable) actions.push({ id: 'download', label: '下载' })
+  // 下载/复制链接对普通 tab 恒在（与桌面右键菜单同口径）；diff tab 展示 HEAD 版内容，
+  // 下载/分享会给工作区版本，不对口径故不给。
+  if (!hasDiff) actions.push({ id: 'download', label: '下载' })
   // 文件 tab 长按直达 Code Server（所在目录作工作区）：仅真容器目标——宿主/服务/SSH
   // 无 code-server 可言，与 FilePanel 的 canCodeServer 同判据。
   if (codeServerable) actions.push({ id: 'code-server', label: '在 Code Server 打开' })
   actions.push(
     { id: 'copy-path', label: '复制容器路径', detail: tab.path },
     { id: 'copy-host-path', label: '复制实际路径' },
+    ...(hasDiff
+      ? []
+      : [{ id: 'copy-link', label: '复制链接', detail: '短期有效的下载 URL（不含凭证）' }]),
     { id: 'close', label: '关闭', destructive: true },
     { id: 'close-other', label: '关闭其他', destructive: true, disabled: single },
     { id: 'close-left', label: '关闭左侧', destructive: true, disabled: isFirst },
@@ -92,6 +97,7 @@ export function runFileTabAction(tab: MobileEditorTab, action: CardAction, deps:
   else if (action.id === 'code-server') deps.openInCodeServer(tab)
   else if (action.id === 'copy-path') deps.copyPath(tab)
   else if (action.id === 'copy-host-path') deps.copyHostPath(tab)
+  else if (action.id === 'copy-link') deps.copyLink(tab)
   else if (action.id === 'close') deps.close(tab)
   else if (action.id === 'close-other') deps.closeRange(tab, 'other')
   else if (action.id === 'close-left') deps.closeRange(tab, 'left')

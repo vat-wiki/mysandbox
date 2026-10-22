@@ -13,6 +13,7 @@ import {
   updateMeta,
   listFiles,
   downloadEntry,
+  createShareLink,
   getListenPorts,
   resolveTermPath,
   listServices,
@@ -90,7 +91,6 @@ import {
   fileTabActions,
   runFileTabAction,
 } from '@/components/mobile/tabActions'
-import { extOf, previewKind } from '@/lib/preview'
 import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -1443,8 +1443,19 @@ async function copyTabText(s: string, okMsg: string) {
 function copyTabPath(t: EditorTab) {
   void copyTabText(t.path, '已复制容器路径')
 }
-// tab 右键「下载」：仅可预览类型（图片/视频/音频/PDF）出现——走整文件流，与编辑器
-// 预览的取流路径同源。目录下载在文件面板右键，不在 tab 上。
+// tab 右键「复制链接」：向服务端签一枚短期 HMAC 签名（server/shareLink.ts），拼出
+// **不含任何凭证**、仅对该路径有效、到期即失效的 web 可直访下载 URL；toast 带有效期。
+async function copyTabLink(t: EditorTab) {
+  try {
+    const { url, expiresAt } = await createShareLink(t.containerId, t.path)
+    const min = Math.max(1, Math.round((expiresAt - Date.now()) / 60_000))
+    void copyTabText(url, `已复制分享链接（${min} 分钟内有效，仅限该文件下载）`)
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : String(e))
+  }
+}
+// tab 右键「下载」：普通文件 tab 一律可下（走整文件流，与编辑器预览取流同源）；
+// diff tab 展示的是 HEAD 版内容，下载会给工作区版本，不对口径故不给。
 async function downloadTab(t: EditorTab) {
   try {
     await downloadEntry(t.containerId, t.path, t.path.slice(t.path.lastIndexOf('/') + 1), false)
@@ -2686,7 +2697,6 @@ function mobileFileTabActionList(t: EditorTab, index: number) {
     tab: t,
     editing: mode?.editing ?? false,
     preview: mode?.preview ?? false,
-    previewable: !!previewKind(t.path),
     hasDiff: !!t.diff,
     isFirst: index === 0,
     isLast: index === editorTabs.value.length - 1,
@@ -2711,6 +2721,7 @@ function runMobileFileTabAction(t: EditorTab, action: CardAction) {
       openCodeServer({ id: tab.containerId, name: tab.containerName, folder: dirname(tab.path) }),
     copyPath: (tab) => void copyTabPath(tab),
     copyHostPath: (tab) => void copyTabHostPath(tab),
+    copyLink: (tab) => void copyTabLink(tab),
     close: closeFileTab,
     closeRange: closeFileTabsRange,
   })
@@ -4967,8 +4978,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <ContextMenuContent>
               <!-- 形态动作：编辑/预览切换（状态感知——渲染视图/只读态显示「编辑」，
                    编辑会话中显示「预览」：md/svg 回渲染视图、普通文件锁回只读）；diff 态
-                   「以普通方式打开」（清 diff 转普通编辑）；可预览类型（图片/视频/
-                   音频/PDF）的下载。编辑器面板无 header，动作全收在这里。 -->
+                   「以普通方式打开」（清 diff 转普通编辑）；普通 tab 的下载与 web 可直访
+                   的「复制链接」。编辑器面板无 header，动作全收在这里。 -->
               <ContextMenuItem
                 v-if="!tabMode[tabId(t)] || !tabMode[tabId(t)].editing || tabMode[tabId(t)].preview"
                 @click="tabModeClick(t, i)"
@@ -4981,17 +4992,19 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               <ContextMenuItem v-if="t.diff" @click="onOpenNormal(t)">
                 以普通方式打开
               </ContextMenuItem>
-              <ContextMenuItem v-if="previewKind(t.path)" @click="downloadTab(t)">
+              <!-- 下载对普通 tab 恒在，分隔线上方动作组至少有一项 -->
+              <ContextMenuItem v-if="!t.diff" @click="downloadTab(t)">
                 下载
               </ContextMenuItem>
-              <template v-if="tabMode[tabId(t)] || t.diff || previewKind(t.path)">
-                <ContextMenuSeparator />
-              </template>
+              <ContextMenuSeparator />
               <ContextMenuItem @click="copyTabPath(t)">
                 复制容器路径
               </ContextMenuItem>
               <ContextMenuItem @click="copyTabHostPath(t)">
                 复制实际路径
+              </ContextMenuItem>
+              <ContextMenuItem v-if="!t.diff" @click="copyTabLink(t)">
+                复制链接
               </ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem variant="destructive" @click="closeFileTab(t)">
