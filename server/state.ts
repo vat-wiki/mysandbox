@@ -41,9 +41,22 @@ export interface SshTarget {
   createdAt?: string;
 }
 
+// —— 受限账户（分享用）——
+// 与主 token 的关系：主 token = owner 全权（宿主属主等价），账户 = 只能操作白名单
+// 容器的第二凭证层（终端 + 文件面板）。存 sidecar 而非 config.yaml：UI 可增删改、
+// 属易变凭据（与 sshTargets 同语义）。passwordHash 由 accounts.ts 生成（scrypt），
+// 本文件只管存取，不做密码学。
+export interface SandboxAccount {
+  name: string; // 唯一标识 + 登录名（^[a-z0-9][a-z0-9_-]{0,30}$）
+  passwordHash: string; // scrypt：<salt hex>:<hash hex>（accounts.ts verifyAccount 消费）
+  containers: string[]; // 容器名白名单：账户可见/可连的受管容器
+  createdAt?: string;
+}
+
 interface StateShape {
   containers: Record<string, ContainerMeta>;
   sshTargets?: SshTarget[];
+  accounts?: SandboxAccount[];
 }
 
 // docker 服务的策展元数据已迁往每项目 compose/<名>/meta.json（server/serviceMeta.ts）——
@@ -152,4 +165,47 @@ export async function deleteSshTarget(name: string): Promise<boolean> {
 
 export function resetStateCache(): void {
   cache = null;
+}
+
+// —— 受限账户（与 sshTargets 同款 sidecar 形状）——
+
+export async function getAccounts(): Promise<SandboxAccount[]> {
+  return (await load()).accounts ?? [];
+}
+
+export async function getAccount(name: string): Promise<SandboxAccount | undefined> {
+  return (await load()).accounts?.find((x) => x.name === name);
+}
+
+/** 新增（name 查重，冲突返回 null）。 */
+export async function addAccount(a: SandboxAccount): Promise<SandboxAccount | null> {
+  const s = await load();
+  if (!s.accounts) s.accounts = [];
+  if (s.accounts.some((x) => x.name === a.name)) return null;
+  s.accounts.push(a);
+  await persist(s);
+  return a;
+}
+
+/** 局部更新（名称不可改；patch 只含调用方显式给出的键）。账户不存在返回 null。 */
+export async function updateAccount(
+  name: string,
+  patch: Partial<Pick<SandboxAccount, 'passwordHash' | 'containers'>>,
+): Promise<SandboxAccount | null> {
+  const s = await load();
+  const a = s.accounts?.find((x) => x.name === name);
+  if (!a) return null;
+  Object.assign(a, patch);
+  await persist(s);
+  return a;
+}
+
+export async function deleteAccount(name: string): Promise<boolean> {
+  const s = await load();
+  const before = s.accounts?.length ?? 0;
+  if (!s.accounts) return false;
+  s.accounts = s.accounts.filter((x) => x.name !== name);
+  const removed = s.accounts.length !== before;
+  if (removed) await persist(s);
+  return removed;
 }

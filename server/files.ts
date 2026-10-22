@@ -15,7 +15,7 @@ import { lstat, mkdir, rename, rm, stat } from 'node:fs/promises';
 import type { Config } from './config.js';
 import { execRun, execFeed, execSpawn, rootfsPath } from './engine/index.js';
 import { resolve, requireControlled } from './routes.js';
-import { HttpError, notFound, conflict, badRequest } from './errors.js';
+import { HttpError, notFound, conflict, badRequest, forbidden } from './errors.js';
 import { withPollCache } from './cache.js';
 import { listServiceContainers } from './docker.js';
 import { getSshTargets, type SshTarget } from './state.js';
@@ -620,6 +620,15 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const dstPath = cleanPath(body.dstPath, 'dstPath');
     if (!srcC || !dstC) throw badRequest('srcContainer and dstContainer are required');
     if (srcPath === '/') throw badRequest('cannot copy /');
+
+    // 受限账户（server/accounts.ts）：双侧都必须是白名单内的**裸容器名**——宿主
+    // （__host__）/服务（s:）/SSH（ssh:）侧对账户一律 403（hook 对本路由放行到
+    // 这里收口，路径白名单在 index.ts accountPathVerdict）。
+    const ident = req.sandboxIdentity;
+    if (ident?.kind === 'account') {
+      const ok = (id: string) => ident.containers.has(id);
+      if (!ok(srcC) || !ok(dstC)) throw forbidden('container is not in this account allowlist');
+    }
 
     // 服务侧探测/操作小助手（docker exec，数组参数无 shell 注入面；受管边界 =
     // findServiceTarget 单源——目录 ∪ stub ∪ 受管行，未收编的容器结构性查不到）。

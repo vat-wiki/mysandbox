@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { Config } from './config.js';
-import { requireToken, tokenOk } from './auth.js';
+import type { SandboxIdentity } from './auth.js';
+import { resolveIdentity, tokenOk } from './auth.js';
+import { registerAccounts } from './accounts.js';
 import { registerRoutes } from './routes.js';
 import { registerFileRoutes } from './files.js';
 import { registerTerminal } from './terminal.js';
@@ -42,6 +44,52 @@ function findWebDist(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
+// —— 受限账户的访问白名单（deny-by-default）——
+// 账户 = 「白名单容器的终端 + 文件面板」（server/accounts.ts 文件头）。路径层先放行
+// 方法+形状，容器层再对 :id/query id 判白名单；不在表内一律 403——新增 owner 路由
+// 默认对账户关闭，漏改是「账户用不了新功能」而不是「账户越权」，失败方向安全。
+// 返回：'pass'（放行）| 'id-gate'（还需容器白名单判定）| 'deny'。
+function accountPathVerdict(
+  method: string,
+  pathname: string,
+  query: Record<string, unknown>,
+): 'pass' | 'id-gate' | 'deny' {
+  if (pathname === '/api/containers' && method === 'GET') return 'pass'; // handler 内过滤
+  if (pathname === '/api/account/me' && method === 'GET') return 'pass';
+  // 跨面板复制：两侧容器 id 在 body 里，hook 拿不到——'pass' 后由 handler 内对账户
+  // 身份做双侧白名单判定（files.ts copyAccountOk）。
+  if (pathname === '/api/files/copy' && method === 'POST') return 'pass';
+  // 容器文件面板 + 终端支撑端点（fg/cwd/resolve/git）：全部对 :id 判白名单。
+  const m = /^\/api\/containers\/([^/]+)(\/.*)?$/.exec(pathname);
+  if (m) {
+    const sub = m[2] ?? '/';
+    if (method === 'GET' && ['/files', '/search', '/file', '/download', '/cwd', '/fg', '/resolve'].includes(sub)) {
+      return 'id-gate';
+    }
+    if (method === 'PUT' && sub === '/file') return 'id-gate';
+    if (method === 'POST' && /^\/fs\/(create|rename|delete)$/.test(sub)) return 'id-gate';
+    if (/^\/git(\/|$)/.test(sub) && (method === 'GET' || method === 'POST')) return 'id-gate';
+    return 'deny';
+  }
+  if (pathname === '/ws/terminal' && method === 'GET' && typeof query.id === 'string') {
+    return 'id-gate';
+  }
+  return 'deny';
+}
+
+// 容器白名单判定（'id-gate' 的后半段）：id 即容器名（LXC engine id === name），
+// URL 解码后对齐。不在白名单 → 403（前面已过鉴权，这里的 403 = 「账户越权」）。
+function containerAllowed(identity: SandboxIdentity, rawId: string): boolean {
+  if (identity.kind !== 'account') return true;
+  let id = rawId;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    /* 保留原值 */
+  }
+  return identity.containers.has(id);
+}
+
 export async function buildServer(cfg: Config) {
   // listen.tls 现在描述 HTTPS 门面（server/facade.ts），控制台本体恒为 HTTP。
   const tls = cfg.listen.tls ? await ensureTlsMaterial(cfg) : null;
@@ -63,8 +111,10 @@ export async function buildServer(cfg: Config) {
   }
 
   // 鉴权：health 公开；其余 /api、/ws 与 Web 代理 /proxy 需 token。
-  // cookie 仅在 /proxy 门面被承认（vhost 页面路径任意，cookie 必须 Path=/ 才随行；
-  // /api、/ws 维持 header/query-only，被代理页面拿 cookie 打不进控制台 API）。
+  // 身份两级：主 token = owner 全权；账户派生 token = 白名单容器的终端+文件面板
+  // （deny-by-default，见 accountPathVerdict）。cookie 仅在 /proxy 门面被承认
+  // （vhost 页面路径任意，cookie 必须 Path=/ 才随行；/api、/ws 维持 header/query-only，
+  // 被代理页面拿 cookie 打不进控制台 API——账户凭证也因此刻意走 header 而非 cookie）。
   // /proxy 未授权的浏览器导航回 HTML 引导页而不是一行 JSON。
   app.addHook('onRequest', async (req, reply) => {
     const u = req.url;
@@ -74,17 +124,55 @@ export async function buildServer(cfg: Config) {
       (u === '/api/auth/session' || u === '/proxy/__auth/session')
       && (req.method === 'POST' || req.method === 'OPTIONS')
     ) return;
-    if (trustedNetworkRequest(req, cfg)) return;
+    // 账户登录本身公开（用户名+密码换账户 token，server/accounts.ts）。
+    if (u === '/api/account/login' && req.method === 'POST') return;
+    if (trustedNetworkRequest(req, cfg)) {
+      // 内网互信 = owner（既有语义：trustLan 开着时私网来源免 token 全权）。
+      req.sandboxIdentity = { kind: 'owner' };
+      return;
+    }
+    const identity = await resolveIdentity(req, cfg);
     const isProxy = u.startsWith('/proxy/');
-    if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
+    if (!identity) {
       if (isProxy && req.method === 'GET' && !tokenOk(req, cfg, true)) {
         return reply
           .code(401)
           .type('text/html; charset=utf-8')
           .send(proxyUnauthorizedHtml());
       }
-      await requireToken(req, reply, cfg, isProxy);
+      if (u.startsWith('/api/') || u.startsWith('/ws/') || isProxy) {
+        return reply.code(401).send({
+          error: { code: 'unauthorized', message: 'invalid or missing token' },
+        });
+      }
+      return;
     }
+    if (identity.kind === 'account') {
+      // 账户身份只走 /api、/ws 的白名单端点；/proxy 门面不开放（那是 proxy 凭据的
+      // 地盘，且 cookie 流不适用于账户）。deny-by-default：新 owner 路由对账户恒 403。
+      if (!u.startsWith('/api/') && !u.startsWith('/ws/')) {
+        return reply.code(403).send({
+          error: { code: 'forbidden', message: 'account identity is not allowed here' },
+        });
+      }
+      const verdict = accountPathVerdict(req.method, u.split('?')[0] ?? u, (req.query ?? {}) as Record<string, unknown>);
+      if (verdict === 'deny') {
+        return reply.code(403).send({
+          error: { code: 'forbidden', message: 'account identity is not allowed here' },
+        });
+      }
+      if (verdict === 'id-gate') {
+        const ok = /^\/ws\//.test(u)
+          ? containerAllowed(identity, String((req.query as Record<string, unknown>).id ?? ''))
+          : containerAllowed(identity, (/^\/api\/containers\/([^/]+)/.exec(u)?.[1]) ?? '');
+        if (!ok) {
+          return reply.code(403).send({
+            error: { code: 'forbidden', message: 'container is not in this account allowlist' },
+          });
+        }
+      }
+    }
+    req.sandboxIdentity = identity;
   });
 
   // 错误处理：HttpError -> 状态码 + {error}；引擎 404 -> not_found；其余 500。
@@ -99,6 +187,8 @@ export async function buildServer(cfg: Config) {
 
   await registerMetrics(app);
   await registerRoutes(app, cfg);
+  // 受限账户（server/accounts.ts）：公开登录 + owner 管理 CRUD。
+  await registerAccounts(app, cfg);
   await registerFileRoutes(app, cfg);
   await registerTerminal(app, cfg);
   await registerDesktop(app, cfg);

@@ -11,6 +11,7 @@ export class HttpError extends Error {
 export const notFound = (m: string) => new HttpError(404, m, 'not_found');
 export const conflict = (m: string) => new HttpError(409, m, 'conflict');
 export const badRequest = (m: string) => new HttpError(400, m, 'bad_request');
+export const forbidden = (m = 'forbidden') => new HttpError(403, m, 'forbidden');
 
 // 引擎错误 -> HttpError 归一（404 形状映射 not_found）。
 // LXC 侧多数路径直接抛 HttpError，这里兜住其余 Error 形状。

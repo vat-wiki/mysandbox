@@ -118,7 +118,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings2, Settings, Network, ArrowRightLeft, ListChecks, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft, Pencil, ChevronDown, ChevronUp, History, Users } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -181,6 +181,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'unauthorized'): void
   (e: 'open-base'): void
+  (e: 'open-accounts'): void
   // 打开服务抽屉；create=true 表示来自 ＋（App 直开创建对话框，不拉抽屉）；
   // select=服务名表示来自卡片点击（抽屉打开即定位到该服务详情）
   (e: 'open-services', create?: boolean, select?: string): void
@@ -3716,6 +3717,9 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <DropdownMenuContent align="end">
               <DropdownMenuItem @click="emit('open-base')">
                 <Settings2 /> {{ baseLabel }}管理
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="emit('open-accounts')">
+                <Users /> 账户管理
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

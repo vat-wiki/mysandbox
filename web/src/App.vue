@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getToken, setToken, clearToken, health, verifyToken, getBaseStatus, startAuthSession, Unauthorized } from '@/lib/api'
+import {
+  getToken, setToken, clearToken, health, verifyToken, getBaseStatus, startAuthSession,
+  Unauthorized, accountLogin, accountMe, getAccountToken, setAccountToken, clearAccountToken,
+} from '@/lib/api'
 import { gatePoll } from '@/lib/linkQuality'
 import { setEngineInfo } from '@/lib/caps'
 import { loadProxyConfig, proxyPrimary } from '@/lib/proxy'
@@ -11,12 +14,47 @@ import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
+import GuestConsole from '@/components/GuestConsole.vue'
 import { Toaster } from '@/components/ui/sonner'
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
+const AccountsPanel = defineAsyncComponent(() => import('@/components/AccountsPanel.vue'))
 
 const token = ref<string | null>(getToken())
 const checking = ref(false)
 const checkErr = ref('')
+
+// —— 受限账户（分享用）——
+// 与 owner 并行的登录形态：账户 token 存独立 key（主 token 优先，owner 不误降）。
+// 启动时若有账户凭证先 /api/account/me 活体校验——失效（被删/改密/主 token 撤销轮换）
+// 就静默清掉走正常流程。
+const guest = ref<{ name: string; containers: string[] } | null>(null)
+async function tryGuest(): Promise<void> {
+  if (!getAccountToken()) return
+  try {
+    const me = await accountMe()
+    if (me.kind === 'account') guest.value = { name: me.name, containers: me.containers }
+    else clearAccountToken() // owner token 在：主身份优先，账户凭证留着只会添乱
+  } catch (e) {
+    clearAccountToken()
+    if (!(e instanceof Unauthorized)) console.warn('account session check failed', e)
+  }
+}
+async function loginAccount(name: string, password: string): Promise<void> {
+  checking.value = true
+  checkErr.value = ''
+  try {
+    const r = await accountLogin(name, password)
+    setAccountToken(r.token)
+    guest.value = { name: r.name, containers: r.containers }
+  } catch (e) {
+    checkErr.value =
+      e instanceof Unauthorized ? '账户名或密码错误' :
+      e instanceof Error && e.name === 'TimeoutError' ? '后端无响应（超时），请确认 mysandbox 在运行' :
+      e instanceof Error ? e.message : String(e)
+  } finally {
+    checking.value = false
+  }
+}
 
 // 基座状态（docker=基础镜像 / lxc=模板容器）：ContainerList 新建守卫用。
 // 存 ready 而非 exists：LXC 模板存在但在运行时不能克隆，新建守卫要拦的是「不可用」。
@@ -69,6 +107,13 @@ function logout() {
   baseReady.value = null
 }
 
+// GuestConsole 的退出/凭证失效：清账户凭证回 TokenGate（主 token 若还在，ready 恒
+// true——这时 unauthorized 只是退出账户身份，回 owner 控制台而不是登录页）。
+function guestExit() {
+  clearAccountToken()
+  guest.value = null
+}
+
 // 登录完成后的一次性环境装载：代理会话 cookie（浏览器导航到代理 URL 的鉴权凭证，
 // Path=/、仅 /proxy 承认，见 server/proxy.ts）+ 代理口径探测（经基域名访问控制台时
 // 端口点击的 URL 拼装；IP/localhost 直连口径用不上，lib/proxy.ts 会跳过探测）。
@@ -93,7 +138,8 @@ async function afterAuth() {
   }
 }
 
-const ready = computed(() => !!token.value)
+// ready：owner（主 token）或受限账户（guest 已活体校验）任一成立。
+const ready = computed(() => !!token.value || !!guest.value)
 
 // —— 面板打开入口（全部来自侧栏，见 ContainerList）——
 // 服务页状态由路由承载：手机是全屏页面，桌面仍是右侧抽屉；系统后退/前进在两端同语义。
@@ -108,6 +154,16 @@ function openServices(_create = false, select?: string) {
 }
 function openBase() {
   void router.push({ name: 'base' })
+}
+// 账户管理面板（受限账户 CRUD，分享用）：与 BasePanel 同款路由承载形态。
+const showAccountsPanel = computed(() => route.name === 'accounts')
+function openAccounts() {
+  void router.push({ name: 'accounts' })
+}
+function closeAccounts() {
+  if (route.name !== 'accounts') return
+  if (typeof history.state?.back === 'string') void router.back()
+  else void router.replace({ name: 'workspace' })
 }
 function closeBase() {
   if (route.name !== 'base') return
@@ -151,6 +207,8 @@ onMounted(() => {
   // 抑制 agent 等待事件的站外推送。无条件挂（与推送开关无关——本机没开推送，
   // 本机在看也该抑制别的设备的推送）。
   armWatchingHeartbeat()
+  // 受限账户凭证活体校验（失效即清，见 tryGuest）。
+  void tryGuest()
   // token 在 localStorage 里直接进主界面的场景（TokenGate 只在无 token/校验失败时出现）
   // 也要补 cookie 会话与代理配置。
   if (token.value) afterAuth()
@@ -170,7 +228,15 @@ onUnmounted(() => {
        h-dvh：手机上随地址栏伸缩（桌面端 dvh≡vh 零差异）。 -->
   <div class="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
     <main class="min-h-0 flex-1">
-      <TokenGate v-if="!ready" :checking="checking" :err="checkErr" @submit="verify" />
+      <TokenGate v-if="!ready" :checking="checking" :err="checkErr" @submit="verify" @account-login="loginAccount" />
+      <!-- 受限账户精简工作区：白名单容器的终端 + 文件面板（凭证失效/退出弹回 TokenGate
+           或 owner 控制台，见 guestExit） -->
+      <GuestConsole
+        v-else-if="guest"
+        :account-name="guest.name"
+        :containers="guest.containers"
+        @unauthorized="guestExit"
+      />
       <!-- popout：纯终端工作区；未授权同样走 TokenGate（token 失效时） -->
       <ContainerList
         v-else-if="popoutTarget"
@@ -187,10 +253,12 @@ onUnmounted(() => {
         :svc-version="svcVersion"
         @unauthorized="logout"
         @open-base="openBase"
+        @open-accounts="openAccounts"
         @open-services="openServices"
         @open-handled="onOpenHandled"
       />
       <BasePanel v-if="showBasePanel" @close="closeBase" @changed="refreshBaseStatus" />
+      <AccountsPanel v-if="showAccountsPanel" @close="closeAccounts" />
       <ServicesPanel
         v-if="showServicesPanel"
         :initial-select="svcSelect"

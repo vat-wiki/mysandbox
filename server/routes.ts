@@ -119,7 +119,15 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     };
   });
 
-  app.get('/api/containers', async () => ({ items: await listManaged(cfg) }));
+  app.get('/api/containers', async (req) => {
+    const items = await listManaged(cfg);
+    // 受限账户只见白名单容器（路径白名单放行 GET 本路由，容器维度的收缩在这里收口）。
+    const ident = req.sandboxIdentity;
+    if (ident?.kind === 'account') {
+      return { items: items.filter((v) => ident.containers.has(v.name)) };
+    }
+    return { items };
+  });
 
   // —— 终端会话发现（web 会话对话框：tab 列表只在各自浏览器的 localStorage 里，
   // 换浏览器 tmux 会话就「找不到」；这里扫出全部活跃会话供找回/接入/清理）——

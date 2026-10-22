@@ -8,7 +8,7 @@ import { CaseSensitive, ChevronDown, ChevronUp, Regex, WholeWord, X } from 'luci
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { getToken, writeFileBase64, resolveTermPath, pushTerminalClipboard, getTermFg, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
+import { authToken, writeFileBase64, resolveTermPath, pushTerminalClipboard, getTermFg, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { noteTermOutput } from '@/lib/terminalActivity'
 import { isPhone } from '@/composables/useDevice'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
@@ -199,7 +199,7 @@ function closeSearch() {
 // 「>> 连接/>> 已断开」两行会把 scrollback 刷成切换日志；意外断线路径照常提示。
 function connectWs(quiet = false) {
   wsQuiet = quiet
-  const token = getToken() ?? ''
+  const token = authToken()
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const shell = props.shell || 'zsh'
   const base = props.host

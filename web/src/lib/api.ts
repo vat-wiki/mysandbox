@@ -42,6 +42,49 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+// —— 受限账户凭证（分享用）——
+// 账户 token（a:<名>:<HMAC> 形态）与主 token 同走 X-Sandbox-Token；分开存，主 token
+// 优先（owner 在同一浏览器不会误降到受限视图）。GuestConsole 启动时用 accountMe 校验。
+const ACCT_KEY = 'mysandbox.acct'
+export function getAccountToken(): string | null {
+  return localStorage.getItem(ACCT_KEY)
+}
+export function setAccountToken(t: string): void {
+  localStorage.setItem(ACCT_KEY, t)
+}
+export function clearAccountToken(): void {
+  localStorage.removeItem(ACCT_KEY)
+}
+// 请求/WS 共用的发送凭证：主 token 在就用主（owner 身份），否则账户。
+export function authToken(): string {
+  return getToken() ?? getAccountToken() ?? ''
+}
+
+export interface AccountLoginResult {
+  token: string
+  name: string
+  containers: string[]
+}
+export const accountLogin = (name: string, password: string) =>
+  postJson('/api/account/login', { name, password }) as Promise<AccountLoginResult>
+
+export type AccountMe = { kind: 'owner' } | { kind: 'account'; name: string; containers: string[] }
+export const accountMe = () => api('/api/account/me') as Promise<AccountMe>
+
+// —— 账户管理（owner）——
+export interface AccountView {
+  name: string
+  containers: string[]
+  createdAt?: string
+}
+export const listAccounts = () => api('/api/accounts') as Promise<{ items: AccountView[] }>
+export const createAccount = (name: string, password: string, containers: string[]) =>
+  postJson('/api/accounts', { name, password, containers }) as Promise<AccountView>
+export const updateAccount = (name: string, patch: { password?: string; containers?: string[] }) =>
+  putJson(`/api/accounts/${encodeURIComponent(name)}`, patch) as Promise<AccountView>
+export const deleteAccount = (name: string) =>
+  api(`/api/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<{ ok: true }>
+
 export interface ContainerPort {
   ip?: string
   privatePort?: number
@@ -93,7 +136,7 @@ async function api(path: string, init: RequestInit = {}): Promise<any> {
       // 耗时请求（跨面板复制等）可通过 init.signal 传入更宽的超时覆盖默认值。
       signal: init.signal ?? AbortSignal.timeout(10_000),
       headers: {
-        'x-sandbox-token': getToken() ?? '',
+        'x-sandbox-token': authToken(),
         // content-type 只在有 body 时带：无 body 的请求（GET、无参 POST）带 JSON
         // content-type 会被 Fastify 拒收（FST_ERR_CTP_EMPTY_JSON_BODY）。
         ...(init.body ? { 'content-type': 'application/json' } : {}),
@@ -781,7 +824,7 @@ export async function streamOp(
   const res = await fetch(path, {
     method: 'POST',
     headers: {
-      'x-sandbox-token': getToken() ?? '',
+      'x-sandbox-token': authToken(),
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -1154,7 +1197,7 @@ export const copyEntry = (p: {
 // Blob 由浏览器磁盘后端兜内存，大文件无压力；目录是服务端现打的 tar.gz 流。
 // 不走 api()：那条路径有 10s 超时，掐死大下载。
 export async function downloadEntry(id: string, path: string, name: string, isDir: boolean): Promise<void> {  const res = await fetch(`${filesBase(id)}/download?path=${encodeURIComponent(path)}`, {
-    headers: { 'x-sandbox-token': getToken() ?? '' },
+    headers: { 'x-sandbox-token': authToken() },
   })
   if (res.status === 401) throw new Unauthorized()
   if (!res.ok) {
@@ -1178,7 +1221,7 @@ export async function downloadEntry(id: string, path: string, name: string, isDi
 // Content-Length 先查后读：超过 PREVIEW_MAX_BYTES 直接拒（整文件进内存的硬顶）。
 export async function fetchFileBlob(id: string, path: string, mime: string): Promise<Blob> {
   const res = await fetch(`${filesBase(id)}/download?path=${encodeURIComponent(path)}`, {
-    headers: { 'x-sandbox-token': getToken() ?? '' },
+    headers: { 'x-sandbox-token': authToken() },
   })
   if (res.status === 401) throw new Unauthorized()
   if (!res.ok) {

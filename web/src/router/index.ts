@@ -41,6 +41,12 @@ const pageRoutes: RouteRecordRaw[] = [
     meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
   },
   {
+    path: '/accounts',
+    name: 'accounts',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
     path: '/files/:target',
     name: 'files',
     component: RouteAnchor,

@@ -88,6 +88,9 @@ const props = defineProps<{
   // 浏览模式：下钻（点文件夹进入目录）/ 展开（点文件夹原位展开，不下钻）。
   // 父组件按终端组持有（sessionStorage），本组件只消费 + 上抛切换。
   browseMode: 'drill' | 'expand'
+  // 受限账户视图（GuestConsole）传入：收掉 owner 专属入口（Code Server、添加为技能）
+  // ——对应端点对账户身份 403，入口不渲染而非点了报错。安全边界在后端，这只是 UX。
+  restricted?: boolean
 }>()
 const emit = defineEmits<{
   (e: 'close'): void
@@ -127,7 +130,9 @@ const isHost = computed(() => targetId() === HOST_ID)
 
 // 在 Code Server 打开：仅真容器目标（宿主/服务 s:/SSH ssh: 无 code-server 可言）。
 // 带当前目录作工作区（?folder=），「看着文件面板一键升到 IDE」的最短动线。
+// restricted（受限账户视图）：code-server 端点对账户 403，入口直接不渲染而非点了报错。
 const canCodeServer = computed(() => {
+  if (props.restricted) return false
   const id = targetId()
   return id !== HOST_ID && !id.startsWith(SVC_FILE_PREFIX) && !id.startsWith(SSH_ID_PREFIX)
 })
@@ -139,7 +144,7 @@ function openInCodeServer(folder?: string | null): void {
 // （拷一份静态快照，与来源解耦；此后任何目标都能「安装技能」拉它，更新在技能中心）。
 // 服务组没有可解析的来源形态，不出现入口。
 const regBusy = ref(false)
-const canRegistry = computed(() => !targetId().startsWith('s:'))
+const canRegistry = computed(() => !props.restricted && !targetId().startsWith('s:'))
 // 当前目录本身是技能（含 SKILL.md）→ 工具栏露出「就地添加」快捷钮。
 const hasSkillMd = computed(() => entries.value.some((e) => e.name === 'SKILL.md' && e.type === 'file'))
 
