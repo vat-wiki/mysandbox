@@ -2754,16 +2754,14 @@ watch(
 const svcReachable = ref<boolean | null>(null)
 const svcJobsRunning = ref(0)
 let svcTimer: ReturnType<typeof setInterval> | null = null
-// 闲时 15s 对账（启停即时性由 service-state 事件保证），任务进行中 3s（任务状态没有
-// 事件源，靠这个频次跟踪进度）。
+// 闲时 15s 对账兜底（启停即时性由 service-state 事件、任务进度由 service-job 事件保证，
+// SSE 断线/丢事件都由这拍追平）。曾经的「任务进行中收紧 3s」已退役——service-job 事件
+// 让进度即达，常驻高频轮询失去存在理由。
 const SVC_IDLE_MS = 15_000
-const SVC_ACTIVE_MS = 3000
-let svcIntervalMs = SVC_IDLE_MS
 function armSvcTimer() {
   if (svcTimer) clearInterval(svcTimer)
-  // gate 基准取 active 档 3s：任务进行中的跟刷不因 gate 变慢（正常档 interval 本就
-  // ≥5s，gate 只在弱网时拉长实际请求频率）；启停的即时性由事件通道兜底。
-  svcTimer = setInterval(gatePoll(() => void refreshServices(), SVC_ACTIVE_MS, { hidden: true }), svcIntervalMs)
+  // gate：正常档 15s 本就 ≥5s，gate 只在弱网时拉长实际请求频率；启停/进度的即时性由事件兜底。
+  svcTimer = setInterval(gatePoll(() => void refreshServices(), SVC_IDLE_MS, { hidden: true }), SVC_IDLE_MS)
 }
 async function refreshServices() {
   try {
@@ -2781,12 +2779,6 @@ async function refreshServices() {
         (g) => g.kind !== 'service' || svcItems.value.some((x) => x.name === g.containerId),
       )
       if (activeIdx.value >= groups.value.length) activeIdx.value = Math.max(0, groups.value.length - 1)
-    }
-    // 有任务在跑 → 收紧轮询；全落定 → 回到闲时节奏
-    const want = svcJobsRunning.value > 0 ? SVC_ACTIVE_MS : SVC_IDLE_MS
-    if (want !== svcIntervalMs) {
-      svcIntervalMs = want
-      armSvcTimer()
     }
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -3119,11 +3111,12 @@ onMounted(() => {
   // 推送通知点击深链（SW）：?focusTerm= 落组 + 已开窗口的 postMessage 通道。
   handleFocusTermQuery()
   window.addEventListener('message', onFocusTermMessage)
-  // 容器/服务状态事件驱动（lxc-monitor / docker events 旁路转发，见 lib/events.ts）：
-  // 启停即刷（防抖合并状态风暴），固定轮询只留 30s 对账兜底。
+  // 容器/服务状态事件驱动（lxc-monitor / docker events / jobs 任务注册表旁路转发，
+  // 见 lib/events.ts）：启停与任务进度即刷（防抖合并状态风暴），固定轮询只留对账兜底。
   disposeEvents = onSandboxEvent((e) => {
     if (e.type === 'container-state') scheduleEventRefresh('ct')
     else if (e.type === 'service-state' && !props.popout) scheduleEventRefresh('svc')
+    else if (e.type === 'service-job' && !props.popout) scheduleEventRefresh('svc')
   })
   timer = setInterval(gatePoll(() => refresh(true), 30_000, { hidden: true }), 30_000)
   // 无输出提醒：popout 独立窗口也有自己的终端组，同样参与轮询。

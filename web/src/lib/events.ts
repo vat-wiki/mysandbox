@@ -14,6 +14,9 @@ import { postJson, getToken, Unauthorized } from './api'
 export type SandboxEvent =
   | { type: 'container-state'; name: string; action: string }
   | { type: 'service-state'; name: string; action: string }
+  // 服务后台任务状态信号（server/jobs.ts 发布）：收到即刷任务列表，进度文本仍从
+  // /api/services/jobs 拉；SSE 断线由各消费方的慢速对账轮询兜底。
+  | { type: 'service-job'; id: string; name: string; state: string }
   | { type: 'file-changed'; target: string; dir: string }
   | { type: 'hello' }
 

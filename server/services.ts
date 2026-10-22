@@ -55,6 +55,7 @@ import {
   type DockerContainerRow,
 } from './docker.js';
 import { relayServiceState } from './events.js';
+import { withPollCache } from './cache.js';
 import {
   findServiceTarget,
   isExternalProject,
@@ -1364,7 +1365,11 @@ async function resolveTarget(name: string): Promise<ServiceTarget> {
 }
 
 export function registerServices(app: FastifyInstance, cfg: Config): void {
-  app.get('/api/services', async () => listServices(cfg));
+  // 侧栏（闲 15s/任务 3s 收紧已退役改事件驱动）与抽屉两个 poller 都打这里，每次都是
+  // 全量 docker ps -a 扫描——withPollCache 把多消费方收敛为一次真实执行（cwd/listen
+  // 同款模式）。TTL 2.5s：抽屉 3s 节奏下最多省一拍，事件驱动侧不受影响。
+  // 只在路由层缓存；内部其他 listServices 调用点（任务收尾、查重）要新鲜数据，不包。
+  app.get('/api/services', async () => withPollCache('svc:list', 2_500, () => listServices(cfg)));
 
   app.get('/api/services/presets', async () => {
     // 前端建表单用：预设元数据，不含 fixedEnv 的值（无所谓，但保持「不回环境变量值」的一致性）。

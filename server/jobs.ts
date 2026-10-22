@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { conflict, notFound } from './errors.js';
 import { log } from './logger.js';
+import { relayServiceJob } from './events.js';
 import type { ServiceView } from './services.js';
 
 export type JobState = 'running' | 'done' | 'error' | 'canceled';
@@ -135,6 +136,7 @@ export function startServiceJob(
     cancelRequested: false,
   };
   jobs.set(rec.view.id, rec);
+  relayServiceJob(rec.view.id, rec.view.name, rec.view.state); // 已创建：前端即知有任务在跑
   const ctx: JobCtx = {
     log: (line) => {
       appendLine(rec, line);
@@ -144,6 +146,9 @@ export function startServiceJob(
       appendLine(rec, `[进行] ${text}`);
       rec.view.statusText = text;
       rec.view.updatedAt = Date.now();
+      // 进度变化即推（层进度已 2s 聚合，频率可控）：前端收到就刷任务列表，
+      // 不再依赖 3s 级轮询；状态文本本身仍从 jobs 接口拉。
+      relayServiceJob(rec.view.id, rec.view.name, rec.view.state);
     },
     setCancellable: (v) => {
       rec.view.cancellable = v;
@@ -166,6 +171,7 @@ export function startServiceJob(
         log.warn({ name: plan.name, err: rec.view.error }, 'service job failed');
       }
     } finally {
+      relayServiceJob(rec.view.id, rec.view.name, rec.view.state); // 终态：前端即时收口（toast/横幅）
       releaseJobName(plan.name);
       releaseJobIp(plan.ip);
       rec.view.cancellable = false;
@@ -216,5 +222,6 @@ export function cancelServiceJob(id: string): void {
   if (!rec.view.cancellable) throw conflict('当前阶段不可取消（容器创建/启动数秒内完成）');
   rec.cancelRequested = true;
   rec.view.statusText = '正在取消…';
+  relayServiceJob(rec.view.id, rec.view.name, rec.view.state);
   rec.controller.abort();
 }

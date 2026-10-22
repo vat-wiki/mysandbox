@@ -12,6 +12,9 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 export type SandboxEvent =
   | { type: 'container-state'; name: string; action: string }
   | { type: 'service-state'; name: string; action: string }
+  // 服务后台任务状态信号（jobs.ts 发布）：state = running/done/error/canceled，前端收到
+  // 即刷任务列表；statusText/日志仍从 GET /api/services/jobs 拉，事件只是「该看一眼了」。
+  | { type: 'service-job'; id: string; name: string; state: string }
   // target = 文件端点目标 id（容器名 / __host__ / s:名 / ssh:名，与 filesBase 哨兵同约定），
   // dir = 目标内绝对路径目录。只发 target+dir 不发文件名/内容：消费方自己比对（列目录
   // 有 sig 防抖、编辑器有 mtime 乐观锁），事件只是「该看一眼了」的信号。
@@ -66,4 +69,9 @@ export function relayContainerState(name: string, action: string): void {
 
 export function relayServiceState(name: string, action: string): void {
   publishEvent({ type: 'service-state', name, action });
+}
+
+// 服务后台任务状态转发（jobs.ts 是状态属主，直接在状态变更点调用）。
+export function relayServiceJob(id: string, name: string, state: string): void {
+  publishEvent({ type: 'service-job', id, name, state });
 }
