@@ -2424,7 +2424,7 @@ function onDelete(c: ContainerView) {
 
 function runMobileContainerAction(c: ContainerView, action: CardAction) {
   runContainerAction(c, action, {
-    openTerminal: openTerm,
+    openTerminal: (container, backend) => openTerm(container, backend),
     adopt: onAdopt,
     start: (container) => void act(container.id, () => startContainer(container.id)),
     power: onPower,
@@ -2445,7 +2445,7 @@ function runMobileContainerAction(c: ContainerView, action: CardAction) {
 
 function runMobileServiceAction(s: ServiceView, action: CardAction) {
   runServiceAction(s, action, {
-    openTerminal: openServiceTerm,
+    openTerminal: (service, backend) => openServiceTerm(service, backend),
     detail: (service) => emit('open-services', false, service.name),
     rename: (service) => {
       svcRenameTarget.value = service
@@ -2576,7 +2576,7 @@ function runMobileGroupAction(group: TermGroup, action: CardAction) {
 // —— 终端区卡片动作（本机 / SSH 主机）：桌面右键菜单与手机动作面板共用一份清单 ——
 function runHostCardAction(action: CardAction) {
   runHostTermAction(action, {
-    openTerminal: openHostTerm,
+    openTerminal: (backend) => openHostTerm(backend),
     popout: () => openPopout(HOST_ID),
     openSessions: () => openRoute('term-sessions'),
   })
@@ -2584,7 +2584,7 @@ function runHostCardAction(action: CardAction) {
 
 function runSshCardAction(t: SshTargetView, action: CardAction) {
   runSshTermAction(t, action, {
-    openTerminal: () => openSshTerm(t),
+    openTerminal: (backend) => openSshTerm(t, backend),
     popout: () => openPopout(sshGroupId(t.name)),
     openSessions: () => openRoute('term-sessions'),
     copySsh: (cmd) => void copyTabText(cmd, '已复制 ssh 命令'),
