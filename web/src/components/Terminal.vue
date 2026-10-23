@@ -483,31 +483,6 @@ function stepFontSize(delta: number) {
   refit()
 }
 
-// 移动端软键盘会先改 visualViewport，再经 padding/工具条触发 refit。xterm resize
-// 会调整 ybase/ydisp，容易把上翻后的回滚视口带回底部。这里按整行绝对位置恢复：
-// 跟随底部时不动（保住新输出自动滚底），上翻时才把同一行拉回视口。
-type ScrollSnapshot = { viewportY: number; baseY: number; following: boolean }
-function snapshotScrollback(): ScrollSnapshot | null {
-  const buf = term?.buffer.active
-  if (!buf) return null
-  return { viewportY: buf.viewportY, baseY: buf.baseY, following: buf.viewportY >= buf.baseY }
-}
-function restoreScrollback(snapshot: ScrollSnapshot | null) {
-  const buf = term?.buffer.active
-  if (!buf || !snapshot || snapshot.following) return
-  const targetY = Math.max(0, Math.min(snapshot.viewportY, buf.baseY))
-  if (buf.viewportY !== targetY) term?.scrollToLine(targetY)
-}
-
-// focus 的「滚到可见位置」发生在 focus 事件/后续 refit 之前；rAF 里再取快照可能已经晚了。
-// 指针按下时先记一份，键盘 visualViewport 第一次收缩时冻结它，供打开后的首次 refit 用。
-let preKeyboardScroll: ScrollSnapshot | null = null
-let keyboardScrollSnapshot: ScrollSnapshot | null = null
-let keyboardRestorePending = false
-function savePreKeyboardScroll() {
-  if (!isPhone.value) return
-  preKeyboardScroll = snapshotScrollback()
-}
 
 // 防抖 fit：合并一帧内的多次尺寸变化，避免拖窗/字号切换时高频抖动；同时同步字号。
 function refit() {
@@ -518,7 +493,6 @@ function refit() {
     const fs = computeFontSize()
     if (term && term.options.fontSize !== fs) term.options.fontSize = fs
     try {
-      const scrollSnapshot = keyboardRestorePending ? keyboardScrollSnapshot : snapshotScrollback()
       fit?.fit()
       // 强制重算 xterm 内部滚动区（切回 tab 后「滚动不到最下面」的修复）。
       // xterm 5.5 的 Viewport._innerRefresh 直接读 viewport 的 offsetHeight，而
@@ -534,8 +508,6 @@ function refit() {
         }
       )._core?.viewport
       vp?.syncScrollArea?.(true)
-      restoreScrollback(scrollSnapshot)
-      keyboardRestorePending = false
       // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
       // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
       // 触摸设备恒不程序性聚焦：切 tab / resize 的自动 focus 会直接弹系统键盘，
@@ -1033,44 +1005,49 @@ function tbTouchEnd(e: TouchEvent) {
   tbPage.value = Math.min(toolPages.value.length - 1, Math.max(0, tbPage.value + (dx < 0 ? 1 : -1)))
 }
 
-// —— 软键盘自适应（仅手机）——
-// visualViewport 在键盘弹起时收缩（layout viewport 不动），kbH = 布局高 - 可视高 即键盘
-// 占位。把根容器 paddingBottom 撑出键盘占位，内层 el 已有 ResizeObserver → 自动走现有 refit，
-// 与 tmux resize 对账心跳（15s）协同，PTY cols/rows 始终正确。
-// ⚠️ 占位不能直接用 kbH：根容器底边不一定贴着布局视口底——移动端主列常态有底部 tab 的
-// pb（2.5rem+safe，随 MobileBottomNav h-10），容器底边悬在视口底上方一个 tab 高，再把全键盘高 kbH 垫进去，工具条
-// 与系统键盘之间就空出一个 tab 高。实测量根容器底边到布局视口底的距离（gap）扣掉，键盘
-// 收起时 gap 为负（容器底边在视口底之上）钳 0、kbH 为 0 也不启用，popout 无 tab 场景
-// gap≈0 自然退化为垫全 kbH 的原行为。
-const kbPad = ref(0)
+// —— 软键盘纯 CSS 裁切（仅手机）——
+// 键盘弹起时不改终端盒子尺寸：xterm/PTY 的 cols/rows 保持不变，不再触发 fit/resize。
+// el 整体上移，顶部超出的行被根容器裁掉；工具条改为绝对定位覆盖层。终端内容盒
+// 在键盘开合之间不变，回滚位置自然不因 xterm resize/reflow 被重置。
+// clearance = 根容器底边被键盘盖住的部分；若根容器本来已在键盘上方则为 0。
+const kbShift = ref(0)
+const kbToolbarOffset = ref(0)
+const toolbarHeight = ref(0)
+const toolbarEl = ref<HTMLDivElement | null>(null)
+let toolbarResizeObs: ResizeObserver | null = null
 let vvCleanup: (() => void) | null = null
 function setupViewportWatch() {
   const vv = window.visualViewport
   if (!vv) return
+  const syncToolbarHeight = () => {
+    toolbarHeight.value = toolbarEl.value?.offsetHeight ?? 0
+  }
+  syncToolbarHeight()
+  if (toolbarEl.value) {
+    toolbarResizeObs = new ResizeObserver(syncToolbarHeight)
+    toolbarResizeObs.observe(toolbarEl.value)
+  }
   const onVv = () => {
     const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
     if (kb <= 120) {
-      keyboardRestorePending = false
-      keyboardScrollSnapshot = null
-      preKeyboardScroll = null
-      kbPad.value = 0 // 透值过滤地址栏小幅伸缩
+      kbToolbarOffset.value = 0
+      kbShift.value = 0 // 透值过滤地址栏小幅伸缩
       return
-    }
-    if (kbPad.value === 0) {
-      keyboardScrollSnapshot = preKeyboardScroll ?? snapshotScrollback()
-      keyboardRestorePending = true
     }
     const root = rootEl.value
     const gap = root ? Math.max(0, window.innerHeight - root.getBoundingClientRect().bottom) : 0
-    kbPad.value = Math.max(0, kb + 8 - gap) // +8：键盘高度顶到按钮会贴死，留一线呼吸
+    const clearance = Math.max(0, kb - gap)
+    kbToolbarOffset.value = clearance
+    // 工具条仍铺在键盘上方；终端保持原尺寸，再额外抬过工具条并留 8px 呼吸。
+    kbShift.value = clearance + toolbarHeight.value + 8
   }
   vv.addEventListener('resize', onVv)
   vv.addEventListener('scroll', onVv)
-  document.addEventListener('pointerdown', savePreKeyboardScroll, { capture: true, passive: true })
   vvCleanup = () => {
     vv.removeEventListener('resize', onVv)
     vv.removeEventListener('scroll', onVv)
-    document.removeEventListener('pointerdown', savePreKeyboardScroll, { capture: true })
+    toolbarResizeObs?.disconnect()
+    toolbarResizeObs = null
   }
 }
 
@@ -1702,20 +1679,25 @@ onBeforeUnmount(() => {
   <!-- bg-black + 内边距放外层：el 自身不带 padding，FitAddon 量到的 clientWidth/clientHeight 才是
        真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
-       手机软键盘弹起时 paddingBottom 撑出键盘占位（kbPad，见 setupViewportWatch），
-       内层 ResizeObserver 自动 refit。 -->
+       手机软键盘弹起时不改终端盒子尺寸（kbShift 只做 CSS 上移/裁切，见 setupViewportWatch），
+       xterm/PTY 的 cols/rows 保持稳定，回滚位置也不会被 resize/reflow 重置。 -->
   <!-- ⚠️ 根容器必须 flex-1 min-h-0 而不是 h-full：叶子是 flex-col（pane 头部 + 本体），
        h-full = 100% 叶子高，加头部后恒溢出一个头高——终端底部会盖住下方文件 tab 栏
        （旧换显布局溢的是黑底看不出来，编辑器+终端分栏后这 22px 正好压住 tab 栏右侧
        按钮）。flex-1 min-h-0 让本体只占头部之外的剩余空间。 -->
-  <div ref="rootEl" class="relative flex min-h-0 flex-1 flex-col bg-black px-2 py-1.5 overscroll-none" :style="kbPad > 0 ? { paddingBottom: kbPad + 'px' } : undefined">
+  <div ref="rootEl" class="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-black px-2 py-1.5 overscroll-none">
     <!-- touch-none（touch-action: none）：触屏滚终端的唯一正解。xterm 的 touchmove 处理是 JS 驱动
          viewport.scrollTop，但只在回滚区边界才 preventDefault——滚动途中浏览器的原生平移同时在跑，
          而触点不在 .xterm-viewport 滚动层内，原生滚动链直接落到 document：上翻历史（手指下划）时
          document 顶部 overscroll 触发下拉刷新、手势被浏览器抢走。touch-action: none 让终端区域的手势
          完全交给 JS（xterm 自滚），浏览器不再启动原生平移/下拉刷新/双指缩放。中间层挂 overscroll-none
          挡不住这个——touch 侧的原生滚动链跳过 overflow:hidden 的祖先直达 document。 -->
-    <div ref="el" class="min-h-0 flex-1 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
+    <div
+      ref="el"
+      class="min-h-0 flex-1 touch-none overflow-hidden"
+      :style="kbShift > 0 ? { transform: `translateY(-${kbShift}px)` } : undefined"
+      @contextmenu.prevent="onContextMenu"
+    />
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
          浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
     <div class="search-shell" v-if="searchVisible">
@@ -1774,9 +1756,17 @@ onBeforeUnmount(() => {
          快捷短语（一键文本+回车）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
-         参与分页。桌面不渲染。随软键盘显隐（kbPad>0 = 键盘弹着）——平时收起不占
-         终端高度，聚焦输入时才跟着键盘一起出来。 -->
-    <div v-if="isPhone && kbPad > 0" class="shrink-0 select-none overflow-hidden border-t border-zinc-800 pt-1 md:hidden" @touchstart="tbTouchStart" @touchend="tbTouchEnd">
+         参与分页。桌面不渲染。工具条是键盘态覆盖层——始终渲染以便测量高度，但平时不可见，
+         且不参与终端盒子布局。 -->
+    <div
+      v-if="isPhone"
+      ref="toolbarEl"
+      class="absolute inset-x-2 z-20 select-none overflow-hidden border-t border-zinc-800 bg-black pt-1 transition-opacity md:hidden"
+      :class="kbShift > 0 ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
+      :style="{ bottom: `${kbToolbarOffset + 6}px` }"
+      @touchstart="tbTouchStart"
+      @touchend="tbTouchEnd"
+    >
       <!-- 分页轨道：每页固定 2 行 × 7 列，横向轻扫翻页（手势见脚本 tbTouchStart/End） -->
       <div
         class="flex transition-transform duration-200 ease-out"
