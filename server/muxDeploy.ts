@@ -30,7 +30,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
-import type { Config } from './config.js';
+import { CONFIG_DIR, CONFIG_FILE, type Config } from './config.js';
 import { badRequest, conflict, HttpError, notFound } from './errors.js';
 import { execRun, inspectContainer, rootfsPath } from './engine/index.js';
 import { muxAgentBridgeIp } from './muxBridge.js';
@@ -38,6 +38,7 @@ import { agentForTarget, muxAgentToken } from './muxAgent.js';
 import { findServiceTarget } from './serviceMeta.js';
 import { getSshTargets } from './state.js';
 import { sshExec, sshFeed } from './sshChannel.js';
+import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +47,8 @@ const HOST_DIR = join(homedir(), '.mysandbox', 'mux');
 const SYSTEMD_USER_DIR = join(homedir(), '.config', 'systemd', 'user');
 
 type TargetKind = 'host' | 'lxc' | 'service' | 'ssh';
+
+type MuxBackend = 'auto' | 'tmux' | 'msmux';
 
 interface ParsedTarget {
   kind: TargetKind;
@@ -438,6 +441,37 @@ export async function deployMuxAgent(
 }
 
 export async function registerMuxDeploy(app: FastifyInstance, cfg: Config): Promise<void> {
+  // 服务端默认后端：启动参数 --mux / config.yaml 都改这里；单个终端组显式选择覆盖。
+  app.get('/api/mux/backend', async (req, reply) => {
+    if (req.sandboxIdentity?.kind !== 'owner') {
+      return reply.code(403).send({ error: { code: 'forbidden', message: 'owner only' } });
+    }
+    return { backend: cfg.mux.backend };
+  });
+
+  app.put('/api/mux/backend', async (req, reply) => {
+    if (req.sandboxIdentity?.kind !== 'owner') {
+      return reply.code(403).send({ error: { code: 'forbidden', message: 'owner only' } });
+    }
+    const body = (req.body ?? {}) as { backend?: unknown };
+    const backend = body.backend;
+    if (backend !== 'auto' && backend !== 'tmux' && backend !== 'msmux') {
+      throw badRequest('backend must be auto, tmux, or msmux');
+    }
+    cfg.mux.backend = backend;
+    // 服务端默认值落 config.yaml（保留其它键；只改 mux.backend）。前端显式选择的
+    // 终端组不进服务端 config，只随浏览器布局持久化。
+    const raw = await readFile(CONFIG_FILE, 'utf8');
+    const user = (yamlLoad(raw) as Record<string, unknown> | null) || {};
+    const mux = (user.mux && typeof user.mux === 'object' ? user.mux : {}) as Record<string, unknown>;
+    mux.backend = backend;
+    user.mux = mux;
+    await mkdir(CONFIG_DIR, { recursive: true });
+    await writeFile(CONFIG_FILE, yamlDump(user), { mode: 0o600 });
+    await chmod(CONFIG_FILE, 0o600);
+    return { backend };
+  });
+
   app.post('/api/mux/deploy', async (req, reply) => {
     if (req.sandboxIdentity?.kind !== 'owner') {
       return reply.code(403).send({ error: { code: 'forbidden', message: 'owner only' } });

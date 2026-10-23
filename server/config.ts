@@ -216,8 +216,11 @@ export const ConfigSchema = z.object({
   mux: z
     .object({
       agentPort: z.number().int().default(7333),
+      // 终端新建时的服务端默认后端；auto = 目标在线才用 msmux。单个终端组显式选择
+      // 时覆盖这里。
+      backend: z.enum(['auto', 'tmux', 'msmux']).default('auto'),
     })
-    .default({ agentPort: 7333 }),
+    .default({ agentPort: 7333, backend: 'auto' }),
   // ⚠️ 已废弃（server/skillSync.ts）：旧版静态 from→to 规则，首次同步时自动迁移成
   // 技能库安装规则（state.staticMigratedAt 记账），之后此键被忽略。schema 仅为读取
   // 旧 config 做迁移而保留；新配置走面板「AI 工具 → 技能中心」（sidecar state.json）。
@@ -341,6 +344,7 @@ export async function loadConfig(): Promise<LoadResult> {
       android: parsed.android,
       proxy: parsed.proxy,
       peer: parsed.peer,
+      mux: parsed.mux,
       skills: parsed.skills,
       token: parsed.token,
       peerToken: parsed.peerToken,

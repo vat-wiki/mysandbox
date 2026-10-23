@@ -151,6 +151,8 @@ peer:
 # 只监听 127.0.0.1。SSH 远端需要显式给一个自己可达的控制台 URL（部署接口的 url 参数）。
 mux:
   agentPort: 7333
+  # 新终端默认后端：auto = 目标有 msmux agent 才用；tmux/msmux = 强制。
+  backend: auto
 
 # msmux 回连主凭据（首启随 config 生成、0600）：它本身不下发给目标；部署接口按
 # HMAC(muxToken, target) 派生每个目标自己的 token，目标之间不能互相冒充。目标无需

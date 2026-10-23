@@ -35,6 +35,9 @@ export interface TermGroup {
   // （containerId 为服务名，WS 走 /ws/service-terminal）；ssh = SSH 主机终端
   // （containerId 为 'ssh:'+目标名，WS 走 /ws/ssh-terminal）；缺省 = 系统容器。
   kind?: 'host' | 'service' | 'ssh'
+  // 显式终端后端；undefined = 使用服务端 mux.backend 默认值。整个组共用（分屏
+  // 新 pane 也继承同一后端，避免同组两侧协议混排）。
+  backend?: 'tmux' | 'msmux'
   root: LayoutNode
   // 同容器内的创建序号（1 起）：多组并存时显示 name·seq，身份稳定——关掉中间的组
   // 留缺口也不换号（语义同 tmux 窗口号）。单组独存时不显示后缀。

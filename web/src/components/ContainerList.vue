@@ -262,6 +262,7 @@ function parseGroup(o: unknown): TermGroup | null {
           : r.kind === 'ssh'
             ? ('ssh' as const)
             : undefined,
+    backend: r.backend === 'tmux' || r.backend === 'msmux' ? r.backend : undefined,
     seq: typeof r.seq === 'number' && r.seq >= 1 ? r.seq : undefined,
     quietNotify: typeof r.quietNotify === 'boolean' ? r.quietNotify : undefined,
     root,
@@ -1809,13 +1810,19 @@ watch(
 
 // 建组公共体：单叶子根（新 termId = 独立会话），激活为新 tab。分屏走 pane 头部按钮。
 // root 可选传入（会话对话框按既有 termId 建组/合组分屏用）；缺省 = 全新单叶子。
-function createGroup(containerId: string, name: string, kind?: 'host' | 'service' | 'ssh', root?: LayoutNode): TermGroup {
+function createGroup(
+  containerId: string,
+  name: string,
+  kind?: 'host' | 'service' | 'ssh',
+  root?: LayoutNode,
+  backend?: 'tmux' | 'msmux',
+): TermGroup {
   // seq = 同容器现有组的最大序号 + 1（稳定身份，不随关闭/排序变化）
   let seq = 0
   for (const x of groups.value) {
     if (x.containerId === containerId) seq = Math.max(seq, x.seq ?? 1)
   }
-  const g: TermGroup = { id: newGroupId(), containerId, name, kind, seq: seq + 1, root: root ?? { kind: 'leaf', termId: newTermId() } }
+  const g: TermGroup = { id: newGroupId(), containerId, name, kind, backend, seq: seq + 1, root: root ?? { kind: 'leaf', termId: newTermId() } }
   // 插到同容器（宿主）最后一组的后面：同容器的 tab 天然聚拢，配合拖拽可随意调序。
   let at = groups.value.length
   for (let i = groups.value.length - 1; i >= 0; i--) {
@@ -1862,29 +1869,29 @@ function openNewGroup(g: TermGroup) {
 // 菜单「打开终端」：恒为新开一组（与原「再开一组终端」合并——两个动作重复，只留
 // 一个）。聚焦已有组是 OSC 深链（locateContainerPath）的内部行为，不走这里。
 // 首参为最小结构形状（locateContainerPath 宿主分支复用，见其注释）。
-function openTerm(c: { id: string; name: string; displayName?: string }) {
+function openTerm(c: { id: string; name: string; displayName?: string }, backend?: 'tmux' | 'msmux') {
   if (isPhone.value) drawerOpen.value = false
-  createGroup(c.id, c.displayName || c.name)
+  createGroup(c.id, c.displayName || c.name, undefined, undefined, backend)
 }
 
 // 菜单「打开终端」（本机）：开本机终端（PTY 由 server 管理，cwd=镜像目录），恒新开一组。
-function openHostTerm() {
+function openHostTerm(backend?: 'tmux' | 'msmux') {
   if (isPhone.value) drawerOpen.value = false
-  createGroup(HOST_ID, '本机', 'host')
+  createGroup(HOST_ID, '本机', 'host', undefined, backend)
 }
 
 // 菜单「打开终端」（SSH 目标）：开远程主机终端（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
 // 恒新开一组；containerId 用 'ssh:'+名前缀（api.ts sshGroupId）隔离与容器名撞名。
-function openSshTerm(t: SshTargetView) {
+function openSshTerm(t: SshTargetView, backend?: 'tmux' | 'msmux') {
   if (isPhone.value) drawerOpen.value = false
-  createGroup(sshGroupId(t.name), t.name, 'ssh')
+  createGroup(sshGroupId(t.name), t.name, 'ssh', undefined, backend)
 }
 
 // 菜单「打开终端」（服务）：进服务终端（docker exec，与容器同语义），恒新开一组。
 // 会话 = 宿主 tmux 上的 docker exec 窗口，跨 mysandbox 重启存活；详情走菜单「详情」。
-function openServiceTerm(s: ServiceView) {
+function openServiceTerm(s: ServiceView, backend?: 'tmux' | 'msmux') {
   if (isPhone.value) drawerOpen.value = false
-  createGroup(s.name, s.displayName || s.name, 'service')
+  createGroup(s.name, s.displayName || s.name, 'service', undefined, backend)
 }
 
 // 在独立窗口（popout）打开某容器/宿主的纯终端工作区（App 按 ?popout= 渲染无侧栏形态）。
@@ -3335,11 +3342,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <template v-if="!c.managed && !c.adopted">
                       <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+                      <ContextMenuItem @click="openTerm(c, 'msmux')">打开 msmux 终端</ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
                     </template>
                     <template v-else>
                       <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+                      <ContextMenuItem @click="openTerm(c, 'msmux')">打开 msmux 终端</ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
                       <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
@@ -3428,6 +3437,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                        全量走卡片或服务抽屉；监听端口保留——rail 收起态的冗余入口）。 -->
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <ContextMenuItem @click="openServiceTerm(s)">打开终端</ContextMenuItem>
+                    <ContextMenuItem @click="openServiceTerm(s, 'msmux')">打开 msmux 终端</ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                     <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
@@ -3496,6 +3506,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   </ContextMenuTrigger>
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <ContextMenuItem @click="openHostTerm()">打开终端</ContextMenuItem>
+                    <ContextMenuItem @click="openHostTerm('msmux')">打开 msmux 终端</ContextMenuItem>
                     <ContextMenuItem @click="openPopout(HOST_ID)">在独立窗口打开</ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>
@@ -3515,6 +3526,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   <!-- 精简菜单（展开态卡片菜单的子集——会话/管理入口在 tab 栏与展开态都有）。 -->
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <ContextMenuItem @click="openSshTerm(t)">打开终端</ContextMenuItem>
+                    <ContextMenuItem @click="openSshTerm(t, 'msmux')">打开 msmux 终端</ContextMenuItem>
                     <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>
@@ -3790,11 +3802,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <ContextMenuContent>
             <template v-if="!c.managed && !c.adopted">
               <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+              <ContextMenuItem @click="openTerm(c, 'msmux')">打开 msmux 终端</ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem @click="onAdopt(c)">纳入管理</ContextMenuItem>
             </template>
             <template v-else>
               <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
+              <ContextMenuItem @click="openTerm(c, 'msmux')">打开 msmux 终端</ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
               <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
@@ -4011,6 +4025,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                    退役。改配置/追新镜像在服务抽屉「配置」页（compose 底账编辑 + 应用）。 -->
               <ContextMenuContent>
                 <ContextMenuItem @click="openServiceTerm(s)">打开终端</ContextMenuItem>
+                <ContextMenuItem @click="openServiceTerm(s, 'msmux')">打开 msmux 终端</ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                 <ContextMenuItem @click="svcRenameTarget = s">重命名</ContextMenuItem>
@@ -4178,6 +4193,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem @click="openHostTerm()">打开终端</ContextMenuItem>
+              <ContextMenuItem @click="openHostTerm('msmux')">打开 msmux 终端</ContextMenuItem>
               <ContextMenuItem @click="openPopout(HOST_ID)">在独立窗口打开</ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem @click="openRoute('term-sessions')">全部终端会话</ContextMenuItem>
@@ -4239,6 +4255,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </ContextMenuTrigger>
               <ContextMenuContent>
                 <ContextMenuItem @click="openSshTerm(t)">打开终端</ContextMenuItem>
+                <ContextMenuItem @click="openSshTerm(t, 'msmux')">打开 msmux 终端</ContextMenuItem>
                 <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>

@@ -32,6 +32,7 @@ import { getVersion } from './version.js';
 interface Args {
   port?: number;
   host?: string;
+  mux?: 'auto' | 'tmux' | 'msmux';
   help?: boolean;
   version?: boolean;
 }
@@ -44,6 +45,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--version' || a === '-V') out.version = true;
     else if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--host') out.host = argv[++i];
+    else if (a === '--mux') out.mux = argv[++i] as Args['mux'];
   }
   return out;
 }
@@ -81,7 +83,7 @@ async function resolveAutoHost(): Promise<string> {
 
 const HELP = `mysandbox ${getVersion()} — dev container control panel
 
-Usage: mysandbox [--port 7321] [--host 127.0.0.1]
+Usage: mysandbox [--port 7321] [--host 127.0.0.1] [--mux auto|tmux|msmux]
   Starts the web UI (default http://127.0.0.1:7321).
 
   mysandbox base <status|clone|export|import>
@@ -144,6 +146,8 @@ Options:
                  listen host (default 127.0.0.1; auto = 默认路由接口的 IPv4；
                  WARNING: binding non-localhost exposes host-root-equivalent access
                  to anyone with the token)
+  --mux <auto|tmux|msmux>
+                 terminal backend default for this run (config: mux.backend)
   -V, --version  print version and exit
   -h, --help     show this help
 
@@ -243,6 +247,10 @@ async function main(): Promise<void> {
   const { config, firstRun, tokenGenerated } = await loadConfig();
   if (args.port) config.listen.port = args.port;
   if (args.host) config.listen.host = args.host;
+  if (args.mux) config.mux.backend = args.mux;
+  if (!['auto', 'tmux', 'msmux'].includes(config.mux.backend)) {
+    throw new Error('--mux must be auto, tmux, or msmux');
+  }
   // --host auto 或 config 里 listen.host: auto → 解析为默认路由接口 IPv4。
   if (config.listen.host === 'auto') config.listen.host = await resolveAutoHost();
 

@@ -68,6 +68,10 @@ msmux agent \
 目标 token **不是** config 里的 `muxToken` 主凭据，而是 `HMAC(muxToken, target)` 派生值；
 一个目标的 token 只能注册它自己的 target。
 
+终端后端有三层选择：单组终端显式选择 > `config.yaml` 的 `mux.backend` > `auto`。
+`auto` 只把在线 agent 的目标切到 msmux；`tmux` / `msmux` 是强制口径。服务启动可
+用 `mysandbox --mux msmux` 覆盖本次默认；设置页会写回 `mux.backend`。
+
 ### 自动分发
 
 owner 调 `POST /api/mux/deploy`（主 token），body：`{"target":"host"}` 或
@@ -87,6 +91,7 @@ CLI 等价入口：`mysandbox mux deploy <target> [--url ...]`、`mysandbox mux 
 mysandbox 侧：
 
 - `GET /api/mux/agents`：已连接目标列表（owner token）
+- `GET|PUT /api/mux/backend`：服务端默认终端后端（owner token）
 - `GET /api/mux/agents/:target/sessions`：目标上的会话列表
 - `WS /ws/mux-terminal?target=&name=&termId=&cols=&rows=&shell=&create=&resume=`
   - 浏览器→服务端：二进制帧是 stdin；文本帧 `{type:'resize'|'detach'|'kill'}`

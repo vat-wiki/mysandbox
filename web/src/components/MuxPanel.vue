@@ -2,13 +2,14 @@
 // msmux 终端后端设置页（设置 → 终端后端）：全局切换 auto/tmux/msmux，
 // 查看当前在线 agent，并对本机/系统容器/应用容器/SSH 目标逐个部署或重连。
 //
-// 这里只负责“让目标上线 + 让浏览器选后端”；真正建会话仍走 Terminal.vue 的
+// 这里只负责“让目标上线 + 保存服务端默认后端”；真正建会话仍走 Terminal.vue 的
 // /ws/mux-terminal。auto 是渐进替代的默认值：没有 agent 的目标绝不会因为本页
 // 改动而断掉旧 tmux 路径。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { Loader2, RefreshCw, Server, Terminal, Waypoints } from 'lucide-vue-next'
 import {
+  getMuxBackend,
   listContainers,
   listMuxAgents,
   listServices,
@@ -59,7 +60,7 @@ interface DeployRow {
   running: boolean
 }
 
-const backend = ref<TerminalBackend>(terminalBackend())
+const backend = ref<TerminalBackend>('auto')
 const agents = ref<MuxAgentView[]>([])
 const containers = ref<ContainerView[]>([])
 const services = ref<ServiceView[]>([])
@@ -108,12 +109,18 @@ const rows = computed<DeployRow[]>(() => {
 const deployableCount = computed(() => rows.value.filter((r) => r.running).length)
 const onlineCount = computed(() => agents.value.length)
 
-function chooseBackend(value: TerminalBackend) {
+async function chooseBackend(value: TerminalBackend) {
   backend.value = value
-  setTerminalBackend(value)
-  toast.success(`终端后端：${BACKENDS.find((x) => x.value === value)?.title}`, {
-    description: '已打开的终端保持不变；新开/重连的终端按新设置选择后端。',
-  })
+  try {
+    await setTerminalBackend(value)
+    toast.success(`终端默认后端：${BACKENDS.find((x) => x.value === value)?.title}`, {
+      description: '已打开的终端保持不变；未显式选择的新终端按新设置选择后端。',
+    })
+  } catch (e) {
+    if (e instanceof Unauthorized) return emit('unauthorized')
+    await terminalBackend().then((v) => (backend.value = v))
+    toast.error('终端后端保存失败')
+  }
 }
 
 async function loadAgents() {
@@ -132,14 +139,16 @@ async function loadAll() {
   loading.value = true
   err.value = ''
   try {
-    const [cs, sv, ssh] = await Promise.all([
+    const [cs, sv, ssh, pref] = await Promise.all([
       listContainers(),
       listServices().catch(() => ({ items: [] as ServiceView[] })),
       listSshTargets().catch(() => ({ targets: [] as SshTargetView[] })),
+      getMuxBackend().catch(() => ({ backend: 'auto' as TerminalBackend })),
     ])
     containers.value = cs.items
     services.value = sv.items
     sshTargets.value = ssh.targets
+    backend.value = pref.backend
     await loadAgents()
   } catch (e) {
     if (e instanceof Unauthorized) return emit('unauthorized')

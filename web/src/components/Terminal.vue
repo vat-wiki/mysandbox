@@ -34,6 +34,8 @@ const props = withDefaults(
     // SSH 主机终端：连 /ws/ssh-terminal（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
     ssh?: string
     fromTermId?: string
+    // 显式后端：新建终端组时用户选过就固定；undefined = 服务端 mux.backend。
+    backend?: 'tmux' | 'msmux'
   }>(),
   {
     active: true,
@@ -226,7 +228,7 @@ async function connectWs(quiet = false) {
   // SSH 远端 shell 由远端自己决定（不传 shell）；其余目标沿用 defaultShell。
   const shell = props.ssh ? '' : props.shell || 'zsh'
   const target = muxTargetOf()
-  const useMux = await muxAgentAvailable(target)
+  const useMux = await muxAgentAvailable(target, props.backend)
   currentBackend = useMux ? 'msmux' : 'tmux'
   // 等在线探测期间组件可能已被切走/重建：过期连接直接作废。
   if (seq !== connectSeq || !props.active) return

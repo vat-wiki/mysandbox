@@ -254,6 +254,7 @@ if (leaf.value) {
       :shell="group.kind === 'service' ? 'bash' : undefined"
       :active="active"
       :from-term-id="ops.cwdSourceOf(leaf.termId)"
+      :backend="group.backend"
       @osc-open="onOsc"
       @link-open="onLinkOpen"
       @title="onTitle"
