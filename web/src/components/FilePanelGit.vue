@@ -1,17 +1,15 @@
 <script setup lang="ts">
-// 文件面板内嵌的「Git 变更」区块：面板当前目录位于 git 仓库内时展示分支与变更文件列表。
+// 文件面板内的独立 Git 视图：占满面板剩余高度，内分「变更 / 历史」两页。
 // path（面板当前目录）是唯一刷新键：跟随/手动导航、外部 locate 都只是换 path。
-// 非仓库目录整块不渲染；结果含 repo:false 时缓存住，同一 path 下不再重复打（/etc 这类
-// 目录不每 8s 白跑一次 rev-parse）。条目可点：点文件行抛 open-change（拼 toplevel 绝对
-// 路径 + R 旧路径作 headPath），父级接 openFile 以 diff 形态开 tab；目录行仍是折叠开关。
-// 视图双模式：list 平铺（服务端 -uall 保证全是单个文件、无目录条目）/ tree 目录树
-// （前端按相对路径聚合；纯 untracked 子树默认折叠——大 untracked 目录不刷屏，同 git
-// porcelain / VSCode 的折叠展示习惯）。模式存 localStorage，跨窗口一致。
-// dock 高度可拖（PaneDivider 夹在折叠头与列表之间），像素值 localStorage 持久化。
+// 非仓库目录保留空态，而不是整块消失——独立视图需要有稳定的落点。
+// 变更页保留原平铺/目录树双模式；历史页按当前分支或任选本地/远端分支分页读取提交。
+// 条目点击仍抛 open-change（拼 toplevel 绝对路径 + R 旧路径作 headPath），父级接 openFile
+// 以 diff 形态开 tab。
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   getGitStatus,
   getGitBranches,
+  getGitHistory,
   gitCheckout,
   gitFetch,
   gitPull,
@@ -26,11 +24,11 @@ import {
   type GitStatusView,
   type GitChange,
   type GitBranchesView,
+  type GitHistoryView,
   type GitWorktreesView,
   type GitRestoreTarget,
 } from '@/lib/api'
 import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
-import PaneDivider from '@/components/PaneDivider.vue'
 import { gatePoll } from '@/lib/linkQuality'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -48,9 +46,27 @@ const emit = defineEmits<{
 
 const view = ref<GitStatusView | null>(null)
 const err = ref('') // 温和降级：灰字提示，不进面板主错误条
-// 折叠态本地保存（path 变不清，切容器随 :key 重建复位）。dock 在面板底部（VSCode 源代码
-// 管理式），默认展开、高度定档：变更数在折叠头徽章上仍可见，收起省列表高度。
-const collapsed = ref(false)
+
+// —— Git 视图页签（变更 / 历史），localStorage 持久化 ——
+type GitTab = 'changes' | 'history'
+const TAB_KEY = 'mysandbox:git-panel-tab'
+function loadTab(): GitTab {
+  try {
+    return localStorage.getItem(TAB_KEY) === 'history' ? 'history' : 'changes'
+  } catch {
+    return 'changes'
+  }
+}
+const gitTab = ref<GitTab>(loadTab())
+function setGitTab(tab: GitTab) {
+  if (gitTab.value === tab) return
+  gitTab.value = tab
+  try {
+    localStorage.setItem(TAB_KEY, tab)
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+}
 
 // —— 子模块行内展开：子模块条目默认收起，展开才拉取其自身变更列表（点文件开对比）——
 // status 端点把 index 里 mode 160000 的 gitlink 条目标记 submodule=true（porcelain 对
@@ -92,8 +108,8 @@ let gitSeq = 0
 let inFlight = false // 门闩：上一发没回来不发下一发（慢仓不排队堆积）
 let notRepoKey = '' // repo:false 结果的缓存键（path 变化才失效）
 
-async function fetchStatus() {
-  if (!props.path || inFlight) return
+async function fetchStatus(force = false) {
+  if (!props.path || (inFlight && !force)) return
   if (notRepoKey === props.path) return // 已确认非仓库，等 path 变化再试
   const seq = ++gitSeq
   inFlight = true
@@ -120,12 +136,20 @@ async function fetchStatus() {
 
 function refresh() {
   notRepoKey = '' // 强刷清非仓库缓存（外链 locate 到刚 git init 的目录也能立刻看到）
-  void fetchStatus()
+  void fetchStatus(true)
+  if (gitTab.value === 'history') {
+    void fetchBranches()
+    void fetchHistory(true)
+  }
 }
 
 let timer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   void fetchStatus()
+  if (gitTab.value === 'history') {
+    void fetchBranches()
+    void fetchHistory(true)
+  }
   timer = setInterval(gatePoll(fetchStatus, 8_000, { hidden: true }), 8000) // 比 cwd 的 3s 慢一档：变更状态低频变化；弱网/隐藏拉长
 })
 onUnmounted(() => {
@@ -143,7 +167,13 @@ watch(
     seenDirs.clear()
     armed.value = new Set()
     armedAll.value = false
-    void fetchStatus()
+    resetHistoryState()
+    branches.value = null
+    void fetchStatus(true)
+    if (gitTab.value === 'history') {
+      void fetchBranches()
+      void fetchHistory(true)
+    }
   },
 )
 
@@ -398,6 +428,93 @@ const fetchRemotes = async () => {
 const pullCurrent = () => runBranchAction(() => gitPull(props.containerId, props.path), 'status')
 const pushCurrent = () => runBranchAction(() => gitPush(props.containerId, props.path), 'status')
 
+// —— 分支历史：独立 Git 视图的「历史」页 ——
+// ref 为空 = HEAD（当前分支）。历史不跟 8s status 轮询走，只在切页、手动刷新、切分支时
+// 读一次；分页用 skip，加载更多不重叠（服务端按 --skip/--max-count 稳定切片）。
+const HISTORY_PAGE = 50
+const historyRef = ref('') // '' = HEAD；否则为分支短名（含 origin/x）
+const history = ref<GitHistoryView | null>(null)
+const historyLoading = ref(false)
+const historyLoadingMore = ref(false)
+const historyErr = ref('')
+let historySeq = 0
+
+function resetHistoryState() {
+  historySeq++
+  historyRef.value = ''
+  history.value = null
+  historyErr.value = ''
+  historyLoading.value = false
+  historyLoadingMore.value = false
+}
+
+async function fetchHistory(reset = true) {
+  if (!props.path) return
+  const seq = ++historySeq
+  if (reset) {
+    historyLoading.value = true
+    historyLoadingMore.value = false
+    historyErr.value = ''
+  } else {
+    historyLoadingMore.value = true
+  }
+  const skip = reset ? 0 : (history.value?.commits?.length ?? 0)
+  try {
+    const v = await getGitHistory(props.containerId, props.path, historyRef.value, HISTORY_PAGE, skip)
+    if (seq !== historySeq) return
+    if (reset || !history.value) history.value = v
+    else {
+      history.value = {
+        ...v,
+        commits: [...(history.value.commits ?? []), ...(v.commits ?? [])],
+      }
+    }
+  } catch (e) {
+    if (seq !== historySeq) return
+    if (e instanceof Unauthorized) return
+    historyErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (seq === historySeq) {
+      historyLoading.value = false
+      historyLoadingMore.value = false
+    }
+  }
+}
+
+function onHistoryRefChange() {
+  void fetchHistory(true)
+}
+
+function loadMoreHistory() {
+  if (historyLoading.value || historyLoadingMore.value || !history.value?.hasMore) return
+  void fetchHistory(false)
+}
+
+watch(gitTab, (t) => {
+  if (t !== 'history') return
+  if (!branches.value) void fetchBranches()
+  void fetchHistory(true)
+})
+
+function fmtCommitTime(iso: string): string {
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return iso
+  const diff = Date.now() - t
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+  const d = new Date(t)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+function refText(ref: string): string {
+  return ref.replace(/^HEAD -> /, '')
+}
+
+const historyTargetLabel = computed(() => historyRef.value || '当前分支')
+
 // —— worktree 管理（多工作树）：入口在 dock 头（worktree 图标），popover 与分支菜单同构。
 // worktree 与分支是两个维度：分支菜单改「当前工作树的状态」，这里管「工作树本体」——
 // 列出/跳转/新建/移除/prune。点列表行 navigate 给父级把面板导航过去（worktree 的核心
@@ -556,35 +673,6 @@ const wtCandidates = computed(() => {
 })
 const wtHasCandidates = computed(() => wtCandidates.value.locals.length > 0 || wtCandidates.value.remotes.length > 0)
 
-// —— dock 高度拖拽（PaneDivider 夹在折叠头与列表之间）：dock 在底部，向上拖（delta<0）
-// 变高；像素值持久化 localStorage，跨容器/跨窗口一致（:key 重建也读同一份）。 ——
-const H_KEY = 'mysandbox:git-panel-h'
-const H_MIN = 80
-const H_MAX = 480
-function loadH(): number {
-  try {
-    const v = Number(localStorage.getItem(H_KEY))
-    return v >= H_MIN && v <= H_MAX ? v : 160
-  } catch {
-    return 160
-  }
-}
-const gitH = ref(loadH())
-let hDragStart = 0
-function onHDragStart() {
-  hDragStart = gitH.value
-}
-function onHDrag(delta: number) {
-  gitH.value = Math.min(Math.max(hDragStart - delta, H_MIN), H_MAX)
-}
-function persistH() {
-  try {
-    localStorage.setItem(H_KEY, String(gitH.value))
-  } catch {
-    /* localStorage 不可用就跳过 */
-  }
-}
-
 // —— 树视图：从变更文件的相对路径聚合目录树（纯前端，8s 轮询重建一次，≤1000 条廉价） ——
 interface TreeNode {
   name: string // 目录段名（不带斜杠）
@@ -688,19 +776,9 @@ watch(view, (v) => {
 </script>
 
 <template>
-  <!-- repo:false 时整块不渲染（v-if 在父级也判断，双保险）。dock 在面板底部：border-t -->
-  <div v-if="view?.repo" class="shrink-0 border-t border-border">
-    <!-- 折叠头：折叠钮 + 分支菜单触发（点分支名弹 popover，低频操作不占注意力）+ 变更数 +
-         视图切换。原先整条头都是一个折叠按钮，现把分支名拆出来作分支菜单入口（button 不可
-         嵌套 button）；模式按钮同理留在折叠按钮外。 -->
-    <div class="flex items-center">
-      <button
-        class="flex shrink-0 items-center py-1.5 pl-2.5 pr-1 hover:bg-accent/50"
-        :title="collapsed ? '展开' : '折叠'"
-        @click="collapsed = !collapsed"
-      >
-        <component :is="collapsed ? ChevronRight : ChevronDown" class="size-3 shrink-0 text-muted-foreground" />
-      </button>
+  <!-- 独立 Git 视图：占满文件面板剩余高度。非仓库/加载中也有稳定空态。 -->
+  <div class="flex h-full min-h-0 flex-col bg-card">
+    <div class="flex h-8 shrink-0 items-center border-b border-border">
       <Popover v-model:open="branchOpen">
         <PopoverTrigger as-child>
           <button
@@ -708,12 +786,12 @@ watch(view, (v) => {
             title="切换 / 新建分支"
           >
             <GitBranch class="size-3 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" :title="view.label">{{
-              view.label
+            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" :title="view?.label">{{
+              view?.label ?? '当前目录'
             }}</span>
           </button>
         </PopoverTrigger>
-        <PopoverContent side="top" align="start" :side-offset="6" class="w-64 p-2">
+        <PopoverContent side="bottom" align="start" :side-offset="6" class="w-64 p-2">
           <!-- 单输入双职：搜索过滤分支；输不中现有名字即成新建入口（无独立创建按钮行） -->
           <Input
             v-model="branchFilter"
@@ -824,11 +902,11 @@ watch(view, (v) => {
         </PopoverContent>
       </Popover>
       <span class="shrink-0 rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
-        {{ view.truncated ? '999+' : (view.changes?.length ?? 0) }}
+        {{ view?.truncated ? '999+' : (view?.changes?.length ?? 0) }}
       </span>
       <!-- 撤销全部：批量有损动作，两击确认（首击亮红，无弹窗） -->
       <button
-        v-if="view.changes?.length"
+        v-if="view?.changes?.length"
         class="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground disabled:pointer-events-none"
         :class="armedAll ? 'text-destructive' : ''"
         :title="allTitle"
@@ -847,7 +925,7 @@ watch(view, (v) => {
             <FolderGit2 class="size-3" />
           </button>
         </PopoverTrigger>
-        <PopoverContent side="top" align="end" :side-offset="6" class="w-80 p-2">
+        <PopoverContent side="bottom" align="end" :side-offset="6" class="w-80 p-2">
           <Input
             v-model="wtFilter"
             class="mb-1.5 h-7 bg-muted/50 px-2 text-xs md:text-xs"
@@ -1005,36 +1083,71 @@ watch(view, (v) => {
           <p v-if="wtErr" class="mt-1 whitespace-pre-line px-1 text-[11px] text-destructive">{{ wtErr }}</p>
         </PopoverContent>
       </Popover>
-      <div class="flex shrink-0 items-center gap-0.5 pr-1.5">
-        <button
-          class="rounded p-0.5"
-          :class="viewMode === 'list' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'"
-          title="平铺列表"
-          @click="setMode('list')"
-        >
-          <List class="size-3" />
-        </button>
-        <button
-          class="rounded p-0.5"
-          :class="viewMode === 'tree' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'"
-          title="目录树"
-          @click="setMode('tree')"
-        >
-          <FolderTree class="size-3" />
+      <div class="ml-auto flex shrink-0 items-center gap-0.5 pr-1.5">
+        <div class="flex items-center gap-0.5 rounded bg-muted/60 p-0.5 text-[10px] leading-none">
+          <button
+            class="rounded px-1.5 py-1"
+            :class="gitTab === 'changes' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+            @click="setGitTab('changes')"
+          >
+            变更
+            <span v-if="view?.changes?.length" class="ml-0.5 text-muted-foreground">{{ view?.changes?.length }}</span>
+          </button>
+          <button
+            class="rounded px-1.5 py-1"
+            :class="gitTab === 'history' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+            @click="setGitTab('history')"
+          >
+            历史
+          </button>
+        </div>
+        <button class="rounded p-0.5 text-muted-foreground hover:text-foreground" title="刷新" @click="refresh">
+          <RefreshCw class="size-3" />
         </button>
       </div>
     </div>
-    <!-- 高度拖动条（折叠时无列表可调，一并隐藏）+ 变更列表（默认展开；高度可拖，
-         80–480px 记 localStorage——太矮没存在感，太高又挤压目录主体） -->
-    <template v-if="!collapsed">
-      <PaneDivider vertical @dragstart="onHDragStart" @drag="onHDrag" @dragend="persistH" />
-      <div class="scroll-thin overflow-y-auto" :style="{ height: gitH + 'px' }">
-        <p v-if="err" class="px-2.5 py-1 text-[11px] text-muted-foreground">{{ err }}</p>
-        <p
-          v-else-if="!view.changes?.length"
-          class="px-2.5 py-1.5 text-[11px] text-muted-foreground"
-          title="工作区与 HEAD 无差异"
+
+    <template v-if="gitTab === 'changes'">
+      <p v-if="!view && err" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+        git：{{ err }}
+      </p>
+      <p v-else-if="!view" class="px-3 py-8 text-center text-xs text-muted-foreground">当前目录不在 Git 仓库内</p>
+
+      <template v-else>
+      <div class="flex h-7 shrink-0 items-center gap-1 border-b border-border px-2">
+        <span class="text-[11px] text-muted-foreground">{{ view.changes?.length ?? 0 }} 个变更</span>
+        <button
+          v-if="view.changes?.length"
+          class="ml-1 shrink-0 rounded p-0.5"
+          :class="armedAll ? 'text-destructive' : 'text-muted-foreground hover:text-foreground'"
+          :title="allTitle"
+          :disabled="restoringAll"
+          @click="revertAll"
         >
+          <Undo2 class="size-3" />
+        </button>
+        <div class="ml-auto flex shrink-0 items-center gap-0.5">
+          <button
+            class="rounded p-0.5"
+            :class="viewMode === 'list' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'"
+            title="平铺列表"
+            @click="setMode('list')"
+          >
+            <List class="size-3" />
+          </button>
+          <button
+            class="rounded p-0.5"
+            :class="viewMode === 'tree' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'"
+            title="目录树"
+            @click="setMode('tree')"
+          >
+            <FolderTree class="size-3" />
+          </button>
+        </div>
+      </div>
+      <div class="scroll-thin min-h-0 flex-1 overflow-y-auto">
+        <p v-if="err" class="px-2.5 py-1 text-[11px] text-muted-foreground">{{ err }}</p>
+        <p v-else-if="!view.changes?.length" class="px-2.5 py-1.5 text-[11px] text-muted-foreground" title="工作区与 HEAD 无差异">
           无变更
         </p>
         <!-- 平铺：全路径逐文件（服务端 -uall，untracked 目录已展开为单个文件）；点行开对比；
@@ -1234,9 +1347,98 @@ watch(view, (v) => {
           </template>
         </template>
       </div>
+      </template>
+    </template>
+
+    <template v-else>
+      <div class="flex h-8 shrink-0 items-center gap-1.5 border-b border-border px-2">
+        <GitBranch class="size-3 shrink-0 text-muted-foreground" />
+        <select
+          v-model="historyRef"
+          class="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+          :title="`查看 ${historyTargetLabel} 的提交历史`"
+          :disabled="branchLoading"
+          @change="onHistoryRefChange"
+        >
+          <option value="">当前分支</option>
+          <optgroup v-if="localNames.length" label="本地分支">
+            <option v-for="b in localNames" :key="`l:${b}`" :value="b">{{ b }}</option>
+          </optgroup>
+          <optgroup v-if="remoteAll.length" label="远端分支">
+            <option v-for="r in remoteAll" :key="`r:${r}`" :value="r">{{ r }}</option>
+          </optgroup>
+        </select>
+        <button
+          class="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
+          title="刷新历史"
+          :disabled="historyLoading"
+          @click="fetchHistory(true)"
+        >
+          <RefreshCw class="size-3" :class="{ 'animate-spin': historyLoading }" />
+        </button>
+      </div>
+      <div class="scroll-thin min-h-0 flex-1 overflow-y-auto">
+        <p v-if="historyLoading && !history" class="flex items-center justify-center gap-1.5 px-3 py-8 text-xs text-muted-foreground">
+          <RefreshCw class="size-3.5 animate-spin" /> 加载中…
+        </p>
+        <p v-else-if="historyErr" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+          {{ historyErr }}
+        </p>
+        <p v-else-if="history && !history.repo" class="px-3 py-8 text-center text-xs text-muted-foreground">
+          当前目录不在 Git 仓库内
+        </p>
+        <p v-else-if="history?.unborn" class="px-3 py-8 text-center text-xs text-muted-foreground">尚无提交</p>
+        <p v-else-if="!history?.commits?.length" class="px-3 py-8 text-center text-xs text-muted-foreground">
+          没有提交记录
+        </p>
+        <template v-else>
+          <div
+            v-for="c in history.commits"
+            :key="c.hash"
+            class="group flex gap-2 px-2.5 py-2 hover:bg-accent/50"
+            :title="`${c.hash}\n${c.subject}`"
+          >
+            <div class="relative flex w-3 shrink-0 justify-center">
+              <span class="absolute inset-y-0 w-px bg-border" />
+              <span
+                class="relative mt-1.5 size-1.5 rounded-full ring-2 ring-card"
+                :class="c.parents.length > 1 ? 'bg-violet-400' : 'bg-sky-400'"
+              />
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-baseline gap-1.5">
+                <span class="min-w-0 flex-1 truncate text-xs font-medium">{{ c.subject || '(无提交信息)' }}</span>
+                <span class="shrink-0 font-mono text-[10px] text-muted-foreground">{{ c.short }}</span>
+              </div>
+              <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
+                <span class="max-w-28 truncate">{{ c.author }}</span>
+                <span>·</span>
+                <span :title="c.date">{{ fmtCommitTime(c.date) }}</span>
+                <span
+                  v-for="r in c.refs.slice(0, 2)"
+                  :key="r"
+                  class="rounded bg-muted px-1 py-0.5 font-mono text-[9px] text-foreground/70"
+                >
+                  {{ refText(r) }}
+                </span>
+                <span v-if="c.refs.length > 2" class="text-[9px] text-muted-foreground/70">+{{ c.refs.length - 2 }}</span>
+                <span v-if="c.parents.length > 1" class="text-[9px] text-violet-400">merge</span>
+              </div>
+            </div>
+          </div>
+          <div class="px-2.5 pb-2 pt-1">
+            <button
+              v-if="history.hasMore"
+              class="w-full rounded bg-muted/50 py-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              :disabled="historyLoadingMore"
+              @click="loadMoreHistory"
+            >
+              {{ historyLoadingMore ? '加载中…' : '加载更多' }}
+            </button>
+            <p v-else class="text-center text-[10px] text-muted-foreground/60">已显示全部提交</p>
+          </div>
+        </template>
+      </div>
     </template>
   </div>
-  <p v-else-if="err" class="shrink-0 border-t border-border px-2.5 py-1 text-[11px] text-muted-foreground">
-    git：{{ err }}
-  </p>
 </template>

@@ -28,6 +28,9 @@ import {
   parseBranchList,
   parseRemoteBranches,
   parseWorktreeListZ,
+  parseHistoryProto,
+  parseHistoryQuery,
+  GIT_HISTORY_SCRIPT,
   withSubmodules,
   mapGitExit,
   assertBranchName,
@@ -37,6 +40,7 @@ import {
   type GitDiffView,
   type GitDiffSide,
   type GitBranchesView,
+  type GitHistoryView,
   type GitWorktreesView,
 } from './gitpanel.js';
 
@@ -1136,6 +1140,28 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const local = parseBranchList((sep < 0 ? lines : lines.slice(0, sep)).join('\n'));
     const remotes = sep < 0 ? [] : parseRemoteBranches(lines.slice(sep + 1).join('\n'));
     return { repo: true, toplevel, ...local, remotes };
+  });
+
+  // —— git 分支历史（独立 Git 视图的「历史」页）——
+  // ref 缺省 HEAD；脚本输出首行 toplevel，其后是自定义 NUL 字段的 log 记录。空仓库
+  // （HEAD 尚无可解析提交）返回 unborn，不是错误；指定了不存在的 ref 由脚本 exit 9。
+  app.get('/api/containers/:id/git/history', async (req): Promise<GitHistoryView> => {
+    const r = await resolveRunning(cfg, (req.params as { id: string }).id);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const { ref, limit, skip } = parseHistoryQuery(q);
+    const res = await execRun(cfg, r.id, {
+      Cmd: ['sh', '-c', GIT_HISTORY_SCRIPT, 'sh', path, ref, String(limit), String(skip)],
+      User: '1000:1000',
+      Tty: false,
+      timeoutMs: 15_000,
+    });
+    if (res.exitCode === 7) return { repo: false };
+    if (res.exitCode === 9) throw badRequest('分支或提交不存在');
+    const err = mapGitExit(res, 'history');
+    if (err) throw err;
+    const view = parseHistoryProto(res.stdout, ref);
+    return { ...view, hasMore: (view.commits?.length ?? 0) >= limit };
   });
 
   app.post('/api/containers/:id/git/checkout', async (req): Promise<{ ok: true }> => {

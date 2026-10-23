@@ -35,6 +35,8 @@ import {
   parseBranchList,
   parseRemoteBranches,
   parseWorktreeListZ,
+  parseHistoryLog,
+  parseHistoryQuery,
   withSubmodules,
   assertBranchName,
   assertGitRelPath,
@@ -42,6 +44,7 @@ import {
   type GitStatusView,
   type GitDiffView,
   type GitBranchesView,
+  type GitHistoryView,
   type GitWorktreesView,
 } from './gitpanel.js';
 
@@ -501,6 +504,43 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
     const local = parseBranchList(localOut);
     const remoteOut = await gitExec(['--no-optional-locks', '-C', top, 'branch', '-r', '--list', '--format=%(refname:short)']);
     return { repo: true, toplevel: top, ...local, remotes: parseRemoteBranches(remoteOut) };
+  });
+
+  // —— git 分支历史（与容器侧同一套语义；宿主直接 execFile git，数组参数无 shell 面）——
+  app.get('/api/host-terminal/git/history', async (req): Promise<GitHistoryView> => {
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const { ref, limit, skip } = parseHistoryQuery(q);
+    let top: string;
+    try {
+      top = (await gitExec(['-C', path, 'rev-parse', '--show-toplevel'])).trim();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      return { repo: false };
+    }
+    try {
+      await gitExec(['-C', top, 'rev-parse', '-q', '--verify', `${ref}^{commit}`]);
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      if (ref === 'HEAD') return { repo: true, toplevel: top, ref, unborn: true, commits: [] };
+      throw badRequest('分支或提交不存在');
+    }
+    let out: string;
+    try {
+      out = await gitExec(
+        [
+          '--no-optional-locks', '-C', top, 'log', '--decorate=short', '--date=iso-strict',
+          `--max-count=${limit}`, `--skip=${skip}`,
+          '--format=%H%x00%h%x00%P%x00%an%x00%aI%x00%s%x00%D%x00', ref, '--',
+        ],
+        15_000,
+      );
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      throw badRequest(stderrOf(e) || '读取 git 历史失败');
+    }
+    const commits = parseHistoryLog(out);
+    return { repo: true, toplevel: top, ref, commits, hasMore: commits.length >= limit };
   });
 
   app.post('/api/host-terminal/git/checkout', async (req): Promise<{ ok: true }> => {

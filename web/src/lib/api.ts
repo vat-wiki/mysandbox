@@ -1300,6 +1300,23 @@ export interface GitBranchesView {
   branches?: string[] // 本地分支（当前分支排最前）
   remotes?: string[] // 远端分支短名原始列表（剔 origin/HEAD；本地已有对应者的由前端过滤展示）
 }
+export interface GitCommit {
+  hash: string
+  short: string
+  parents: string[]
+  author: string
+  date: string
+  subject: string
+  refs: string[]
+}
+export interface GitHistoryView {
+  repo: boolean
+  toplevel?: string
+  ref?: string
+  unborn?: boolean
+  commits?: GitCommit[]
+  hasMore?: boolean
+}
 export const getGitStatus = (id: string, path: string) =>
   api(`${filesBase(id)}/git/status?path=${encodeURIComponent(path)}`) as Promise<GitStatusView>
 export const getGitDiff = (id: string, path: string, headPath?: string) =>
@@ -1309,6 +1326,12 @@ export const getGitDiff = (id: string, path: string, headPath?: string) =>
   ) as Promise<GitDiffView>
 export const getGitBranches = (id: string, path: string) =>
   api(`${filesBase(id)}/git/branches?path=${encodeURIComponent(path)}`) as Promise<GitBranchesView>
+export const getGitHistory = (id: string, path: string, ref = '', limit = 50, skip = 0) =>
+  api(
+    `${filesBase(id)}/git/history?path=${encodeURIComponent(path)}` +
+      (ref ? `&ref=${encodeURIComponent(ref)}` : '') +
+      `&limit=${limit}&skip=${skip}`,
+  ) as Promise<GitHistoryView>
 // 切换 / 新建（create）本地分支 / 检出远端分支（remote + name=origin/xxx 短名）；
 // 冲突等 git 校验错误以 stderr 原话抛 ApiError
 export const gitCheckout = (

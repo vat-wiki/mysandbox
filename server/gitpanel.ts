@@ -57,6 +57,29 @@ export interface GitBranchesView {
 }
 export const MAX_CHANGES = 1000;
 
+// 分支历史（GET git/history）。ref 缺省 = HEAD；limit/skip 由路由层钳制。
+export interface GitCommit {
+  hash: string;
+  short: string;
+  parents: string[]; // 父提交完整 hash；>1 = merge
+  author: string;
+  date: string; // author date，ISO 8601（%aI）
+  subject: string; // %s，不含换行
+  refs: string[]; // %D 拆分：HEAD -> main / origin/main / tag: v1.0
+}
+
+export interface GitHistoryView {
+  repo: boolean;
+  toplevel?: string;
+  ref?: string; // 请求的 ref（HEAD = 当前分支）
+  unborn?: boolean; // 仓库存在但 ref 尚无提交（空仓库）
+  commits?: GitCommit[];
+  hasMore?: boolean; // 本次返回条数达到 limit（下一页可能还有）
+}
+
+export const HISTORY_LIMIT_DEFAULT = 50;
+export const HISTORY_LIMIT_MAX = 200;
+
 // 解析 `git status --porcelain=v1 -z --branch` 的输出（不含 toplevel 行——那是容器侧
 // 脚本协议自己拼的首行，由调用方先剥掉）。
 //
@@ -201,6 +224,77 @@ export function assertBranchName(name: unknown): string {
   return n;
 }
 
+// 历史查询参数：ref 缺省 HEAD；limit/skip 做整型边界钳制，避免前端传巨大值拖垮 git。
+export function parseHistoryQuery(q: Record<string, string | undefined>): {
+  ref: string;
+  limit: number;
+  skip: number;
+} {
+  const rawRef = String(q.ref ?? '').trim();
+  const ref = rawRef ? assertBranchName(rawRef) : 'HEAD';
+  const intOf = (raw: unknown, fallback: number, min: number, max: number): number => {
+    const n = Number.parseInt(String(raw ?? ''), 10);
+    return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
+  };
+  return {
+    ref,
+    limit: intOf(q.limit, HISTORY_LIMIT_DEFAULT, 1, HISTORY_LIMIT_MAX),
+    skip: intOf(q.skip, 0, 0, 100_000),
+  };
+}
+
+// 容器 / 服务 / SSH 共用的历史脚本。首行 toplevel；空仓库且 ref=HEAD 时打印 UNBORN；
+// 其余无法解析的 ref 走 exit 9（路由层回 400）。记录格式与 parseHistoryLog 成对。
+export const GIT_HISTORY_SCRIPT = [
+  'p="$1"; r="$2"; lim="$3"; skip="$4"',
+  't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
+  'printf "%s\\n" "$t"',
+  'if ! git -C "$t" rev-parse -q --verify "$r^{commit}" >/dev/null 2>&1; then',
+  '  [ "$r" = HEAD ] && { printf "UNBORN\\n"; exit 0; }',
+  '  exit 9',
+  'fi',
+  'git --no-optional-locks -C "$t" log --decorate=short --date=iso-strict --max-count="$lim" --skip="$skip" --format="%H%x00%h%x00%P%x00%an%x00%aI%x00%s%x00%D%x00" "$r" --',
+].join('\n');
+
+// git log 自定义格式解析：每条记录一行，字段 NUL 分隔，行尾多一个 NUL。
+// subject 是单行、author 不含换行，所以按行切安全；refs 为空时 %D 为空串。
+export function parseHistoryLog(out: string): GitCommit[] {
+  const commits: GitCommit[] = [];
+  for (const line of out.split('\n')) {
+    if (!line) continue;
+    const f = line.split('\0');
+    if (f.length < 8 || !f[0]) continue;
+    const refs = f[6]
+      ? f[6]
+          .split(', ')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    commits.push({
+      hash: f[0],
+      short: f[1],
+      parents: f[2] ? f[2].split(' ').filter(Boolean) : [],
+      author: f[3],
+      date: f[4],
+      subject: f[5],
+      refs,
+    });
+  }
+  return commits;
+}
+
+// 共用脚本输出 -> GitHistoryView（非仓库形状由路由层提前返回，这里兜异常）。
+export function parseHistoryProto(stdout: string, ref: string): GitHistoryView {
+  const nl = stdout.indexOf('\n');
+  const toplevel = stdout.slice(0, nl);
+  if (nl < 0 || !toplevel.startsWith('/')) return { repo: false };
+  const rest = stdout.slice(nl + 1);
+  if (rest.startsWith('UNBORN\n')) {
+    return { repo: true, toplevel, ref, unborn: true, commits: [] };
+  }
+  return { repo: true, toplevel, ref, commits: parseHistoryLog(rest) };
+}
+
 // 相对仓库根的路径校验（git/restore 的 file/oldFile/dir 共用；restore 对「HEAD 里没有的
 // 路径」会落到 rm/clean 删内容，路径面必须自己守住）。拒绝空 / 绝对 / - 开头（git 选项
 // 注入）/ . 或 .. 段（越出 toplevel）/ 空段（尾斜杠等未规整形状）/ \0 / 超长；返回原名
@@ -297,4 +391,3 @@ export function assertWorktreeDir(p: unknown): string {
   }
   return p.length > 1 ? p.replace(/\/+$/, '') : p; // 去尾斜杠（根除外），与 cleanPath 同规整
 }
-

@@ -46,6 +46,9 @@ import {
   parseBranchList,
   parseRemoteBranches,
   parseWorktreeListZ,
+  parseHistoryProto,
+  parseHistoryQuery,
+  GIT_HISTORY_SCRIPT,
   withSubmodules,
   mapGitExit,
   assertBranchName,
@@ -54,6 +57,7 @@ import {
   type GitStatusView,
   type GitDiffView,
   type GitBranchesView,
+  type GitHistoryView,
   type GitWorktreesView,
 } from './gitpanel.js';
 
@@ -539,6 +543,26 @@ export function registerSshFileRoutes(app: FastifyInstance): void {
     const local = parseBranchList((sep < 0 ? lines : lines.slice(0, sep)).join('\n'));
     const remotes = sep < 0 ? [] : parseRemoteBranches(lines.slice(sep + 1).join('\n'));
     return { repo: true, toplevel, ...local, remotes };
+  });
+
+  // —— git 分支历史（脚本与容器侧同源；远端没 git 时 127 按非仓库回）——
+  app.get('/api/ssh/:name/git/history', async (req): Promise<GitHistoryView> => {
+    const t = await requireTarget((req.params as { name: string }).name);
+    await requireRemoteLinux(t);
+    const q = (req.query as Record<string, string | undefined>) || {};
+    const path = cleanPath(q.path);
+    const { ref, limit, skip } = parseHistoryQuery(q);
+    const res = await sshExec(
+      t,
+      ['sh', '-c', GIT_HISTORY_SCRIPT, 'sh', path, ref, String(limit), String(skip)],
+      15_000,
+    );
+    if (res.exitCode === 7 || res.exitCode === 127) return { repo: false };
+    if (res.exitCode === 9) throw badRequest('分支或提交不存在');
+    const err = mapGitExit(res, 'history');
+    if (err) throw err;
+    const view = parseHistoryProto(res.stdout, ref);
+    return { ...view, hasMore: (view.commits?.length ?? 0) >= limit };
   });
 
   app.post('/api/ssh/:name/git/checkout', async (req): Promise<{ ok: true }> => {

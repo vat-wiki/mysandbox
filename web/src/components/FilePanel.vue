@@ -76,6 +76,7 @@ import {
   Regex,
   Package,
   SquareCode,
+  GitBranch,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -109,6 +110,29 @@ const emit = defineEmits<{
 const follow = ref(true)
 const manualContainerId = ref(props.containerId)
 const path = ref('')
+
+// —— 面板视图（文件 / Git）：Git 不再是文件列表底部的小 dock，而是占满面板的独立页 ——
+type PanelView = 'files' | 'git'
+const PANEL_VIEW_KEY = 'mysandbox:file-panel-view'
+function loadPanelView(): PanelView {
+  try {
+    return localStorage.getItem(PANEL_VIEW_KEY) === 'git' ? 'git' : 'files'
+  } catch {
+    return 'files'
+  }
+}
+const panelView = ref<PanelView>(loadPanelView())
+function setPanelView(v: PanelView) {
+  if (panelView.value === v) return
+  panelView.value = v
+  try {
+    localStorage.setItem(PANEL_VIEW_KEY, v)
+  } catch {
+    /* localStorage 不可用就跳过 */
+  }
+  if (v === 'git') nextTick(() => gitRef.value?.refresh())
+}
+
 // 当前目录对应的宿主机实际路径（listFiles 随视图返回；宿主面板 = path 本身）。
 const hostPath = ref<string | null>(null)
 const entries = ref<FileEntry[]>([])
@@ -935,6 +959,7 @@ function refresh() {
 
 // 外部定位入口（CLI open / 父组件请求）：直接展示某容器某目录，暂停跟随。
 function locate(containerId: string, p: string) {
+  setPanelView('files')
   manualContainerId.value = containerId
   follow.value = containerId !== props.containerId // 同容器也暂停（用户明确要看这个目录）
   loadDir(p)
@@ -947,6 +972,7 @@ function locate(containerId: string, p: string) {
 const revealPath = ref('')
 let revealTimer: ReturnType<typeof setTimeout> | null = null
 async function revealFile(containerId: string, filePath: string) {
+  setPanelView('files')
   const dir = filePath.slice(0, filePath.lastIndexOf('/')) || '/'
   manualContainerId.value = containerId
   // 恒暂停跟随（不像 locate 靠「容器不同=组即将切换」回跟随态）：reveal 的目标就是
@@ -1434,10 +1460,27 @@ function fmtSize(n: number): string {
     <!-- Folder 图标给 1px 光学下移：lucide 图形在 viewBox 内整体偏上（形状中心 y=13/24 ≈ 0.6px），
          小写西文名字的光学质量又偏 x-height 带下方 ~1px——盒模型虽已居中，视觉上图标翘高 ~1.5px -->
     <div class="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
-      <Folder class="relative top-px size-3.5 shrink-0 text-muted-foreground" />
+      <GitBranch v-if="panelView === 'git'" class="size-3.5 shrink-0 text-sky-400" />
+      <Folder v-else class="relative top-px size-3.5 shrink-0 text-muted-foreground" />
       <span class="min-w-0 truncate font-mono text-xs font-medium" :title="containerName">{{
         containerName
       }}</span>
+      <div class="flex shrink-0 items-center gap-0.5 rounded bg-muted/60 p-0.5 text-[10px] leading-none">
+        <button
+          class="rounded px-1.5 py-1"
+          :class="panelView === 'files' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+          @click="setPanelView('files')"
+        >
+          文件
+        </button>
+        <button
+          class="rounded px-1.5 py-1"
+          :class="panelView === 'git' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+          @click="setPanelView('git')"
+        >
+          Git
+        </button>
+      </div>
       <select
         v-if="panes.length > 1"
         class="ml-auto max-w-24 shrink-0 rounded border border-border bg-background px-1 py-0.5 text-[10px] text-muted-foreground"
@@ -1447,6 +1490,7 @@ function fmtSize(n: number): string {
       >
         <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
       </select>
+      <template v-if="panelView === 'files'">
       <!-- 新建文件/文件夹（目录级操作）：手机主入口（触屏无右键），桌面也是顺手按钮 -->
       <Button
         variant="ghost"
@@ -1505,6 +1549,7 @@ function fmtSize(n: number): string {
       >
         <SquareCode class="size-3.5" />
       </Button>
+      </template>
       <Button
         variant="ghost"
         size="icon-xs"
@@ -1521,7 +1566,7 @@ function fmtSize(n: number): string {
       </Button>
     </div>
 
-
+    <template v-if="panelView === 'files'">
     <!-- 已暂停跟随提示条 -->
     <button
       v-if="!follow"
@@ -1968,22 +2013,25 @@ function fmtSize(n: number): string {
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+    </template>
 
-    <!-- Git 变更 dock（底部）：条目点击以对比形态开 tab，可折叠，折叠头常显分支+变更数。
-         diff 恒传（headPath 仅 R/C 有）：任何条目点击都以对比形态打开（untracked/新增 =
-         左侧空的全增视图，服务端 absent 协议已兜住）——若写成「有 headPath 才带 diff」，
-         M/A/D 等普通修改条目会静默落回普通编辑器形态。 -->
-    <FilePanelGit
-      v-if="hasTerminal && path"
-      ref="gitRef"
-      :key="targetId()"
-      :container-id="targetId()"
-      :path="path"
-      @open-change="
-        (t) => emit('open-file', t.path, { diff: t.headPath ? { headPath: t.headPath } : {} })
-      "
-      @navigate="openDir"
-    />
+    <!-- 独立 Git 视图：占满面板剩余高度（内部再分变更/历史）。始终挂载以保留页签与滚动状态，
+         v-show 切换；条目点击仍以 diff 形态开编辑器 tab。 -->
+    <div v-show="panelView === 'git'" class="min-h-0 flex-1">
+      <FilePanelGit
+        v-if="hasTerminal && path"
+        ref="gitRef"
+        class="h-full"
+        :key="targetId()"
+        :container-id="targetId()"
+        :path="path"
+        @open-change="
+          (t) => emit('open-file', t.path, { diff: t.headPath ? { headPath: t.headPath } : {} })
+        "
+        @navigate="openDir"
+      />
+      <p v-else class="px-3 py-8 text-center text-xs text-muted-foreground">先在左侧打开终端</p>
+    </div>
 
     <!-- 命名弹窗（新建/重命名共用） -->
     <NameDialog
