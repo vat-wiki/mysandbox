@@ -76,7 +76,6 @@ import {
   Regex,
   Package,
   SquareCode,
-  GitBranch,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -1079,10 +1078,31 @@ function downloadDir() {
 }
 
 function currentDirActionList() {
-  return currentDirActions(!!clip.value, !!path.value && path.value !== '/')
+  const actions = currentDirActions(!!clip.value, !!path.value && path.value !== '/')
+  if (canCodeServer.value) actions.push({ id: 'open-code-server', label: '在 Code Server 打开' })
+  if (canRegistry.value && hasSkillMd.value) actions.push({ id: 'register-skill', label: '添加为技能' })
+  actions.push({ id: 'refresh', label: '刷新' })
+  actions.push({ id: 'close', label: '关闭文件面板' })
+  return actions
 }
 
 function runCurrentDirMobileAction(action: Parameters<typeof runCurrentDirAction>[0]) {
+  if (action.id === 'open-code-server') {
+    openInCodeServer()
+    return
+  }
+  if (action.id === 'register-skill') {
+    void registerSkillFrom(path.value)
+    return
+  }
+  if (action.id === 'refresh') {
+    refresh()
+    return
+  }
+  if (action.id === 'close') {
+    emit('close')
+    return
+  }
   runCurrentDirAction(action, {
     paste: () => pasteInto(path.value),
     download: downloadDir,
@@ -1456,114 +1476,34 @@ function fmtSize(n: number): string {
     @dragleave="onPanelDragLeave"
     @drop="onPanelDrop"
   >
-    <!-- 头：容器名 + pane 选择 + 关闭 -->
-    <!-- Folder 图标给 1px 光学下移：lucide 图形在 viewBox 内整体偏上（形状中心 y=13/24 ≈ 0.6px），
-         小写西文名字的光学质量又偏 x-height 带下方 ~1px——盒模型虽已居中，视觉上图标翘高 ~1.5px -->
-    <div class="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
-      <GitBranch v-if="panelView === 'git'" class="size-3.5 shrink-0 text-sky-400" />
-      <Folder v-else class="relative top-px size-3.5 shrink-0 text-muted-foreground" />
-      <span class="min-w-0 truncate font-mono text-xs font-medium" :title="containerName">{{
-        containerName
-      }}</span>
-      <div class="flex shrink-0 items-center gap-0.5 rounded bg-muted/60 p-0.5 text-[10px] leading-none">
-        <button
-          class="rounded px-1.5 py-1"
-          :class="panelView === 'files' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
-          @click="setPanelView('files')"
-        >
-          文件
-        </button>
-        <button
-          class="rounded px-1.5 py-1"
-          :class="panelView === 'git' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
-          @click="setPanelView('git')"
-        >
-          Git
-        </button>
-      </div>
-      <select
-        v-if="panes.length > 1"
-        class="ml-auto max-w-24 shrink-0 rounded border border-border bg-background px-1 py-0.5 text-[10px] text-muted-foreground"
-        title="跟随哪个终端的目录"
-        :value="termId ?? undefined"
-        @change="emit('pane-pick', ($event.target as HTMLSelectElement).value)"
+    <!-- 头只承担「文件 / Git」视图切换：目标名放悬浮提示，操作全部下沉到各视图自己的工具栏。 -->
+    <div class="flex h-9 shrink-0 items-stretch border-b border-border" :title="containerName">
+      <button
+        type="button"
+        class="relative flex flex-1 items-center justify-center text-xs transition-colors"
+        :class="
+          panelView === 'files'
+            ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
+            : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
+        "
+        :aria-pressed="panelView === 'files'"
+        @click="setPanelView('files')"
       >
-        <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
-      </select>
-      <template v-if="panelView === 'files'">
-      <!-- 新建文件/文件夹（目录级操作）：手机主入口（触屏无右键），桌面也是顺手按钮 -->
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :disabled="!path"
-        title="新建文件"
-        @click="nameDialog = { mode: 'newFile' }"
+        文件
+      </button>
+      <button
+        type="button"
+        class="relative flex flex-1 items-center justify-center text-xs transition-colors"
+        :class="
+          panelView === 'git'
+            ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
+            : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
+        "
+        :aria-pressed="panelView === 'git'"
+        @click="setPanelView('git')"
       >
-        <FilePlus class="size-3.5" />
-      </Button>
-      <!-- 粘贴（跨面板剪贴板非空时出现）：粘到当前目录。触屏无右键，这是触屏粘贴入口。 -->
-      <Button
-        v-if="clip"
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :disabled="!path"
-        :title="clipLabel"
-        @click="pasteInto(path)"
-      >
-        <ClipboardPaste class="size-3.5" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :disabled="!path"
-        title="新建文件夹"
-        @click="nameDialog = { mode: 'newDir' }"
-      >
-        <FolderPlus class="size-3.5" />
-      </Button>
-      <!-- 添加为技能（就地收进库）：当前目录含 SKILL.md = 本身就是技能，一键进库
-           （目录来源自动更新）。与「安装技能」方向相反：库 ← 目录。 -->
-      <Button
-        v-if="canRegistry && hasSkillMd"
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :disabled="regBusy || !path"
-        :title="regBusy ? '添加中…' : `添加为技能（${path.split('/').filter(Boolean).pop() ?? path}）`"
-        @click="registerSkillFrom(path)"
-      >
-        <BookPlus class="size-3.5" />
-      </Button>
-      <!-- 在 Code Server 打开当前目录（?folder=）：文件面板 → IDE 的最短动线。
-           仅真容器目标；ensure 逻辑与右键菜单同源（lib/codeserver.ts）。 -->
-      <Button
-        v-if="canCodeServer"
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        title="在 Code Server 打开当前目录"
-        @click="openInCodeServer"
-      >
-        <SquareCode class="size-3.5" />
-      </Button>
-      </template>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="shrink-0"
-        :class="{ 'ml-auto': panes.length <= 1 }"
-        :disabled="loading"
-        :title="loading ? '刷新中…' : '刷新'"
-        @click="refresh"
-      >
-        <RefreshCw :class="['size-3.5', loading ? 'animate-spin' : '']" />
-      </Button>
-      <Button variant="ghost" size="icon-xs" class="shrink-0" title="关闭文件面板" @click="emit('close')">
-        <X class="size-3.5" />
-      </Button>
+        Git
+      </button>
     </div>
 
     <template v-if="panelView === 'files'">
@@ -1710,6 +1650,15 @@ function fmtSize(n: number): string {
         </template>
       </div>
       <span v-else class="min-w-0 flex-1 font-mono text-[11px] text-muted-foreground">…</span>
+      <select
+        v-if="panes.length > 1"
+        class="max-w-20 shrink-0 rounded border border-border bg-background px-1 py-0.5 text-[10px] text-muted-foreground"
+        title="跟随哪个终端的目录"
+        :value="termId ?? undefined"
+        @change="emit('pane-pick', ($event.target as HTMLSelectElement).value)"
+      >
+        <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
+      </select>
       <!-- 浏览模式切换（状态按钮）：下钻 = 点文件夹进入目录；展开 = 点文件夹原位展开/收起，
            不动当前目录（VS Code 树语义）。图标即状态（FolderInput=下钻 / FolderTree=展开，
            展开态染文件夹同款 sky 提示「树模式生效中」）。原「宿主机实际路径」弹框已撤——
@@ -1727,6 +1676,50 @@ function fmtSize(n: number): string {
         <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
         <FolderInput v-else class="size-3.5" />
       </button>
+      <!-- 桌面操作收进一个菜单：刷新 / 新建 / 粘贴 / 技能 / Code Server / 关闭。
+           手机用下面的 bottom-sheet 入口，触屏不需要右键。 -->
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        class="hidden shrink-0 md:inline-flex"
+        :disabled="loading"
+        :title="loading ? '刷新中…' : '刷新'"
+        @click="refresh"
+      >
+        <RefreshCw :class="['size-3.5', loading ? 'animate-spin' : '']" />
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger as-child>
+          <Button variant="ghost" size="icon-xs" class="hidden shrink-0 md:inline-flex" title="当前目录操作">
+            <MoreHorizontal class="size-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" class="w-48">
+          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
+            <FilePlus class="size-3.5" /> 新建文件
+          </DropdownMenuItem>
+          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newDir' }">
+            <FolderPlus class="size-3.5" /> 新建文件夹
+          </DropdownMenuItem>
+          <DropdownMenuItem v-if="clip" :disabled="!path" @click="pasteInto(path)">
+            <ClipboardPaste class="size-3.5" /> {{ clipLabel }}
+          </DropdownMenuItem>
+          <DropdownMenuItem v-if="canCodeServer" :disabled="!path" @click="openInCodeServer()">
+            <SquareCode class="size-3.5" /> 在 Code Server 打开
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            v-if="canRegistry && hasSkillMd"
+            :disabled="regBusy || !path"
+            @click="registerSkillFrom(path)"
+          >
+            <BookPlus class="size-3.5" /> {{ regBusy ? '添加中…' : '添加为技能' }}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem @click="emit('close')">
+            <X class="size-3.5" /> 关闭文件面板
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <MobileTabActions
         v-if="hasTerminal && path"
         class="md:hidden"
@@ -2029,6 +2022,7 @@ function fmtSize(n: number): string {
           (t) => emit('open-file', t.path, { diff: t.headPath ? { headPath: t.headPath } : {} })
         "
         @navigate="openDir"
+        @close="emit('close')"
       />
       <p v-else class="px-3 py-8 text-center text-xs text-muted-foreground">先在左侧打开终端</p>
     </div>
