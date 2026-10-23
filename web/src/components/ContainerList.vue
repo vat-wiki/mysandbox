@@ -1853,63 +1853,37 @@ function groupDynamicLabel(g: TermGroup): string {
   }
   return best
 }
-// 手动新开一组（tab 右键菜单「新开一组终端」/ 侧栏菜单「再开一组终端」同语义）：
-// 为该 tab 的容器/宿主再开一组全新终端。
-// 侧栏点「打开终端」是「聚焦已有组」，这里是「再开一组」——单组分屏满 MAX_GROUP_PANES
+// 手动新开一组（tab 右键菜单「新开一组终端」）：为该 tab 的容器/宿主再开一组全新终端。
+// 侧栏「打开终端」同样是新开一组（原「再开一组」已并入）——单组分屏满 MAX_GROUP_PANES
 // 块后想要更多终端，走这个显式动作。触屏长按 tab 同样能弹菜单。
 function openNewGroup(g: TermGroup) {
   createGroup(g.containerId, g.name, g.kind)
 }
-// 菜单「打开终端」/ OSC 深链（locateContainerPath）共用：该容器已有 group 则聚焦，
-// 否则建组（避免重复打开堆积）。
-// 想要同容器多个独立 shell -> 菜单「再开一组终端」，或在 pane 头部点左右 / 上下分屏。
+// 菜单「打开终端」：恒为新开一组（与原「再开一组终端」合并——两个动作重复，只留
+// 一个）。聚焦已有组是 OSC 深链（locateContainerPath）的内部行为，不走这里。
 // 首参为最小结构形状（locateContainerPath 宿主分支复用，见其注释）。
 function openTerm(c: { id: string; name: string; displayName?: string }) {
   if (isPhone.value) drawerOpen.value = false
-  const i = groups.value.findIndex((g) => g.containerId === c.id)
-  if (i >= 0) {
-    activeIdx.value = i
-    setMainView('terminal') // 已有组只聚焦也要切主区/收 /ai（createGroup 路径由 setMainView 覆盖）
-    return
-  }
   createGroup(c.id, c.displayName || c.name)
 }
-// 菜单「打开终端」（本机）：开本机终端（PTY 由 server 管理，cwd=镜像目录），已有组则聚焦。
+
+// 菜单「打开终端」（本机）：开本机终端（PTY 由 server 管理，cwd=镜像目录），恒新开一组。
 function openHostTerm() {
   if (isPhone.value) drawerOpen.value = false
-  const i = groups.value.findIndex((g) => g.kind === 'host')
-  if (i >= 0) {
-    activeIdx.value = i
-    setMainView('terminal')
-    return
-  }
   createGroup(HOST_ID, '本机', 'host')
 }
 
 // 菜单「打开终端」（SSH 目标）：开远程主机终端（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
-// 同目标唯一 group；containerId 用 'ssh:'+名前缀（api.ts sshGroupId）隔离与容器名撞名。
+// 恒新开一组；containerId 用 'ssh:'+名前缀（api.ts sshGroupId）隔离与容器名撞名。
 function openSshTerm(t: SshTargetView) {
   if (isPhone.value) drawerOpen.value = false
-  const id = sshGroupId(t.name)
-  const i = groups.value.findIndex((g) => g.containerId === id)
-  if (i >= 0) {
-    activeIdx.value = i
-    setMainView('terminal')
-    return
-  }
-  createGroup(id, t.name, 'ssh')
+  createGroup(sshGroupId(t.name), t.name, 'ssh')
 }
 
-// 菜单「打开终端」（服务）：进服务终端（docker exec，与容器同语义）。
+// 菜单「打开终端」（服务）：进服务终端（docker exec，与容器同语义），恒新开一组。
 // 会话 = 宿主 tmux 上的 docker exec 窗口，跨 mysandbox 重启存活；详情走菜单「详情」。
 function openServiceTerm(s: ServiceView) {
   if (isPhone.value) drawerOpen.value = false
-  const i = groups.value.findIndex((g) => g.kind === 'service' && g.containerId === s.name)
-  if (i >= 0) {
-    activeIdx.value = i
-    setMainView('terminal')
-    return
-  }
   createGroup(s.name, s.displayName || s.name, 'service')
 }
 
@@ -2276,21 +2250,6 @@ function cardClickOpensMenu(e: MouseEvent): boolean {
   )
   return true
 }
-// 侧栏菜单「再开一组终端」：无条件为该目标建全新组（与 tab 右键「新开一组终端」同
-// 语义，入口提前到侧栏）——openTerm 系列是「聚焦已有组」，这里是显式再开一组。
-function openExtraContainerGroup(c: { id: string; name: string; displayName?: string }) {
-  createGroup(c.id, c.displayName || c.name)
-}
-function openExtraServiceGroup(s: { name: string; displayName?: string }) {
-  createGroup(s.name, s.displayName || s.name, 'service')
-}
-function openExtraHostGroup() {
-  createGroup(HOST_ID, '本机', 'host')
-}
-function openExtraSshGroup(t: SshTargetView) {
-  createGroup(sshGroupId(t.name), t.name, 'ssh')
-}
-
 // ---- tab 拖拽排序 ----
 // 原生 HTML5 DnD + live-reorder：dragover 越过相邻 tab 中点即实时交换 groups 顺序
 // （Vue 按 key 移动节点，终端实例不重建）。焦点跟随被拖 tab，拖完落在哪就激活哪。
@@ -3381,7 +3340,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                     </template>
                     <template v-else>
                       <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
-                      <ContextMenuItem @click="openExtraContainerGroup(c)">再开一组终端</ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
                       <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
@@ -3470,7 +3428,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                        全量走卡片或服务抽屉；监听端口保留——rail 收起态的冗余入口）。 -->
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <ContextMenuItem @click="openServiceTerm(s)">打开终端</ContextMenuItem>
-                    <ContextMenuItem @click="openExtraServiceGroup(s)">再开一组终端</ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                     <ContextMenuItem v-if="!s.running" @click="svcOp(s.name, () => startService(s.name))">启动</ContextMenuItem>
@@ -3539,7 +3496,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   </ContextMenuTrigger>
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <ContextMenuItem @click="openHostTerm()">打开终端</ContextMenuItem>
-                    <ContextMenuItem @click="openExtraHostGroup()">再开一组终端</ContextMenuItem>
                     <ContextMenuItem @click="openPopout(HOST_ID)">在独立窗口打开</ContextMenuItem>
                   </ContextMenuContent>
                 </ContextMenu>
@@ -3559,7 +3515,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   <!-- 精简菜单（展开态卡片菜单的子集——会话/管理入口在 tab 栏与展开态都有）。 -->
                   <ContextMenuContent @close-auto-focus="closeRailSection">
                     <ContextMenuItem @click="openSshTerm(t)">打开终端</ContextMenuItem>
-                    <ContextMenuItem @click="openExtraSshGroup(t)">再开一组终端</ContextMenuItem>
                     <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>
@@ -3831,7 +3786,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <!-- 右键菜单（左键/触屏长按同款——点击卡片即弹，见 cardClickOpensMenu）：
                低频操作收进来（外部的容器只有「纳入管理」），running 时末尾追加「代理地址」
                二级菜单。原 ⋯ 按钮退役——卡片右下角不再常驻控件，端口也不再有 hover 浮层，
-               全部收编进这份菜单。终端也在这里：打开（无组则建、有组聚焦）/ 再开一组。 -->
+               全部收编进这份菜单。终端也在这里：打开 = 恒新开一组（聚焦已有组由 tab 切换）。 -->
           <ContextMenuContent>
             <template v-if="!c.managed && !c.adopted">
               <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
@@ -3840,7 +3795,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             </template>
             <template v-else>
               <ContextMenuItem @click="openTerm(c)">打开终端</ContextMenuItem>
-              <ContextMenuItem @click="openExtraContainerGroup(c)">再开一组终端</ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem v-if="c.state === 'running'" @click="onPower(c, 'stop')">停止</ContextMenuItem>
               <ContextMenuItem v-else @click="act(c.id, () => startContainer(c.id))">启动</ContextMenuItem>
@@ -4052,12 +4006,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   </div>
                 </div>
               </ContextMenuTrigger>
-              <!-- 右键菜单（左键/触屏长按同款，与容器卡片同款交互）：终端（打开/再开
+              <!-- 右键菜单（左键/触屏长按同款，与容器卡片同款交互）：终端（打开 = 新开
                    一组）/ 详情 / 复制连接命令 / 代理地址二级菜单 / 启停重启。原 ⋯ 按钮
                    退役。改配置/追新镜像在服务抽屉「配置」页（compose 底账编辑 + 应用）。 -->
               <ContextMenuContent>
                 <ContextMenuItem @click="openServiceTerm(s)">打开终端</ContextMenuItem>
-                <ContextMenuItem @click="openExtraServiceGroup(s)">再开一组终端</ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem @click="emit('open-services', false, s.name)">详情</ContextMenuItem>
                 <ContextMenuItem @click="svcRenameTarget = s">重命名</ContextMenuItem>
@@ -4225,14 +4178,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem @click="openHostTerm()">打开终端</ContextMenuItem>
-              <ContextMenuItem @click="openExtraHostGroup()">再开一组终端</ContextMenuItem>
               <ContextMenuItem @click="openPopout(HOST_ID)">在独立窗口打开</ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem @click="openRoute('term-sessions')">全部终端会话</ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
           <!-- SSH 主机卡片：无运行态概念（连接失败在终端里可见），色条恒用身份色。
-               点击 / 右键 / 长按 = 终端动作清单（开终端 / 再开一组 / 独立窗口 / 复制 ssh 命令 / 会话 / 管理 / 删除）。 -->
+               点击 / 右键 / 长按 = 终端动作清单（开终端 / 独立窗口 / 复制 ssh 命令 / 会话 / 管理 / 删除）。 -->
           <template v-for="t in orderedSsh" :key="t.name">
             <MobileCard
               v-if="isPhone"
@@ -4287,7 +4239,6 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
               </ContextMenuTrigger>
               <ContextMenuContent>
                 <ContextMenuItem @click="openSshTerm(t)">打开终端</ContextMenuItem>
-                <ContextMenuItem @click="openExtraSshGroup(t)">再开一组终端</ContextMenuItem>
                 <ContextMenuItem @click="openPopout(sshGroupId(t.name))">在独立窗口打开</ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem @click="copyTabText(sshSshCommand(t), '已复制 ssh 命令')">复制 ssh 命令</ContextMenuItem>
