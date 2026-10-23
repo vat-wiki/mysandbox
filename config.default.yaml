@@ -88,13 +88,9 @@ ui:
 # 回调配置（claude hooks / codex notify / opencode、pi 插件），回合完成/等权限时经
 # peer API 精准上报，收到过信号的会话退出上面的通用启发式（误报根治）。peer.enabled=false
 # 时整体无效。
-# mouse：tmux 是否接管鼠标（默认 off）。off 时滚轮/选择/右键复制粘贴全交给 xterm.js，
-# 网页终端的复制、链接和触屏滚动才正常；on 只给需要内建滚动的 TUI 留逃生口（会把交互
-# 交回 tmux/应用，xterm 的选择与滚轮能力随之下放）。
 terminal:
   quietSeconds: 15
   agentNotify: true
-  mouse: off
 
 # 容器 code-server（按需 ensure，监听 7332）的闲置自动停：浏览器关掉 tab 后无连接，
 # 闲置超过 idleStopMinutes 分钟即停进程（磁盘安装保留，下次打开秒级重起）。0 = 常驻不停。
@@ -149,6 +145,16 @@ android:
 peer:
   enabled: true
   port: 7331
+
+# msmux 目标侧 agent 的回连桥（server/muxBridge.ts）：绑网关 IP（<ipPool 前缀>.1），
+# 把 WebSocket 原样透传到本机控制台端口。LXC / 应用容器用网关地址回连，主服务仍可
+# 只监听 127.0.0.1。SSH 远端需要显式给一个自己可达的控制台 URL（部署接口的 url 参数）。
+mux:
+  agentPort: 7333
+
+# msmux 回连主凭据（首启随 config 生成、0600）：它本身不下发给目标；部署接口按
+# HMAC(muxToken, target) 派生每个目标自己的 token，目标之间不能互相冒充。目标无需
+# 暴露入站端口。轮换本值会让旧目标的 token 全部失效，重新部署即可。
 
 # Skills 分发（server/skillSync.ts）——技能库（面板「AI 工具 → 技能中心」）是唯一
 # 技能真相源，安装规则把库技能装进宿主与全部受管容器。宿主直读直写 rootfs（D1 uid

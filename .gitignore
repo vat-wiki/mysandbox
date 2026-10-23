@@ -1,6 +1,7 @@
 node_modules/
 dist/
 web/dist/
+mux/target/
 config.yaml
 *.log
 .DS_Store

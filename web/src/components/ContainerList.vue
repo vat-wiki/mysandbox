@@ -566,7 +566,7 @@ watch(hiddenGroups, saveHidden, { deep: true })
 const { isOpen: drawerOpen } = usePageRoute('environments')
 // 设置目录已降格为 SettingsMenu popup（不再占 /settings 路由）；本状态只承载
 // popup 落点的详情弹框（TestLens/集群/浏览器通知），非路由瞬态。
-const settingsSection = ref<'testlens' | 'cluster' | 'notify' | null>(null)
+const settingsSection = ref<'testlens' | 'cluster' | 'notify' | 'mux' | null>(null)
 
 // 手机环境选择页支持「向左拖动关闭」。横向意图确认后接管触摸（阻止列表纵向滚动），
 // 跟手位移；松手超过阈值、或短时间内的快速轻扫，都按系统级页面关闭处理。

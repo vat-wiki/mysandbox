@@ -86,6 +86,45 @@ idmap 参数取自该容器 config 自己的 `lxc.idmap` 行（不能硬编码�
 且 **ns 内创建的文件宿主用户连删都删不掉**（属主是 uid 100000），所以归档必须由宿主进程 `createWriteStream` 落盘、
 让 ns 里的 tar 写 stdout。import 的 idmap 取**宿主** `~/.config/lxc/default.conf`（包可能来自 subuid 段不同的机器）。
 
+### msmux（自有终端复用器，`mux/`）
+
+`mux/` 是从零开发的 tmux 替代品，不是 tmux 适配层：目标侧跑静态 Rust 二进制，
+守 PTY + VT 屏幕模型，客户端断开后会话保留；agent 模式主动回连 mysandbox，无需目标
+暴露入站端口。只复刻会话语义（attach/detach、多客户端、resize、scrollback、capture、
+kill/rename），**不**复刻 tmux 的键位/pane/status bar。
+
+- 构建：`mux/README.md`；`npm run build:mux`（musl linker 缺省 `musl-gcc`，可用
+  `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER` 覆盖）；静态产物约 4.7MB。
+- 回连端点：`server/muxAgent.ts` 的 `/ws/mux-agent`。config 的 `muxToken` 是**宿主
+  master，不下发**；每个目标用 `muxAgentToken(cfg,target)` 派生的 HMAC token，目标之间
+  不能互相冒充。全局 auth hook 对该精确路径豁免，路由在 upgrade 前自校验。
+- 容器/服务回连桥：`server/muxBridge.ts` 绑网关 IP:`mux.agentPort`（默认 7333），
+  裸 TCP 透传到本机控制台端口；主服务仍可只监听 127.0.0.1。SSH 远端需显式给可达 url。
+- 分发：`server/muxDeploy.ts` 的 `POST /api/mux/deploy`（owner），目标语法
+  `host | c:<容器> | s:<服务/项目> | ssh:<SSH 目标>`。host 写持久 systemd user unit；
+  LXC 先把 unit 源落到 dev 可写目录，再由容器 root 安装 `/etc/systemd/system`（容器
+  重启自启）；服务走 `docker cp` + `docker exec -d`（arbitrary 镜像没有统一 init，
+  暂不保证自启）；SSH 走 `sshFeed` + `nohup`。token 一律落目标侧 0600 文件，避免
+  出现在进程命令行。
+  CLI 等价入口：`mysandbox mux deploy <target> [--url ...]` / `mysandbox mux agents`
+  （走运行中服务的 HTTP API——agent 在线表在服务进程内，不能由一次性进程直判）。
+- 浏览器桥：`/ws/mux-terminal`（owner）转发到 agent，协议保持 Terminal.vue 的 binary
+  stdin / 文本控制帧形状；`GET /api/mux/agents` 看已连接目标。控制请求带 id、响应按 id
+  关联，事件帧（title/cwd/foreground/exit）不带 id。
+- 会话找回与活动监测已接 msmux：`/api/terminal-sessions` 把在线 agent 的 daemon
+  `list` 结果按 `backend:'msmux'` 并入（同 termId 时覆盖 tmux 行），结束走
+  `DELETE /api/terminal-sessions/mux/:termId?target=`（按 agent 转发 kill）；activity.ts
+  对 msmux 用 daemon 的 `last_seq` 判断输出变化，detach 期间也有效。
+- 前端：`web/src/lib/mux.ts` 默认 `auto`——目标 agent 在线才走 msmux，否则原样回退
+  tmux；`?mux=1|0` 临时覆盖，偏好键 `mysandbox:terminal-backend`。设置 →「终端后端」
+  （`MuxPanel.vue`）可切 tri-state、看在线 agent、逐个目标部署；`MuxDeployDialog.vue`
+  负责 SSH 回连地址输入与 6s 回连结果。
+- 会话可靠性：host agent 必须活在本服务 cgroup 外（systemd user unit）；capture 依赖
+  `vt100` 的 scrollback，不能只回放原始 PTY 字节；重连用 `resume=1` 只回最近 2000 行，
+  浏览器按锚点拼 `history-delta`。
+- 安全：派生 token = 对应目标的终端权限（agent 可创建 shell）。轮换 `muxToken` 会让
+  全部目标旧 token 失效，重新部署即可。
+
 ### 容器契约
 
 容器内契约：uid:gid `1000:1000`（用户名 `dev`，home `/home/dev`）、zsh/git/tmux/node/AI CLI 就位、

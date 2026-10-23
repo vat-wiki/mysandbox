@@ -183,6 +183,31 @@ export interface Health {
 export const health = () => api('/api/health') as Promise<Health>
 export const listContainers = () => api('/api/containers') as Promise<{ items: ContainerView[] }>
 
+// —— msmux（server/muxAgent.ts / muxDeploy.ts）——
+export interface MuxAgentView {
+  target: string
+  connectedAt: number
+  lastSeenAt: number
+  protocol: number | null
+  pid: number | null
+  remote: string
+  channels: number
+}
+export const listMuxAgents = () =>
+  api('/api/mux/agents') as Promise<{ agents: MuxAgentView[] }>
+export interface MuxDeployResult {
+  ok: boolean
+  connected: boolean
+  target: string
+  kind: 'host' | 'lxc' | 'service' | 'ssh'
+  url: string
+  binary: { path: string; bytes: number; sha256: string }
+  detail: string
+}
+// 部署会同步上传数 MB 二进制并等待回连，默认 10s 不够。
+export const deployMuxAgent = (target: string, url?: string) =>
+  postJson('/api/mux/deploy', { target, ...(url ? { url } : {}) }, 120_000) as Promise<MuxDeployResult>
+
 // —— Web 代理（server/proxy.ts）——
 // vhost 门面基域名信息 + 会话 cookie 下发。URL 拼装在 lib/proxy.ts（单例）。
 export interface ProxyBaseInfo {
@@ -669,6 +694,9 @@ export interface TermSessionView {
   created: number
   cwd?: string
   title?: string
+  foreground?: string
+  backend?: 'tmux' | 'msmux'
+  target?: string // backend=msmux 时的目标（host | c:<容器> | s:<服务> | ssh:<目标>）
 }
 // 会话去重 key：ContainerList 算「本窗口已占用」（可见 + 隐藏组的全部叶子）、
 // TermSessionsDialog 过滤远端列表，两处必须同构，收拢在这里。
@@ -689,7 +717,9 @@ export const listTermSessions = () =>
   api('/api/terminal-sessions') as Promise<{ sessions: TermSessionView[] }>
 export const killTermSession = (s: TermSessionView) =>
   api(
-    s.kind === 'host'
+    s.backend === 'msmux'
+      ? `/api/terminal-sessions/mux/${encodeURIComponent(s.termId)}?target=${encodeURIComponent(s.target ?? '')}`
+      : s.kind === 'host'
       ? `/api/terminal-sessions/host/${encodeURIComponent(s.termId)}`
       : s.kind === 'service'
         ? `/api/terminal-sessions/service/${encodeURIComponent(s.termId)}`
@@ -739,12 +769,13 @@ export const listSshConfigHosts = () =>
 // agent = 该会话收到过 agent 精准信号（server/agentNotify.ts）——前端据此整体退出
 // 启发式，提醒完全由 agentWaiting 驱动。
 export interface TermActivityView {
-  kind: 'host' | 'container'
+  kind: 'host' | 'container' | 'service' | 'ssh'
   containerId?: string
   termId: string
   state: 'active' | 'quiet'
   quietSeconds: number
   agent?: string
+  backend?: 'tmux' | 'msmux'
 }
 // agent 精准等待事件（agent hook/插件经 peer API 上报）：该会话的 agent 回合完成 /
 // 等权限/等输入。agoSeconds = 距事件发生（服务端时钟上算好），前端换算回本机钟使用。
@@ -1138,8 +1169,10 @@ export const getTermCwd = (id: string, termId: string) =>
   api(`${filesBase(id)}/cwd?termId=${encodeURIComponent(termId)}`) as Promise<{ cwd: string }>
 // 前台命令 + 剪贴板桥可用性（仅容器侧实现了 /fg）：图片粘贴分流判据——
 // command 是 shell → 路径粘贴；bridge 且前台是 CLI → 转发 ^V 走原生附加（shim 取图）。
-export const getTermFg = (id: string, termId: string) =>
-  api(`/api/containers/${id}/fg?termId=${encodeURIComponent(termId)}`) as Promise<{ command: string; bridge: boolean }>
+export const getTermFg = (id: string, termId: string, backend?: 'tmux' | 'msmux') =>
+  api(
+    `/api/containers/${id}/fg?termId=${encodeURIComponent(termId)}${backend ? `&backend=${backend}` : ''}`,
+  ) as Promise<{ command: string; bridge: boolean }>
 // web 终端剪贴板桥推送：图片（canvas 已统一转 PNG 的 base64）+ 文本，容器内 xclip/wl-paste
 // shim 经 peer GET /clipboard 取走（server/terminalClipboard.ts 暂存，120s TTL）。
 export const pushTerminalClipboard = (payload: { image?: { b64: string }; text?: string }) =>

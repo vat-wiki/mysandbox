@@ -136,11 +136,8 @@ export const ConfigSchema = z.object({
     .object({
       quietSeconds: z.number().int().default(15),
       agentNotify: z.boolean().default(true),
-      // off = xterm.js 独占鼠标（滚轮/选择/复制/触屏）；on = 交给 tmux/TUI 自己处理。
-      // 默认必须保持 off：网页终端的复制、链接和滚动都建立在 xterm 拿到鼠标事件之上。
-      mouse: z.enum(['off', 'on']).default('off'),
     })
-    .default({ quietSeconds: 15, agentNotify: true, mouse: 'off' }),
+    .default({ quietSeconds: 15, agentNotify: true }),
   // 容器 code-server（server/codeserver.ts，监听 7332）闲置自动停：浏览器开着才有
   // ESTABLISHED 连接，闲置超过 idleStopMinutes 分钟即 pkill（磁盘安装保留，下次打开
   // 秒级重起）。0 = 不自动停（常驻，旧行为）。
@@ -213,6 +210,14 @@ export const ConfigSchema = z.object({
       port: z.number().int().default(7331),
     })
     .default({ enabled: true, port: 7331 }),
+  // msmux agent 回连桥（server/muxBridge.ts）：绑网关 IP，把目标侧（LXC/服务容器/
+  // 同网主机）的 WebSocket 回连透传到本机 127.0.0.1 的控制台端口。主服务仍可只监听
+  // localhost，容器侧走这座桥即可。
+  mux: z
+    .object({
+      agentPort: z.number().int().default(7333),
+    })
+    .default({ agentPort: 7333 }),
   // ⚠️ 已废弃（server/skillSync.ts）：旧版静态 from→to 规则，首次同步时自动迁移成
   // 技能库安装规则（state.staticMigratedAt 记账），之后此键被忽略。schema 仅为读取
   // 旧 config 做迁移而保留；新配置走面板「AI 工具 → 技能中心」（sidecar state.json）。
@@ -232,6 +237,9 @@ export const ConfigSchema = z.object({
   // peer API 凭据（与主 token 分离：peer 端点只有 targets/exec，控制台全量 API 不在内）。
   // 首启随 token 一起生成；宿主自动种进每个受管容器的 ~/.config/mysandbox/peer.json。
   peerToken: z.string().optional(),
+  // msmux 回连主凭据（与主 token、peerToken 分离）：它本身不下发；部署时按
+  // HMAC(muxToken, target) 派生目标 token，目标之间不能互相冒充，控制台 API 不可达。
+  muxToken: z.string().optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -304,6 +312,10 @@ export async function loadConfig(): Promise<LoadResult> {
     userCfg.peerToken = randomBytes(24).toString('hex');
     tokenGenerated = true;
   }
+  if (!userCfg.muxToken) {
+    userCfg.muxToken = randomBytes(24).toString('hex');
+    tokenGenerated = true;
+  }
 
   const merged = deepMerge(defaults, userCfg);
   const parsed = ConfigSchema.parse(merged);
@@ -332,6 +344,7 @@ export async function loadConfig(): Promise<LoadResult> {
       skills: parsed.skills,
       token: parsed.token,
       peerToken: parsed.peerToken,
+      muxToken: parsed.muxToken,
     });
     await writeFile(CONFIG_FILE, out, { mode: 0o600 });
     await chmod(CONFIG_FILE, 0o600);

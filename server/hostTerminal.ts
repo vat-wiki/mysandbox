@@ -602,7 +602,7 @@ async function windowsPane(
         // alt screen，xterm 滚轮变方向键、无滚动条、历史被覆盖（容器侧 terminal.ts 同款
         // 注释「每次 attach 都重设，扛得住 tmux server 重启」）。必须在 attach 之前
         // detached 跑（attach 后客户端接管 tty）。
-        await hostMux.setMouse(cfg.terminal.mouse);
+        await hostMux.run(['set', '-g', 'mouse', 'off']);
         // escape-time 10（默认 500）：裸 ESC 被 tmux 扣 500ms 判断是否序列开头，opencode/vim
         // 里按 ESC 打断迟 0.5s、连按互相吞并（容器侧 terminal.ts 的 escape-time 注释同源）。
         await hostMux.run(['set', '-sg', 'escape-time', '10']);

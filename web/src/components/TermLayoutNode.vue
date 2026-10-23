@@ -8,6 +8,7 @@ import { RefreshCw, SquareSplitHorizontal, SquareSplitVertical, X } from 'lucide
 import PaneDivider from '@/components/PaneDivider.vue'
 import { containerColor } from '@/lib/utils'
 import { getTermCwd, serviceFileId, sshTargetName } from '@/lib/api'
+import { muxAgentAvailable } from '@/lib/mux'
 import { gatePoll } from '@/lib/linkQuality'
 import {
   TERM_OPS,
@@ -89,11 +90,6 @@ function onEnter() {
   if (props.node.kind !== 'leaf') return
   ops.onPaneEnter(props.group, props.node.termId)
 }
-// OSC 7 cwd 上抛：ContainerList 只在被跟随 pane 上报时转发给文件面板（cd 生效即达）。
-function onCwd(path: string) {
-  if (props.node.kind !== 'leaf') return
-  ops.onPaneCwd(props.group, props.node.termId, path)
-}
 // 分叉动作：分隔条 dragstart 换算该轴最小像素后上抛（idx = 分隔条之后的 child 序号）。
 function onDividerStart(idx: number, parentSize: number) {
   const s = split.value
@@ -115,6 +111,14 @@ const cwd = ref('')
 const paneTitle = computed(() => (leaf.value ? ops.titleOf(leaf.value.termId) : ''))
 let cwdSeq = 0
 let cwdTimer: ReturnType<typeof setInterval> | null = null
+let cwdRun = 0
+let muxCwd = false
+async function muxTargetOf(): Promise<string> {
+  if (props.group.kind === 'host') return 'host'
+  if (props.group.kind === 'service') return `s:${props.group.containerId}`
+  if (props.group.kind === 'ssh') return `ssh:${sshTargetName(props.group.containerId)}`
+  return `c:${props.group.containerId}`
+}
 async function pollCwd() {
   const l = leaf.value
   const seq = ++cwdSeq
@@ -134,8 +138,17 @@ async function pollCwd() {
     cwd.value = '' // 会话还没建好/已收：占位，下轮自愈
   }
 }
+// OSC 7 / msmux cwd 上抛：ContainerList 只在被跟随 pane 上报时转发给文件面板。
+// msmux 的 cwd 是 daemon 推送的真值，同时关闭本 pane 的 tmux 轮询。
+function onCwd(path: string) {
+  if (props.node.kind !== 'leaf') return
+  cwd.value = path
+  muxCwd = true
+  ops.onPaneCwd(props.group, props.node.termId, path)
+}
 if (leaf.value) {
   function stopCwdPoll() {
+    cwdRun++
     if (cwdTimer) {
       clearInterval(cwdTimer)
       cwdTimer = null
@@ -143,9 +156,16 @@ if (leaf.value) {
   }
   function startCwdPoll() {
     if (cwdTimer) return
-    pollCwd()
-    // gate：弱网/页面隐藏时拉长实际频率（pane 标题非关键路径）。
-    cwdTimer = setInterval(gatePoll(() => void pollCwd(), 5_000, { hidden: true }), 5000)
+    const run = ++cwdRun
+    void (async () => {
+      const target = await muxTargetOf()
+      muxCwd = await muxAgentAvailable(target)
+      if (run !== cwdRun) return
+      if (muxCwd) return
+      pollCwd()
+      // gate：弱网/页面隐藏时拉长实际频率（pane 标题非关键路径）。
+      cwdTimer = setInterval(gatePoll(() => void pollCwd(), 5_000, { hidden: true }), 5000)
+    })()
   }
   const cwdVisible = computed(() => (props.active ?? true) && (props.visible ?? true))
   watch(cwdVisible, (v) => (v ? startCwdPoll() : stopCwdPoll()), { immediate: true })

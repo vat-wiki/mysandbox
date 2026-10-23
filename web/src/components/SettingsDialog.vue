@@ -32,6 +32,7 @@ import {
 } from '@/lib/api'
 import InfoHint from '@/components/InfoHint.vue'
 import ClusterPanel from '@/components/ClusterPanel.vue'
+import MuxPanel from '@/components/MuxPanel.vue'
 import {
   notifyAvailable,
   notifyPermission,
@@ -43,7 +44,7 @@ import {
 import { pushSupported, pushEnabled, enablePush, disablePush } from '@/lib/pushNotify'
 
 const props = defineProps<{
-  section: 'testlens' | 'cluster' | 'notify'
+  section: 'testlens' | 'cluster' | 'notify' | 'mux'
 }>()
 
 const emit = defineEmits<{
@@ -55,11 +56,13 @@ const SECTION_TITLE: Record<typeof props.section, string> = {
   testlens: 'TestLens',
   cluster: '集群',
   notify: '浏览器通知',
+  mux: '终端后端',
 }
 const SECTION_DESC: Record<typeof props.section, string> = {
   testlens: 'TestLens 配置批量下发',
   cluster: '跨机组网与资源互通',
   notify: '无输出提醒的系统通知出口',
+  mux: 'msmux 渐进替代 tmux：部署 agent、查看在线状态、切换浏览器终端后端',
 }
 
 const DEFAULT_HOST = 'http://testlens:10004'
@@ -345,6 +348,11 @@ if (props.section === 'testlens') onMounted(load)
             仅推送 agent 等待输入事件；有控制台在线时不推。
           </p>
         </section>
+      </div>
+
+      <!-- msmux 终端后端详情层 -->
+      <div v-else-if="props.section === 'mux'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <MuxPanel @unauthorized="emit('unauthorized')" />
       </div>
     </DialogContent>
   </Dialog>

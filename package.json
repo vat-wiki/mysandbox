@@ -1,6 +1,6 @@
 {
   "name": "mysandbox",
-  "version": "0.6.10",
+  "version": "0.9.0",
   "description": "Web control panel for dev containers - terminal, lifecycle, batch config.",
   "type": "module",
   "bin": {
@@ -21,7 +21,10 @@
     "build:server": "tsc",
     "build:web": "npm -C web run build",
     "build": "npm run build:server && npm run build:web",
-    "prepublishOnly": "npm run build"
+    "postbuild": "if [ -f mux/target/x86_64-unknown-linux-musl/release/msmux ]; then mkdir -p dist/bin && cp mux/target/x86_64-unknown-linux-musl/release/msmux dist/bin/msmux; else echo '>> msmux binary not built; run npm run build:mux before deploying or packaging'; fi",
+    "prepublishOnly": "npm run build:mux && npm run build",
+    "build:mux": "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-musl-gcc} cargo build --manifest-path mux/Cargo.toml --release --target x86_64-unknown-linux-musl",
+    "test:mux": "cargo test --manifest-path mux/Cargo.toml"
   },
   "engines": {
     "node": ">=20"

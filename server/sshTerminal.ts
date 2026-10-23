@@ -34,7 +34,6 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { ChildProcess } from 'node:child_process';
-import type { Config } from './config.js';
 import { TERMID_RE, type TermSessionView } from './terminal.js';
 import { TmuxMultiplexer, LIST_FMT, type Multiplexer } from './multiplexer.js';
 import { badRequest, conflict, notFound } from './errors.js';
@@ -213,7 +212,6 @@ function createChain(
   cols: number,
   rows: number,
   cwd: string,
-  mouse: 'off' | 'on',
   withEnv: boolean,
 ): string[] {
   return [
@@ -225,7 +223,7 @@ function createChain(
     '-s', session, '-x', String(cols), '-y', String(rows),
     ...(cwd ? ['-c', cwd] : []),
     '\\;',
-    'set', '-g', 'mouse', mouse, '\\;',
+    'set', '-g', 'mouse', 'off', '\\;',
     'set', '-sg', 'escape-time', '10', '\\;',
     'set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@', '\\;',
     'set', '-as', 'terminal-overrides', ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007', '\\;',
@@ -356,7 +354,7 @@ export interface SshTargetView {
   hasPassword?: boolean;
 }
 
-export async function registerSshTerminal(app: FastifyInstance, cfg: Config): Promise<void> {
+export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
   const log = app.log;
 
   // —— 目标 CRUD（存 state.json sidecar；UI 增删，config.yaml 不掺和）——
@@ -477,9 +475,9 @@ export async function registerSshTerminal(app: FastifyInstance, cfg: Config): Pr
       const aliveRun = await mux.run(['has-session', '-t', mux.target(session)], 10_000);
       const noRemoteTmux = !aliveRun.ok && !!aliveRun.err && /tmux/.test(aliveRun.err) && /not found|Unknown command|No such file/.test(aliveRun.err);
       if (!aliveRun.ok && !noRemoteTmux) {
-        let created = await sshMuxExec(target, createChain(session, cols, rows, cwd, cfg.terminal.mouse, true), 20_000);
+        let created = await sshMuxExec(target, createChain(session, cols, rows, cwd, true), 20_000);
         if (!created.ok) {
-          created = await sshMuxExec(target, createChain(session, cols, rows, cwd, cfg.terminal.mouse, false), 20_000);
+          created = await sshMuxExec(target, createChain(session, cols, rows, cwd, false), 20_000);
         }
         if (!created.ok) {
           log.warn({ target: target.name, err: created.err }, 'ssh terminal: remote session create failed (falling back to attach -A)');
@@ -487,8 +485,6 @@ export async function registerSshTerminal(app: FastifyInstance, cfg: Config): Pr
       }
 
       if (!noRemoteTmux) {
-        // 每次 attach 都重设 mouse：已有会话也要跟上配置变更（新会话的 createChain 已设过一次）。
-        await mux.setMouse(cfg.terminal.mouse, 10_000);
         // 历史回填（attach 前 capture，控制帧先发；与 hostTerminal 同款，前端写 scrollback）。
         // -e 带色 / resume=1 走 history-delta 增量（物理行、含当前屏、只取 -2000），取舍见
         // terminal.ts 同名注释。会话刚经 -A 兜底创建时无历史可回，失败静默。

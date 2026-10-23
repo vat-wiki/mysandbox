@@ -52,7 +52,6 @@ export interface Multiplexer {
   capturePane(name: string, delta: boolean, timeoutMs?: number): Promise<{ ok: boolean; text: string }>;
   killSession(name: string, timeoutMs?: number): Promise<boolean>;
   renameSession(from: string, to: string, timeoutMs?: number): Promise<boolean>;
-  setMouse(mode: 'off' | 'on', timeoutMs?: number): Promise<boolean>;
 }
 
 export class TmuxMultiplexer implements Multiplexer {
@@ -132,8 +131,4 @@ export class TmuxMultiplexer implements Multiplexer {
     return (await this.run(['rename-session', '-t', this.target(from), to], timeoutMs)).ok;
   }
 
-  /** 全局鼠标归属：off = xterm.js 接管；on = tmux/TUI 内建滚动接管。 */
-  async setMouse(mode: 'off' | 'on', timeoutMs = 5_000): Promise<boolean> {
-    return (await this.run(['set', '-g', 'mouse', mode], timeoutMs)).ok;
-  }
 }

@@ -26,6 +26,8 @@ import { registerServices } from './services.js';
 import { registerServiceFileRoutes } from './serviceFiles.js';
 import { makeRewriteUrl, registerProxy, proxyUnauthorizedHtml } from './proxy.js';
 import { registerMetrics } from './metrics.js';
+import { registerMuxAgent } from './muxAgent.js';
+import { registerMuxDeploy } from './muxDeploy.js';
 import { startActivityPoller } from './activity.js';
 import { startCodeServerIdleSweeper } from './codeserver.js';
 import { ensureTlsMaterial } from './tls.js';
@@ -123,6 +125,8 @@ export async function buildServer(cfg: Config) {
   app.addHook('onRequest', async (req, reply) => {
     const u = req.url;
     if (u.startsWith('/api/health')) return;
+    // msmux agent 回连：端点自己校验 muxToken（独立于主 token / peerToken）。
+    if (u.split('?')[0] === '/ws/mux-agent') return;
     // session 自带 token 校验；vhost 401 内页用同源请求完成登录。
     if (
       (u === '/api/auth/session' || u === '/proxy/__auth/session')
@@ -207,8 +211,12 @@ export async function buildServer(cfg: Config) {
   await registerDesktop(app, cfg);
   await registerCodeServer(app, cfg);
   await registerHostTerminal(app, cfg);
+  // msmux 回连注册（server/muxAgent.ts）：目标侧 agent 主动连入，独立 muxToken。
+  await registerMuxAgent(app, cfg);
+  // msmux 目标分发（server/muxDeploy.ts）：上传静态二进制 + 派生凭据并拉起 agent。
+  await registerMuxDeploy(app, cfg);
   // SSH 终端（server/sshTerminal.ts）：远程主机的 tmux 会话 + 目标 CRUD（sidecar）。
-  await registerSshTerminal(app, cfg);
+  await registerSshTerminal(app);
   await registerHostFileRoutes(app);
   await registerBaseRoutes(app, cfg);
   registerServices(app, cfg);

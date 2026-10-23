@@ -270,6 +270,10 @@ export interface TermSessionView {
   created: number; // epoch ms
   cwd?: string;
   title?: string; // pane 动态标题（shell 钩子的命令行/空闲路径、CC·opencode 任务标题）
+  foreground?: string; // msmux：前台进程名（剪贴板桥分流用；tmux 列表未填）
+  backend?: 'tmux' | 'msmux'; // 缺省 = tmux（旧协议兼容）
+  target?: string; // backend=msmux 时的目标（host | c:<容器> | s:<服务> | ssh:<目标>）
+  lastSeq?: number; // backend=msmux：daemon 侧输出序号（活动监测用，不属于终端外观）
 }
 
 // 行格式：每会话**两行**——主行 `name|attached|created|path`（| 分隔：路径可含空格；
@@ -490,9 +494,8 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   //   0) echo $$ > pidfile：sh 把自己的 PID（容器内 PID，exec tmux 后同 PID）写进唯一 pidfile，
   //      关闭时 killExecClient 据此找到并杀掉对应 tmux 客户端（exec.inspect().Pid 恒为 0，用不了）；
   //   1) has-session || new-session -d：有会话则复用、没有则 detached 新建（server+shell 起来但不 attach）；
-  //   2) set -g alternate-screen off + mouse <terminal.mouse> + terminal-overrides smcup@:rmcup@：
-  //      tmux 仅做会话守护，交互交给 xterm.js。mouse 默认 off（选择/复制/滚轮归 xterm），
-  //      配置 on 时交回 tmux/TUI 自己处理（需要应用内建滚动的逃生口）。
+  //   2) set -g alternate-screen off + mouse off + terminal-overrides smcup@:rmcup@：tmux 仅做会话守护，交互交给 xterm.js。
+  //      mouse off：选择/复制交给 xterm.js（tmux 不劫持鼠标）。
   //      禁 alt screen：alternate-screen off 拦 pane 内程序自己的 smcup（Codex 等 TUI 进入后当前屏清空、历史不可回放）；
   //      禁 smcup/rmcup：让 tmux 客户端 attach 时【不进 alt screen】。否则 tmux 发 ?1049h 进 alt buffer，
   //      xterm 在 alt buffer 下 hasScrollback=false，会把滚轮转成 ↑/↓ 方向键发给 shell（=翻命令历史，
@@ -550,15 +553,15 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   //     纯噪声；session 级不影响用户自己的会话。hostTerminal.ts 同款。
   //   3) exec tmux attach：替换进程为 attach 客户端。
   //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>、
-  //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）、$6=terminal.mouse。
+  //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）。
   //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
   //   后续 has-session 命中新名。注意 set 必须在 attach 之前 detached 跑--attach 后
   //   客户端接管 tty，命令行里 ';' 接的后续 tmux 命令不再执行（实测 attach 路径下 set 不生效）。
   const cmd = useTmux
     ? [
         'sh', '-c',
-        'echo $$ > "$3"; tmux start-server >/dev/null 2>&1; tmux set -g alternate-screen off 2>/dev/null; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -e COLORTERM=truecolor -e CLAUDE_CODE_TMUX_TRUECOLOR=1 -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse "$6" 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; tmux set -t "=$1:" status off 2>/dev/null; exec tmux attach -t "$1"',
-        'sh', session, shell, pidfile, oldSession, splitCwd, cfg.terminal.mouse,
+        'echo $$ > "$3"; tmux start-server >/dev/null 2>&1; tmux set -g alternate-screen off 2>/dev/null; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -e COLORTERM=truecolor -e CLAUDE_CODE_TMUX_TRUECOLOR=1 -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; tmux set -t "=$1:" status off 2>/dev/null; exec tmux attach -t "$1"',
+        'sh', session, shell, pidfile, oldSession, splitCwd,
       ]
     : [shell];
 

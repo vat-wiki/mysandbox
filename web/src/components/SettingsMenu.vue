@@ -7,7 +7,7 @@
 // 管理动作统一走设置一个路口（分区头只留刷新/新建两个高频直连钮）。
 // 版本号收编在列表末行（2026-10-22 起，品牌块 / rail 展开键 tooltip / 手机抽屉底
 // 不再重复展示）。触发按钮由使用方以默认插槽传入（各处样式不同，as-child 接管）。
-import { Bell, Bot, Globe, Network, Settings2, Users, ListChecks } from 'lucide-vue-next'
+import { Bell, Bot, Globe, Network, Settings2, Terminal, Users, ListChecks } from 'lucide-vue-next'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,7 +32,7 @@ withDefaults(
 
 const emit = defineEmits<{
   (e: 'open-ai'): void
-  (e: 'open-section', s: 'testlens' | 'cluster' | 'notify'): void
+  (e: 'open-section', s: 'testlens' | 'cluster' | 'notify' | 'mux'): void
   (e: 'open-base'): void
   (e: 'open-accounts'): void
   (e: 'open-batch'): void
@@ -47,6 +47,9 @@ const appVersion = __APP_VERSION__
     <DropdownMenuContent :side="side" :align="align" class="w-56">
       <DropdownMenuItem @click="emit('open-ai')">
         <Bot class="size-4" /> AI 配置
+      </DropdownMenuItem>
+      <DropdownMenuItem @click="emit('open-section', 'mux')">
+        <Terminal class="size-4" /> 终端后端
       </DropdownMenuItem>
       <DropdownMenuItem @click="emit('open-section', 'testlens')">
         <Globe class="size-4" /> TestLens

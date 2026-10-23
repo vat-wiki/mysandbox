@@ -29,6 +29,7 @@ import type { Config } from './config.js';
 import { listManaged, execRun } from './engine/index.js';
 import { HOST_SOCKET } from './hostTerminal.js';
 import { noteOutput, forgetSession } from './agentNotify.js';
+import { listMuxSessions, muxAgentTargets } from './muxAgent.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -38,13 +39,14 @@ const POLL_MS = 5_000;
 const SCAN_TIMEOUT_MS = 8_000;
 
 export interface TermActivityView {
-  kind: 'host' | 'container';
+  kind: 'host' | 'container' | 'service' | 'ssh';
   containerId?: string;
   termId: string;
   // quiet = 出现过输出且已安静超过阈值；active = 其余（含从未有过输出的空会话）。
   state: 'active' | 'quiet';
   // 距最近一次检测到输出的秒数（quiet 时即安静时长）。
   quietSeconds: number;
+  backend?: 'tmux' | 'msmux';
 }
 
 // 每会话的观测状态。key = `${kind}|${containerId}|${termId}`。
@@ -53,6 +55,9 @@ interface Entry {
   size: number; // history_size 总和（上一拍）
   lastOutputAt: number; // 最近一次检测到输出的时刻
   seenOutput: boolean; // 观测期内是否出现过输出（空会话永不判 quiet）
+  seq?: number; // msmux 输出序号（tmux 源为空）
+  backend?: 'tmux' | 'msmux';
+  target?: string; // msmux 目标（清理断线目标状态用）
 }
 
 const entries = new Map<string, Entry>();
@@ -141,14 +146,20 @@ function termIdOf(kind: 'host' | 'container', id: string, name: string): string 
   return m ? m[1] : null;
 }
 
-const keyOf = (kind: 'host' | 'container', cid: string, termId: string): string =>
+const keyOf = (kind: 'host' | 'container' | 'service' | 'ssh', cid: string, termId: string): string =>
   `${kind}|${cid}|${termId}`;
 
 function applyScan(key: string, row: ScanRow, now: number): void {
   const prev = entries.get(key);
   if (!prev) {
     // 首见只建基线：seenOutput=false，永远不会立刻判 quiet（首拉/重启不补发提醒）。
-    entries.set(key, { hash: row.hash, size: row.size, lastOutputAt: now, seenOutput: false });
+    entries.set(key, {
+      hash: row.hash,
+      size: row.size,
+      lastOutputAt: now,
+      seenOutput: false,
+      backend: 'tmux',
+    });
     return;
   }
   if (row.hash !== prev.hash || row.size !== prev.size) {
@@ -160,6 +171,41 @@ function applyScan(key: string, row: ScanRow, now: number): void {
   }
   prev.hash = row.hash;
   prev.size = row.size;
+  prev.seq = undefined;
+  prev.backend = 'tmux';
+  prev.target = undefined;
+}
+
+// msmux 源：daemon 为每次 PTY 输出递增 seq。与 tmux 的 hash/size 同语义：
+// 首见建基线，之后 seq 变化 = 有输出；detach 期间输出仍会推进 seq，所以隐藏会话也能判。
+function applyMux(
+  key: string,
+  row: { seq: number; backend: 'msmux'; target?: string },
+  now: number,
+): void {
+  const prev = entries.get(key);
+  if (!prev) {
+    entries.set(key, {
+      hash: '',
+      size: 0,
+      seq: row.seq,
+      lastOutputAt: now,
+      seenOutput: false,
+      backend: 'msmux',
+      target: row.target,
+    });
+    return;
+  }
+  if (row.seq !== prev.seq) {
+    prev.lastOutputAt = now;
+    prev.seenOutput = true;
+    noteOutput(key, now);
+  }
+  prev.seq = row.seq;
+  prev.hash = '';
+  prev.size = 0;
+  prev.backend = 'msmux';
+  prev.target = row.target;
 }
 
 async function tick(): Promise<void> {
@@ -185,6 +231,10 @@ async function tick(): Promise<void> {
     ),
     scanHost().then((rows): Source => ({ kind: 'host', id: '', rows })),
   ]);
+  // msmux 会话发现：在线 agent 逐个 list（每拍很轻）。listMuxSessions 内部单目标失败会
+  // 降级为空；断线目标由 onlineTargets 统一清理，避免把抖动误判成「会话结束」。
+  const muxRows = await listMuxSessions().catch(() => []);
+  const onlineMuxTargets = new Set(muxAgentTargets());
 
   const seen = new Set<string>();
   const scannedContainers = new Set<string>();
@@ -202,11 +252,25 @@ async function tick(): Promise<void> {
       applyScan(key, row, now);
     }
   }
+  for (const row of muxRows) {
+    if (row.backend !== 'msmux' || row.lastSeq == null) continue;
+    const key = keyOf(row.kind, row.containerId ?? '', row.termId);
+    seen.add(key);
+    applyMux(key, { seq: row.lastSeq, backend: 'msmux', target: row.target }, now);
+  }
 
   // 清理：本拍没见过的 key——容器已不在运行清单 = 会话随容器消亡，直接清；
   // 容器还在但本拍扫描失败 / 宿主扫描失败 = 瞬时抖动，保留状态别误重置基线。
   for (const key of [...entries.keys()]) {
     if (seen.has(key)) continue;
+    const entry = entries.get(key);
+    if (entry?.backend === 'msmux') {
+      if (!onlineMuxTargets.has(entry.target ?? '')) {
+        entries.delete(key);
+        forgetSession(key);
+      }
+      continue;
+    }
     const [kind, cid] = key.split('|');
     if (kind === 'host') {
       if (scannedHost) {
@@ -255,6 +319,7 @@ export function terminalActivity(): TermActivityView[] {
       termId,
       state: quiet ? 'quiet' : 'active',
       quietSeconds: Math.floor(quietMs / 1000),
+      backend: e.backend,
     });
   }
   return out;

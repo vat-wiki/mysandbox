@@ -266,7 +266,7 @@ async function doKill() {
     <template v-if="openGroups.has(row.key)">
       <div
         v-for="s in row.sessions"
-        :key="s.termId"
+        :key="`${s.backend ?? 'tmux'}:${s.termId}`"
         class="group/srow mx-1 ml-3.5 flex min-w-0 cursor-pointer items-center gap-2 rounded-md py-1 pl-2 pr-1.5 transition-colors hover:bg-accent/40"
         :title="`点击接入：${s.title || s.cwd || '未命名会话'}`"
         @click="emit('adopt', [s])"
@@ -280,6 +280,12 @@ async function doKill() {
           variant="outline"
           class="shrink-0 border-transparent bg-primary/15 px-1 text-[10px] text-primary"
         >已打开</Badge>
+        <Badge
+          v-if="s.backend === 'msmux'"
+          variant="outline"
+          class="shrink-0 border-transparent bg-violet-500/15 px-1 text-[10px] text-violet-500"
+          title="由 msmux 管理的会话"
+        >mux</Badge>
         <Badge
           v-else-if="s.attached > 0"
           variant="outline"

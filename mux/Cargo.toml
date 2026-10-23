@@ -1,0 +1,31 @@
+[package]
+name = "msmux"
+version = "0.1.0"
+edition = "2024"
+description = "Portable session multiplexer for mysandbox targets"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
+futures-util = "0.3"
+http = "1"
+libc = "0.2"
+nix = { version = "0.28", features = ["process", "signal"] }
+parking_lot = "0.12"
+portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vt100 = "0.15"
+
+[profile.release]
+lto = "thin"
+strip = true

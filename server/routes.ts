@@ -18,6 +18,7 @@ import { wrapEngineError, conflict, HttpError, badRequest } from './errors.js';
 import { listContainerSessions, killContainerSession, TERMID_RE } from './terminal.js';
 import { listHostSessions, killHostSession, listServiceSessions, killServiceSession } from './hostTerminal.js';
 import { listSshSessions, killSshSession } from './sshTerminal.js';
+import { listMuxSessions, killMuxSession } from './muxAgent.js';
 import { terminalActivity } from './activity.js';
 import { putTerminalClipboard } from './terminalClipboard.js';
 import { agentKeyOf, agentSeenOf, agentWaitingView } from './agentNotify.js';
@@ -144,7 +145,17 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     sessions.push(...(await listServiceSessions()));
     // SSH 目标会话（会话本体在远端 tmux，见 sshTerminal.ts）：逐目标并行、失败降级为 0。
     sessions.push(...(await listSshSessions()));
-    return { sessions };
+    // msmux 在线 agent 的会话与 tmux 可能短暂并存（同一 termId 迁移中）：按逻辑会话 key
+    // 去重，后到的 msmux 覆盖先到的 tmux——与 auto 模式当前会选的后端一致。
+    sessions.push(...(await listMuxSessions()));
+    const byKey = new Map<string, (typeof sessions)[number]>();
+    for (const s of sessions) {
+      const key = s.kind === 'host'
+        ? `host:${s.termId}`
+        : `${s.kind}:${s.containerId ?? ''}:${s.termId}`;
+      byKey.set(key, s);
+    }
+    return { sessions: [...byKey.values()] };
   });
 
   // 结束一条会话（孤儿清理：别处开的、本窗口没有 tab 的）。token 即宿主权限，不设
@@ -174,6 +185,18 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const { name, termId } = req.params as { name: string; termId: string };
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
     await killSshSession(name, termId);
+    return { ok: true };
+  });
+
+  app.delete('/api/terminal-sessions/mux/:termId', async (req) => {
+    const { termId } = req.params as { termId: string };
+    const target = (req.query as { target?: string }).target ?? '';
+    if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    try {
+      await killMuxSession(target, termId);
+    } catch (e) {
+      throw badRequest(e instanceof Error ? e.message : String(e));
+    }
     return { ok: true };
   });
 

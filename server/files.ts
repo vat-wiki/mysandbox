@@ -23,6 +23,7 @@ import { findServiceTarget } from './serviceMeta.js';
 import { sshExec, sshSpawn, sshSpawnIn, sshTest } from './sshChannel.js';
 import { mintShareToken } from './shareLink.js';
 import { TERMID_RE, sessionName } from './terminal.js';
+import { listMuxSessions } from './muxAgent.js';
 import {
   parsePorcelainZ,
   parseBranchList,
@@ -899,28 +900,43 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     const q = (req.query as Record<string, string | undefined>) || {};
     const termId = q.termId || '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
-    return withPollCache(`fg:c:${r.id}:${termId}`, 2_500, async () => {
-      const res = await execRun(cfg, r.id, {
-        Cmd: [
-          'sh', '-c',
-          // 一次 exec 双探测：tmux 前台命令 + shim 存在性（查固定路径，不吃 PATH——
-          // execRun 的 PATH 与用户交互 shell 不同；CLI 实际调用发生在用户 shell 里，
-          // 那里 ~/.local/bin 必在 PATH 首位，见 container-cli.ts 文件头）。
-          [
-            'tmux list-panes -t "$1" -F "#{pane_active} #{pane_current_command}" 2>/dev/null | sed -n "s/^1 //p"',
-            '[ -x "$HOME/.local/bin/xclip" ] && echo __BRIDGE__',
-          ].join('\n'),
-          'sh', `=${sessionName(r.id, termId)}`,
-        ],
+    const backend = q.backend === 'msmux' ? 'msmux' : 'tmux';
+    return withPollCache(`fg:c:${r.id}:${termId}:${backend}`, 2_500, async () => {
+      let cmd: string;
+      if (backend === 'msmux') {
+        const sessions = await listMuxSessions();
+        cmd = sessions.find((s) =>
+          s.backend === 'msmux' && s.kind === 'container' && s.containerId === r.id && s.termId === termId,
+        )?.foreground ?? '';
+      } else {
+        const res = await execRun(cfg, r.id, {
+          Cmd: [
+            'sh', '-c',
+            // 一次 exec 双探测：tmux 前台命令 + shim 存在性（查固定路径，不吃 PATH——
+            // execRun 的 PATH 与用户交互 shell 不同；CLI 实际调用发生在用户 shell 里，
+            // 那里 ~/.local/bin 必在 PATH 首位，见 container-cli.ts 文件头）。
+            [
+              'tmux list-panes -t "$1" -F "#{pane_active} #{pane_current_command}" 2>/dev/null | sed -n "s/^1 //p"',
+              '[ -x "$HOME/.local/bin/xclip" ] && echo __BRIDGE__',
+            ].join('\n'),
+            'sh', `=${sessionName(r.id, termId)}`,
+          ],
+          User: '1000:1000',
+          Tty: false,
+          timeoutMs: 5_000,
+        });
+        if (res.exitCode !== 0) throw notFound('terminal session not found');
+        const lines = res.stdout.split('\n');
+        cmd = (lines.find((l) => l && !l.startsWith('__BRIDGE__')) ?? '').trim();
+      }
+      if (!cmd) throw notFound('terminal session not found');
+      const probe = await execRun(cfg, r.id, {
+        Cmd: ['sh', '-c', '[ -x "$HOME/.local/bin/xclip" ] && echo __BRIDGE__'],
         User: '1000:1000',
         Tty: false,
         timeoutMs: 5_000,
       });
-      if (res.exitCode !== 0) throw notFound('terminal session not found');
-      const lines = res.stdout.split('\n');
-      const cmd = (lines.find((l) => l && !l.startsWith('__BRIDGE__')) ?? '').trim();
-      if (!cmd) throw notFound('terminal session not found');
-      return { command: cmd, bridge: res.stdout.includes('__BRIDGE__') };
+      return { command: cmd, bridge: probe.exitCode === 0 && probe.stdout.includes('__BRIDGE__') };
     });
   });
 

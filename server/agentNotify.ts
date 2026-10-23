@@ -209,7 +209,7 @@ interface Waiting {
 
 // key 与 activity.ts 的 entries 同构：`${kind}|${containerId}|${termId}`（routes/activity
 // 两处拼 key 共用这个，防三处手拼漂移）。
-export const agentKeyOf = (kind: 'host' | 'container', cid: string, termId: string): string =>
+export const agentKeyOf = (kind: 'host' | 'container' | 'service' | 'ssh', cid: string, termId: string): string =>
   `${kind}|${cid}|${termId}`;
 
 const WAITING_TTL_MS = 6 * 60 * 60 * 1000; // waiting 兜底 TTL（懒清扫）

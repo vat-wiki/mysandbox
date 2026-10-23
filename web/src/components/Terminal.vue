@@ -10,6 +10,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { authToken, writeFileBase64, resolveTermPath, pushTerminalClipboard, getTermFg, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { noteTermOutput } from '@/lib/terminalActivity'
+import { muxAgentAvailable } from '@/lib/mux'
 import { isCoarse, isPhone } from '@/composables/useDevice'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
 import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
@@ -57,6 +58,8 @@ const emit = defineEmits<{
   // shell 集成上报 cwd（OSC 7，zsh precmd 发射）：cd 生效即到达，零轮询零请求的
   // 事件流。老容器/SSH/宿主无种子不上报，由 FilePanel 的 1s 轮询兜底。
   (e: 'cwd', path: string): void
+  // msmux 上报前台进程名：图片粘贴桥用它绕开 tmux 专属的 REST fg 探测。
+  (e: 'foreground', command: string): void
   // 收到首帧终端输出（二进制帧）：父组件据此注入首条命令/提示词。不用 onopen——
   // 那时后端 tmux 可能还没 attach 完，直接写 PTY 有概率丢输入。
   (e: 'ready'): void
@@ -69,7 +72,11 @@ const emit = defineEmits<{
 // 挂到 open 再发；close 先行入队，TCP 保序，服务端先收 kill 再见断开，wantKill 落地。
 // fire-and-forget：open 前组件就卸载也无妨——没送到 kill 就当纯 detach（真 tmux 语义）。
 function kill() {
-  if (!ws) return
+  // 在线探测/建连窗口内用户就点了 ✕：记下来，等 socket 建好立即补发。
+  if (!ws) {
+    pendingKill = true
+    return
+  }
   const send = () => {
     try {
       ws?.send(JSON.stringify({ type: 'kill' }))
@@ -200,34 +207,75 @@ function closeSearch() {
 // 首连共用。termId 不变 -> 后端 attach 回同一 tmux 会话（无限期保留，直到显式 ✕ 或 shell 退出）。
 // quiet：程序性连接/断开（tab 切换的 detach/attach）不打 banner——每次切 tab 都写
 // 「>> 连接/>> 已断开」两行会把 scrollback 刷成切换日志；意外断线路径照常提示。
-function connectWs(quiet = false) {
+let connectSeq = 0
+let pendingKill = false
+
+// msmux 的目标命名与 server/muxDeploy.ts 一致：host | c:<容器> | s:<服务> | ssh:<目标>。
+function muxTargetOf(): string {
+  if (props.host) return 'host'
+  if (props.service) return `s:${props.service}`
+  if (props.ssh) return `ssh:${props.ssh}`
+  return props.id ? `c:${props.id}` : ''
+}
+
+async function connectWs(quiet = false) {
+  const seq = ++connectSeq
   wsQuiet = quiet
   const token = authToken()
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const shell = props.shell || 'zsh'
-  const base = props.host
-    ? `${proto}://${location.host}/ws/host-terminal?token=${encodeURIComponent(token)}`
-    : props.ssh
-      ? `${proto}://${location.host}/ws/ssh-terminal?target=${encodeURIComponent(props.ssh)}&token=${encodeURIComponent(token)}`
-      : props.service
-        ? `${proto}://${location.host}/ws/service-terminal?name=${encodeURIComponent(props.service)}&token=${encodeURIComponent(token)}`
-        : `${proto}://${location.host}/ws/terminal?id=${encodeURIComponent(props.id ?? '')}&token=${encodeURIComponent(token)}`
-  const url =
-    base +
-    (props.ssh ? '' : `&shell=${encodeURIComponent(shell)}`) +
-    `&cols=${term ? term.cols : 80}&rows=${term ? term.rows : 24}` +
-    `&termId=${encodeURIComponent(props.termId)}` +
-    (props.fromTermId ? `&from=${encodeURIComponent(props.fromTermId)}` : '') +
-    // 重连（本组件已回填过一次）告诉后端走增量分支：history-delta 只补断线窗口的输出，
-    // 而不是把整个历史重写一遍（scrollback 里已有内容，全量回填会整体重复）。
-    (backfilled ? '&resume=1' : '')
+  // SSH 远端 shell 由远端自己决定（不传 shell）；其余目标沿用 defaultShell。
+  const shell = props.ssh ? '' : props.shell || 'zsh'
+  const target = muxTargetOf()
+  const useMux = await muxAgentAvailable(target)
+  currentBackend = useMux ? 'msmux' : 'tmux'
+  // 等在线探测期间组件可能已被切走/重建：过期连接直接作废。
+  if (seq !== connectSeq || !props.active) return
+  const cols = term ? term.cols : 80
+  const rows = term ? term.rows : 24
+  let url: string
+  if (useMux) {
+    const q = new URLSearchParams({
+      target,
+      termId: props.termId,
+      cols: String(cols),
+      rows: String(rows),
+      create: '1',
+      token,
+    })
+    if (shell) q.set('shell', shell)
+    if (props.fromTermId) q.set('from', props.fromTermId)
+    if (backfilled) q.set('resume', '1')
+    url = `${proto}://${location.host}/ws/mux-terminal?${q}`
+  } else {
+    const base = props.host
+      ? `${proto}://${location.host}/ws/host-terminal?token=${encodeURIComponent(token)}`
+      : props.ssh
+        ? `${proto}://${location.host}/ws/ssh-terminal?target=${encodeURIComponent(props.ssh)}&token=${encodeURIComponent(token)}`
+        : props.service
+          ? `${proto}://${location.host}/ws/service-terminal?name=${encodeURIComponent(props.service)}&token=${encodeURIComponent(token)}`
+          : `${proto}://${location.host}/ws/terminal?id=${encodeURIComponent(props.id ?? '')}&token=${encodeURIComponent(token)}`
+    url =
+      base +
+      (props.ssh ? '' : `&shell=${encodeURIComponent(shell)}`) +
+      `&cols=${cols}&rows=${rows}` +
+      `&termId=${encodeURIComponent(props.termId)}` +
+      (props.fromTermId ? `&from=${encodeURIComponent(props.fromTermId)}` : '') +
+      // 重连（本组件已回填过一次）告诉后端走增量分支：history-delta 只补断线窗口的输出，
+      // 而不是把整个历史重写一遍（scrollback 里已有内容，全量回填会整体重复）。
+      (backfilled ? '&resume=1' : '')
+  }
   ws = new WebSocket(url)
+  if (pendingKill) {
+    pendingKill = false
+    kill()
+  }
   const sock = ws
   ws.binaryType = 'arraybuffer'
 
   ws.onopen = () => {
     connState.value = 'ok'
-    if (!wsQuiet) term?.writeln(`\x1b[2m>> 连接 ${props.name}${props.ssh ? '' : ` (${shell})`}\x1b[0m`)
+    const label = useMux ? 'msmux' : shell
+    if (!wsQuiet) term?.writeln(`\x1b[2m>> 连接 ${props.name}${label ? ` (${label})` : ''}\x1b[0m`)
   }
   ws.onmessage = (ev) => {
     // 刷新/重建连接时旧 socket 可能还有排队消息先到：丢弃，别写进刚 reset 的 buffer。
@@ -249,6 +297,11 @@ function connectWs(quiet = false) {
           // 重连/刷新后的标题恢复：pane title 留在 tmux 里不会随 attach 重发（历史回填
           // 只有可见文本），服务端 attach 前读 #T 补发此帧（terminal.ts / hostTerminal.ts）。
           emit('title', m.text)
+        } else if (m.type === 'cwd' && typeof m.text === 'string' && m.text) {
+          emit('cwd', m.text)
+        } else if (m.type === 'foreground' && typeof m.text === 'string') {
+          foregroundCommand = m.text
+          emit('foreground', m.text)
         }
       } catch {
         /* 非法控制帧忽略 */
@@ -394,6 +447,10 @@ let hbTimer: ReturnType<typeof setInterval> | null = null
 let backfilled = false
 // ready 只在本次挂载内发一次：首个二进制帧 = 后端已 attach、PTY 可以稳定接收输入。
 let readySent = false
+// 当前连接是否走 msmux；foreground 事件只在 msmux 后端可用。
+let currentBackend: 'tmux' | 'msmux' = 'tmux'
+// msmux 最新前台进程名；断线/重连后由 attach 元数据恢复。
+let foregroundCommand = ''
 
 // 内置 Cascadia Code Variable 优先（woff2 打包，跨端一致）；彩色 emoji 走系统字体兜底。
 const FONT_FAMILY =
@@ -494,7 +551,7 @@ watch(
   },
 )
 
-// 复制/粘贴：默认 terminal.mouse=off，tmux 不劫持鼠标，交互层由 xterm.js 接管。
+// 复制/粘贴：tmux 不再劫持鼠标（后端 set -g mouse off），交互层由 xterm.js 接管。
 // 剪贴板走 navigator.clipboard；OSC 52（TUI 应用请终端代写剪贴板）也汇到 copyText
 // （见下方 registerOscHandler(52)）。
 // 非 https 环境（http://局域网IP 访问）navigator.clipboard 是 undefined——一律走
@@ -621,6 +678,12 @@ async function tryBridgePaste(first: File): Promise<boolean> {
   try {
     const b64 = await imageToPngB64(first)
     await pushTerminalClipboard({ image: { b64 } })
+    if (currentBackend === 'msmux') {
+      // msmux 事件已给出权威前台命令；bridge 仍要问 shim 是否在位，但不再解析 tmux。
+      if (!foregroundCommand || SHELL_COMMANDS.has(foregroundCommand)) return false
+      const fg = await getTermFg(props.id, props.termId, 'msmux')
+      return fg.bridge
+    }
     const fg = await getTermFg(props.id, props.termId)
     // 前台是普通 shell：^V 会被解释成 quoted-insert 白吃一个键，粘贴落空 → 路径粘贴。
     // 老容器没补种（bridge=false）：^V 后 CLI 找不到 xclip，无事发生 → 路径粘贴。
@@ -1070,7 +1133,7 @@ function setupTouchScroll() {
   }
 }
 
-// 滚轮/滚动条：默认交给 xterm.js 原生处理（与 VSCode 集成终端一致）——tmux 不劫持鼠标，
+// 滚轮/滚动条：交给 xterm.js 原生处理（与 VSCode 集成终端一致）--tmux 不再开 mouse 劫持，
 // 终端流不带鼠标追踪序列，xterm 默认即把滚轮滚 scrollback 并保留右侧滚动条。无需手写 wheel 接管，
 // 手写反而会 preventDefault 掉原生滚动、破坏滚动条。
 

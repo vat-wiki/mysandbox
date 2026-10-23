@@ -25,6 +25,8 @@ import { startServicesEventSync } from './services.js';
 import { ensureComposeRoot } from './serviceCompose.js';
 import { startDockerApiBridge } from './dockerApi.js';
 import { startAndroidAdbBridge } from './androidBridge.js';
+import { startMuxAgentBridge } from './muxBridge.js';
+import { runMuxCommand } from './muxDeploy.js';
 import { getVersion } from './version.js';
 
 interface Args {
@@ -131,6 +133,11 @@ Usage: mysandbox [--port 7321] [--host 127.0.0.1]
       Tail the server's on-disk log (latest daily file, default 100 lines).
       --raw prints JSON lines. Full history: journalctl --user -u mysandbox.
 
+  mysandbox mux deploy <target> [--url <ws://...>] [--json]
+  mysandbox mux agents [--json]
+      Deploy msmux agents (host | c:<container> | s:<service> | ssh:<target>)
+      and inspect agents currently connected to the running console.
+
 Options:
   --port <n>     listen port (default 7321)
   --host <addr|auto>
@@ -199,6 +206,13 @@ async function main(): Promise<void> {
   if (process.argv[2] === 'firewall') {
     const { config } = await loadConfig();
     await runFirewallCommand(process.argv.slice(3), config);
+    return;
+  }
+
+  // 一次性子命令：mysandbox mux（走运行中服务的 HTTP API，agent 在线表在服务进程内）。
+  if (process.argv[2] === 'mux') {
+    const { config } = await loadConfig();
+    await runMuxCommand(process.argv.slice(3), config);
     return;
   }
 
@@ -276,6 +290,9 @@ async function main(): Promise<void> {
   // peer API（peer.enabled）：容器间命令互通的转发枢纽（server/peer.ts，绑网关
   // IP:peer.port，失败非致命）——容器内 `mysandbox exec <目标> -- 命令` 打到这里。
   startPeerApi(config);
+  // msmux agent 回连桥：网关 IP:agentPort → 本机控制台端口（WebSocket 字节透传），
+  // 让只监听 localhost 的部署也能收到容器/服务目标的主动回连。
+  startMuxAgentBridge(config);
   startHeartbeat(config);
   await app.listen({ host: config.listen.host, port: config.listen.port });
   log.info({ logFile: LOG_DIR }, 'file logging active (daily rotate, 14d retention; also on journald)');
