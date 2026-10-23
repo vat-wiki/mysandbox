@@ -666,18 +666,19 @@ export function registerServiceFileRoutes(app: FastifyInstance): void {
               guard,
               "case \"$l\" in ''|-*) exit 9 ;; esac",
               't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
-              'exec git -C "$t" switch -c "$l" --track "$n"',
+              'exec git -C "$t" switch --recurse-submodules -c "$l" --track "$n"',
             ].join('\n')
           : [
               'p="$1"; n="$2"; c="$3"',
               guard,
               't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
-              'if [ "$c" = 1 ]; then exec git -C "$t" switch -c "$n"; fi',
-              'exec git -C "$t" switch -- "$n"',
+              'if [ "$c" = 1 ]; then exec git -C "$t" switch --recurse-submodules -c "$n"; fi',
+              'exec git -C "$t" switch --recurse-submodules -- "$n"',
             ].join('\n'),
         'sh', path, bname, ...(body.remote ? [local] : [body.create ? '1' : '0']),
       ],
-      15_000,
+      // 60s：--recurse-submodules 可能触发 submodule 首次补拉，比普通分支切换慢。
+      60_000,
     );
     if (res.exitCode === 7 || res.exitCode === 127) throw badRequest('目标目录不在 git 仓库内');
     if (res.exitCode === 9) throw badRequest('分支名不合法');

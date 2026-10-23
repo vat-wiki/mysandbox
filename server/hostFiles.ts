@@ -489,7 +489,8 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
   // —— git 分支列表 / 切换 / 远端三件套 / 删分支（与容器侧 files.ts 一比一对齐，
   // 解析单源 gitpanel.ts）——切换用 git switch（只做分支操作不碰工作区路径；-c 创建时
   // 不带 --，实测 git 2.43 把 -- 当 start-point）。远端模式传全短名，节点侧剥本地名。
-  // 有未提交变更时由 git 自行裁决，冲突把 stderr 原话回给前端。
+  // --recurse-submodules 同步 active submodule 到目标提交；有未提交变更时由 git 自行裁决，
+  // submodule 冲突/脏改动会阻止切换，stderr 原话回给前端。
   app.get('/api/host-terminal/git/branches', async (req): Promise<GitBranchesView> => {
     const q = (req.query as Record<string, string | undefined>) || {};
     const path = cleanPath(q.path);
@@ -557,12 +558,13 @@ export async function registerHostFileRoutes(app: FastifyInstance): Promise<void
       throw badRequest('目标目录不在 git 仓库内');
     }
     const args = body.remote
-      ? ['switch', '-c', local, '--track', name]
+      ? ['switch', '--recurse-submodules', '-c', local, '--track', name]
       : body.create
-        ? ['switch', '-c', name]
-        : ['switch', '--', name];
+        ? ['switch', '--recurse-submodules', '-c', name]
+        : ['switch', '--recurse-submodules', '--', name];
     try {
-      await gitExec(['-C', top, ...args]);
+      // 60s：--recurse-submodules 可能触发 submodule 首次补拉，比普通分支切换慢。
+      await gitExec(['-C', top, ...args], 60_000);
     } catch (e) {
       if (e instanceof HttpError) throw e; // git_missing 等已映射的真错误
       throw badRequest(stderrOf(e) || '分支切换失败');

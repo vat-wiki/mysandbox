@@ -1103,8 +1103,9 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
   // 分支名不含换行，按行切分安全。切换用 git switch——它只做分支操作、不碰工作区路径
   //（checkout 会把同名文件误当还原目标）；-c 创建时不能带 --（实测 git 2.43 会把 --
   // 当 start-point 报「无效引用」），名字已过 assertBranchName 的 - 开头防线。远端模式
-  // 传全短名（origin/feat-x），节点侧剥出本地名后 -c --track 检出。有未提交变更时由
-  // git 自行裁决（不冲突就携带过去，冲突报 stderr 原话）。
+  // 传全短名（origin/feat-x），节点侧剥出本地名后 -c --track 检出。
+  // --recurse-submodules：把 active submodule 同步到目标提交；submodule 有会被覆盖的
+  // 本地修改时 switch 直接失败，错误原话回给前端。未初始化 submodule 仍保持未初始化。
   // exit 7 = 非仓库 / exit 9 = 分支名不合法（脚本侧防线，与 assertBranchName 双保险）。
   app.get('/api/containers/:id/git/branches', async (req): Promise<GitBranchesView> => {
     const r = await resolveRunning(cfg, (req.params as { id: string }).id);
@@ -1182,20 +1183,21 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
               guard,
               "case \"$l\" in ''|-*) exit 9 ;; esac",
               't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
-              'exec git -C "$t" switch -c "$l" --track "$n"',
+              'exec git -C "$t" switch --recurse-submodules -c "$l" --track "$n"',
             ].join('\n')
           : [
               'p="$1"; n="$2"; c="$3"',
               guard,
               't=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || exit 7',
-              'if [ "$c" = 1 ]; then exec git -C "$t" switch -c "$n"; fi',
-              'exec git -C "$t" switch -- "$n"',
+              'if [ "$c" = 1 ]; then exec git -C "$t" switch --recurse-submodules -c "$n"; fi',
+              'exec git -C "$t" switch --recurse-submodules -- "$n"',
             ].join('\n'),
         'sh', path, name, ...(body.remote ? [local] : [body.create ? '1' : '0']),
       ],
       User: '1000:1000',
       Tty: false,
-      timeoutMs: 15_000,
+      // 60s：--recurse-submodules 可能触发 submodule 首次补拉，比普通分支切换慢。
+      timeoutMs: 60_000,
     });
     if (res.exitCode === 7) throw badRequest('目标目录不在 git 仓库内');
     if (res.exitCode === 9) throw badRequest('分支名不合法');
