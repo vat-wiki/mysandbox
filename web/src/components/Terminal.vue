@@ -1007,9 +1007,9 @@ function tbTouchEnd(e: TouchEvent) {
 
 // —— 软键盘纯 CSS 裁切（仅手机）——
 // 键盘弹起时不改终端盒子尺寸：xterm/PTY 的 cols/rows 保持不变，不再触发 fit/resize。
-// 整个终端根盒子上移，顶部超出的部分交给外层视口裁掉；工具条 Teleport 到 body
-// 并固定在可视区底边上方。终端内容盒在键盘开合之间不变，回滚位置自然不因
-// xterm resize/reflow 被重置。clearance = 根盒底边被键盘盖住的部分。
+// 键盘弹起时不改 xterm 盒子尺寸：外层 root 固定并裁切，内层 shift 整盒上移。
+// 顶部被裁掉，底部和光标保持在键盘上方；工具条 Teleport 到 body 并固定在
+// 可视区底边上方。cols/rows 不变，回滚位置不会被 resize/reflow 重置。
 const kbShift = ref(0)
 const kbToolbarTop = ref(0)
 const toolbarHeight = ref(0)
@@ -1035,8 +1035,7 @@ function setupViewportWatch() {
       return
     }
     const root = rootEl.value
-    // 根盒自身带 transform，getBoundingClientRect 已包含上一次位移；先还原到布局底边再对齐 visualViewport。
-    const layoutBottom = root ? root.getBoundingClientRect().bottom + kbShift.value : 0
+    const layoutBottom = root ? root.getBoundingClientRect().bottom : 0
     const visualBottom = vv.offsetTop + vv.height
     const clearance = root ? Math.max(0, layoutBottom - visualBottom) : 0
     kbToolbarTop.value = Math.max(0, visualBottom - toolbarHeight.value - 6)
@@ -1681,24 +1680,22 @@ onBeforeUnmount(() => {
   <!-- bg-black + 内边距放外层：el 自身不带 padding，FitAddon 量到的 clientWidth/clientHeight 才是
        真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
-       手机软键盘弹起时不改终端盒子尺寸（kbShift 只对根盒做 CSS 上移/裁切，见 setupViewportWatch），
+       手机软键盘弹起时不改 xterm 盒子尺寸（kbShift 只对内层 shift 做整盒上移，见 setupViewportWatch），
        xterm/PTY 的 cols/rows 保持稳定，回滚位置也不会被 resize/reflow 重置。 -->
   <!-- ⚠️ 根容器必须 flex-1 min-h-0 而不是 h-full：叶子是 flex-col（pane 头部 + 本体），
        h-full = 100% 叶子高，加头部后恒溢出一个头高——终端底部会盖住下方文件 tab 栏
        （旧换显布局溢的是黑底看不出来，编辑器+终端分栏后这 22px 正好压住 tab 栏右侧
        按钮）。flex-1 min-h-0 让本体只占头部之外的剩余空间。 -->
-  <div
-    ref="rootEl"
-    class="relative flex min-h-0 flex-1 flex-col bg-black px-2 py-1.5 overscroll-none"
-    :style="kbShift > 0 ? { transform: `translate3d(0, -${kbShift}px, 0)` } : undefined"
-  >
+  <div ref="rootEl" class="relative min-h-0 flex-1 overflow-hidden bg-black px-2 py-1.5 overscroll-none">
     <!-- touch-none（touch-action: none）：触屏滚终端的唯一正解。xterm 的 touchmove 处理是 JS 驱动
          viewport.scrollTop，但只在回滚区边界才 preventDefault——滚动途中浏览器的原生平移同时在跑，
          而触点不在 .xterm-viewport 滚动层内，原生滚动链直接落到 document：上翻历史（手指下划）时
          document 顶部 overscroll 触发下拉刷新、手势被浏览器抢走。touch-action: none 让终端区域的手势
          完全交给 JS（xterm 自滚），浏览器不再启动原生平移/下拉刷新/双指缩放。中间层挂 overscroll-none
          挡不住这个——touch 侧的原生滚动链跳过 overflow:hidden 的祖先直达 document。 -->
-    <div ref="el" class="min-h-0 flex-1 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
+    <div class="absolute inset-x-2 top-1.5 bottom-1.5 will-change-transform" :style="kbShift > 0 ? { transform: `translate3d(0, -${kbShift}px, 0)` } : undefined">
+      <div ref="el" class="absolute inset-0 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
+    </div>
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
          浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
     <div class="search-shell" v-if="searchVisible">
