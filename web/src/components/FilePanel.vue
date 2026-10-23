@@ -1476,7 +1476,137 @@ function fmtSize(n: number): string {
     @dragleave="onPanelDragLeave"
     @drop="onPanelDrop"
   >
-    <!-- 头只承担「文件 / Git」视图切换：目标名放悬浮提示，操作全部下沉到各视图自己的工具栏。 -->
+    <!-- 路径行属于整个面板（文件 / Git 共用）：目录在上，视图切换在下。 -->
+    <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 max-md:h-11">
+      <button
+        v-if="path && path !== '/'"
+        class="shrink-0 rounded text-muted-foreground hover:text-foreground"
+        :class="dragOverDir === parentPath ? 'bg-accent text-foreground' : ''"
+        :data-drop-dir="parentPath ?? undefined"
+        title="上一级"
+        @click="goParent"
+      >
+        <FolderUp class="size-3.5 shrink-0 text-sky-400" />
+      </button>
+      <input
+        v-if="editingPath"
+        ref="pathInputEl"
+        v-model="pathInput"
+        class="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px]"
+        @keydown.enter.prevent="commitPath"
+        @keydown.esc="editingPath = false"
+        @blur="commitPath"
+      />
+      <div
+        v-else-if="path"
+        ref="crumbsEl"
+        class="flex min-w-0 flex-1 items-center gap-0 overflow-hidden"
+        title="点击任意上级直达；点击当前目录可编辑路径"
+      >
+        <button
+          v-if="crumbsDropped"
+          class="flex shrink-0 items-center rounded px-0.5 font-mono text-[11px] leading-none text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="中间层级已折叠，点击编辑完整路径"
+          @click="startEditPath"
+        >
+          …
+        </button>
+        <template v-for="(c, i) in visibleCrumbs" :key="c.p">
+          <ChevronRight v-if="i || crumbsDropped" class="size-2.5 shrink-0 text-muted-foreground/40" />
+          <button
+            class="flex shrink-0 items-center rounded px-0.5 font-mono text-[11px] leading-none"
+            :class="[
+              i === visibleCrumbs.length - 1
+                ? 'text-foreground'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+              dragOverDir === c.p ? 'bg-accent text-foreground' : '',
+            ]"
+            :data-drop-dir="i === visibleCrumbs.length - 1 ? null : c.p"
+            @click="i === visibleCrumbs.length - 1 ? startEditPath() : openDir(c.p)"
+          >
+            {{ c.name }}
+          </button>
+        </template>
+      </div>
+      <span v-else class="min-w-0 flex-1 font-mono text-[11px] text-muted-foreground">…</span>
+      <select
+        v-if="panes.length > 1"
+        class="max-w-20 shrink-0 rounded border border-border bg-background px-1 py-0.5 text-[10px] text-muted-foreground"
+        title="跟随哪个终端的目录"
+        :value="termId ?? undefined"
+        @change="emit('pane-pick', ($event.target as HTMLSelectElement).value)"
+      >
+        <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
+      </select>
+      <!-- 浏览模式与目录操作只属于文件视图；Git 保留同一条路径上下文但不显示这些按钮。 -->
+      <button
+        v-if="panelView === 'files'"
+        class="shrink-0 hover:text-foreground"
+        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
+        :title="
+          browseMode === 'expand'
+            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
+            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
+        "
+        @click="toggleBrowseMode"
+      >
+        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
+        <FolderInput v-else class="size-3.5" />
+      </button>
+      <Button
+        v-if="panelView === 'files'"
+        variant="ghost"
+        size="icon-xs"
+        class="hidden shrink-0 md:inline-flex"
+        :disabled="loading"
+        :title="loading ? '刷新中…' : '刷新'"
+        @click="refresh"
+      >
+        <RefreshCw :class="['size-3.5', loading ? 'animate-spin' : '']" />
+      </Button>
+      <DropdownMenu v-if="panelView === 'files'">
+        <DropdownMenuTrigger as-child>
+          <Button variant="ghost" size="icon-xs" class="hidden shrink-0 md:inline-flex" title="当前目录操作">
+            <MoreHorizontal class="size-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" class="w-48">
+          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
+            <FilePlus class="size-3.5" /> 新建文件
+          </DropdownMenuItem>
+          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newDir' }">
+            <FolderPlus class="size-3.5" /> 新建文件夹
+          </DropdownMenuItem>
+          <DropdownMenuItem v-if="clip" :disabled="!path" @click="pasteInto(path)">
+            <ClipboardPaste class="size-3.5" /> {{ clipLabel }}
+          </DropdownMenuItem>
+          <DropdownMenuItem v-if="canCodeServer" :disabled="!path" @click="openInCodeServer()">
+            <SquareCode class="size-3.5" /> 在 Code Server 打开
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            v-if="canRegistry && hasSkillMd"
+            :disabled="regBusy || !path"
+            @click="registerSkillFrom(path)"
+          >
+            <BookPlus class="size-3.5" /> {{ regBusy ? '添加中…' : '添加为技能' }}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem @click="emit('close')">
+            <X class="size-3.5" /> 关闭文件面板
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <MobileTabActions
+        v-if="panelView === 'files' && hasTerminal && path"
+        class="md:hidden"
+        title="当前目录操作"
+        :description="path"
+        :actions="currentDirActionList()"
+        @select="runCurrentDirMobileAction"
+      />
+    </div>
+
+    <!-- 视图切换在路径之下：目录是上下文，文件/Git 是同一目录的两种看板。 -->
     <div class="flex h-9 shrink-0 items-stretch border-b border-border" :title="containerName">
       <button
         type="button"
@@ -1592,142 +1722,6 @@ function fmtSize(n: number): string {
       >
         <X class="size-3.5" />
       </button>
-    </div>
-
-    <!-- 路径行：面包屑（祖先可点直达，溢出折叠成…，末段点击进编辑）+ 上一级 + 宿主路径弹框。
-         上一级用彩色 FolderUp：裸 chevron 语义太泛（收起/回顶?），文件夹+上箭头无歧义；
-         蓝色与列表里文件夹图标同色系（目录动作的语言）。行内图标一律裸按钮（与搜索行同款，
-         无 Button 外壳的 6px 盒子），两行字形垂直完全对齐。 -->
-    <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 max-md:h-11">
-      <button
-        v-if="path && path !== '/'"
-        class="shrink-0 rounded text-muted-foreground hover:text-foreground"
-        :class="dragOverDir === parentPath ? 'bg-accent text-foreground' : ''"
-        :data-drop-dir="parentPath ?? undefined"
-        title="上一级"
-        @click="goParent"
-      >
-        <FolderUp class="size-3.5 shrink-0 text-sky-400" />
-      </button>
-      <input
-        v-if="editingPath"
-        ref="pathInputEl"
-        v-model="pathInput"
-        class="min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px]"
-        @keydown.enter.prevent="commitPath"
-        @keydown.esc="editingPath = false"
-        @blur="commitPath"
-      />
-      <div
-        v-else-if="path"
-        ref="crumbsEl"
-        class="flex min-w-0 flex-1 items-center gap-0 overflow-hidden"
-        title="点击任意上级直达；点击当前目录可编辑路径"
-      >
-        <button
-          v-if="crumbsDropped"
-          class="flex shrink-0 items-center rounded px-0.5 font-mono text-[11px] leading-none text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-          title="中间层级已折叠，点击编辑完整路径"
-          @click="startEditPath"
-        >
-          …
-        </button>
-        <template v-for="(c, i) in visibleCrumbs" :key="c.p">
-          <ChevronRight v-if="i || crumbsDropped" class="size-2.5 shrink-0 text-muted-foreground/40" />
-          <button
-            class="flex shrink-0 items-center rounded px-0.5 font-mono text-[11px] leading-none"
-            :class="[
-              i === visibleCrumbs.length - 1
-                ? 'text-foreground'
-                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-              dragOverDir === c.p ? 'bg-accent text-foreground' : '',
-            ]"
-            :data-drop-dir="i === visibleCrumbs.length - 1 ? null : c.p"
-            @click="i === visibleCrumbs.length - 1 ? startEditPath() : openDir(c.p)"
-          >
-            {{ c.name }}
-          </button>
-        </template>
-      </div>
-      <span v-else class="min-w-0 flex-1 font-mono text-[11px] text-muted-foreground">…</span>
-      <select
-        v-if="panes.length > 1"
-        class="max-w-20 shrink-0 rounded border border-border bg-background px-1 py-0.5 text-[10px] text-muted-foreground"
-        title="跟随哪个终端的目录"
-        :value="termId ?? undefined"
-        @change="emit('pane-pick', ($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
-      </select>
-      <!-- 浏览模式切换（状态按钮）：下钻 = 点文件夹进入目录；展开 = 点文件夹原位展开/收起，
-           不动当前目录（VS Code 树语义）。图标即状态（FolderInput=下钻 / FolderTree=展开，
-           展开态染文件夹同款 sky 提示「树模式生效中」）。原「宿主机实际路径」弹框已撤——
-           行级「复制实际路径」（右键/⋯）仍在，这个位置让给模式切换。 -->
-      <button
-        class="shrink-0 hover:text-foreground"
-        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
-        :title="
-          browseMode === 'expand'
-            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
-            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
-        "
-        @click="toggleBrowseMode"
-      >
-        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
-        <FolderInput v-else class="size-3.5" />
-      </button>
-      <!-- 桌面操作收进一个菜单：刷新 / 新建 / 粘贴 / 技能 / Code Server / 关闭。
-           手机用下面的 bottom-sheet 入口，触屏不需要右键。 -->
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="hidden shrink-0 md:inline-flex"
-        :disabled="loading"
-        :title="loading ? '刷新中…' : '刷新'"
-        @click="refresh"
-      >
-        <RefreshCw :class="['size-3.5', loading ? 'animate-spin' : '']" />
-      </Button>
-      <DropdownMenu>
-        <DropdownMenuTrigger as-child>
-          <Button variant="ghost" size="icon-xs" class="hidden shrink-0 md:inline-flex" title="当前目录操作">
-            <MoreHorizontal class="size-3.5" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" class="w-48">
-          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
-            <FilePlus class="size-3.5" /> 新建文件
-          </DropdownMenuItem>
-          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newDir' }">
-            <FolderPlus class="size-3.5" /> 新建文件夹
-          </DropdownMenuItem>
-          <DropdownMenuItem v-if="clip" :disabled="!path" @click="pasteInto(path)">
-            <ClipboardPaste class="size-3.5" /> {{ clipLabel }}
-          </DropdownMenuItem>
-          <DropdownMenuItem v-if="canCodeServer" :disabled="!path" @click="openInCodeServer()">
-            <SquareCode class="size-3.5" /> 在 Code Server 打开
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            v-if="canRegistry && hasSkillMd"
-            :disabled="regBusy || !path"
-            @click="registerSkillFrom(path)"
-          >
-            <BookPlus class="size-3.5" /> {{ regBusy ? '添加中…' : '添加为技能' }}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem @click="emit('close')">
-            <X class="size-3.5" /> 关闭文件面板
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <MobileTabActions
-        v-if="hasTerminal && path"
-        class="md:hidden"
-        title="当前目录操作"
-        :description="path"
-        :actions="currentDirActionList()"
-        @select="runCurrentDirMobileAction"
-      />
     </div>
 
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
