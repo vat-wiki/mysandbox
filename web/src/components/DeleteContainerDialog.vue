@@ -6,7 +6,7 @@
 //   2) 勾「同时删除 home 数据」：弹输入框，需输入容器名确认才解锁删除按钮。
 //   这修掉了原生版本的一个反直觉点——原 onDelete 点 confirm「取消」时 deleteData=false，
 //   仍会继续删容器；这里取消就是真取消。
-// B) LXC（home 在 rootfs 内，见 docs/lxc-migration.md D4）——数据无法保留：
+// B) LXC（home 在 rootfs 内，见 docs/migrations/lxc-migration.md D4）——数据无法保留：
 //   删容器必然连数据一起删，所以没有可勾的选项，无条件要求输入容器名确认。
 //   后端 lifecycle.deleteManaged 也强制同一条规则，前端只是把「为什么」讲清楚。
 import { ref, computed, watch } from 'vue'

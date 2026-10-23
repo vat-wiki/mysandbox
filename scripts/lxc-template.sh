@@ -81,7 +81,7 @@ EOS
 # ---------- dns：静态 IP 无 DHCP，resolved 没有上游 ----------
 # 上游 = 宿主在网桥上的网关副 IP:53（网段无关——从容器自己的 config 解析，不写死 10.88.x）。
 # 应答方由 install.sh 的 DNSStubListenerExtra 步骤保证（自配 DNS 的机器由 mihomo/dnsmasq 等
-# 应答）。见 docs/lxc-migration.md P8。
+# 应答）。见 docs/migrations/lxc-migration.md P8。
 step dns
 GW="$(grep -E '^lxc\.net\.0\.ipv4\.gateway[[:space:]]*=' "$HOME/.local/share/lxc/$NAME/config" | head -n1 | awk '{print $3}')"
 [ -n "$GW" ] || { echo "容器 config 缺 lxc.net.0.ipv4.gateway——先在 $HOME/.local/share/lxc/$NAME/config 配好网关（前置要求，见文件头）" >&2; exit 1; }

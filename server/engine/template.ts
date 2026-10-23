@@ -463,7 +463,7 @@ export async function createTemplate(
 }
 
 // lxc-create 产物的 config 修正（范围对齐 create() 克隆后的改写）：桥/IP/网关 +
-// apparmor unconfined（Ubuntu 默认 profile 不许 systemd 挂 cgroup2，见 docs/lxc-migration.md
+// apparmor unconfined（Ubuntu 默认 profile 不许 systemd 挂 cgroup2，见 docs/migrations/lxc-migration.md
 // 宿主准备 #4）。setConfigValue 经动态 import 拿（lxc.ts 反向 import 本文件，同款防环）。
 async function alignCreatedConfig(
   cfg: Config,
@@ -589,7 +589,7 @@ export async function importArchiveTo(
   const defaults = await readDefaultConf();
   if (!defaults) {
     throw new Error(
-      'no ~/.config/lxc/default.conf with lxc.idmap — set up unprivileged LXC first (see docs/lxc-migration.md)',
+      'no ~/.config/lxc/default.conf with lxc.idmap — set up unprivileged LXC first (see docs/migrations/lxc-migration.md)',
     );
   }
   const dir = deps.containerDir(name);

@@ -383,7 +383,7 @@ async function materialize(
     // 模板存在性：给「先建模板」的明确指引，不让 lxc-copy 抛看不懂的东西。
     if ((await readConfig(template)) == null) {
       throw notFound(
-        `LXC template container "${template}" not found. Create it first (see docs/lxc-migration.md), or set lxc.template in config.`,
+        `LXC template container "${template}" not found. Create it first (see docs/migrations/lxc-migration.md), or set lxc.template in config.`,
       );
     }
     const tInfo = await infoLines(template);

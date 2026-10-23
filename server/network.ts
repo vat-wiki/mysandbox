@@ -1,5 +1,5 @@
 // IP 池：权威源 = 引擎的 assignedIps（LXC 扫容器 config 的 lxc.net.0.ipv4.address；
-// wsl2 扫安装簿记账，见 docs/wsl2-migration.md D5——记账 IP 管去重，真实 IP 是 NAT 动态的）。
+// wsl2 扫安装簿记账，见 docs/migrations/wsl2-migration.md D5——记账 IP 管去重，真实 IP 是 NAT 动态的）。
 // 假设 /24：前 3 段为前缀，第 4 段在 from..to 间分配。
 // 网关约定为 <前缀>.1（宿主在 mysandbox0 桥上的副 IP，由
 // /etc/systemd/system/mysandbox-net.service 挂载，含网段出网 MASQUERADE）——

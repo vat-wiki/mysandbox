@@ -65,7 +65,7 @@ export const STATE_DIR = MYSANDBOX_DIR;
 export const STATE_FILE = join(STATE_DIR, 'state.json');
 
 export const ConfigSchema = z.object({
-  // 容器引擎（engine 抽象见 server/engine/types.ts；wsl2 设计见 docs/wsl2-migration.md）。
+  // 容器引擎（engine 抽象见 server/engine/types.ts；wsl2 设计见 docs/migrations/wsl2-migration.md）。
   // lxc = Linux unprivileged LXC（默认，本机）；wsl2 = Windows WSL2 发行版实例。
   // 引擎差异出口走 EngineCaps（/api/health 下发），业务层不判引擎名。
   engine: z.enum(['lxc', 'wsl2']).default('lxc'),

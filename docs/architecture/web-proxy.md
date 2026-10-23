@@ -155,6 +155,21 @@ proxy:
   vite dev 的 `/api` `/ws` `/proxy` 代理 target 转 https + `secure: false`。
 - 401 引导页、CLI 横幅的 URL 均随 tls 切换 scheme。
 
+## 端口免带门面（systemd socket 激活，2026-09 起）
+
+`https://mysandbox.test/` 不带 `:7321` 也能开 = systemd socket 激活透传：
+
+- `mysandbox-console.socket`（root systemd 持 443 被动 fd，空闲零进程）+ `mysandbox-console.service`（`server/facade.ts` node 进程：TLS 在这里终结 + **HTTP/2** 多路复用（远程弱网轮询收益大；刻意不开 RFC 8441 WS over h2——compat 'request' 监听器会把 extended CONNECT 自动 405，h1 回退与隧道无两全，不开时浏览器自动回退 h1 WS 零回归，实测记录在 facade.ts 文件头））。
+- user unit 拿不到 `CAP_NET_BIND_SERVICE` 实测 exit 218，这是唯一不给 mysandbox 特权的路；fd 由 root systemd 的 socket unit 传入。
+- 模板在 `scripts/mysandbox-console.*`、install.sh 8.5 段按 config listen 落盘。
+
+## 泛解析（mysandbox-dns.service）
+
+`.test` 不可注册、hosts 做不了通配，泛解析同样自持：`mysandbox-dns.service`（本机 dnsmasq `127.0.0.1:53`，`*.mysandbox.test → 127.0.0.1`，上游实时读 resolved uplink）。此前靠 mihomo hosts 应答是环境巧合不是依赖。
+
+- install.sh 在 `127.0.0.1:53` 空闲时落盘启用并写 resolved drop-in（`DNS=127.0.0.1`，dnsmasq 上游同读一份文件不成环；已有自配 DNS 的环境跳过）。
+- 坑：dnsmasq 的 `--no-resolv` 会把 `--resolv-file` 一起禁掉（no upstream servers → 全部 REFUSED，且 `--log-facility=/dev/null` 下无日志，只能前台跑抓 warning）。
+
 ## 已知限制
 
 - 只代理 HTTP/WS；非 HTTP 的 TCP 服务浏览器无解（tailscale 直连）。

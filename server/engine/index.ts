@@ -1,5 +1,5 @@
 // engine 入口：消费方唯一 import 点。getEngine 按 cfg.engine 分流实现
-// （lxc = Linux unprivileged LXC；wsl2 = Windows WSL2，见 docs/wsl2-migration.md）。
+// （lxc = Linux unprivileged LXC；wsl2 = Windows WSL2，见 docs/migrations/wsl2-migration.md）。
 // 业务层不直接 import 具体实现——历史上 status/base/network 三处违例已经修掉，别再开新口子。
 import type { Config } from '../config.js';
 import type { Engine } from './types.js';

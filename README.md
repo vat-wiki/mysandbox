@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts\win\mysandbox.ps1 status
   （hosts 自动注入），数据在命名卷，长操作都是可取消的后台任务。
 - **Web 代理**：容器/服务端口经 `<名>-<端口>.<基域名>` 域名门面或 `/proxy/...` 子路径访问；
   可开自签 TLS、systemd socket 激活做到 `https://mysandbox.test/` 免带端口。详见
-  `docs/web-proxy.md`。
+  `docs/architecture/web-proxy.md`。
 - **AI 工具**：技能中心（库 → 按规则分发到本机+全部容器，项目克隆跟铺）+ AI 网关
   （provider × 绑定，落盘 claude/codex/opencode/pi 各自配置文件，幂等不碰用户其余配置）。
 - **容器桌面**：浏览器里看/操作容器内 XFCE 桌面（noVNC），首次自动装栈，关窗不杀桌面。
@@ -129,7 +129,7 @@ node dist/server/cli.js             # 跑产物（LXC 引擎下开发期建议�
 ```
 
 架构与设计约定见 `AGENTS.md`（后端 fastify，业务层只 import `server/engine/` 的引擎抽象）；
-引擎相关的实测记录在 `docs/`（lxc 迁移 / WSL2 / web 代理）。
+详细文档（架构设计 / 迁移实测记录）在 `docs/`，入口 [`docs/index.md`](docs/index.md)。
 
 ## License
 

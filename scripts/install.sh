@@ -315,7 +315,7 @@ cat > "$TARGET_HOME/.config/systemd/user/mysandbox.service" <<EOF
 [Unit]
 Description=mysandbox web console (LXC engine)
 # LXC 引擎要求 mysandbox 跑在 systemd user manager 里（cgroup 委派），
-# 见 docs/lxc-migration.md「LXC 命令必须在 systemd user manager 环境跑」。
+# 见 docs/migrations/lxc-migration.md「LXC 命令必须在 systemd user manager 环境跑」。
 # 由 scripts/install.sh 生成——改 ExecStart/WorkingDirectory 请重跑 install.sh。
 
 [Service]

@@ -97,7 +97,7 @@ async function collectTemplate(cfg: Config): Promise<StatusReport['template']> {
     return { name: cfg.lxc.template, exists: content != null, ip };
   }
   // 其余引擎：exists 走 baseStatus；IP 不展示（wsl2 的记账 IP 不是真实 IP，
-  // 见 docs/wsl2-migration.md D5）。
+  // 见 docs/migrations/wsl2-migration.md D5）。
   const st = await engine.baseStatus(cfg).catch(() => null);
   return { name: engine.baseName(cfg), exists: !!st?.exists, ip: null };
 }

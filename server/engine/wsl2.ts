@@ -1,5 +1,5 @@
 // WSL2 引擎实现（接口见 types.ts），底层是 wsl.exe CLI + 安装簿纯文件。
-// 设计决策/分歧点/Windows 实测清单见 docs/wsl2-migration.md（改这个文件前先读它）。
+// 设计决策/分歧点/Windows 实测清单见 docs/migrations/wsl2-migration.md（改这个文件前先读它）。
 //
 // 核心映射：容器 = WSL2 发行版实例（wsl --import 落地），基座 = 模板发行版。
 // 与 LXC 的关键差异：
