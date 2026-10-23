@@ -57,6 +57,9 @@ const emit = defineEmits<{
   // shell 集成上报 cwd（OSC 7，zsh precmd 发射）：cd 生效即到达，零轮询零请求的
   // 事件流。老容器/SSH/宿主无种子不上报，由 FilePanel 的 1s 轮询兜底。
   (e: 'cwd', path: string): void
+  // 收到首帧终端输出（二进制帧）：父组件据此注入首条命令/提示词。不用 onopen——
+  // 那时后端 tmux 可能还没 attach 完，直接写 PTY 有概率丢输入。
+  (e: 'ready'): void
 }>()
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
@@ -256,6 +259,10 @@ function connectWs(quiet = false) {
     noteTermOutput(props.termId)
     const bytes = new Uint8Array(ev.data as ArrayBuffer)
     term?.write(bytes)
+    if (!readySent) {
+      readySent = true
+      emit('ready')
+    }
   }
   // 非正常关闭（非 1000/1001）视为意外断线，置 lost 徽标；点「重连」条或刷新恢复。
   ws.onclose = (ev) => {
@@ -305,7 +312,12 @@ function reconnect() {
   connectWs()
   term?.focus()
 }
-defineExpose({ kill, reconnect, screenHash })
+
+// 程序化输入出口（Claude 终端对话框用）：与键盘输入同通道，调用方负责带回车。
+function sendInput(s: string) {
+  sendRaw(s)
+}
+defineExpose({ kill, reconnect, screenHash, sendInput })
 
 // 非激活 tab 的懒挂载（detach）：终端组全部常驻 DOM（v-show 切换、组件不卸载），但
 // WS 只留给激活 tab——非激活 tab 不再吃输出流，省掉三样：xterm 对不可见输出的 VT 解析
@@ -378,6 +390,8 @@ let hbTimer: ReturnType<typeof setInterval> | null = null
 // tmux 历史回填只做一次（组件首连）：reconnect 时 term 实例还在、scrollback 已有内容，
 // 再回填会重复整段历史。断线期间产生的输出留在 tmux 历史里滚不到（可接受的缺口）。
 let backfilled = false
+// ready 只在本次挂载内发一次：首个二进制帧 = 后端已 attach、PTY 可以稳定接收输入。
+let readySent = false
 
 // 内置 Cascadia Code Variable 优先（woff2 打包，跨端一致）；彩色 emoji 走系统字体兜底。
 const FONT_FAMILY =

@@ -9,12 +9,11 @@
 // 规则的 UI 入口已删（原文件面板 ✨ AiSpotDialog，用得少被移除）；存量规则仍由后端
 // start 事件补发链路生效，API（/api/ai/projects/*）保留供 agent 调用。
 // 工具自身配置（toolConfig）是全局一份，不进绑定四层。
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import {
   getAiView,
   saveAiBinding,
   saveAiClaudePage,
-  updateAgentTools,
   normalizeOpenCodeBinding,
   normalizePiBinding,
   openCodeVariants,
@@ -38,7 +37,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Bot, RefreshCw } from 'lucide-vue-next'
+import { Bot, TerminalSquare } from 'lucide-vue-next'
 import AiFieldClaude from './AiFieldClaude.vue'
 import AiFieldCodex from './AiFieldCodex.vue'
 import AiOpenCodeField from './AiOpenCodeField.vue'
@@ -46,6 +45,8 @@ import AiModelCombo from './AiModelCombo.vue'
 import AiBindingResult from './AiBindingResult.vue'
 import AiClaudeToolConfig from './AiClaudeToolConfig.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+
+const ClaudeTerminalDialog = defineAsyncComponent(() => import('./ClaudeTerminalDialog.vue'))
 
 const emit = defineEmits<{
   (e: 'done'): void
@@ -75,28 +76,10 @@ const busy = ref(false)
 const err = ref('')
 const result = ref<BatchResult | null>(null)
 
-// —— 一键更新：对本机 + 全部受管系统容器跑 npm 全局更新（agent CLI 全员 @latest）——
-// 与保存/下发互不相干，独立的 busy/结果态；结果复用 BatchResult 表格。
-const askUpdate = ref(false)
-const updating = ref(false)
-const updateResult = ref<BatchResult | null>(null)
-
-async function runAgentUpdate() {
-  askUpdate.value = false
-  updating.value = true
-  err.value = ''
-  try {
-    updateResult.value = await updateAgentTools()
-  } catch (e) {
-    if (e instanceof Unauthorized) {
-      emit('unauthorized')
-      return
-    }
-    err.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    updating.value = false
-  }
-}
+// —— AI 终端：更新/诊断/修复这类批量操作交给 Claude 在宿主终端里逐步做 ——
+// 旧的后端同步批量 npm 更新在中断时会留下半回滚状态（bin 链接被挪走、新链接没建），
+// 因此入口改成打开 Claude 终端 + 快捷提示词，由 agent 逐个工具验证着来。
+const claudeOpen = ref(false)
 
 // —— 绑定表单：每工具一段；没选模型供应商 = 该工具不参与（不碰落盘配置）——
 const claude = ref('')
@@ -394,13 +377,8 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
 <template>
   <!-- 板块外框与技能中心/模型供应商同款（rounded-md border + muted 头部条）——三页签统一板块语言 -->
   <div class="flex flex-col gap-3">
-    <!-- 更新结果态（优先于下发结果展示；同为 BatchResult 表格，复用同款视图） -->
-    <template v-if="updateResult">
-      <AiBindingResult :result="updateResult" title="更新结果" @back="updateResult = null" />
-    </template>
-
     <!-- 结果态：表单区整体切走（返回编辑保留表单内容，重推是常态） -->
-    <template v-else-if="result">
+    <template v-if="result">
       <AiBindingResult :result="result" @back="result = null" />
     </template>
 
@@ -412,7 +390,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
           <Bot class="size-3.5 shrink-0 text-muted-foreground" />
           <!-- 工具切换：分段控件（选中底色明显，点开即该 CLI 的输入表单）；
                圆点 = 该工具绑定已启用。四个 CLI 标签 ~320px，手机放不下——可横向轻扫，
-               「一键更新」flex-wrap 落到第二行 -->
+               「Claude 终端」flex-wrap 落到第二行 -->
           <div class="scroll-thin flex max-w-full gap-0.5 overflow-x-auto rounded-md border bg-background/40 p-0.5">
             <button
               v-for="t in toolTabs"
@@ -434,16 +412,16 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               {{ t.label }}
             </button>
           </div>
-          <!-- 一键更新：与本页配置/保存无关的独立动作，放头部右侧 -->
+          <!-- Claude 终端：更新/诊断/修复交给 agent 逐步执行，不再走同步批量 npm -->
           <Button
             variant="outline"
             size="sm"
             class="ml-auto"
-            :disabled="busy || updating"
-            @click="askUpdate = true"
+            :disabled="busy"
+            @click="claudeOpen = true"
           >
-            <RefreshCw class="size-3.5" :class="updating ? 'animate-spin' : ''" />
-            {{ updating ? '更新中…' : '一键更新' }}
+            <TerminalSquare class="size-3.5" />
+            Claude 终端
           </Button>
         </div>
 
@@ -776,15 +754,8 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
         @close="askReplace = false"
       />
 
-      <!-- 一键更新的确认步：npm 全局更新不可逆程度低，但要挑明「停机容器标失败」与耗时 -->
-      <ConfirmDialog
-        v-if="askUpdate"
-        title="更新全部 Agent 工具？"
-        description="对所有目标执行 npm 全局更新（Claude Code / Codex / OpenCode / Pi / OpenClaw）。停机容器会失败，耗时可能数分钟。"
-        confirm-text="开始更新"
-        @confirm="runAgentUpdate"
-        @close="askUpdate = false"
-      />
+      <!-- AI 终端：新开宿主终端并自动运行 claude；快捷提示词含一键更新/诊断/修复 -->
+      <ClaudeTerminalDialog v-if="claudeOpen" @close="claudeOpen = false" />
     </template>
   </div>
 </template>
