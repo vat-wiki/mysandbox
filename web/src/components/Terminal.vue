@@ -483,6 +483,22 @@ function stepFontSize(delta: number) {
   refit()
 }
 
+// 移动端软键盘会先改 visualViewport，再经 padding/工具条触发 refit。xterm resize
+// 会调整 ybase/ydisp，容易把上翻后的回滚视口带回底部。这里按整行绝对位置恢复：
+// 跟随底部时不动（保住新输出自动滚底），上翻时才把同一行拉回视口。
+type ScrollSnapshot = { viewportY: number; baseY: number; following: boolean }
+function snapshotScrollback(): ScrollSnapshot | null {
+  const buf = term?.buffer.active
+  if (!buf) return null
+  return { viewportY: buf.viewportY, baseY: buf.baseY, following: buf.viewportY >= buf.baseY }
+}
+function restoreScrollback(snapshot: ScrollSnapshot | null) {
+  const buf = term?.buffer.active
+  if (!buf || !snapshot || snapshot.following) return
+  const targetY = Math.max(0, Math.min(snapshot.viewportY, buf.baseY))
+  if (buf.viewportY !== targetY) term?.scrollToLine(targetY)
+}
+
 // 防抖 fit：合并一帧内的多次尺寸变化，避免拖窗/字号切换时高频抖动；同时同步字号。
 function refit() {
   if (rafId) cancelAnimationFrame(rafId)
@@ -492,6 +508,7 @@ function refit() {
     const fs = computeFontSize()
     if (term && term.options.fontSize !== fs) term.options.fontSize = fs
     try {
+      const scrollSnapshot = snapshotScrollback()
       fit?.fit()
       // 强制重算 xterm 内部滚动区（切回 tab 后「滚动不到最下面」的修复）。
       // xterm 5.5 的 Viewport._innerRefresh 直接读 viewport 的 offsetHeight，而
@@ -507,6 +524,7 @@ function refit() {
         }
       )._core?.viewport
       vp?.syncScrollArea?.(true)
+      restoreScrollback(scrollSnapshot)
       // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
       // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
       // 触摸设备恒不程序性聚焦：切 tab / resize 的自动 focus 会直接弹系统键盘，
