@@ -123,6 +123,7 @@ const applying = ref(false)
 // 让按钮/提示跟 job 走，直到看到终态才松开。否则「秒回 + 片刻后 drift 自己归零」
 // 像失联，且 drift 提示（本意是"改了没应用"）会被当成报错。
 const applyJobId = ref('')
+const cfgApplying = computed(() => applying.value || !!applyJobId.value)
 const applyingJob = computed(() => {
   if (!applyJobId.value) return null
   const j = jobs.value.find((x) => x.id === applyJobId.value)
@@ -172,7 +173,8 @@ async function applyCfg(build = false) {
   try {
     const r = await applyServiceConfig(name, cfgYaml.value, build)
     applyJobId.value = r.jobId
-    // 文件已被后端落盘（应用校验通过）：以编辑器内容为新基准，drift 等 job 完成后由刷新归零。
+    // 文件已被后端落盘（应用校验通过）：以编辑器内容为新基准；任务列表由轮询补齐，
+    // 提交后立刻用 cfgApplying 显示「应用中」，避免下一轮轮询前误读成「待应用」。
     cfg.value = { ...cfg.value, yaml: cfgYaml.value, drift: true }
   } catch (e) {
     if (e instanceof Unauthorized) {
@@ -791,7 +793,7 @@ onUnmounted(() => {
                   <!-- 放大态工具条：路径/dirty 状态 + 应用动作原样可用 + 退出 -->
                   <div v-if="cfgZoom" class="flex shrink-0 items-center gap-2 border-b px-2 py-1.5">
                     <span class="truncate font-mono text-[11px] text-muted-foreground" :title="cfg.path">{{ cfg.path }}</span>
-                    <span v-if="applyingJob" class="shrink-0 text-[11px] text-muted-foreground">应用中…</span>
+                    <span v-if="cfgApplying" class="shrink-0 text-[11px] text-muted-foreground">应用中…</span>
                     <span v-else-if="cfgDirty" class="shrink-0 text-[11px] text-amber-600">未保存</span>
                     <span v-else-if="cfg.drift" class="shrink-0 text-[11px] text-amber-600">待应用</span>
                     <span class="min-w-0 flex-1" />
@@ -807,14 +809,14 @@ onUnmounted(() => {
                     @save="applyCfg(false)"
                   />
                   <div v-if="cfgZoom" class="flex shrink-0 flex-wrap items-center gap-1.5 border-t px-2 py-1.5">
-                    <Button size="sm" :disabled="applying || !!applyingJob || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
-                      <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" />
-                      {{ applyingJob ? '应用中…' : '应用' }}
+                    <Button size="sm" :disabled="cfgApplying || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
+                      <LoaderCircle v-if="cfgApplying" class="size-3.5 animate-spin" />
+                      {{ cfgApplying ? '应用中…' : '应用' }}
                     </Button>
-                    <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying || !!applyingJob" @click="applyCfg(true)">
-                      <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" /> 构建并应用
+                    <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="cfgApplying" @click="applyCfg(true)">
+                      <LoaderCircle v-if="cfgApplying" class="size-3.5 animate-spin" /> 构建并应用
                     </Button>
-                    <span v-if="applyingJob" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
+                    <span v-if="cfgApplying" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
                     <span v-else-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
                     <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
                   </div>
@@ -831,14 +833,14 @@ onUnmounted(() => {
                   </Button>
                 </div>
                 <div v-if="!cfgZoom" class="flex flex-wrap items-center gap-1.5">
-                  <Button size="sm" :disabled="applying || !!applyingJob || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
-                    <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" />
-                    {{ applyingJob ? '应用中…' : '应用' }}
+                  <Button size="sm" :disabled="cfgApplying || (!cfgDirty && !cfg.drift)" @click="applyCfg(false)">
+                    <LoaderCircle v-if="cfgApplying" class="size-3.5 animate-spin" />
+                    {{ cfgApplying ? '应用中…' : '应用' }}
                   </Button>
-                  <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="applying || !!applyingJob" @click="applyCfg(true)">
-                    <LoaderCircle v-if="applying || applyingJob" class="size-3.5 animate-spin" /> 构建并应用
+                  <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="cfgApplying" @click="applyCfg(true)">
+                    <LoaderCircle v-if="cfgApplying" class="size-3.5 animate-spin" /> 构建并应用
                   </Button>
-                  <span v-if="applyingJob" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
+                  <span v-if="cfgApplying" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
                   <span v-else-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
                   <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
                 </div>
