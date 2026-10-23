@@ -56,14 +56,14 @@ function doClose() {
   if (props.node.kind !== 'leaf') return
   ops.close(props.group, props.node.termId)
 }
-const termRef = ref<{ redraw(): void } | null>(null)
+const termRef = ref<{ refresh(): void } | null>(null)
 function bindTerm(el: unknown) {
   if (props.node.kind !== 'leaf') return
-  termRef.value = (el as { redraw(): void } | null) ?? null
+  termRef.value = (el as { refresh(): void } | null) ?? null
   ops.setRef(props.node.termId, el)
 }
-function doRedraw() {
-  termRef.value?.redraw()
+function doRefresh() {
+  termRef.value?.refresh()
 }
 function onOsc(path: string) {
   if (props.node.kind !== 'leaf') return
@@ -183,12 +183,12 @@ if (leaf.value) {
         {{ paneTitle || (cwd ? '· ' + cwd : '· …') }}
       </span>
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
-        <!-- 重绘：xterm 滚回历史后偶发叠字/错位（buffer 没坏，是渲染层失配），点一下
-             清字形缓存并重画当前视口，滚动位置保持不变。 -->
+        <!-- 刷新：滚回历史后偶发叠字/错位时，清本地 buffer 并重新 attach，按 tmux 全量
+             历史重建 scrollback（不是单纯重画坏掉的本地行）。 -->
         <button
           class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground pointer-coarse:p-2"
-          title="重绘终端（滚动后字符叠字/错位时点一下，不改变滚动位置）"
-          @click="doRedraw"
+          title="刷新终端（重新拉取 tmux 历史并重绘；会回到最新输出）"
+          @click="doRefresh"
         >
           <RefreshCw class="size-3.5 pointer-coarse:size-4.5" />
         </button>

@@ -230,6 +230,8 @@ function connectWs(quiet = false) {
     if (!wsQuiet) term?.writeln(`\x1b[2m>> 连接 ${props.name}${props.ssh ? '' : ` (${shell})`}\x1b[0m`)
   }
   ws.onmessage = (ev) => {
+    // 刷新/重建连接时旧 socket 可能还有排队消息先到：丢弃，别写进刚 reset 的 buffer。
+    if (ws !== sock) return
     // 文本帧 = 服务端控制帧（二进制才是终端流）。目前只有 history：tmux pane 历史回填
     // （后端 attach 前 capture-pane 发来），写入 scrollback 后 tmux 整屏重绘落在空视口上。
     if (typeof ev.data === 'string') {
@@ -317,7 +319,7 @@ function reconnect() {
 function sendInput(s: string) {
   sendRaw(s)
 }
-defineExpose({ kill, reconnect, redraw, screenHash, sendInput })
+defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput })
 
 // 非激活 tab 的懒挂载（detach）：终端组全部常驻 DOM（v-show 切换、组件不卸载），但
 // WS 只留给激活 tab——非激活 tab 不再吃输出流，省掉三样：xterm 对不可见输出的 VT 解析
@@ -746,28 +748,33 @@ function toolScrollEnd(top: boolean) {
   if (top) term?.scrollToTop()
   else term?.scrollToBottom()
 }
-// 手动重绘当前视口：大量滚动回看历史后，WebGL 字形图集或行几何偶发失配，屏幕出现
-// 跨行叠字/错位（buffer 里的数据本身是好的）。清图集 + 强制重算滚动区 + refresh 即可
-// 恢复；不清 buffer、不动 ydisp，滚到哪刷新后还在哪。DOM 渲染器直接走 refresh。
-function redraw() {
+// 真正刷新：本地 buffer 里的行一旦被 reflow/宽字符错位写坏，repaint 只会把坏内容再画一遍。
+// 清 buffer 后按 resume=0 重连，服务端 capture-pane 全量回填 + tmux attach 重画当前屏，
+// 等价于在终端里 detach/attach 一次。代价是回到最新输出、丢弃本地多出 tmux 的历史。
+function refreshTerminal() {
   const currentTerm = term
   if (!currentTerm) return
+  // 顺带清一次字形图集，避免 WebGL 图集损坏在重建后继续存在。
   try {
     ;(currentTerm as unknown as TerminalViewportHost)._core?.viewport?.syncScrollArea?.(true)
-  } catch {
-    /* 渲染器重建中/dispose 后忽略 */
-  }
-  try {
     webglAddon?.clearTextureAtlas()
   } catch {
-    /* WebGL 上下文已丢失时 clear 可能抛错，refresh 仍要走 */
+    /* 渲染器重建中/上下文丢失时忽略 */
   }
   try {
-    currentTerm.refresh(0, currentTerm.rows - 1)
+    ws?.close()
   } catch {
     /* noop */
   }
-  // 桌面端把焦点还给终端，点完按钮可直接继续输入；触屏不程序性聚焦（会弹键盘）。
+  ws = null
+  if (hbTimer) {
+    clearInterval(hbTimer)
+    hbTimer = null
+  }
+  currentTerm.reset()
+  backfilled = false
+  connState.value = 'ok'
+  connectWs(true) // 程序性重连：不要往刚清空的 buffer 写「连接/断开」横幅
   if (!isCoarse.value) {
     suppressFocusEmit = true
     try {
@@ -857,8 +864,8 @@ function runKeyBtn(id: string) {
     case 'scrollEnd':
       toolScrollEnd(a.top)
       break
-    case 'redraw':
-      redraw()
+    case 'refresh':
+      refreshTerminal()
       break
     case 'paste':
       void toolPaste()
