@@ -88,9 +88,13 @@ ui:
 # 回调配置（claude hooks / codex notify / opencode、pi 插件），回合完成/等权限时经
 # peer API 精准上报，收到过信号的会话退出上面的通用启发式（误报根治）。peer.enabled=false
 # 时整体无效。
+# mouse：tmux 是否接管鼠标（默认 off）。off 时滚轮/选择/右键复制粘贴全交给 xterm.js，
+# 网页终端的复制、链接和触屏滚动才正常；on 只给需要内建滚动的 TUI 留逃生口（会把交互
+# 交回 tmux/应用，xterm 的选择与滚轮能力随之下放）。
 terminal:
   quietSeconds: 15
   agentNotify: true
+  mouse: off
 
 # 容器 code-server（按需 ensure，监听 7332）的闲置自动停：浏览器关掉 tab 后无连接，
 # 闲置超过 idleStopMinutes 分钟即停进程（磁盘安装保留，下次打开秒级重起）。0 = 常驻不停。

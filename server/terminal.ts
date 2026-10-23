@@ -17,6 +17,7 @@ import type { Duplex } from 'node:stream';
 import type { Config } from './config.js';
 import { execRun, execStream as execStreamRaw, inspectContainer } from './engine/index.js';
 import { pumpToWs } from './wsPump.js';
+import { TmuxMultiplexer, LIST_FMT, type Multiplexer } from './multiplexer.js';
 
 // 控制帧：resize 调 PTY 尺寸、kill 杀整条会话（真关）。
 interface ControlMsg {
@@ -58,6 +59,23 @@ const activePidfiles = new Set<string>();
 // 每个会话当前挂着的 WS 连接数（多窗口同 termId 时 >1）。决定断开时是否动会话：
 // >1 -> 还有别的窗口在用，只 detach 本连接；==0（最后一个走）-> 按 wantKill 决定即杀或纯 detach。
 const activeCount = new Map<string, number>();
+
+// 容器内 tmux：经引擎 execRun 直传 argv（不经过 shell），socket 用默认。
+function containerMux(cfg: Config, id: string): Multiplexer {
+  return new TmuxMultiplexer('tmux', async (argv, timeoutMs = 5_000) => {
+    try {
+      const r = await execRun(cfg, id, {
+        Cmd: argv,
+        User: '1000:1000',
+        Tty: false,
+        timeoutMs,
+      });
+      return { ok: r.exitCode === 0, stdout: r.stdout, err: r.stderr.split('\n')[0] };
+    } catch (e) {
+      return { ok: false, stdout: '', err: e instanceof Error ? e.message : String(e) };
+    }
+  });
+}
 
 // 快速探测容器里有没有 tmux（不安装）。命中缓存或 command -v 成功即返回 true。
 async function hasTmux(cfg: Config, id: string): Promise<boolean> {
@@ -260,8 +278,6 @@ export interface TermSessionView {
 // 与 TUI 应用标题，加段必有歧义；控制字符（\x1f 试过）会被 tmux format 转义成 \037
 // 字面串也切不开。换行分块最稳（title 含换行的情形实际不存在：钩子已剔、tmux pane
 // title 不含换行），解析按「主行命中 re、其后一行即 title」消费。
-export const LIST_FMT = '#{session_name}|#{session_attached}|#{session_created}|#{pane_current_path}\n#{pane_title}';
-
 export async function listContainerSessions(cfg: Config, id: string): Promise<TermSessionView[]> {
   const short = id.slice(0, 8);
   // 会话名按本容器短 id 前缀匹配（容器名可能来自 adopt，转义防正则元字符）
@@ -270,12 +286,8 @@ export async function listContainerSessions(cfg: Config, id: string): Promise<Te
   );
   let out = '';
   try {
-    const r = await execRun(cfg, id, {
-      Cmd: ['sh', '-c', `tmux list-sessions -F "${LIST_FMT}" 2>/dev/null || true`],
-      User: '1000:1000',
-      Tty: false,
-      timeoutMs: 8_000,
-    });
+    const r = await containerMux(cfg, id).listSessions(LIST_FMT, 8_000);
+    if (!r.ok) return [];
     out = r.stdout;
   } catch {
     return []; // 容器刚停/exec 失败：按 0 会话
@@ -310,12 +322,7 @@ export async function killContainerSession(cfg: Config, id: string, termId: stri
   const session = sessionName(id, termId);
   activeCount.delete(session);
   try {
-    await execRun(cfg, id, {
-      Cmd: ['tmux', 'kill-session', '-t', `=${session}`],
-      User: '1000:1000',
-      Tty: false,
-      timeoutMs: 5_000,
-    });
+    await containerMux(cfg, id).killSession(session, 5_000);
   } catch {
     /* 会话/容器已没了就忽略 */
   }
@@ -473,17 +480,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       let splitCwd = '';
       if (useTmux && from) {
         try {
-          const r = await execRun(cfg, id, {
-            Cmd: [
-              'sh', '-c',
-              'tmux list-panes -t "=$1:" -F "#{pane_active} #{pane_current_path}" 2>/dev/null | sed -n "s/^1 //p"',
-              'sh', sessionName(id, from),
-            ],
-            User: '1000:1000',
-            Tty: false,
-            timeoutMs: 8_000,
-          });
-          const cwd = r.stdout.trim();
+          const cwd = await containerMux(cfg, id).paneCwd(sessionName(id, from), 8_000);
           if (cwd.startsWith('/')) splitCwd = cwd;
         } catch {
           /* 源会话不在/容器抖动：落默认 home */
@@ -493,8 +490,9 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   //   0) echo $$ > pidfile：sh 把自己的 PID（容器内 PID，exec tmux 后同 PID）写进唯一 pidfile，
   //      关闭时 killExecClient 据此找到并杀掉对应 tmux 客户端（exec.inspect().Pid 恒为 0，用不了）；
   //   1) has-session || new-session -d：有会话则复用、没有则 detached 新建（server+shell 起来但不 attach）；
-  //   2) set -g alternate-screen off + mouse off + terminal-overrides smcup@:rmcup@：tmux 仅做会话守护，交互交给 xterm.js。
-  //      mouse off：选择/复制交给 xterm.js（tmux 不劫持鼠标）。
+  //   2) set -g alternate-screen off + mouse <terminal.mouse> + terminal-overrides smcup@:rmcup@：
+  //      tmux 仅做会话守护，交互交给 xterm.js。mouse 默认 off（选择/复制/滚轮归 xterm），
+  //      配置 on 时交回 tmux/TUI 自己处理（需要应用内建滚动的逃生口）。
   //      禁 alt screen：alternate-screen off 拦 pane 内程序自己的 smcup（Codex 等 TUI 进入后当前屏清空、历史不可回放）；
   //      禁 smcup/rmcup：让 tmux 客户端 attach 时【不进 alt screen】。否则 tmux 发 ?1049h 进 alt buffer，
   //      xterm 在 alt buffer 下 hasScrollback=false，会把滚轮转成 ↑/↓ 方向键发给 shell（=翻命令历史，
@@ -552,15 +550,15 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
   //     纯噪声；session 级不影响用户自己的会话。hostTerminal.ts 同款。
   //   3) exec tmux attach：替换进程为 attach 客户端。
   //   $1=会话名 mysandbox-<短id>-<termId>、$2=shell、$3=pidfile、$4=旧名会话 ms-<短id>-<termId>、
-  //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）。
+  //   $5=新会话 cwd（分屏继承源 pane 目录，空则落 /home/dev）、$6=terminal.mouse。
   //   旧名存在就 rename 成新名（命名统一迁移，幂等）：rename 后立刻退出脚本防串扰，
   //   后续 has-session 命中新名。注意 set 必须在 attach 之前 detached 跑--attach 后
   //   客户端接管 tty，命令行里 ';' 接的后续 tmux 命令不再执行（实测 attach 路径下 set 不生效）。
   const cmd = useTmux
     ? [
         'sh', '-c',
-        'echo $$ > "$3"; tmux start-server >/dev/null 2>&1; tmux set -g alternate-screen off 2>/dev/null; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -e COLORTERM=truecolor -e CLAUDE_CODE_TMUX_TRUECOLOR=1 -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse off 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; tmux set -t "=$1:" status off 2>/dev/null; exec tmux attach -t "$1"',
-        'sh', session, shell, pidfile, oldSession, splitCwd,
+        'echo $$ > "$3"; tmux start-server >/dev/null 2>&1; tmux set -g alternate-screen off 2>/dev/null; if tmux has-session -t "=$4" 2>/dev/null; then tmux rename-session -t "=$4" "$1"; fi; tmux has-session -t "$1" 2>/dev/null || tmux new-session -d -e COLORTERM=truecolor -e CLAUDE_CODE_TMUX_TRUECOLOR=1 -s "$1" -c "${5:-/home/dev}" "$2"; tmux set -g mouse "$6" 2>/dev/null; tmux set -sg escape-time 10 2>/dev/null; tmux set -g terminal-overrides "xterm*:smcup@:rmcup@" 2>/dev/null; tmux set-environment -g MYSANDBOX_WEB 1 2>/dev/null; tmux set-environment -g LANG C.UTF-8 2>/dev/null; tmux set -s allow-passthrough on 2>/dev/null; tmux set -as terminal-overrides ",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007" 2>/dev/null; tmux set -g set-clipboard on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; tmux set -t "=$1:" set-titles on 2>/dev/null; tmux set -t "=$1:" set-titles-string "#T" 2>/dev/null; tmux set -t "=$1:" status off 2>/dev/null; exec tmux attach -t "$1"',
+        'sh', session, shell, pidfile, oldSession, splitCwd, cfg.terminal.mouse,
       ]
     : [shell];
 
@@ -582,22 +580,14 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
       // 首连仍走全量 -J（join 折行，回填逻辑行）+ -E -1（不含当前屏，配合前端 rows 个 CRLF
       // 把历史精确推进 scrollback 的数学）。两种 frame 前端分别处理，见 Terminal.vue。
       const resume = q.resume === '1';
-      const capCmd = resume
-        ? 'tmux capture-pane -p -e -t "=$1:" -S -2000 2>/dev/null'
-        : 'tmux capture-pane -p -e -J -t "=$1:" -S -10000 -E -1 2>/dev/null';
       if (useTmux) {
+        const mux = containerMux(cfg, id);
         try {
-          const r = await execRun(cfg, id, {
-            Cmd: [
-              'sh', '-c',
-              `if tmux has-session -t "=$2" 2>/dev/null; then tmux rename-session -t "=$2" "$1"; fi; ${capCmd}`,
-              'sh', session, oldSession,
-            ],
-            User: '1000:1000',
-            timeoutMs: 10_000,
-          });
-          const text = r.stdout.trim();
-          if (text) {
+          // 旧名会话先迁移（幂等），再 capture；两步都走 mux，target 语义见 Multiplexer.target。
+          if (await mux.hasSession(oldSession, 10_000)) await mux.renameSession(oldSession, session, 10_000);
+          const cap = await mux.capturePane(session, resume, 10_000);
+          if (cap.ok && cap.text) {
+            const text = cap.text;
             socket.send(JSON.stringify({ type: resume ? 'history-delta' : 'history', text }));
           }
         } catch {
@@ -611,17 +601,7 @@ export async function registerTerminal(app: FastifyInstance, cfg: Config): Promi
         // 的 set-titles 注释）。list-panes 而非 display-message：后者对无 attach client
         // 的会话返回空串（files.ts 同款结论）；target 带「=会话名:」（capture-pane 教训）。
         try {
-          const r = await execRun(cfg, id, {
-            Cmd: [
-              'sh', '-c',
-              'tmux list-panes -t "=$1:" -F "#{pane_active} #{pane_title}" 2>/dev/null | sed -n "s/^1 //p"',
-              'sh', session,
-            ],
-            User: '1000:1000',
-            Tty: false,
-            timeoutMs: 8_000,
-          });
-          const title = r.stdout.trim();
+          const title = await mux.paneTitle(session, 8_000);
           if (title) {
             socket.send(JSON.stringify({ type: 'title', text: title }));
           }

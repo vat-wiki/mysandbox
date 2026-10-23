@@ -208,7 +208,7 @@ export async function buildServer(cfg: Config) {
   await registerCodeServer(app, cfg);
   await registerHostTerminal(app, cfg);
   // SSH 终端（server/sshTerminal.ts）：远程主机的 tmux 会话 + 目标 CRUD（sidecar）。
-  await registerSshTerminal(app);
+  await registerSshTerminal(app, cfg);
   await registerHostFileRoutes(app);
   await registerBaseRoutes(app, cfg);
   registerServices(app, cfg);

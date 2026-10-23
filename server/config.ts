@@ -136,8 +136,11 @@ export const ConfigSchema = z.object({
     .object({
       quietSeconds: z.number().int().default(15),
       agentNotify: z.boolean().default(true),
+      // off = xterm.js 独占鼠标（滚轮/选择/复制/触屏）；on = 交给 tmux/TUI 自己处理。
+      // 默认必须保持 off：网页终端的复制、链接和滚动都建立在 xterm 拿到鼠标事件之上。
+      mouse: z.enum(['off', 'on']).default('off'),
     })
-    .default({ quietSeconds: 15, agentNotify: true }),
+    .default({ quietSeconds: 15, agentNotify: true, mouse: 'off' }),
   // 容器 code-server（server/codeserver.ts，监听 7332）闲置自动停：浏览器开着才有
   // ESTABLISHED 连接，闲置超过 idleStopMinutes 分钟即 pkill（磁盘安装保留，下次打开
   // 秒级重起）。0 = 不自动停（常驻，旧行为）。

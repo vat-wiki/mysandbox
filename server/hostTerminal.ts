@@ -35,7 +35,8 @@ import { resolve as resolvePath, join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import type { ChildProcess } from 'node:child_process';
-import { TERMID_RE, LIST_FMT, type TermSessionView } from './terminal.js';
+import { TERMID_RE, type TermSessionView } from './terminal.js';
+import { TmuxMultiplexer, hostTransport, LIST_FMT } from './multiplexer.js';
 import { spawnPty, type PtyTerm } from './pty.js';
 import { notFound, badRequest, HttpError } from './errors.js';
 import { withPollCache } from './cache.js';
@@ -44,6 +45,7 @@ const execFileAsync = promisify(execFile);
 
 // 宿主专用 tmux socket 名（-L）。与用户自己的 tmux server 完全隔离。
 export const HOST_SOCKET = 'mysandbox-host';
+const hostMux = new TmuxMultiplexer('tmux', hostTransport, ['-L', HOST_SOCKET]);
 
 // 宿主 tmux server 的宿主 scope 名：server 若直接从本进程 fork 出来，会落进
 // mysandbox.service 的 cgroup，服务重启时被 systemd 连带清杀（KillMode=
@@ -160,22 +162,6 @@ async function resolveSvcShell(name: string): Promise<string> {
   }
 }
 
-// 跑一条宿主 tmux 命令（专用 socket）。tmux 报 no server running 等一律按失败返回，
-// 调用方按「无会话」处理——宿主 tmux server 只在有会话时存在。
-async function hostTmux(
-  args: string[],
-  timeoutMs = 5_000,
-): Promise<{ ok: boolean; stdout: string }> {
-  try {
-    const { stdout } = await execFileAsync('tmux', ['-L', HOST_SOCKET, ...args], {
-      timeout: timeoutMs,
-    });
-    return { ok: true, stdout };
-  } catch {
-    return { ok: false, stdout: '' };
-  }
-}
-
 // 创建 detached 会话——server 的拉起点。⚠️ 只在 server 尚不存在时走 systemd-run
 // --scope（见 HOST_TMUX_UNIT 注释）：scope 已 loaded（server 活着、别的 termId 会话
 // 在用）时 systemd-run 必失败（"unit already active"）。server 已活则普通
@@ -193,9 +179,8 @@ async function ensureTmuxSession(
   rows: number,
   opts: { cwd?: string; command?: string[] } = {},
 ): Promise<boolean> {
-  const alive = await hostTmux(['has-session', '-t', `=${session}`]);
-  if (alive.ok) return true; // 会话已在，直接 attach 路径（调用方语义）
-  const hasServer = (await hostTmux(['list-sessions', '-F', '#{session_name}'])).ok;
+  if (await hostMux.hasSession(session)) return true; // 会话已在，直接 attach 路径（调用方语义）
+  const hasServer = await hostMux.hasServer();
   // `alternate-screen off` 管的是 pane 内程序能否进入 alt screen；terminal-overrides 的
   // smcup@ 只管 tmux 客户端（web xterm）。Codex/claude 这类 TUI 进入 pane alt screen 后
   // 会清掉当前屏且历史不可回放，必须在 new-session 前关掉，避免首屏竞态。
@@ -223,29 +208,27 @@ async function ensureTmuxSession(
     ...(opts.command ?? []),
   ];
   if (hasServer) {
-    return (await hostTmux(argv)).ok;
+    return (await hostMux.run(argv)).ok;
   }
   try {
     await execFileAsync(
       'systemd-run',
-      ['--user', '--collect', `--unit=${HOST_TMUX_UNIT}`, '--scope', 'tmux', '-L', HOST_SOCKET, ...argv],
+      ['--user', '--collect', `--unit=${HOST_TMUX_UNIT}`, '--scope', ...hostMux.command(argv)],
       { timeout: 5_000 },
     );
     return true;
   } catch {
     // scope 已被并发首连拉起（unit already active）：此刻 server 已活，退回普通 new-session。
-    return (await hostTmux(argv)).ok;
+    return (await hostMux.run(argv)).ok;
   }
 }
 
 // 宿主会话创建：旧名（h-<termId>）会话先 rename 成新名（统一命名迁移，用户无感）。
 async function hostNewSession(session: string, cols: number, rows: number, cwd: string): Promise<boolean> {
-  const alive = await hostTmux(['has-session', '-t', `=${session}`]);
-  if (alive.ok) return true;
+  if (await hostMux.hasSession(session)) return true;
   const old = `${OLD_HOST_PREFIX}${session.slice('mysandbox-host-'.length)}`;
-  const oldAlive = await hostTmux(['has-session', '-t', `=${old}`]);
-  if (oldAlive.ok) {
-    await hostTmux(['rename-session', '-t', `=${old}`, session]);
+  if (await hostMux.hasSession(old)) {
+    await hostMux.renameSession(old, session);
     return true;
   }
   return ensureTmuxSession(session, cols, rows, { cwd });
@@ -253,14 +236,14 @@ async function hostNewSession(session: string, cols: number, rows: number, cwd: 
 
 // 当前会话的客户端 pts 列表（`=` 前缀精确匹配，防 tmux 前缀匹配串到别的 termId）。
 async function clientTtys(session: string): Promise<string[]> {
-  const r = await hostTmux(['list-clients', '-t', `=${session}`, '-F', '#{client_tty}']);
+  const r = await hostMux.run(['list-clients', '-t', hostMux.target(session), '-F', '#{client_tty}']);
   if (!r.ok) return [];
   return r.stdout.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/dev/'));
 }
 
 async function killSession(session: string): Promise<void> {
   activeCount.delete(session);
-  await hostTmux(['kill-session', '-t', `=${session}`]);
+  await hostMux.killSession(session);
 }
 
 // script 子进程的控制终端 pts（`ps -o tty=` 输出 pts/N 或 ?）。拿不到给 stty 落初始尺寸用。
@@ -293,7 +276,7 @@ export async function applyTtySize(pts: string, cols: number, rows: number): Pro
 // 只扫宿主专用 socket（-L mysandbox-host）：用户自己的 tmux server 完全不碰。
 // 新名 mysandbox-host-<termId> + 旧名 h-<termId>（统一命名迁移前的活会话，连接时才 rename）。
 export async function listHostSessions(): Promise<TermSessionView[]> {
-  const r = await hostTmux(['list-sessions', '-F', LIST_FMT]);
+  const r = await hostMux.listSessions(LIST_FMT);
   if (!r.ok) return []; // server 不在（无任何会话）等：按 0 会话
   const rows: TermSessionView[] = [];
   const re = /^(?:mysandbox-host|h)-([A-Za-z0-9_-]{4,64})\|/;
@@ -322,13 +305,13 @@ export async function listHostSessions(): Promise<TermSessionView[]> {
 export async function killHostSession(termId: string): Promise<void> {
   const session = hostSessionName(termId);
   activeCount.delete(session);
-  await hostTmux(['kill-session', '-t', `=${session}`]);
+  await hostMux.killSession(session);
 }
 
 // —— 服务终端的会话发现 / 结束（同宿主 socket，前缀 mysandbox-svc-）——
 // @svc 选项携带服务名（创建时 set），格式串直读，绕开「名字含 - 与 termId 切不开」。
 export async function listServiceSessions(): Promise<TermSessionView[]> {
-  const r = await hostTmux(['list-sessions', '-F', '#{session_name}|#{session_attached}|#{session_created}|#{@svc}']);
+  const r = await hostMux.listSessions('#{session_name}|#{session_attached}|#{session_created}|#{@svc}');
   if (!r.ok) return []; // server 不在（无任何会话）等：按 0 会话
   const rows: TermSessionView[] = [];
   for (const line of r.stdout.split('\n')) {
@@ -350,7 +333,7 @@ export async function listServiceSessions(): Promise<TermSessionView[]> {
 export async function killServiceSession(termId: string): Promise<void> {
   const session = serviceSessionName(termId);
   activeCount.delete(session);
-  await hostTmux(['kill-session', '-t', `=${session}`]);
+  await hostMux.killSession(session);
 }
 
 export async function registerHostTerminal(app: FastifyInstance, cfg: Config): Promise<void> {
@@ -367,15 +350,7 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     if (platform() === 'win32') return { cwd: homedir() };
     // TTL 缓存同 files.ts /cwd：前端双 poller（跟随 + pane 标题）共用，2.5s 内收敛为一次 tmux 查询
     const cwd = await withPollCache(`cwd:h:${termId}`, 2_500, async (): Promise<string> => {
-      const r = await hostTmux([
-        'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
-      ]);
-      if (!r.ok) throw notFound('terminal session not found');
-      const v = r.stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .find((l) => l.startsWith('1 '))
-        ?.slice(2) ?? '';
+      const v = await hostMux.paneCwd(hostSessionName(termId));
       if (!v || !v.startsWith('/')) throw notFound('terminal session not found');
       return v;
     });
@@ -398,15 +373,7 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     const home = homedir();
     let cwd = home;
     if (platform() !== 'win32') {
-      const r = await hostTmux([
-        'list-panes', '-t', `=${hostSessionName(termId)}`, '-F', '#{pane_active} #{pane_current_path}',
-      ]);
-      if (!r.ok) throw notFound('terminal session not found');
-      cwd = r.stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .find((l) => l.startsWith('1 '))
-        ?.slice(2) ?? '';
+      cwd = await hostMux.paneCwd(hostSessionName(termId));
       if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
     }
     // Windows：绝对路径带盘符；相对路径 join 到 cwd（Windows 上 cwd 恒宿主 home）。
@@ -603,15 +570,8 @@ async function windowsPane(
       // 服务终端无宿主 cwd 概念（窗口命令进的是容器 fs），恒落 homedir（不进 tmux 参数）。
       let cwd = homedir();
       if (mode === 'host' && useTmux && from) {
-        const r = await hostTmux([
-          'list-panes', '-t', `=${hostSessionName(from)}:`, '-F', '#{pane_active} #{pane_current_path}',
-        ]);
-        const src = r.stdout
-          .split('\n')
-          .map((l) => l.trim())
-          .find((l) => l.startsWith('1 '))
-          ?.slice(2) ?? '';
-        if (r.ok && src.startsWith('/')) cwd = src;
+        const src = await hostMux.paneCwd(hostSessionName(from));
+        if (src.startsWith('/')) cwd = src;
       }
 
       const session = mode === 'service' ? serviceSessionName(termId) : hostSessionName(termId);
@@ -633,7 +593,7 @@ async function windowsPane(
           // 会话都读到同一个值）——多服务时所有会话的 #{@svc} 全等于最后设的服务名，
           // 会话对话框按服务分组/接入会 docker exec 进错的容器。-t 用 "=会话:"（裸 =名
           // 实测报 no such session，同 set-titles 的 target 教训）。
-          await hostTmux(['set-option', '-t', `=${session}:`, '@svc', svc]);
+          await hostMux.run(['set-option', '-t', hostMux.target(session, true), '@svc', svc]);
         } else {
           await hostNewSession(session, cols, rows, cwd);
         }
@@ -642,32 +602,32 @@ async function windowsPane(
         // alt screen，xterm 滚轮变方向键、无滚动条、历史被覆盖（容器侧 terminal.ts 同款
         // 注释「每次 attach 都重设，扛得住 tmux server 重启」）。必须在 attach 之前
         // detached 跑（attach 后客户端接管 tty）。
-        await hostTmux(['set', '-g', 'mouse', 'off']);
+        await hostMux.setMouse(cfg.terminal.mouse);
         // escape-time 10（默认 500）：裸 ESC 被 tmux 扣 500ms 判断是否序列开头，opencode/vim
         // 里按 ESC 打断迟 0.5s、连按互相吞并（容器侧 terminal.ts 的 escape-time 注释同源）。
-        await hostTmux(['set', '-sg', 'escape-time', '10']);
-        await hostTmux(['set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@']);
-        await hostTmux(['set-environment', '-g', 'MYSANDBOX_WEB', '1']);
-        await hostTmux(['set', '-s', 'allow-passthrough', 'on']);
+        await hostMux.run(['set', '-sg', 'escape-time', '10']);
+        await hostMux.run(['set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@']);
+        await hostMux.run(['set-environment', '-g', 'MYSANDBOX_WEB', '1']);
+        await hostMux.run(['set', '-s', 'allow-passthrough', 'on']);
         // OSC 52（剪贴板）转发打通：Ms override + set-clipboard on（external 不转发 pane
         // 内应用发的序列，实测对照过）。背景见 terminal.ts 的同名注释。
-        await hostTmux(['set', '-as', 'terminal-overrides', ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007']);
-        await hostTmux(['set', '-g', 'set-clipboard', 'on']);
+        await hostMux.run(['set', '-as', 'terminal-overrides', ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007']);
+        await hostMux.run(['set', '-g', 'set-clipboard', 'on']);
         // pane 历史默认 2000 行，与容器侧对齐放大（前端 scrollback 10000）。
-        await hostTmux(['set', '-g', 'history-limit', '50000']);
+        await hostMux.run(['set', '-g', 'history-limit', '50000']);
         // tab 标题链路 tmux 侧：pane 内程序发的 OSC 0/2（shell 钩子/CC·opencode）被截获
         // 存成 pane title，set-titles on 把它转发到外层终端（xterm.js onTitleChange →
         // tab 标签）。session 级选项（不带 -g），只影响本会话；每次 attach 都设（同上）。
         // 用 #T 不用 #W 的实测依据见 terminal.ts 的 set 串注释；⚠️ -t 必须 "=会话:"
         // （带冒号）：set-option 的 -t 是 target-pane，无冒号按 window 名解析（实测报
         // no such session），terminal.ts 同款教训。
-        await hostTmux(['set', '-t', `=${session}:`, 'set-titles', 'on']);
-        await hostTmux(['set', '-t', `=${session}:`, 'set-titles-string', '#T']);
+        await hostMux.run(['set', '-t', hostMux.target(session, true), 'set-titles', 'on']);
+        await hostMux.run(['set', '-t', hostMux.target(session, true), 'set-titles-string', '#T']);
         // 状态栏 off：tmux 状态栏自带分钟时钟，整点跳分钟 = 整屏底部重绘一格，附着客户端
         // 每 60s 必收一帧——「无输出提醒」的静默确认（60s）永远凑不满，提醒恒不触发
         // （实测 lastNotable 每整 60s 重置一次）。web 终端有自己的 tab 栏，状态栏纯噪声；
         // session 级不影响用户自己开的 tmux 会话。每次 attach 都设（server 重启后重连即生效）。
-        await hostTmux(['set', '-t', `=${session}:`, 'status', 'off']);
+        await hostMux.run(['set', '-t', hostMux.target(session, true), 'status', 'off']);
         // ---- 历史回填 ----
         // tmux attach 只重绘当前屏不回放历史：重连/刷新后 xterm scrollback 从空开始。
         // attach 前 capture 历史（-E -1 不含当前屏）作 {type:'history'} 控制帧先发，
@@ -676,17 +636,10 @@ async function windowsPane(
         // 详版取舍见 terminal.ts 同名注释——两侧逻辑刻意保持同形。
         try {
           const delta = q.resume === '1';
-          const cap = await hostTmux([
-            // target 必须带冒号（"=会话名:"）：tmux 3.4 实测 capture-pane 的 target 按 window
-            // 解析，纯会话名会被当 window 名匹配 -> "can't find pane" 静默失败（has-session
-            // 是 session target 所以没事）。带冒号 = 精确会话 + 默认窗口。
-            'capture-pane',
-            '-p',
-            '-e',
-            ...(delta ? ['-t', `=${session}:`, '-S', '-2000'] : ['-J', '-t', `=${session}:`, '-S', '-10000', '-E', '-1']),
-          ]);
-          const text = cap.stdout.trim();
-          if (cap.ok && text) {
+          // target 带冒号的 window 解析坑收在 Multiplexer.capturePane。
+          const cap = await hostMux.capturePane(session, delta);
+          if (cap.ok && cap.text) {
+            const text = cap.text;
             socket.send(JSON.stringify({ type: delta ? 'history-delta' : 'history', text }));
           }
         } catch {
@@ -696,14 +649,8 @@ async function windowsPane(
         // 重连/刷新后 pane title 不会随 attach 重发，读 #T 补发 {type:'title'} 控制帧；
         // 失败静默（首连/会话未建好），tab 落默认名。
         try {
-          const t = await hostTmux(['list-panes', '-t', `=${session}:`, '-F', '#{pane_active} #{pane_title}']);
-          const title = t.stdout
-            .split('\n')
-            .map((l) => l.trim())
-            .find((l) => l.startsWith('1 '))
-            ?.slice(2)
-            .trim() ?? '';
-          if (t.ok && title) {
+          const title = await hostMux.paneTitle(session);
+          if (title) {
             socket.send(JSON.stringify({ type: 'title', text: title }));
           }
         } catch {

@@ -494,7 +494,7 @@ watch(
   },
 )
 
-// 复制/粘贴：tmux 不再劫持鼠标（后端 set -g mouse off），交互层由 xterm.js 接管。
+// 复制/粘贴：默认 terminal.mouse=off，tmux 不劫持鼠标，交互层由 xterm.js 接管。
 // 剪贴板走 navigator.clipboard；OSC 52（TUI 应用请终端代写剪贴板）也汇到 copyText
 // （见下方 registerOscHandler(52)）。
 // 非 https 环境（http://局域网IP 访问）navigator.clipboard 是 undefined——一律走
@@ -1070,7 +1070,7 @@ function setupTouchScroll() {
   }
 }
 
-// 滚轮/滚动条：交给 xterm.js 原生处理（与 VSCode 集成终端一致）--tmux 不再开 mouse 劫持，
+// 滚轮/滚动条：默认交给 xterm.js 原生处理（与 VSCode 集成终端一致）——tmux 不劫持鼠标，
 // 终端流不带鼠标追踪序列，xterm 默认即把滚轮滚 scrollback 并保留右侧滚动条。无需手写 wheel 接管，
 // 手写反而会 preventDefault 掉原生滚动、破坏滚动条。
 

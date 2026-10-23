@@ -34,7 +34,9 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { ChildProcess } from 'node:child_process';
-import { TERMID_RE, LIST_FMT, type TermSessionView } from './terminal.js';
+import type { Config } from './config.js';
+import { TERMID_RE, type TermSessionView } from './terminal.js';
+import { TmuxMultiplexer, LIST_FMT, type Multiplexer } from './multiplexer.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { addSshTarget, deleteSshTarget, getSshTargets, updateSshTarget, type SshTarget } from './state.js';
 import { children, childTty, applyTtySize, detectEnv } from './hostTerminal.js';
@@ -157,8 +159,18 @@ async function sshRun(
   }
 }
 
-function tmuxArgs(args: string[]): string[] {
-  return ['tmux', '-L', SSH_SOCKET, ...args];
+// 远端 tmux 经 ssh 启动；transport 把每个 argv 裹成远端 shell 可解析的单引号词。
+function sshMux(t: SshTarget): Multiplexer {
+  return new TmuxMultiplexer(
+    'tmux',
+    (argv, timeoutMs) => sshRun(t, argv.map(shq), timeoutMs),
+    ['-L', SSH_SOCKET],
+  );
+}
+
+// 不走 Multiplexer 的高层方法、但仍需 socket 前缀的建会话链。
+function sshMuxExec(t: SshTarget, args: string[], timeoutMs = 12_000) {
+  return sshRun(t, sshMux(t).command(args).map(shq), timeoutMs);
 }
 
 export function sshSessionName(termId: string): string {
@@ -196,8 +208,15 @@ function noteOsc7(termId: string, d: Buffer, tail: { s: string }): void {
 //   - -e 注入色深需 tmux ≥3.2，老远端整链失败时由调用方退回无 -e 版本重试；
 //   - set-titles-string 的 #T 必须单引号包裹：裸 # 在远端 shell 里开头即注释，
 //     会把后面的参数全部吞掉。
-function createChain(session: string, cols: number, rows: number, cwd: string, withEnv: boolean): string[] {
-  return tmuxArgs([
+function createChain(
+  session: string,
+  cols: number,
+  rows: number,
+  cwd: string,
+  mouse: 'off' | 'on',
+  withEnv: boolean,
+): string[] {
+  return [
     'start-server', '\\;',
     'set', '-g', 'history-limit', '50000', '\\;',
     'set', '-g', 'alternate-screen', 'off', '\\;',
@@ -206,15 +225,15 @@ function createChain(session: string, cols: number, rows: number, cwd: string, w
     '-s', session, '-x', String(cols), '-y', String(rows),
     ...(cwd ? ['-c', cwd] : []),
     '\\;',
-    'set', '-g', 'mouse', 'off', '\\;',
+    'set', '-g', 'mouse', mouse, '\\;',
     'set', '-sg', 'escape-time', '10', '\\;',
-    'set', '-g', 'terminal-overrides', '"xterm*:smcup@:rmcup@"', '\\;',
-    'set', '-as', 'terminal-overrides', '",xterm*:Ms=\\E]52;%p1%s;%p2%s\\007"', '\\;',
+    'set', '-g', 'terminal-overrides', 'xterm*:smcup@:rmcup@', '\\;',
+    'set', '-as', 'terminal-overrides', ',xterm*:Ms=\\E]52;%p1%s;%p2%s\\007', '\\;',
     'set', '-g', 'set-clipboard', 'on', '\\;',
-    'set', '-t', shq(`${session}:`), 'set-titles', 'on', '\\;',
-    'set', '-t', shq(`${session}:`), 'set-titles-string', "'#T'", '\\;',
-    'set', '-t', shq(`${session}:`), 'status', 'off',
-  ]);
+    'set', '-t', `${session}:`, 'set-titles', 'on', '\\;',
+    'set', '-t', `${session}:`, 'set-titles-string', '#T', '\\;',
+    'set', '-t', `${session}:`, 'status', 'off',
+  ];
 }
 
 // 每个会话的活连接数（多窗口同 termId，语义同 hostTerminal）。进程重启即清零：
@@ -223,7 +242,7 @@ const activeCount = new Map<string, number>();
 
 async function killSession(target: SshTarget, session: string): Promise<void> {
   activeCount.delete(session);
-  await sshRun(target, tmuxArgs(['kill-session', '-t', shq(`${session}`)]));
+  await sshMux(target).killSession(session);
 }
 
 // —— 会话发现 / 结束（/api/terminal-sessions 的 ssh 段，routes.ts 组合）——
@@ -235,7 +254,7 @@ export async function listSshSessions(): Promise<TermSessionView[]> {
     targets.map(async (t): Promise<TermSessionView[]> => {
       // -F 格式串含换行与 |（LIST_FMT 两行格式）：必须引号裹住过远端 shell，
       // 否则被拆成多条命令（实测 sessions 扫描恒空、| 变管道）。
-      const r = await sshRun(t, tmuxArgs(['list-sessions', '-F', shq(LIST_FMT)]), 10_000);
+      const r = await sshMux(t).listSessions(LIST_FMT, 10_000);
       if (!r.ok) return [];
       const rows: TermSessionView[] = [];
       const re = /^mysandbox-ssh-([A-Za-z0-9_-]{4,64})\|/;
@@ -337,7 +356,7 @@ export interface SshTargetView {
   hasPassword?: boolean;
 }
 
-export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
+export async function registerSshTerminal(app: FastifyInstance, cfg: Config): Promise<void> {
   const log = app.log;
 
   // —— 目标 CRUD（存 state.json sidecar；UI 增删，config.yaml 不掺和）——
@@ -444,17 +463,8 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       // 静默落远端 home（不传 -c 即远端默认）。
       let cwd = '';
       if (from) {
-        const r = await sshRun(
-          target,
-          tmuxArgs(['list-panes', '-t', shq(`${sshSessionName(from)}:`), '-F', shq('#{pane_active} #{pane_current_path}')]),
-          10_000,
-        );
-        const src = r.stdout
-          .split('\n')
-          .map((l) => l.trim())
-          .find((l) => l.startsWith('1 '))
-          ?.slice(2) ?? '';
-        if (r.ok && src.startsWith('/')) cwd = src;
+        const src = await sshMux(target).paneCwd(sshSessionName(from), 10_000);
+        if (src.startsWith('/')) cwd = src;
       }
 
       // 建会话 + 注设置（后台 best-effort）：密码认证/无 tmux/老版本等失败一律不挡
@@ -463,12 +473,13 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       // 远端压根没装 tmux（has-session 的 stderr 报 command not found）→ 会话层整体
       // 降级为直连 shell（裸 ssh + pty）：终端照用，断开即结束——对方机器装不了
       // tmux 时 SSH 主机仍可用，只是没有持久会话/历史回填/cwd 继承这些 tmux 红利。
-      const aliveRun = await sshRun(target, tmuxArgs(['has-session', '-t', shq(`${session}`)]), 10_000);
+      const mux = sshMux(target);
+      const aliveRun = await mux.run(['has-session', '-t', mux.target(session)], 10_000);
       const noRemoteTmux = !aliveRun.ok && !!aliveRun.err && /tmux/.test(aliveRun.err) && /not found|Unknown command|No such file/.test(aliveRun.err);
       if (!aliveRun.ok && !noRemoteTmux) {
-        let created = await sshRun(target, createChain(session, cols, rows, cwd, true), 20_000);
+        let created = await sshMuxExec(target, createChain(session, cols, rows, cwd, cfg.terminal.mouse, true), 20_000);
         if (!created.ok) {
-          created = await sshRun(target, createChain(session, cols, rows, cwd, false), 20_000);
+          created = await sshMuxExec(target, createChain(session, cols, rows, cwd, cfg.terminal.mouse, false), 20_000);
         }
         if (!created.ok) {
           log.warn({ target: target.name, err: created.err }, 'ssh terminal: remote session create failed (falling back to attach -A)');
@@ -476,25 +487,16 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
       }
 
       if (!noRemoteTmux) {
+        // 每次 attach 都重设 mouse：已有会话也要跟上配置变更（新会话的 createChain 已设过一次）。
+        await mux.setMouse(cfg.terminal.mouse, 10_000);
         // 历史回填（attach 前 capture，控制帧先发；与 hostTerminal 同款，前端写 scrollback）。
         // -e 带色 / resume=1 走 history-delta 增量（物理行、含当前屏、只取 -2000），取舍见
         // terminal.ts 同名注释。会话刚经 -A 兜底创建时无历史可回，失败静默。
         try {
           const delta = q.resume === '1';
-          const cap = await sshRun(
-            target,
-            tmuxArgs([
-              'capture-pane',
-              '-p',
-              '-e',
-              ...(delta
-                ? ['-t', shq(`${session}:`), '-S', '-2000']
-                : ['-J', '-t', shq(`${session}:`), '-S', '-10000', '-E', '-1']),
-            ]),
-            15_000,
-          );
-          const text = cap.stdout.trim();
-          if (cap.ok && text) {
+          const cap = await mux.capturePane(session, delta, 15_000);
+          if (cap.ok && cap.text) {
+            const text = cap.text;
             socket.send(JSON.stringify({ type: delta ? 'history-delta' : 'history', text }));
           }
         } catch {
@@ -502,18 +504,8 @@ export async function registerSshTerminal(app: FastifyInstance): Promise<void> {
         }
         // tab 标题恢复（重连/刷新后 pane title 不随 attach 重发）。
         try {
-          const t = await sshRun(
-            target,
-            tmuxArgs(['list-panes', '-t', shq(`${session}:`), '-F', shq('#{pane_active} #{pane_title}')]),
-            15_000,
-          );
-          const title = t.stdout
-            .split('\n')
-            .map((l) => l.trim())
-            .find((l) => l.startsWith('1 '))
-            ?.slice(2)
-            .trim() ?? '';
-          if (t.ok && title) {
+          const title = await mux.paneTitle(session, 15_000);
+          if (title) {
             socket.send(JSON.stringify({ type: 'title', text: title }));
           }
         } catch {
