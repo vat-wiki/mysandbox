@@ -499,6 +499,16 @@ function restoreScrollback(snapshot: ScrollSnapshot | null) {
   if (buf.viewportY !== targetY) term?.scrollToLine(targetY)
 }
 
+// focus 的「滚到可见位置」发生在 focus 事件/后续 refit 之前；rAF 里再取快照可能已经晚了。
+// 指针按下时先记一份，键盘 visualViewport 第一次收缩时冻结它，供打开后的首次 refit 用。
+let preKeyboardScroll: ScrollSnapshot | null = null
+let keyboardScrollSnapshot: ScrollSnapshot | null = null
+let keyboardRestorePending = false
+function savePreKeyboardScroll() {
+  if (!isPhone.value) return
+  preKeyboardScroll = snapshotScrollback()
+}
+
 // 防抖 fit：合并一帧内的多次尺寸变化，避免拖窗/字号切换时高频抖动；同时同步字号。
 function refit() {
   if (rafId) cancelAnimationFrame(rafId)
@@ -508,7 +518,7 @@ function refit() {
     const fs = computeFontSize()
     if (term && term.options.fontSize !== fs) term.options.fontSize = fs
     try {
-      const scrollSnapshot = snapshotScrollback()
+      const scrollSnapshot = keyboardRestorePending ? keyboardScrollSnapshot : snapshotScrollback()
       fit?.fit()
       // 强制重算 xterm 内部滚动区（切回 tab 后「滚动不到最下面」的修复）。
       // xterm 5.5 的 Viewport._innerRefresh 直接读 viewport 的 offsetHeight，而
@@ -525,6 +535,7 @@ function refit() {
       )._core?.viewport
       vp?.syncScrollArea?.(true)
       restoreScrollback(scrollSnapshot)
+      keyboardRestorePending = false
       // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
       // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
       // 触摸设备恒不程序性聚焦：切 tab / resize 的自动 focus 会直接弹系统键盘，
@@ -1039,8 +1050,15 @@ function setupViewportWatch() {
   const onVv = () => {
     const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
     if (kb <= 120) {
+      keyboardRestorePending = false
+      keyboardScrollSnapshot = null
+      preKeyboardScroll = null
       kbPad.value = 0 // 透值过滤地址栏小幅伸缩
       return
+    }
+    if (kbPad.value === 0) {
+      keyboardScrollSnapshot = preKeyboardScroll ?? snapshotScrollback()
+      keyboardRestorePending = true
     }
     const root = rootEl.value
     const gap = root ? Math.max(0, window.innerHeight - root.getBoundingClientRect().bottom) : 0
@@ -1048,9 +1066,11 @@ function setupViewportWatch() {
   }
   vv.addEventListener('resize', onVv)
   vv.addEventListener('scroll', onVv)
+  document.addEventListener('pointerdown', savePreKeyboardScroll, { capture: true, passive: true })
   vvCleanup = () => {
     vv.removeEventListener('resize', onVv)
     vv.removeEventListener('scroll', onVv)
+    document.removeEventListener('pointerdown', savePreKeyboardScroll, { capture: true })
   }
 }
 
