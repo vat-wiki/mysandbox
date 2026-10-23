@@ -200,7 +200,7 @@ onMounted(refresh)
         <DialogHeader>
           <DialogTitle>加入集群</DialogTitle>
           <DialogDescription>
-            填入一个已有集群成员的 mysandbox 地址和 Token。
+            填入现有集群成员的地址与 Token。
           </DialogDescription>
         </DialogHeader>
         <div class="space-y-3">

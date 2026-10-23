@@ -235,7 +235,7 @@ if (props.section === 'testlens') onMounted(load)
       <div v-if="props.section === 'testlens'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <section class="space-y-3">
           <div class="flex items-center gap-1.5">
-            <p class="text-xs leading-relaxed text-muted-foreground">往所选目标的 home 写入 agent-browser 与 testlens 两份配置。</p>
+            <p class="text-xs leading-relaxed text-muted-foreground">写入 agent-browser 与 testlens 配置。</p>
             <InfoHint label="写入位置说明">
               <p>两份种子：<code class="rounded bg-muted px-1">~/.agent-browser/config.json</code> 与 <code class="rounded bg-muted px-1">~/.testlens.json</code>。</p>
               <p>项目级 <code class="rounded bg-muted px-1">.testlens.json</code> 优先于这里的种子，不受影响。</p>
@@ -246,7 +246,7 @@ if (props.section === 'testlens') onMounted(load)
             <Label for="testlens-host" class="text-xs text-muted-foreground">服务地址</Label>
             <Input id="testlens-host" v-model="host" placeholder="http://testlens:10004" class="font-mono text-xs" />
             <p v-if="view?.suggestedHost" class="text-[11px] text-muted-foreground">
-              检测到 testlens 服务，已按约定地址预填（本机自动换算 localhost）。
+              已按检测到的 testlens 服务预填。
             </p>
           </div>
 
@@ -305,8 +305,7 @@ if (props.section === 'testlens') onMounted(load)
       <div v-else-if="props.section === 'notify'" class="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <section class="space-y-4">
           <p class="text-xs leading-relaxed text-muted-foreground">
-            终端在你看不见的地方安静下来（agent 干完活 / 等你输入）时发一条系统通知，点击直达对应终端。
-            只在页面不在前台时发；回到本页自动收掉还挂着的通知。每组可用 tab 右键「无输出时提醒」单独关闭。
+            页面不在前台时，agent 完成或等待输入会发系统通知，点击直达终端。
           </p>
           <label class="flex cursor-pointer items-center gap-2.5 rounded-md px-1 py-1 hover:bg-accent/50">
             <Checkbox
@@ -335,7 +334,7 @@ if (props.section === 'testlens') onMounted(load)
             <span class="min-w-0 flex-1">
               <span class="block text-sm">锁屏推送（Web Push）</span>
               <span class="block text-xs text-muted-foreground">
-                经系统推送通道下发——页面没开 / 手机锁屏也能收到，点击直达对应终端
+                页面关闭或锁屏也能收到，点击直达终端
               </span>
             </span>
           </label>
@@ -343,7 +342,7 @@ if (props.section === 'testlens') onMounted(load)
             当前浏览器不支持 Web Push（需要 https 访问；iOS Safari 需先添加到主屏幕）。
           </p>
           <p v-else class="text-xs text-muted-foreground">
-            只推 agent 等输入的精准事件；任何一台设备的控制台正开着时都不推（琥珀标即可）。
+            仅推送 agent 等待输入事件；有控制台在线时不推。
           </p>
         </section>
       </div>

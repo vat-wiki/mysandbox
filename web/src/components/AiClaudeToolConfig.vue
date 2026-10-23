@@ -545,7 +545,7 @@ defineExpose({
             <Trash2 class="size-3.5" />
           </button>
         </div>
-        <p class="text-[10px] text-muted-foreground/60">settings.json 顶级键原样合并写入（整键覆盖）；嵌套结构（permissions、hooks 等）在下方原文里编辑。env 不能写在这里。</p>
+        <p class="text-[10px] text-muted-foreground/60">顶级键原样合并；嵌套结构在下方原文编辑。env 不在此填写。</p>
       </div>
         </div>
       </details>

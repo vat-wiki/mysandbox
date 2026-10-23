@@ -788,10 +788,8 @@ async function cleanMissing(r: SkillRuleResult) {
       <div class="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <Library class="size-3.5 shrink-0 text-muted-foreground" />
         <InfoHint label="技能库说明">
-          <p>个人技能池——每张卡一件技能。</p>
-          <p>日常装到项目：文件面板进到目录点 📚「安装技能」就地装（人在哪装到哪）。</p>
-          <p>这里管库本身：全局安装一键铺开、卡脚「安装」集中补装、卡头「N 处」管位置、⋯ 菜单管更新/移除。</p>
-          <p>来源改动不自动进库，更新走显式动作；位置订阅库，库一变装出去的自动跟走。</p>
+          <p>项目内安装走文件面板 📚；这里管理技能库与分发范围。</p>
+          <p>来源更新需手动拉取；已有位置随库同步。</p>
         </InfoHint>
         <div class="flex-1" />
         <Button
@@ -835,9 +833,7 @@ async function cleanMissing(r: SkillRuleResult) {
             </div>
             <template v-if="importMode === 'loose'">
               <div class="mt-2 flex items-center gap-2">
-                <span class="min-w-0 flex-1 text-[10px] leading-relaxed text-muted-foreground/70">
-                  本机和各容器里已有的技能——一键收进库。
-                </span>
+                  <span class="min-w-0 flex-1 text-[10px] leading-relaxed text-muted-foreground/70">已有技能可一键收进库。</span>
                 <Button
                   variant="ghost"
                   size="xs"
@@ -849,7 +845,7 @@ async function cleanMissing(r: SkillRuleResult) {
                 </Button>
               </div>
               <p v-if="invErr" class="mt-1 text-[11px] text-destructive">{{ invErr }}</p>
-              <p v-if="!invLocations.length" class="mt-1 text-[11px] text-muted-foreground/70">没有待纳管的技能——扫到的都已在库里。</p>
+              <p v-if="!invLocations.length" class="mt-1 text-[11px] text-muted-foreground/70">已扫描的技能都在库里。</p>
               <div v-for="loc in invLocations" :key="loc.name" class="mt-1.5">
                 <div class="flex items-center gap-2">
                   <span
@@ -929,7 +925,7 @@ async function cleanMissing(r: SkillRuleResult) {
                 <Button size="sm" class="mt-1.5 h-7" :disabled="impBusy || !impPicked" @click="doImportGit">导入选中</Button>
               </div>
               <p class="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/70">
-                导入 = 快照；要更新点卡片上的「更新」。库内同名会提示覆盖。
+                导入为快照，同名覆盖。
               </p>
             </template>
           </PopoverContent>
@@ -952,7 +948,7 @@ async function cleanMissing(r: SkillRuleResult) {
           <DropdownMenuContent side="bottom" align="end">
             <DropdownMenuItem
               :disabled="checking"
-              title="比对来源与库，有更新标在卡上——只比对不分发"
+              title="比对来源与库，只比对不分发"
               @click="checkAll"
             >
               <SearchCheck /> 检查更新<span
@@ -960,7 +956,7 @@ async function cleanMissing(r: SkillRuleResult) {
                 class="ml-auto text-[10px] text-amber-600 dark:text-amber-400"
               >·{{ changedCount }}</span>
             </DropdownMenuItem>
-            <DropdownMenuItem :disabled="syncing" title="手动兜底——平时随动作自动分发" @click="syncNow">
+            <DropdownMenuItem :disabled="syncing" title="手动同步；平时自动分发" @click="syncNow">
               <FolderSync :class="syncing ? 'animate-pulse' : ''" /> 立即同步
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -970,7 +966,7 @@ async function cleanMissing(r: SkillRuleResult) {
       <!-- 空库 / 报错 -->
       <div v-if="regErr" class="px-3 py-4 text-center text-[11px] text-destructive">{{ regErr }}</div>
       <div v-else-if="!reg?.length" class="m-3 rounded-md border border-dashed px-3 py-3 text-center text-[11px] leading-relaxed text-muted-foreground/70">
-        还没有添加任何技能——点「添加」从扫描/本地目录/git 仓库收进库。
+        还没有技能，点「添加」导入。
       </div>
 
       <!-- 技能收藏架：大卡片铺开——名称 + 描述 + 卡脚（右 ⋯ 菜单 / 安装主钮：
@@ -991,12 +987,12 @@ async function cleanMissing(r: SkillRuleResult) {
             <span
               v-else-if="s.exists && !installedCount(s)"
               class="shrink-0 text-[10px] text-amber-600 dark:text-amber-400"
-              title="还没装到任何位置——卡脚「安装」指定落点"
+              title="尚未安装"
             >未安装</span>
             <span
               v-if="s.exists && installedAt(s.name, GLOBAL_TO)"
               class="shrink-0 cursor-help rounded border border-primary/40 bg-primary/10 px-1 text-[10px] text-primary"
-              title="已装全局（~/.agents/skills 与 ~/.claude/skills，本机 + 全部受管容器）"
+              title="已装全局"
             >全局</span>
             <Badge
               v-if="!s.exists"
@@ -1035,7 +1031,7 @@ async function cleanMissing(r: SkillRuleResult) {
                 <button
                   type="button"
                   class="shrink-0 rounded text-[10px] text-muted-foreground/50 transition-colors hover:text-foreground"
-                  title="安装位置——点范围 chip 切换，✕ 卸载该处"
+                  title="点范围切换；✕ 卸载"
                 >{{ installedCount(s) }} 处</button>
               </PopoverTrigger>
               <PopoverContent side="bottom" align="end" class="w-80 max-w-[calc(100vw-1.5rem)] p-2">
@@ -1058,7 +1054,7 @@ async function cleanMissing(r: SkillRuleResult) {
                     :class="r.all
                       ? 'border-primary/40 bg-primary/10 text-primary'
                       : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
-                    title="点击切换：本机+全部容器 ⇄ 仅已有该项目的机器"
+                    title="切换本机/全部容器与已有该项目的机器"
                     @click="toggleScope(r)"
                   >
                     {{ r.all ? '本机+全部容器' : '有该项目' }}
@@ -1067,7 +1063,7 @@ async function cleanMissing(r: SkillRuleResult) {
                     variant="ghost"
                     size="icon-xs"
                     class="shrink-0 text-muted-foreground/50 hover:text-destructive"
-                    title="从该位置卸载（位置保留，下次同步从容器清理）"
+                    title="卸载该位置；下次同步清理"
                     :disabled="!!unloadingRule"
                     @click="unloadSkill(r, s.name)"
                   >
@@ -1086,7 +1082,7 @@ async function cleanMissing(r: SkillRuleResult) {
               <DropdownMenuContent side="bottom" align="end">
                 <DropdownMenuItem
                   :disabled="!s.exists"
-                  title="查看库内源文件（只读）——SKILL.md 与配套脚本"
+                  title="查看源文件（只读）"
                   @click="viewing = s"
                 >
                   <FileText /> 源文件
@@ -1122,7 +1118,7 @@ async function cleanMissing(r: SkillRuleResult) {
               variant="outline"
               size="xs"
               class="h-6 shrink-0 gap-1 px-2.5 text-[11px]"
-              title="安装到指定位置——弹框目录树里选（本机/容器、可多选）"
+              title="安装到指定位置"
               @click="openInstall(s.name)"
             >
               <FolderOpen class="size-3" /> 安装
@@ -1141,7 +1137,7 @@ async function cleanMissing(r: SkillRuleResult) {
         <DialogHeader>
           <DialogTitle class="flex items-center gap-1.5">
             安装 · {{ installOpenFor }}
-            <InfoHint tip="日常装到项目：到文件面板进目录点 📚 就地装（人在哪装到哪）。" />
+            <InfoHint tip="项目内安装：文件面板进目录点 📚。" />
           </DialogTitle>
           <DialogDescription>
             集中补装——点目录行选落点，可多选
@@ -1270,7 +1266,7 @@ async function cleanMissing(r: SkillRuleResult) {
             </template>
           </SkillPickList>
           <p class="text-[11px] leading-snug text-muted-foreground/70">
-            勾选 = 安装，取消 = 移除（下次同步清理）；保存即全量同步。
+            勾选安装，取消移除；保存即同步。
           </p>
         </div>
 

@@ -280,7 +280,7 @@ const defaultOptions = computed(() => openCodeVariants(props.entries, props.prov
             </Popover>
             <span v-if="!e.wires.find((x) => x.wire === w)?.models?.length" class="text-[11px] text-muted-foreground">未选 = 全部 {{ wireModelsOf(e.provider, w).length }} 个模型</span>
           </template>
-          <span v-else class="text-[11px] text-muted-foreground">库内该协议没有清单，落盘不挂模型（到「模型供应商」编辑该行补齐）</span>
+          <span v-else class="text-[11px] text-muted-foreground">该协议无模型清单；到「模型供应商」补齐</span>
         </div>
       </div>
 

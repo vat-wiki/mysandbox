@@ -71,7 +71,7 @@ function submitAccount() {
             <InfoHint tip="也保存在 ~/.config/mysandbox/config.yaml" />
           </CardTitle>
           <CardDescription>
-            首次启动 <code class="rounded bg-muted px-1">mysandbox</code> 时会在终端打印 token——粘贴到下面即可。
+            首次启动时终端会打印 token。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -96,7 +96,7 @@ function submitAccount() {
       <template v-else>
         <CardHeader>
           <CardTitle>账户登录</CardTitle>
-          <CardDescription>账户只能访问被授权的系统容器（终端 + 文件面板）。</CardDescription>
+          <CardDescription>仅能访问授权容器（终端 + 文件面板）。</CardDescription>
         </CardHeader>
         <CardContent>
           <div class="flex flex-col gap-2">

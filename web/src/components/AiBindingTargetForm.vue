@@ -205,13 +205,13 @@ async function submit() {
       >
         <span>
           <b class="font-medium">{{ props.target }}</b> ·
-          <template v-if="overrideExists">本容器使用专属绑定，全局绑定不再应用（启动追平也跳过）。</template>
-          <template v-else>当前跟随全局绑定——保存后成为本容器的专属绑定。</template>
+          <template v-if="overrideExists">本容器使用专属绑定，不再应用全局绑定。</template>
+          <template v-else>当前跟随全局；保存后改为专属绑定。</template>
         </span>
       </div>
 
       <p v-if="noProviders" class="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-        模型供应商库还是空的——先到「AI 工具 → 模型供应商」添加提供商（端点 + key），再回来绑定工具。
+        先到「AI 工具 → 模型供应商」添加提供商。
       </p>
 
       <!-- 四工具字段组（与全局 Agent 工具页共用同一组组件） -->

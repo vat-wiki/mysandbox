@@ -62,7 +62,7 @@ function submit() {
     <DialogContent class="max-w-md">
       <DialogHeader>
         <DialogTitle>删除容器 {{ name() }}</DialogTitle>
-        <DialogDescription>删除后无法恢复。容器内进程将被停止。</DialogDescription>
+        <DialogDescription>不可恢复，容器进程会停止。</DialogDescription>
       </DialogHeader>
 
       <div class="space-y-3">

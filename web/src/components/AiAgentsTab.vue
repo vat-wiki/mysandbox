@@ -449,9 +449,8 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
 
         <div class="p-3">
           <p v-if="noProviders" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-            模型供应商库还是空的——
+            供应商库为空，
             <button type="button" class="font-medium text-primary underline-offset-2 hover:underline" @click="emit('switch-providers')">先到「模型供应商」添加</button>
-            （端点 + key），再回来绑定工具。
           </p>
 
           <!-- ① Claude Code：绑定 + 自身配置（toolConfig，全局一份）——绑定与自身
@@ -472,7 +471,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
                应用范围说明挪到按钮旁常显（短句）；写入策略在按钮下拉里选（同 ServicesPanel
                删除菜单范式） -->
           <div class="flex items-center justify-end gap-2 border-t pt-3">
-            <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
+            <span class="text-[11px] text-muted-foreground">范围：本机 / 容器 / 模板</span>
             <DropdownMenu>
               <DropdownMenuTrigger as-child>
                 <Button :disabled="busy">{{ busy ? '应用中…' : '保存并应用' }}</Button>
@@ -502,7 +501,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               </summary>
               <div class="mt-3 space-y-3 border-t pt-3">
                 <p class="text-[11px] leading-relaxed text-muted-foreground">
-                  写入 .codex/model-catalog.json；上下文窗口、推理力度、输出详略和推理摘要用下方 Codex 自身配置。
+                  写入 .codex/model-catalog.json；其余项在下方 Codex 配置。
                 </p>
                 <div class="grid gap-3 sm:grid-cols-2">
                   <div class="space-y-1.5">
@@ -678,7 +677,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               </details>
             </div>
             <div class="flex items-center justify-end gap-2 border-t pt-3">
-              <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
+              <span class="text-[11px] text-muted-foreground">范围：本机 / 容器 / 模板</span>
               <Button :disabled="busy" @click="submitTool('codex')">{{
                 busy ? '应用中…' : '保存并应用'
               }}</Button>
@@ -715,7 +714,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
                   <!-- opencode 的 auto 徽标是 TUI 运行时开关（--auto / Ctrl+P 命令面板），
                        不读配置也不持久化——配置生效与否看行为（不弹审批），别看徽标 -->
                   <p class="text-[10px] leading-relaxed text-muted-foreground">
-                    免审批即刻生效，但 TUI 的 auto 徽标是运行时开关（Ctrl+P → Enable auto-approve），不随配置显示
+            免审批立即生效；TUI 的 auto 徽标是运行时状态，不反映配置
                   </p>
                 </div>
                 <div class="space-y-1.5">
@@ -739,7 +738,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               </div>
             </div>
             <div class="flex items-center justify-end gap-2 border-t pt-3">
-              <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
+              <span class="text-[11px] text-muted-foreground">范围：本机 / 容器 / 模板</span>
               <Button :disabled="busy" @click="submitTool('opencode')">{{
                 busy ? '应用中…' : '保存并应用'
               }}</Button>
@@ -754,7 +753,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
               @update:entries="(v) => (piEntries = v)"
             />
             <div class="flex items-center justify-end gap-2 border-t pt-3">
-              <span class="text-[11px] text-muted-foreground">目标：本机 + 受管容器（含停机）+ 模板</span>
+              <span class="text-[11px] text-muted-foreground">范围：本机 / 容器 / 模板</span>
               <Button :disabled="busy" @click="submitTool('pi')">{{
                 busy ? '应用中…' : '保存并应用'
               }}</Button>
@@ -769,7 +768,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       <ConfirmDialog
         v-if="askReplace"
         title="替换整个 settings.json？"
-        description="每个目标（本机 + 受管容器 + 模板）的 settings.json 将被整体重写，只含本次管理内容——你手工加的其它键（主题、插件、模型映射等）会一并清掉。"
+        description="将整体重写各目标的 settings.json，仅保留本次管理内容；手工添加的其它键会清掉。"
         confirm-text="替换应用"
         variant="destructive"
         :busy="busy"
@@ -781,7 +780,7 @@ async function submitTool(tool: ToolTab, claudeMode: 'merge' | 'replace' = 'merg
       <ConfirmDialog
         v-if="askUpdate"
         title="更新全部 Agent 工具？"
-        description="对本机与全部受管系统容器执行 npm 全局更新（Claude Code / Codex / OpenCode / Pi / OpenClaw → 最新版）。容器需在运行，停机的会标为失败（先启动再更新）；整体耗时可能数分钟。"
+        description="对所有目标执行 npm 全局更新（Claude Code / Codex / OpenCode / Pi / OpenClaw）。停机容器会失败，耗时可能数分钟。"
         confirm-text="开始更新"
         @confirm="runAgentUpdate"
         @close="askUpdate = false"

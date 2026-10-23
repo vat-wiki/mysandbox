@@ -275,7 +275,7 @@ function logout() {
         </div>
         <div v-else class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
           <p class="text-sm">从左侧选择一个授权容器开始</p>
-          <p class="text-xs">终端会话在服务端保持，刷新页面自动重连</p>
+          <p class="text-xs">刷新后自动重连</p>
         </div>
       </div>
 

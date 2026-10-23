@@ -14,7 +14,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import InfoHint from '@/components/InfoHint.vue'
 
 const props = defineProps<{ container: ContainerView }>()
 const emit = defineEmits<{ (e: 'done'): void; (e: 'close'): void }>()
@@ -74,12 +73,8 @@ function submit() {
       <DialogHeader>
         <DialogTitle class="flex items-center gap-1.5">
           导出为包
-          <InfoHint label="导出说明">
-            <p>包内容 = config + rootfs。</p>
-            <p>拷到别的机器用「从包导入」恢复。</p>
-          </InfoHint>
         </DialogTitle>
-        <DialogDescription>把 {{ container.displayName || container.name }} 打包成 tar.zst。</DialogDescription>
+        <DialogDescription>把 {{ container.displayName || container.name }} 打包成 tar.zst（config + rootfs）。</DialogDescription>
       </DialogHeader>
 
       <div class="space-y-3">
@@ -97,7 +92,7 @@ function submit() {
           v-if="container.state === 'running'"
           class="text-xs leading-relaxed text-amber-600 dark:text-amber-500"
         >
-          容器须已停止——运行中导出的包内容不可信。先停止它再导出。
+          容器须已停止；运行中导出的内容不可信。
         </p>
 
         <div

@@ -528,14 +528,8 @@ onUnmounted(() => {
             <img src="/docker.svg" alt="" class="size-8 opacity-30" />
             <p class="text-sm text-muted-foreground">暂无应用容器</p>
             <p class="max-w-xs text-xs leading-relaxed text-muted-foreground/60">
-              放一份 compose.yaml 再 <span class="font-mono">docker compose up -d</span>，
-              或经侧栏收编入口纳入现有容器。
+              放一份 compose.yaml 后 up，或从侧栏 Inbox 收编现有容器。
             </p>
-            <InfoHint label="服务来源说明">
-              <p>服务来自两处：</p>
-              <p>① 目录注册——往 <span class="font-mono">~/.config/mysandbox/compose/&lt;名&gt;/</span> 放一份 compose.yaml 再 <span class="font-mono">docker compose up -d</span>（agent 干这事最顺手）；</p>
-              <p>② 收编——侧栏「应用容器」分区头的 Inbox 入口纳入现有容器。</p>
-            </InfoHint>
           </div>
 
           <!-- 服务详情（分层） -->
@@ -551,7 +545,7 @@ onUnmounted(() => {
               <div class="flex flex-wrap items-center gap-1.5">
                 <!-- 未创建（目录里只有 compose.yaml 还没 up）：起停无意义，提示为主 -->
                 <span v-if="sel.state === 'absent'" class="text-xs text-muted-foreground">
-                  底账在、容器未创建——配置页应用一次即可
+                  配置页应用后创建容器
                 </span>
                 <Button
                   v-else-if="!sel.running"
@@ -756,7 +750,7 @@ onUnmounted(() => {
               <div v-if="openCfg && cfg && cfg.readonly" class="space-y-2 pt-1.5">
                 <div class="flex items-start gap-1.5">
                   <p class="flex-1 text-xs text-muted-foreground">
-                    收编的 compose 栈——配置回原文件改，这里重启栈生效。
+                    配置回原文件改；这里只重启栈。
                   </p>
                   <InfoHint label="原底账路径">
                     <p class="font-mono break-all">{{ cfg.path }}</p>
@@ -777,7 +771,7 @@ onUnmounted(() => {
               <div v-else-if="openCfg && cfg && cfg.yaml != null" class="space-y-2 pt-1.5">
                 <p class="truncate text-[11px] text-muted-foreground" :title="cfg.path">
                   <span class="font-mono">{{ cfg.path }}</span>
-                  <span class="ml-1.5 text-muted-foreground/60">终端手改此文件 + docker compose up -d 等价</span>
+                  <span class="ml-1.5 text-muted-foreground/60">可直接在终端修改此文件</span>
                 </p>
                 <p v-if="cfgLoading" class="py-6 text-center text-xs text-muted-foreground">读取中…</p>
                 <!-- 放大 = 外层容器从抽屉内嵌切到全屏覆盖（fixed）；同一编辑器实例不重建。 -->
@@ -816,9 +810,6 @@ onUnmounted(() => {
                     <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="cfgApplying" @click="applyCfg(true)">
                       <LoaderCircle v-if="cfgApplying" class="size-3.5 animate-spin" /> 构建并应用
                     </Button>
-                    <span v-if="cfgApplying" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
-                    <span v-else-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
-                    <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
                   </div>
                   <!-- 内嵌态：放大入口浮在编辑器右上角 -->
                   <Button
@@ -840,9 +831,6 @@ onUnmounted(() => {
                   <Button v-if="cfg.hasBuild" size="sm" variant="outline" :disabled="cfgApplying" @click="applyCfg(true)">
                     <LoaderCircle v-if="cfgApplying" class="size-3.5 animate-spin" /> 构建并应用
                   </Button>
-                  <span v-if="cfgApplying" class="text-[11px] text-muted-foreground">compose up 进行中，完成后自动刷新</span>
-                  <span v-else-if="cfgDirty" class="text-[11px] text-amber-600">有未保存修改——应用以编辑器内容为准</span>
-                  <span v-else-if="cfg.drift" class="text-[11px] text-amber-600">文件与容器不一致，应用后收敛</span>
                 </div>
               </div>
               <p v-if="openCfg && cfgErr" class="pt-1.5 text-xs text-destructive">{{ cfgErr }}</p>
@@ -887,7 +875,7 @@ onUnmounted(() => {
           <p v-if="status?.error" class="text-destructive">{{ status.error }}</p>
           <p v-if="status?.network.detail" class="text-amber-600">{{ status.network.detail }}</p>
           <p v-if="status?.registryMirrors?.length === 0" class="flex items-start gap-1.5 text-amber-600">
-            <span class="flex-1">未配置 registry-mirrors——受限网络下 Docker Hub 直连常失败。</span>
+            <span class="flex-1">未配置 registry-mirrors，拉取可能失败。</span>
             <InfoHint label="registry-mirrors 说明">
               <p>可在 <span class="font-mono">/etc/docker/daemon.json</span> 配置 <span class="font-mono">registry-mirrors</span> 后重启 docker。</p>
               <p>私有 registry 不受影响。</p>
@@ -912,7 +900,7 @@ onUnmounted(() => {
         <ConfirmDialog
           v-if="pendingUnadopt"
           :title="`取消收编 ${pendingUnadopt}`"
-          description="将移出服务网络并清除登记，恢复为普通外部容器——容器与数据不动，hosts 解析随之消失。"
+          description="移出服务网络并清除登记；容器与数据不动。"
           confirm-text="取消收编"
           variant="destructive"
           @confirm="confirmUnadopt"

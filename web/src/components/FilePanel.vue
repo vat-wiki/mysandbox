@@ -1724,7 +1724,7 @@ function fmtSize(n: number): string {
             </p>
             <template v-else>
               <p v-if="searchTruncated" class="px-2.5 py-1 text-[11px] text-muted-foreground">
-                结果已截断（前 500 条）——换更具体的关键词或目录
+                仅显示前 500 条，请缩小范围
               </p>
               <template v-for="g in contentGroups" :key="'sg:' + g.path">
                 <button

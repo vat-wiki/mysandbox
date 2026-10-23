@@ -208,7 +208,7 @@ function openInPanel() {
             variant="outline"
             size="xs"
             class="h-6 shrink-0 gap-1 px-2 text-[11px]"
-            title="跳宿主文件面板定位到库目录——编辑在这里改（查看器只读）"
+            title="在文件面板编辑（查看器只读）"
             @click="openInPanel"
           >
             <FolderOpen class="size-3" /> 在文件面板打开

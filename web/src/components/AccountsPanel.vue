@@ -134,7 +134,7 @@ async function doDelete() {
       <DialogHeader>
         <DialogTitle>账户管理</DialogTitle>
         <DialogDescription>
-          受限账户只能访问被授权容器（终端 + 文件面板）；主 token 不受影响。
+          账户仅能访问授权容器（终端 + 文件面板），主 token 不受影响。
         </DialogDescription>
       </DialogHeader>
 
@@ -168,7 +168,7 @@ async function doDelete() {
           </DropdownMenu>
         </div>
         <p v-if="!accounts.length && !loading" class="py-6 text-center text-xs text-muted-foreground">
-          还没有账户——创建一个，把用户名密码和容器授权一起给对方。
+          还没有账户。
         </p>
       </div>
 
@@ -186,7 +186,7 @@ async function doDelete() {
       <DialogHeader>
         <DialogTitle>{{ editName ? `编辑账户 ${editName}` : '新建账户' }}</DialogTitle>
         <DialogDescription>
-          账户名登录用；密码至少 6 位。勾选该账户可以访问的容器。
+          密码至少 6 位；勾选授权容器。
         </DialogDescription>
       </DialogHeader>
       <div class="flex flex-col gap-3">

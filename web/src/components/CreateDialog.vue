@@ -169,7 +169,7 @@ function submit() {
     <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
       <DialogHeader>
         <DialogTitle>新建容器</DialogTitle>
-        <DialogDescription>名称、描述与 IP；其余在「高级」里。</DialogDescription>
+        <DialogDescription class="sr-only">新建系统容器</DialogDescription>
       </DialogHeader>
 
       <!-- 主路径只有 基础+网络（名称/描述/IP）；来源与 hosts 来源收进「高级」折叠块。
@@ -231,7 +231,7 @@ function submit() {
             class="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
           >
             <span class="transition-transform group-open:rotate-90" aria-hidden="true">▸</span>
-            高级（从哪儿建 / hosts 来源）
+            高级
           </summary>
           <div class="space-y-3 border-t px-3 py-3">
             <div class="space-y-2">
@@ -265,7 +265,7 @@ function submit() {
                   </SelectContent>
                 </Select>
                 <p class="text-xs leading-relaxed text-amber-600 dark:text-amber-500">
-                  源容器须已停止：会先停它，完成后不自动重启。
+                  会先停止源容器；完成后不会自动启动。
                 </p>
               </div>
               <div v-else-if="sourceKind === 'archive'" class="space-y-1">
@@ -301,7 +301,7 @@ function submit() {
                   <span class="transition-transform group-open:rotate-90" aria-hidden="true"
                     >▸</span
                   >
-                  预览（想改默认去改模板容器）
+                  预览
                 </summary>
                 <div class="border-t px-3 py-2">
                   <pre

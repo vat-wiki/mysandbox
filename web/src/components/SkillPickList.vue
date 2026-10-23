@@ -60,7 +60,7 @@ const filtered = computed(() =>
             <Badge
               variant="outline"
               class="shrink-0 border-transparent bg-muted px-1 text-[9px] text-muted-foreground"
-              title="静态快照——来源改动不自动进库，更新在技能中心"
+              title="静态快照；更新在技能中心"
             >快照</Badge>
           </div>
           <p class="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground" :title="s.description">{{ s.description }}</p>

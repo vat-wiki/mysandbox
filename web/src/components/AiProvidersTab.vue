@@ -268,7 +268,7 @@ async function doRemoveProvider() {
         <Badge variant="outline" class="shrink-0 border-transparent bg-muted px-1 text-[10px] text-muted-foreground">
           {{ providers.length }}
         </Badge>
-        <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">接入凭据与端点的库，分配给「Agent 工具」里的各 CLI</span>
+        <span class="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">凭据与端点库，供各 CLI 绑定</span>
         <Button v-if="!draft" variant="ghost" size="xs" class="h-6 shrink-0 gap-1 px-1.5 text-[11px]" :disabled="busy" @click="startAdd">
           <Plus class="size-3.5" /> 添加
         </Button>
@@ -334,8 +334,8 @@ async function doRemoveProvider() {
 
         <!-- 库列表（常驻） -->
         <p v-if="!providers.length && !draft" class="rounded-md border border-dashed px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-          还没有模型供应商——点「添加」把网关的端点与 key 存进来。
-          <template v-if="!draft">旧版单网关档已自动迁移为 <code class="font-mono">myapikey</code> 条目（重启过服务即有），直接编辑改 key。</template>
+          还没有模型供应商，点「添加」接入端点与 key。
+          <template v-if="!draft">旧版网关已迁移为 <code class="font-mono">myapikey</code>，可直接改 key。</template>
         </p>
         <div v-else class="space-y-1.5">
           <div v-for="p in providers" :key="p.id" class="rounded-md border px-3 py-2">

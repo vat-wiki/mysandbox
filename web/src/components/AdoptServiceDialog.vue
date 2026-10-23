@@ -113,10 +113,8 @@ async function doTakeover(row: AdoptableContainerView) {
 
       <div class="flex justify-end">
         <InfoHint label="收编方式说明">
-          <p>收编 = 接管进 mysandbox 底账，之后由面板统一管理（容器与数据不动）。</p>
-          <p><span class="text-foreground">裸容器 → 接管：</span>启动方式复刻进 compose 底账（可查看/修改），之后由 compose 管理，会重建容器。</p>
-          <p><span class="text-foreground">compose 栈 → 栈级收编：</span>全体成员纳管、单入口展示，原底账不动。</p>
-          <p>都会接入服务网络、LXC 按名字可达。</p>
+          <p>裸容器会重建，数据卷保留；compose 栈保留原文件，全体成员纳管。</p>
+          <p>收编后接入服务网络，LXC 可按服务名访问。</p>
         </InfoHint>
       </div>
 

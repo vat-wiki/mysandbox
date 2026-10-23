@@ -322,7 +322,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
               v-if="stoppedSelected"
               class="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400"
             >
-              所选有 {{ stoppedSelected }} 个容器未运行——本操作需容器在跑，这部分会失败。
+              所选有 {{ stoppedSelected }} 个容器未运行，将失败。
             </div>
 
             <!-- exec：shell 高亮编辑（Monaco 异步加载，外层定高盒防止布局跳动） -->
@@ -366,9 +366,6 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                   <Input id="b-git-email" v-model="gitEmail" placeholder="dev@local" />
                 </div>
               </div>
-              <p class="text-xs text-muted-foreground">
-                对每个容器覆写 git 全局 user.name/email。
-              </p>
             </TabsContent>
 
             <!-- ssh -->
@@ -384,7 +381,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
                 </div>
               </RadioGroup>
               <p v-if="sshMode === 'reseed'" class="text-xs text-muted-foreground">
-                清空 ~/.ssh 并从 /mnt/host/.ssh 重新拷贝（权限 700/600）。
+                清空 ~/.ssh，从 /mnt/host/.ssh 重拷（700/600）。
               </p>
               <Textarea
                 v-else
@@ -413,8 +410,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
               >
                 <p class="flex-1">以 root 覆写这 {{ ids.length }} 个容器的 /etc/hosts，写入即持久。</p>
                 <InfoHint label="hosts 维护语义说明">
-                  <p>mysandbox 只维护文件尾部的服务发现块（应用容器变化会自动重建该块），其余内容不再被动。</p>
-                  <p>想改新容器的默认 hosts？去改模板容器。</p>
+                  <p>只自动维护尾部服务块；新容器默认 hosts 请改模板容器。</p>
                 </InfoHint>
               </div>
             </TabsContent>

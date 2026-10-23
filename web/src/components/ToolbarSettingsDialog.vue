@@ -161,7 +161,7 @@ onBeforeUnmount(() => {
       </DialogHeader>
 
       <p class="text-xs text-muted-foreground">
-        拖拽 chip 调序，改动即时生效并记忆（存本浏览器）。一页 14 键（2 行 × 7 列），满页自动溢到下一页，工具条上横向轻扫翻页。
+        拖拽调序，改动只保存在本浏览器。每页 14 个按钮，工具条上横向翻页。
       </p>
 
       <div class="max-h-[52vh] overflow-y-auto pr-0.5 scroll-thin">

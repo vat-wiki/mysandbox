@@ -4000,7 +4000,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                       v-if="s.externalStack"
                       variant="outline"
                       class="shrink-0 border-transparent bg-muted text-[10px] text-muted-foreground"
-                      title="生命周期归原编排方——这里只提供终端/文件/网络可达"
+                      title="生命周期归原编排方；这里仅提供终端/文件/网络"
                       >收编</Badge
                     >
                   </div>
@@ -5062,7 +5062,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
   <ConfirmDialog
     v-if="adoptTarget"
     title="纳入管理"
-    description="为此容器设置显示名（可选，留空则用容器名）。"
+    description="留空使用容器名。"
     confirm-text="纳入"
     :input="{ default: adoptTarget.name, placeholder: adoptTarget.name }"
     @confirm="doAdopt"
@@ -5073,7 +5073,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
   <ConfirmDialog
     v-if="renameTarget"
     title="重命名容器"
-    description="修改显示名（终端 tab、侧栏、文件面板都用它），不改容器名。"
+    description="仅修改显示名，不改容器名。"
     confirm-text="重命名"
     :input="{ default: renameTarget.displayName || renameTarget.name, placeholder: renameTarget.name }"
     @confirm="doRename"
@@ -5085,7 +5085,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
   <ConfirmDialog
     v-if="svcRenameTarget"
     title="重命名服务"
-    description="修改显示名（侧栏卡片、服务终端 tab 用它），连接仍按服务真名解析。"
+    description="仅修改显示名，连接仍按服务真名解析。"
     confirm-text="重命名"
     :input="{ default: svcRenameTarget.displayName || svcRenameTarget.name, placeholder: svcRenameTarget.name }"
     @confirm="doSvcRename"
@@ -5130,7 +5130,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
   <ConfirmDialog
     v-if="pendingSvcUnadopt"
     :title="`取消收编 ${pendingSvcUnadopt}`"
-    description="将移出服务网络并清除登记，恢复为普通外部容器——容器与数据不动，hosts 解析随之消失。"
+    description="移出服务网络并清除登记；容器与数据不动。"
     confirm-text="取消收编"
     variant="destructive"
     @confirm="doSvcUnadopt"

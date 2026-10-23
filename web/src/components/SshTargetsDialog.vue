@@ -185,9 +185,8 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
 
       <div class="flex justify-end">
         <InfoHint label="接入方式说明">
-          <p>远程主机作为「终端」接入，会话在远端 tmux 上；凭据缺省复用本机 ssh（密钥 / agent）。</p>
-          <p>密码为可选填项：仅存本机 sidecar（0600），经 sshpass 自动应答，不出 API；不填则用密钥，首连可在终端交互确认。</p>
-          <p>会话跨重启存活；~/.ssh/config 别名（含跳板）直接生效。</p>
+          <p>远端 tmux 会话，跨重启保留；默认复用本机 ssh 凭据。</p>
+          <p>密码仅存本机（0600），经 sshpass 自动应答。</p>
         </InfoHint>
       </div>
 
