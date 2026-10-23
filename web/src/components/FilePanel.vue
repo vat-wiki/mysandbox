@@ -75,6 +75,7 @@ import {
   CaseSensitive,
   Regex,
   Package,
+  Search,
   SquareCode,
 } from 'lucide-vue-next'
 
@@ -810,7 +811,6 @@ watch(
     skillProbeSeq.clear()
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
     q.value = '' // 搜索是当前目录视图，切容器一并清掉
-    searchMode.value = 'name' // 内容搜索上下文不跨容器，视图重置回名称搜索
     tick()
   },
 )
@@ -977,10 +977,9 @@ async function revealFile(containerId: string, filePath: string) {
   // 恒暂停跟随（不像 locate 靠「容器不同=组即将切换」回跟随态）：reveal 的目标就是
   // 这个文件目录，不是新 pane 的 cwd——不能给在途 followCheck 任何回写 cwd 的机会
   follow.value = false
-  // 搜索态会把目标行过滤/排走（内容搜索更是整体接管列表区）：reveal 换的是浏览上下文，
+  // 搜索态会把目标行过滤/排走（展开模式尤其明显）：reveal 换的是浏览上下文，
   // 顺带清掉搜索态，保证目标行可见。
   q.value = ''
-  searchMode.value = 'name'
   resetSearchState()
   revealPath.value = filePath
   if (revealTimer) clearTimeout(revealTimer)
@@ -1162,12 +1161,10 @@ function nameSegs(name: string, needle: string): { t: string; hit: boolean }[] {
 }
 
 // —— 内容搜索（grep，服务端视图）——
-// 与名称搜索（displayEntries 纯客户端派生）并列的第二模式：服务端对当前目录跑 grep
-// -rnI，结果按文件分组平铺在列表区（完全接管 rows 渲染分支，见模板），点命中行
-// emit open-file 带 line + editing（md/svg 默认预览态，跳行只在源码态有意义，必须
-// editing:true 强制进源码），父级汇聚到 FileEditorPane 的 revealTarget 跳行。
-// 名称搜索的 MIN 无关：MIN_QUERY 只约束内容模式（1 个字符的 grep 请求噪声太大）。
-const searchMode = ref<'name' | 'content'>('name')
+// 与文件名搜索共用一个输入框：名称侧即时排序/过滤，输入达到 MIN_QUERY 后再并行跑
+// 服务端 grep，命中按文件分组显示在文件列表上方。点命中行 emit open-file 带 line +
+// editing（md/svg 默认预览态，跳行只在源码态有意义，必须 editing:true 强制进源码）。
+// MIN_QUERY 只约束 grep（1 个字符的递归搜索噪声太大）。
 const searchHits = ref<SearchHit[] | null>(null) // null = 无结果态（未搜/已清）
 const searchLoading = ref(false)
 const searchErr = ref('')
@@ -1176,8 +1173,8 @@ const searchCs = ref(false) // 大小写敏感（默认否）
 const searchRe = ref(false) // 正则模式（默认固定串）
 const searchDeps = ref(false) // 含依赖目录（默认剪 .git/node_modules 等）
 const MIN_QUERY = 2
-// 内容模式激活 = 列表区被结果接管（渲染分支判它，一处收口）。
-const contentActive = computed(() => searchMode.value === 'content' && q.value.trim().length >= MIN_QUERY)
+// 内容搜索激活 = 内容分组显示（文件列表仍保留，渲染分支判它，一处收口）。
+const contentActive = computed(() => q.value.trim().length >= MIN_QUERY)
 
 let searchCtl: AbortController | null = null
 let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -1196,7 +1193,7 @@ function resetSearchState() {
 }
 async function runContentSearch() {
   const needle = q.value.trim()
-  if (searchMode.value !== 'content' || needle.length < MIN_QUERY) {
+  if (needle.length < MIN_QUERY) {
     resetSearchState()
     return
   }
@@ -1229,17 +1226,23 @@ async function runContentSearch() {
   }
 }
 function scheduleContentSearch() {
-  if (searchMode.value !== 'content' || q.value.trim().length < MIN_QUERY) {
+  if (q.value.trim().length < MIN_QUERY) {
     resetSearchState()
     return
   }
   searchCtl?.abort()
   if (searchTimer) clearTimeout(searchTimer)
+  // debounce 期间就进入 loading 并丢掉上一词的命中：合并搜索后内容分组常驻，
+  // 否则新查询会先闪一下旧结果/「无匹配」，看起来像搜索失灵。
+  searchHits.value = null
+  searchLoading.value = true
+  searchErr.value = ''
+  searchTruncated.value = false
   searchTimer = setTimeout(runContentSearch, 300)
 }
 // path 进依赖 = 搜索作用域就是当前目录，导航即按新目录重搜（旧结果过期丢弃）；容器 id
 // 兜底（切容器 watch 已清 q，q 变化会触发本 watch，双保险）。开关变化即重搜。
-watch([q, searchMode, searchCs, searchRe, searchDeps, path, () => props.containerId], scheduleContentSearch)
+watch([q, searchCs, searchRe, searchDeps, path, () => props.containerId], scheduleContentSearch)
 
 // 结果按文件分组（服务端 flat hits，客户端分组纯展示）：保持服务端返回序（grep 递归序）。
 const contentGroups = computed(() => {
@@ -1478,6 +1481,21 @@ function fmtSize(n: number): string {
   >
     <!-- 路径行属于整个面板（文件 / Git 共用）：目录在上，视图切换在下。 -->
     <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 max-md:h-11">
+      <!-- 浏览模式是路径行的前置功能键：下钻 / 树展开，切换的是「点目录」的语义。 -->
+      <button
+        v-if="panelView === 'files'"
+        class="shrink-0 hover:text-foreground"
+        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
+        :title="
+          browseMode === 'expand'
+            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
+            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
+        "
+        @click="toggleBrowseMode"
+      >
+        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
+        <FolderInput v-else class="size-3.5" />
+      </button>
       <button
         v-if="path && path !== '/'"
         class="shrink-0 rounded text-muted-foreground hover:text-foreground"
@@ -1538,32 +1556,7 @@ function fmtSize(n: number): string {
       >
         <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
       </select>
-      <!-- 浏览模式与目录操作只属于文件视图；Git 保留同一条路径上下文但不显示这些按钮。 -->
-      <button
-        v-if="panelView === 'files'"
-        class="shrink-0 hover:text-foreground"
-        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
-        :title="
-          browseMode === 'expand'
-            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
-            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
-        "
-        @click="toggleBrowseMode"
-      >
-        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
-        <FolderInput v-else class="size-3.5" />
-      </button>
-      <Button
-        v-if="panelView === 'files'"
-        variant="ghost"
-        size="icon-xs"
-        class="hidden shrink-0 md:inline-flex"
-        :disabled="loading"
-        :title="loading ? '刷新中…' : '刷新'"
-        @click="refresh"
-      >
-        <RefreshCw :class="['size-3.5', loading ? 'animate-spin' : '']" />
-      </Button>
+      <!-- 目录操作只属于文件视图；Git 保留同一条路径上下文但不显示这些按钮。 -->
       <DropdownMenu v-if="panelView === 'files'">
         <DropdownMenuTrigger as-child>
           <Button variant="ghost" size="icon-xs" class="hidden shrink-0 md:inline-flex" title="当前目录操作">
@@ -1571,6 +1564,10 @@ function fmtSize(n: number): string {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" class="w-48">
+          <DropdownMenuItem :disabled="loading" @click="refresh">
+            <RefreshCw class="size-3.5" :class="{ 'animate-spin': loading }" /> {{ loading ? '刷新中…' : '刷新' }}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
             <FilePlus class="size-3.5" /> 新建文件
           </DropdownMenuItem>
@@ -1653,42 +1650,19 @@ function fmtSize(n: number): string {
       终端会话未就绪，等待中…
     </p>
 
-    <!-- 搜索行：名称搜索（随浏览模式分两套：下钻=当前目录排序平铺 / 展开=树内过滤保层级）
-         与内容搜索（grep，服务端执行）两模式。左侧显式分段切换（初版是图标即切换，实测太
-         隐晦没人发现）；内容模式追加 大小写/正则/含依赖目录 三开关。Esc/✕ 清空。 -->
+    <!-- 搜索行：一个输入框同时承担文件名过滤与内容 grep。名称侧即时响应；内容侧输入
+         达到 2 个字符后自动执行，命中分组显示在文件列表上方。Esc/✕ 清空。 -->
     <div v-if="hasTerminal" class="flex h-7 shrink-0 items-center gap-1.5 border-b border-border px-2">
-      <div class="flex shrink-0 items-center gap-0.5 rounded bg-muted/60 p-0.5 text-[10px] leading-none">
-        <button
-          class="rounded px-1.5 py-1"
-          :class="searchMode === 'name' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
-          title="按文件名过滤当前目录列表"
-          @click="searchMode = 'name'"
-        >
-          文件名
-        </button>
-        <button
-          class="rounded px-1.5 py-1"
-          :class="searchMode === 'content' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
-          title="grep 当前目录文件内容（含子目录）"
-          @click="searchMode = 'content'"
-        >
-          内容
-        </button>
-      </div>
+      <Search class="size-3.5 shrink-0 text-muted-foreground/60" />
       <input
         v-model="q"
         class="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
-        :placeholder="
-          searchMode === 'content'
-            ? '搜索当前目录内容（grep）…'
-            : browseMode === 'expand'
-              ? '在目录树中过滤（含已展开的子目录）…'
-              : '搜索当前目录文件名…'
-        "
+        placeholder="搜索文件名或内容…"
+        title="文件名即时过滤；输入至少 2 个字符后同时搜索文件内容"
         @keydown.esc="q = ''"
       />
-      <!-- 内容模式三开关：激活态与 browseMode 切换钮同语言（sky-400 图标即状态） -->
-      <template v-if="searchMode === 'content'">
+      <!-- 内容搜索三开关：输入不足 2 字符时隐藏，达到阈值后与 grep 同时生效。 -->
+      <template v-if="contentActive">
         <button
           class="shrink-0"
           :class="searchCs ? 'text-sky-400' : 'text-muted-foreground/60 hover:text-foreground'"
@@ -1737,61 +1711,6 @@ function fmtSize(n: number): string {
           <p v-if="!hasTerminal" class="px-3 py-6 text-center text-xs text-muted-foreground">
             先在左侧打开终端
           </p>
-          <!-- 内容搜索结果完全接管列表区（平铺分组，不做树形——窄面板里树形折叠命中组难读）。
-               结果行不进拖拽/多选/右键体系（不是目录树条目），行点击 = 开编辑器（命中行带
-               line 跳行，文件头只开文件）。高亮复用 nameSegs（正则模式语义不合字面包含，
-               传空 needle 走全不命中）。 -->
-          <template v-else-if="contentActive">
-            <p
-              v-if="searchLoading"
-              class="flex items-center justify-center gap-1.5 px-3 py-6 text-xs text-muted-foreground"
-            >
-              <Loader2 class="size-3.5 animate-spin" /> 搜索中…
-            </p>
-            <p v-else-if="searchErr" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
-              {{ searchErr }}
-            </p>
-            <p v-else-if="!contentGroups.length" class="px-3 py-6 text-center text-xs text-muted-foreground">
-              无匹配内容
-            </p>
-            <template v-else>
-              <p v-if="searchTruncated" class="px-2.5 py-1 text-[11px] text-muted-foreground">
-                仅显示前 500 条，请缩小范围
-              </p>
-              <template v-for="g in contentGroups" :key="'sg:' + g.path">
-                <button
-                  class="flex w-full items-center gap-2 py-1.5 pl-2.5 pr-2.5 text-left hover:bg-accent/50"
-                  :title="hitAbsPath(g.path)"
-                  @click="emit('open-file', hitAbsPath(g.path))"
-                >
-                  <FileText class="size-3.5 shrink-0 text-muted-foreground" />
-                  <span class="min-w-0 flex-1 truncate font-mono text-xs font-medium">
-                    <span v-if="g.dir" class="text-muted-foreground">{{ g.dir }}/</span>
-                    <template v-for="(s, i) in nameSegs(g.name, q.trim())" :key="i">
-                      <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
-                      <template v-else>{{ s.t }}</template>
-                    </template>
-                  </span>
-                  <span class="shrink-0 text-[10px] text-muted-foreground">{{ g.hits.length }}</span>
-                </button>
-                <button
-                  v-for="h in g.hits"
-                  :key="'sh:' + g.path + ':' + h.line + ':' + h.text"
-                  class="flex w-full items-center gap-2 py-1 pl-9 pr-2.5 text-left font-mono text-xs hover:bg-accent/50"
-                  :title="`${g.path}:${h.line}`"
-                  @click="emit('open-file', hitAbsPath(h.path), { line: h.line, editing: true })"
-                >
-                  <span class="w-8 shrink-0 text-right text-[10px] text-muted-foreground/70">{{ h.line }}</span>
-                  <span class="min-w-0 flex-1 truncate">
-                    <template v-for="(s, i) in nameSegs(h.text, searchRe ? '' : q.trim())" :key="i">
-                      <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
-                      <template v-else>{{ s.t }}</template>
-                    </template>
-                  </span>
-                </button>
-              </template>
-            </template>
-          </template>
           <template v-else>
             <p v-if="err" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
               {{ err }}
@@ -1805,11 +1724,71 @@ function fmtSize(n: number): string {
             <!-- 展开模式的搜索是过滤语义：全不命中时树被滤空，给个明确空态（下钻的排序
                  语义永远有行，走不到这） -->
             <p
-              v-else-if="q.trim() && !rows.length && !loading"
+              v-else-if="q.trim() && !contentActive && !rows.length && !loading"
               class="px-3 py-6 text-center text-xs text-muted-foreground"
             >
               无匹配条目
             </p>
+
+            <!-- 内容命中放在文件列表之前：内容搜索通常递归整个目录，放在全部文件行之后
+                 会被下钻模式的排序列表埋掉。名称侧仍保留原有过滤/排序语义。 -->
+            <div v-if="contentActive" class="border-b border-border">
+              <div class="flex h-7 items-center gap-1.5 border-b border-border bg-muted/20 px-2.5 text-[11px] text-muted-foreground">
+                <FileText class="size-3 shrink-0" />
+                <span class="font-medium">内容</span>
+                <template v-if="searchLoading">
+                  <Loader2 class="size-3 animate-spin" />
+                  <span>搜索中…</span>
+                </template>
+                <span v-else-if="contentGroups.length">{{ contentGroups.length }} 个文件</span>
+                <span v-else class="text-muted-foreground/60">无匹配</span>
+                <span v-if="searchTruncated" class="ml-auto text-muted-foreground/70">仅前 500 条</span>
+              </div>
+              <p v-if="searchErr" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                {{ searchErr }}
+              </p>
+              <template v-else-if="contentGroups.length">
+                <template v-for="g in contentGroups" :key="'sg:' + g.path">
+                  <button
+                    class="flex w-full items-center gap-2 py-1.5 pl-2.5 pr-2.5 text-left hover:bg-accent/50"
+                    :title="hitAbsPath(g.path)"
+                    @click="emit('open-file', hitAbsPath(g.path))"
+                  >
+                    <FileText class="size-3.5 shrink-0 text-muted-foreground" />
+                    <span class="min-w-0 flex-1 truncate font-mono text-xs font-medium">
+                      <span v-if="g.dir" class="text-muted-foreground">{{ g.dir }}/</span>
+                      <template v-for="(s, i) in nameSegs(g.name, q.trim().toLowerCase())" :key="i">
+                        <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
+                        <template v-else>{{ s.t }}</template>
+                      </template>
+                    </span>
+                    <span class="shrink-0 text-[10px] text-muted-foreground">{{ g.hits.length }}</span>
+                  </button>
+                  <button
+                    v-for="h in g.hits"
+                    :key="'sh:' + g.path + ':' + h.line + ':' + h.text"
+                    class="flex w-full items-center gap-2 py-1 pl-9 pr-2.5 text-left font-mono text-xs hover:bg-accent/50"
+                    :title="`${g.path}:${h.line}`"
+                    @click="emit('open-file', hitAbsPath(h.path), { line: h.line, editing: true })"
+                  >
+                    <span class="w-8 shrink-0 text-right text-[10px] text-muted-foreground/70">{{ h.line }}</span>
+                    <span class="min-w-0 flex-1 truncate">
+                      <template v-for="(s, i) in nameSegs(h.text, searchRe ? '' : q.trim().toLowerCase())" :key="i">
+                        <span v-if="s.hit" class="rounded bg-primary/20 px-0.5 font-semibold text-primary">{{ s.t }}</span>
+                        <template v-else>{{ s.t }}</template>
+                      </template>
+                    </span>
+                  </button>
+                </template>
+              </template>
+            </div>
+            <div
+              v-if="contentActive && rows.length"
+              class="flex h-7 items-center gap-1.5 border-b border-border bg-muted/20 px-2.5 text-[11px] text-muted-foreground"
+            >
+              <Folder class="size-3 shrink-0" />
+              <span class="font-medium">文件</span>
+            </div>
             <!-- 行 = 树平面化结果（rows）：主列表 + 各展开目录的子内容。点行 = 打开/进入/
                  展开（随浏览模式），Ctrl/⌘ 点行 = 加入/移出多选、Shift 点行 = 从锚点范围选
                  （VS Code 式，选中集供「复制」整体带走）；点行首 chevron 或文件夹图标 =
