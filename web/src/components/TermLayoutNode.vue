@@ -4,7 +4,7 @@
 // 布局状态全部由 ContainerList 持有：动作经 inject 的 TERM_OPS 上抛统一改树，
 // 尺寸比例由父级经 style 下发（flexGrow + flexBasis 0%）。
 import { computed, defineAsyncComponent, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { SquareSplitHorizontal, SquareSplitVertical, X } from 'lucide-vue-next'
+import { RefreshCw, SquareSplitHorizontal, SquareSplitVertical, X } from 'lucide-vue-next'
 import PaneDivider from '@/components/PaneDivider.vue'
 import { containerColor } from '@/lib/utils'
 import { getTermCwd, serviceFileId, sshTargetName } from '@/lib/api'
@@ -56,9 +56,14 @@ function doClose() {
   if (props.node.kind !== 'leaf') return
   ops.close(props.group, props.node.termId)
 }
+const termRef = ref<{ redraw(): void } | null>(null)
 function bindTerm(el: unknown) {
   if (props.node.kind !== 'leaf') return
+  termRef.value = (el as { redraw(): void } | null) ?? null
   ops.setRef(props.node.termId, el)
+}
+function doRedraw() {
+  termRef.value?.redraw()
 }
 function onOsc(path: string) {
   if (props.node.kind !== 'leaf') return
@@ -178,6 +183,15 @@ if (leaf.value) {
         {{ paneTitle || (cwd ? '· ' + cwd : '· …') }}
       </span>
       <div class="ml-auto flex shrink-0 items-center gap-0.5">
+        <!-- 重绘：xterm 滚回历史后偶发叠字/错位（buffer 没坏，是渲染层失配），点一下
+             清字形缓存并重画当前视口，滚动位置保持不变。 -->
+        <button
+          class="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground pointer-coarse:p-2"
+          title="重绘终端（滚动后字符叠字/错位时点一下，不改变滚动位置）"
+          @click="doRedraw"
+        >
+          <RefreshCw class="size-3.5 pointer-coarse:size-4.5" />
+        </button>
         <!-- 手机禁用分屏：竖屏宽度放不下横排，堆叠又过度压缩终端；
              单 pane 连头部一起隐藏，终端空间最大化。桌面创建的多 pane
              恢复到手机时保留关闭入口，但不再继续新增分屏。 -->

@@ -9,6 +9,7 @@ export type PoolAct =
   | { kind: 'repeat'; seq: string }
   | { kind: 'scroll'; pages: number }
   | { kind: 'scrollEnd'; top: boolean }
+  | { kind: 'redraw' }
   | { kind: 'paste' }
   | { kind: 'copy' }
   | { kind: 'ctrl' }
@@ -51,6 +52,7 @@ export const KEY_POOL: Record<string, PoolEntry> = {
   pgdn: { label: '下页', title: '下翻一页（只滚本地回滚区，不进 PTY）', act: { kind: 'scroll', pages: 1 } },
   top: { label: '顶', title: '滚到历史顶部（只滚本地回滚区）', act: { kind: 'scrollEnd', top: true } },
   bottom: { label: '底', title: '滚回最新输出（只滚本地回滚区）', act: { kind: 'scrollEnd', top: false } },
+  redraw: { label: '重绘', title: '重绘终端画面（滚动后字符叠字/错位时点一下；不动滚动位置）', act: { kind: 'redraw' } },
   paste: { label: '粘贴', title: '粘贴剪贴板内容', act: { kind: 'paste' } },
   copy: { label: '复制', title: '复制选中内容', act: { kind: 'copy' } },
   ctrl: { label: 'Ctrl', title: 'Ctrl 粘滞修饰（Termux 式）：点亮后下一个按键带 Ctrl 发出（^A / ^← 等），用掉即灭', act: { kind: 'ctrl' } },
@@ -93,6 +95,7 @@ const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'pgdn' },
   { t: 'key', id: 'enter' },
   { t: 'key', id: 'stab' },
+  { t: 'key', id: 'redraw' },
 ]
 
 function loadToolButtons(): ToolBtn[] {

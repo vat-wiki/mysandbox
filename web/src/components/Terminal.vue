@@ -317,7 +317,7 @@ function reconnect() {
 function sendInput(s: string) {
   sendRaw(s)
 }
-defineExpose({ kill, reconnect, screenHash, sendInput })
+defineExpose({ kill, reconnect, redraw, screenHash, sendInput })
 
 // 非激活 tab 的懒挂载（detach）：终端组全部常驻 DOM（v-show 切换、组件不卸载），但
 // WS 只留给激活 tab——非激活 tab 不再吃输出流，省掉三样：xterm 对不可见输出的 VT 解析
@@ -746,6 +746,37 @@ function toolScrollEnd(top: boolean) {
   if (top) term?.scrollToTop()
   else term?.scrollToBottom()
 }
+// 手动重绘当前视口：大量滚动回看历史后，WebGL 字形图集或行几何偶发失配，屏幕出现
+// 跨行叠字/错位（buffer 里的数据本身是好的）。清图集 + 强制重算滚动区 + refresh 即可
+// 恢复；不清 buffer、不动 ydisp，滚到哪刷新后还在哪。DOM 渲染器直接走 refresh。
+function redraw() {
+  const currentTerm = term
+  if (!currentTerm) return
+  try {
+    ;(currentTerm as unknown as TerminalViewportHost)._core?.viewport?.syncScrollArea?.(true)
+  } catch {
+    /* 渲染器重建中/dispose 后忽略 */
+  }
+  try {
+    webglAddon?.clearTextureAtlas()
+  } catch {
+    /* WebGL 上下文已丢失时 clear 可能抛错，refresh 仍要走 */
+  }
+  try {
+    currentTerm.refresh(0, currentTerm.rows - 1)
+  } catch {
+    /* noop */
+  }
+  // 桌面端把焦点还给终端，点完按钮可直接继续输入；触屏不程序性聚焦（会弹键盘）。
+  if (!isCoarse.value) {
+    suppressFocusEmit = true
+    try {
+      currentTerm.focus()
+    } finally {
+      suppressFocusEmit = false
+    }
+  }
+}
 // 直发 stdin（与 onData 同通道）：工具条按键/粘贴共用。
 function sendRaw(s: string) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(s))
@@ -825,6 +856,9 @@ function runKeyBtn(id: string) {
       break
     case 'scrollEnd':
       toolScrollEnd(a.top)
+      break
+    case 'redraw':
+      redraw()
       break
     case 'paste':
       void toolPaste()
