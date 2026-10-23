@@ -1481,21 +1481,6 @@ function fmtSize(n: number): string {
   >
     <!-- 路径行属于整个面板（文件 / Git 共用）：目录在上，视图切换在下。 -->
     <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 max-md:h-11">
-      <!-- 浏览模式是路径行的前置功能键：下钻 / 树展开，切换的是「点目录」的语义。 -->
-      <button
-        v-if="panelView === 'files'"
-        class="shrink-0 hover:text-foreground"
-        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
-        :title="
-          browseMode === 'expand'
-            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
-            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
-        "
-        @click="toggleBrowseMode"
-      >
-        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
-        <FolderInput v-else class="size-3.5" />
-      </button>
       <button
         v-if="path && path !== '/'"
         class="shrink-0 rounded text-muted-foreground hover:text-foreground"
@@ -1556,6 +1541,22 @@ function fmtSize(n: number): string {
       >
         <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
       </select>
+      <!-- 浏览模式是视图偏好，不是路径导航：放在右侧操作区，避免和「上一级」混淆。 -->
+      <button
+        v-if="panelView === 'files'"
+        class="shrink-0 rounded hover:text-foreground"
+        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
+        :aria-pressed="browseMode === 'expand'"
+        :title="
+          browseMode === 'expand'
+            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
+            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
+        "
+        @click="toggleBrowseMode"
+      >
+        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
+        <FolderInput v-else class="size-3.5" />
+      </button>
       <!-- 目录操作只属于文件视图；Git 保留同一条路径上下文但不显示这些按钮。 -->
       <DropdownMenu v-if="panelView === 'files'">
         <DropdownMenuTrigger as-child>
