@@ -48,8 +48,6 @@ import { gatePoll } from '@/lib/linkQuality'
 import { openCodeServer } from '@/lib/codeserver'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
-import MobileTabActions from '@/components/mobile/MobileTabActions.vue'
-import { currentDirActions, runCurrentDirAction } from '@/components/mobile/currentDirActions'
 import {
   Folder,
   FileText,
@@ -1076,44 +1074,10 @@ function downloadDir() {
   return downloadTo(p, p.slice(p.lastIndexOf('/') + 1) || p, true)
 }
 
-function currentDirActionList() {
-  const actions = currentDirActions(!!clip.value, !!path.value && path.value !== '/')
-  if (canCodeServer.value) actions.push({ id: 'open-code-server', label: '在 Code Server 打开' })
-  if (canRegistry.value && hasSkillMd.value) actions.push({ id: 'register-skill', label: '添加为技能' })
-  actions.push({ id: 'refresh', label: '刷新' })
-  actions.push({ id: 'close', label: '关闭文件面板' })
-  return actions
-}
-
-function runCurrentDirMobileAction(action: Parameters<typeof runCurrentDirAction>[0]) {
-  if (action.id === 'open-code-server') {
-    openInCodeServer()
-    return
-  }
-  if (action.id === 'register-skill') {
-    void registerSkillFrom(path.value)
-    return
-  }
-  if (action.id === 'refresh') {
-    refresh()
-    return
-  }
-  if (action.id === 'close') {
-    emit('close')
-    return
-  }
-  runCurrentDirAction(action, {
-    paste: () => pasteInto(path.value),
-    download: downloadDir,
-    createFile: () => {
-      ctxTarget.value = null
-      nameDialog.value = { mode: 'newFile' }
-    },
-    createDir: () => {
-      ctxTarget.value = null
-      nameDialog.value = { mode: 'newDir' }
-    },
-  })
+// 工具行的新建入口：清掉条目右键留下的目标，落到当前目录。
+function startCreate(mode: 'newFile' | 'newDir') {
+  ctxTarget.value = null
+  nameDialog.value = { mode }
 }
 
 // —— 名称搜索：两套语义随浏览模式（渲染分支见 rows）——
@@ -1541,67 +1505,16 @@ function fmtSize(n: number): string {
       >
         <option v-for="p in panes" :key="p.termId" :value="p.termId">{{ p.label }}</option>
       </select>
-      <!-- 浏览模式是视图偏好，不是路径导航：放在右侧操作区，避免和「上一级」混淆。 -->
+      <!-- 路径行只负责导航与关闭；目录操作统一下沉到搜索下方的工具行。 -->
       <button
-        v-if="panelView === 'files'"
-        class="shrink-0 rounded hover:text-foreground"
-        :class="browseMode === 'expand' ? 'text-sky-400' : 'text-muted-foreground'"
-        :aria-pressed="browseMode === 'expand'"
-        :title="
-          browseMode === 'expand'
-            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
-            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
-        "
-        @click="toggleBrowseMode"
+        type="button"
+        class="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/50 hover:text-foreground max-md:size-9"
+        title="关闭文件面板"
+        aria-label="关闭文件面板"
+        @click="emit('close')"
       >
-        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
-        <FolderInput v-else class="size-3.5" />
+        <X class="size-3.5" />
       </button>
-      <!-- 目录操作只属于文件视图；Git 保留同一条路径上下文但不显示这些按钮。 -->
-      <DropdownMenu v-if="panelView === 'files'">
-        <DropdownMenuTrigger as-child>
-          <Button variant="ghost" size="icon-xs" class="hidden shrink-0 md:inline-flex" title="当前目录操作">
-            <MoreHorizontal class="size-3.5" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" class="w-48">
-          <DropdownMenuItem :disabled="loading" @click="refresh">
-            <RefreshCw class="size-3.5" :class="{ 'animate-spin': loading }" /> {{ loading ? '刷新中…' : '刷新' }}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newFile' }">
-            <FilePlus class="size-3.5" /> 新建文件
-          </DropdownMenuItem>
-          <DropdownMenuItem :disabled="!path" @click="nameDialog = { mode: 'newDir' }">
-            <FolderPlus class="size-3.5" /> 新建文件夹
-          </DropdownMenuItem>
-          <DropdownMenuItem v-if="clip" :disabled="!path" @click="pasteInto(path)">
-            <ClipboardPaste class="size-3.5" /> {{ clipLabel }}
-          </DropdownMenuItem>
-          <DropdownMenuItem v-if="canCodeServer" :disabled="!path" @click="openInCodeServer()">
-            <SquareCode class="size-3.5" /> 在 Code Server 打开
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            v-if="canRegistry && hasSkillMd"
-            :disabled="regBusy || !path"
-            @click="registerSkillFrom(path)"
-          >
-            <BookPlus class="size-3.5" /> {{ regBusy ? '添加中…' : '添加为技能' }}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem @click="emit('close')">
-            <X class="size-3.5" /> 关闭文件面板
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <MobileTabActions
-        v-if="panelView === 'files' && hasTerminal && path"
-        class="md:hidden"
-        title="当前目录操作"
-        :description="path"
-        :actions="currentDirActionList()"
-        @select="runCurrentDirMobileAction"
-      />
     </div>
 
     <template v-if="panelView === 'files'">
@@ -1667,6 +1580,109 @@ function fmtSize(n: number): string {
       >
         <X class="size-3.5" />
       </button>
+    </div>
+
+    <!-- 目录工具行：浏览模式用带文字的切换钮明确语义，其余目录操作直接露出。 -->
+    <div
+      v-if="hasTerminal"
+      class="flex h-8 shrink-0 items-center gap-0.5 border-b border-border bg-muted/10 px-1.5 max-md:h-10"
+    >
+      <button
+        type="button"
+        class="flex h-7 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] transition-colors max-md:h-8"
+        :class="
+          browseMode === 'expand'
+            ? 'bg-sky-500/10 text-sky-400 hover:bg-sky-500/15'
+            : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+        "
+        :aria-pressed="browseMode === 'expand'"
+        :title="
+          browseMode === 'expand'
+            ? '展开模式：点击文件夹原位展开/收起，不进入目录（点击切换回下钻模式）'
+            : '下钻模式：点击文件夹进入目录（点击切换为展开模式）'
+        "
+        @click="toggleBrowseMode"
+      >
+        <FolderTree v-if="browseMode === 'expand'" class="size-3.5" />
+        <FolderInput v-else class="size-3.5" />
+        <span>{{ browseMode === 'expand' ? '展开' : '下钻' }}</span>
+      </button>
+      <span class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+      <div class="ml-auto flex min-w-0 items-center gap-0.5 overflow-x-auto scroll-thin">
+        <button
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-35 max-md:size-8"
+          :disabled="loading"
+          title="刷新"
+          aria-label="刷新"
+          @click="refresh"
+        >
+          <RefreshCw class="size-3.5" :class="{ 'animate-spin': loading }" />
+        </button>
+        <button
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-35 max-md:size-8"
+          :disabled="!path"
+          title="新建文件"
+          aria-label="新建文件"
+          @click="startCreate('newFile')"
+        >
+          <FilePlus class="size-3.5" />
+        </button>
+        <button
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-35 max-md:size-8"
+          :disabled="!path"
+          title="新建文件夹"
+          aria-label="新建文件夹"
+          @click="startCreate('newDir')"
+        >
+          <FolderPlus class="size-3.5" />
+        </button>
+        <button
+          v-if="clip"
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-35 max-md:size-8"
+          :disabled="!path"
+          :title="clipLabel"
+          :aria-label="clipLabel"
+          @click="pasteInto(path)"
+        >
+          <ClipboardPaste class="size-3.5" />
+        </button>
+        <button
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-35 max-md:size-8"
+          :disabled="!path || path === '/'"
+          title="下载当前文件夹"
+          aria-label="下载当前文件夹"
+          @click="downloadDir"
+        >
+          <Download class="size-3.5" />
+        </button>
+        <button
+          v-if="canCodeServer"
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-35 max-md:size-8"
+          :disabled="!path"
+          title="在 Code Server 打开当前目录"
+          aria-label="在 Code Server 打开当前目录"
+          @click="openInCodeServer()"
+        >
+          <SquareCode class="size-3.5" />
+        </button>
+        <button
+          v-if="canRegistry && hasSkillMd"
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-35 max-md:size-8"
+          :disabled="regBusy || !path"
+          :title="regBusy ? '添加中…' : '添加为技能'"
+          :aria-label="regBusy ? '添加中…' : '添加为技能'"
+          @click="registerSkillFrom(path)"
+        >
+          <BookPlus class="size-3.5" />
+        </button>
+      </div>
     </div>
 
     <!-- 列表体：ContextMenu 包裹，右键新建/重命名/删除 -->
@@ -1966,7 +1982,6 @@ function fmtSize(n: number): string {
           (t) => emit('open-file', t.path, { diff: t.headPath ? { headPath: t.headPath } : {} })
         "
         @navigate="openDir"
-        @close="emit('close')"
       />
       <p v-else class="px-3 py-8 text-center text-xs text-muted-foreground">先在左侧打开终端</p>
     </div>

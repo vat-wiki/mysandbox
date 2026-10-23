@@ -28,7 +28,7 @@ import {
   type GitWorktreesView,
   type GitRestoreTarget,
 } from '@/lib/api'
-import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2, X } from 'lucide-vue-next'
+import { GitBranch, ChevronDown, ChevronRight, List, FolderTree, Folder, Plus, Check, Trash2, RefreshCw, FolderGit2, ArrowUpRight, Eraser, TriangleAlert, Lock, Undo2 } from 'lucide-vue-next'
 import { gatePoll } from '@/lib/linkQuality'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -42,7 +42,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'open-change', target: { path: string; headPath?: string }): void
   (e: 'navigate', path: string): void
-  (e: 'close'): void
 }>()
 
 const view = ref<GitStatusView | null>(null)
@@ -1104,9 +1103,6 @@ watch(view, (v) => {
         </div>
         <button class="rounded p-0.5 text-muted-foreground hover:text-foreground" title="刷新" @click="refresh">
           <RefreshCw class="size-3" />
-        </button>
-        <button class="rounded p-0.5 text-muted-foreground hover:text-foreground" title="关闭文件面板" @click="emit('close')">
-          <X class="size-3" />
         </button>
       </div>
     </div>
