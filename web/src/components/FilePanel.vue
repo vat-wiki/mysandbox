@@ -1479,7 +1479,7 @@ function fmtSize(n: number): string {
     @dragleave="onPanelDragLeave"
     @drop="onPanelDrop"
   >
-    <!-- 路径行属于整个面板（文件 / Git 共用）：目录在上，视图切换在下。 -->
+    <!-- 路径行属于整个面板（文件 / Git 共用）：目录在上，视图切换在面板底部。 -->
     <div class="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 max-md:h-11">
       <button
         v-if="path && path !== '/'"
@@ -1602,36 +1602,6 @@ function fmtSize(n: number): string {
         :actions="currentDirActionList()"
         @select="runCurrentDirMobileAction"
       />
-    </div>
-
-    <!-- 视图切换在路径之下：目录是上下文，文件/Git 是同一目录的两种看板。 -->
-    <div class="flex h-9 shrink-0 items-stretch border-b border-border" :title="containerName">
-      <button
-        type="button"
-        class="relative flex flex-1 items-center justify-center text-xs transition-colors"
-        :class="
-          panelView === 'files'
-            ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
-            : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
-        "
-        :aria-pressed="panelView === 'files'"
-        @click="setPanelView('files')"
-      >
-        文件
-      </button>
-      <button
-        type="button"
-        class="relative flex flex-1 items-center justify-center text-xs transition-colors"
-        :class="
-          panelView === 'git'
-            ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_0_var(--primary)]'
-            : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
-        "
-        :aria-pressed="panelView === 'git'"
-        @click="setPanelView('git')"
-      >
-        Git
-      </button>
     </div>
 
     <template v-if="panelView === 'files'">
@@ -1999,6 +1969,39 @@ function fmtSize(n: number): string {
         @close="emit('close')"
       />
       <p v-else class="px-3 py-8 text-center text-xs text-muted-foreground">先在左侧打开终端</p>
+    </div>
+
+    <!-- 视图切换固定在面板底部：目录是上下文，文件/Git 是同一目录的两种看板。 -->
+    <div
+      class="flex h-10 shrink-0 items-stretch border-t border-border bg-muted/30 max-md:h-11"
+      :title="containerName"
+    >
+      <button
+        type="button"
+        class="relative flex flex-1 items-center justify-center text-xs transition-colors"
+        :class="
+          panelView === 'files'
+            ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
+            : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
+        "
+        :aria-pressed="panelView === 'files'"
+        @click="setPanelView('files')"
+      >
+        文件
+      </button>
+      <button
+        type="button"
+        class="relative flex flex-1 items-center justify-center text-xs transition-colors"
+        :class="
+          panelView === 'git'
+            ? 'bg-card font-medium text-foreground shadow-[inset_0_2px_0_0_var(--primary)]'
+            : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
+        "
+        :aria-pressed="panelView === 'git'"
+        @click="setPanelView('git')"
+      >
+        Git
+      </button>
     </div>
 
     <!-- 命名弹窗（新建/重命名共用） -->
