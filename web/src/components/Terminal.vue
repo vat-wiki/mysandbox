@@ -1007,11 +1007,11 @@ function tbTouchEnd(e: TouchEvent) {
 
 // —— 软键盘纯 CSS 裁切（仅手机）——
 // 键盘弹起时不改终端盒子尺寸：xterm/PTY 的 cols/rows 保持不变，不再触发 fit/resize。
-// el 整体上移，顶部超出的行被根容器裁掉；工具条改为绝对定位覆盖层。终端内容盒
-// 在键盘开合之间不变，回滚位置自然不因 xterm resize/reflow 被重置。
-// clearance = 根容器底边被键盘盖住的部分；若根容器本来已在键盘上方则为 0。
+// 整个终端根盒子上移，顶部超出的部分交给外层视口裁掉；工具条 Teleport 到 body
+// 并固定在可视区底边上方。终端内容盒在键盘开合之间不变，回滚位置自然不因
+// xterm resize/reflow 被重置。clearance = 根盒底边被键盘盖住的部分。
 const kbShift = ref(0)
-const kbToolbarOffset = ref(0)
+const kbToolbarTop = ref(0)
 const toolbarHeight = ref(0)
 const toolbarEl = ref<HTMLDivElement | null>(null)
 let toolbarResizeObs: ResizeObserver | null = null
@@ -1030,15 +1030,17 @@ function setupViewportWatch() {
   const onVv = () => {
     const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
     if (kb <= 120) {
-      kbToolbarOffset.value = 0
+      kbToolbarTop.value = 0
       kbShift.value = 0 // 透值过滤地址栏小幅伸缩
       return
     }
     const root = rootEl.value
-    const gap = root ? Math.max(0, window.innerHeight - root.getBoundingClientRect().bottom) : 0
-    const clearance = Math.max(0, kb - gap)
-    kbToolbarOffset.value = clearance
-    // 工具条仍铺在键盘上方；终端保持原尺寸，再额外抬过工具条并留 8px 呼吸。
+    // 根盒自身带 transform，getBoundingClientRect 已包含上一次位移；先还原到布局底边再对齐 visualViewport。
+    const layoutBottom = root ? root.getBoundingClientRect().bottom + kbShift.value : 0
+    const visualBottom = vv.offsetTop + vv.height
+    const clearance = root ? Math.max(0, layoutBottom - visualBottom) : 0
+    kbToolbarTop.value = Math.max(0, visualBottom - toolbarHeight.value - 6)
+    // 终端保持原尺寸，再整体抬过工具条并留 8px 呼吸。
     kbShift.value = clearance + toolbarHeight.value + 8
   }
   vv.addEventListener('resize', onVv)
@@ -1679,25 +1681,24 @@ onBeforeUnmount(() => {
   <!-- bg-black + 内边距放外层：el 自身不带 padding，FitAddon 量到的 clientWidth/clientHeight 才是
        真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
-       手机软键盘弹起时不改终端盒子尺寸（kbShift 只做 CSS 上移/裁切，见 setupViewportWatch），
+       手机软键盘弹起时不改终端盒子尺寸（kbShift 只对根盒做 CSS 上移/裁切，见 setupViewportWatch），
        xterm/PTY 的 cols/rows 保持稳定，回滚位置也不会被 resize/reflow 重置。 -->
   <!-- ⚠️ 根容器必须 flex-1 min-h-0 而不是 h-full：叶子是 flex-col（pane 头部 + 本体），
        h-full = 100% 叶子高，加头部后恒溢出一个头高——终端底部会盖住下方文件 tab 栏
        （旧换显布局溢的是黑底看不出来，编辑器+终端分栏后这 22px 正好压住 tab 栏右侧
        按钮）。flex-1 min-h-0 让本体只占头部之外的剩余空间。 -->
-  <div ref="rootEl" class="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-black px-2 py-1.5 overscroll-none">
+  <div
+    ref="rootEl"
+    class="relative flex min-h-0 flex-1 flex-col bg-black px-2 py-1.5 overscroll-none"
+    :style="kbShift > 0 ? { transform: `translate3d(0, -${kbShift}px, 0)` } : undefined"
+  >
     <!-- touch-none（touch-action: none）：触屏滚终端的唯一正解。xterm 的 touchmove 处理是 JS 驱动
          viewport.scrollTop，但只在回滚区边界才 preventDefault——滚动途中浏览器的原生平移同时在跑，
          而触点不在 .xterm-viewport 滚动层内，原生滚动链直接落到 document：上翻历史（手指下划）时
          document 顶部 overscroll 触发下拉刷新、手势被浏览器抢走。touch-action: none 让终端区域的手势
          完全交给 JS（xterm 自滚），浏览器不再启动原生平移/下拉刷新/双指缩放。中间层挂 overscroll-none
          挡不住这个——touch 侧的原生滚动链跳过 overflow:hidden 的祖先直达 document。 -->
-    <div
-      ref="el"
-      class="min-h-0 flex-1 touch-none overflow-hidden"
-      :style="kbShift > 0 ? { transform: `translateY(-${kbShift}px)` } : undefined"
-      @contextmenu.prevent="onContextMenu"
-    />
+    <div ref="el" class="min-h-0 flex-1 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
          浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
     <div class="search-shell" v-if="searchVisible">
@@ -1758,15 +1759,16 @@ onBeforeUnmount(() => {
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
          参与分页。桌面不渲染。工具条是键盘态覆盖层——始终渲染以便测量高度，但平时不可见，
          且不参与终端盒子布局。 -->
-    <div
-      v-if="isPhone"
-      ref="toolbarEl"
-      class="absolute inset-x-2 z-20 select-none overflow-hidden border-t border-zinc-800 bg-black pt-1 transition-opacity md:hidden"
-      :class="kbShift > 0 ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
-      :style="{ bottom: `${kbToolbarOffset + 6}px` }"
-      @touchstart="tbTouchStart"
-      @touchend="tbTouchEnd"
-    >
+    <Teleport to="body">
+      <div
+        v-if="isPhone"
+        ref="toolbarEl"
+        class="fixed inset-x-2 z-[80] select-none overflow-hidden border-t border-zinc-800 bg-black pt-1 transition-opacity md:hidden"
+        :class="kbShift > 0 ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
+        :style="kbShift > 0 ? { top: `${kbToolbarTop}px` } : undefined"
+        @touchstart="tbTouchStart"
+        @touchend="tbTouchEnd"
+      >
       <!-- 分页轨道：每页固定 2 行 × 7 列，横向轻扫翻页（手势见脚本 tbTouchStart/End） -->
       <div
         class="flex transition-transform duration-200 ease-out"
@@ -1803,7 +1805,8 @@ onBeforeUnmount(() => {
       <div v-if="toolPages.length > 1" class="mt-1 flex justify-center gap-1.5 pb-0.5">
         <span v-for="i in toolPages.length" :key="i" class="size-1.5 rounded-full transition-colors" :class="i - 1 === tbPage ? 'bg-zinc-400' : 'bg-zinc-700'" />
       </div>
-    </div>
+      </div>
+    </Teleport>
     <ToolbarSettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
     <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox
          readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
