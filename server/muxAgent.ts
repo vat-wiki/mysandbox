@@ -413,6 +413,10 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
 
     const previous = agents.get(target);
     if (previous && previous.socket !== socket) {
+      // 替换日志：旧 socket 的 close 守卫（agents.get(target)?.socket !== socket）会静默跳过
+      // "agent disconnected"，换连接不留痕——排查 agent 侧反复掉线重连（浏览器终端被连带
+      // 1012 关闭、用户看到断连横幅风暴）时这里曾是盲区。
+      app.log.info({ target, previousPid: previous.pid }, 'msmux agent replaced by newer connection');
       for (const channel of previous.channels.values()) {
         try { channel.socket.close(1012, 'agent replaced'); } catch { /* noop */ }
       }

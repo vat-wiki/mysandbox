@@ -225,28 +225,38 @@ let inputFlushTimer: ReturnType<typeof setTimeout> | null = null
 // 会话结束是正常路径，不是断线，提示语也不同。
 let sessionEnded = false
 // 发 stdin 的唯一出口：attach 未完成先入队。onData / sendRaw / 粘贴全走这里。
+// 连接不在 OPEN（重连空窗：旧 socket CLOSING、新 socket 未建 / CONNECTING / 首帧未到）
+// 一律入队而不是丢弃——手机回前台、agent 断连重连的窗口里敲的键曾经被这里无声吃掉
+//（表现就是「重连后快捷键/输入无效」）。上限兜底：连接死透（服务端不可达）时不无限积压。
+const PENDING_INPUT_MAX = 512
+function queueStdin(s: string) {
+  pendingInput.push(s)
+  if (pendingInput.length > PENDING_INPUT_MAX) pendingInput.splice(0, pendingInput.length - PENDING_INPUT_MAX)
+}
 function sendStdin(s: string) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return
-  if (!inputReady) {
-    pendingInput.push(s)
+  if (ws && ws.readyState === WebSocket.OPEN && inputReady) {
+    ws.send(new TextEncoder().encode(s))
     return
   }
-  ws.send(new TextEncoder().encode(s))
+  queueStdin(s)
 }
 function markInputReady() {
-  if (inputReady) return
-  inputReady = true
-  if (inputFlushTimer) {
-    clearTimeout(inputFlushTimer)
-    inputFlushTimer = null
+  if (!inputReady) {
+    inputReady = true
+    if (inputFlushTimer) {
+      clearTimeout(inputFlushTimer)
+      inputFlushTimer = null
+    }
   }
-  if (pendingInput.length && ws && ws.readyState === WebSocket.OPEN) {
-    const blob = pendingInput.join('')
-    pendingInput = []
-    ws.send(new TextEncoder().encode(blob))
-  } else {
-    pendingInput = []
-  }
+  flushPendingInput()
+}
+// 入队输入的冲刷：OPEN 且闸门已开时整体发出。onopen（重连前敲的键）与 markInputReady
+//（首帧到达 / 2s 兜底定时器）都会调，保证任何入队路径都有冲刷出口、不滞留。
+function flushPendingInput() {
+  if (!pendingInput.length || !ws || ws.readyState !== WebSocket.OPEN) return
+  const blob = pendingInput.join('')
+  pendingInput = []
+  ws.send(new TextEncoder().encode(blob))
 }
 
 // msmux 的目标命名与 server/muxDeploy.ts 一致：host | c:<容器> | s:<服务> | ssh:<目标>。
@@ -391,7 +401,9 @@ async function connectWs(quiet = false) {
     // shell 已退出（exit 帧处理过）不再写「已断开」——正常终结不是断线，提示语在 exit 分支。
     if (!wsQuiet && !sessionEnded) term?.writeln(`\x1b[2m>> 已断开 (${ev.code})\x1b[0m`)
   }
-  ws.onerror = () => term?.writeln('\x1b[31m>> socket 错误\x1b[0m')
+  // onerror 不写横幅：错误后面必然跟着 onclose（「已断开 (code)」或 lost 徽标 + 重连条），
+  // 单独一行「socket 错误」只是噪声——手机上回前台/网络抖动每次都刷两三行，把回滚刷花。
+  ws.onerror = () => {}
 
   // 心跳探测：15s 一个空文本帧。服务端收到未知文本帧走 JSON.parse 失败分支静默忽略；
   // send 抛错（栈已死）则置 lost。TCP 半开（后端挂死不 reset）时 onclose 迟迟不来，
@@ -411,8 +423,10 @@ async function connectWs(quiet = false) {
 }
 
 // 断线重连：卸掉旧 WS 重建。termId 不变 -> 后端 attach 回同一 tmux 会话（无时限保留），
-// 历史/正在跑的任务都在。终端上方的「连接已断开 · 点击重连」条走这里。
-function reconnect() {
+// 历史/正在跑的任务都在。终端上方的「连接已断开 · 点击重连」条与自愈路径（recoverOnReturn）
+// 都走这里。quiet：不写「连接/已断开」横幅——lost 徽标 + 重连条已经把状态说清楚了，重连
+// 成功不需要再往回滚里写一行；手机上回前台自愈一次刷两三行横幅会把 scrollback 刷花。
+function reconnect(quiet = false) {
   try {
     ws?.close()
   } catch {
@@ -424,8 +438,10 @@ function reconnect() {
     hbTimer = null
   }
   connState.value = 'ok'
-  connectWs()
-  term?.focus()
+  connectWs(quiet)
+  // 触摸设备不程序性聚焦（弹系统键盘）：自愈重连由 pointerdown 捕获触发，跟着 focus
+  // 会把软键盘在用户没点终端的时候弹出来（点文件 tab / 底部导航都会中招）。
+  if (!isCoarse.value) term?.focus()
 }
 
 // 程序化输入出口（Claude 终端对话框用）：与键盘输入同通道，调用方负责带回车。
@@ -459,7 +475,7 @@ function detachWs() {
 // 手动点击。有些回前台路径 visibilitychange/focus 都不触发（手机息屏唤醒、页面一直
 // visible 只是断网恢复），所以交互事件也兜底——lost 状态下任何点击/按键即重连。
 function recoverOnReturn() {
-  if (!document.hidden && connState.value === 'lost') reconnect()
+  if (!document.hidden && connState.value === 'lost') reconnect(true)
 }
 
 const el = ref<HTMLDivElement | null>(null)
@@ -1902,7 +1918,7 @@ onBeforeUnmount(() => {
     <button
       v-if="connState === 'lost'"
       class="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-amber-500/90 px-3 py-1 text-xs font-medium text-black"
-      @click="reconnect"
+      @click="reconnect(true)"
     >
       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-black" />
       连接已断开 · 点击重连
