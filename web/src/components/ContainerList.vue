@@ -4158,7 +4158,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           <MobileCard
             v-if="isPhone"
             title="本机"
-            description="宿主 shell · tmux 会话保留"
+            description="宿主 shell · 会话保留"
             :running="true"
             color="var(--color-amber-500)"
             :actions="hostTermActions()"
@@ -4187,7 +4187,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
                   <span class="min-w-0 truncate text-[13px] font-medium leading-snug text-foreground">本机</span>
                 </div>
                 <div class="flex items-center gap-2 text-[11px] leading-snug text-muted-foreground">
-                  <span class="min-w-0 flex-1 truncate">宿主 shell · tmux 会话保留</span>
+                  <span class="min-w-0 flex-1 truncate">宿主 shell · 会话保留</span>
                 </div>
               </div>
             </ContextMenuTrigger>

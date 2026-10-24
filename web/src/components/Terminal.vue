@@ -65,6 +65,9 @@ const emit = defineEmits<{
   // 收到首帧终端输出（二进制帧）：父组件据此注入首条命令/提示词。不用 onopen——
   // 那时后端 tmux 可能还没 attach 完，直接写 PTY 有概率丢输入。
   (e: 'ready'): void
+  // 实际生效的终端后端（在线探测 + attach 完成）：pane 头部据此显示后端徽标。
+  // msmux 是默认静默选路的，不显式上抛用户永远无从知道当前走的哪条。
+  (e: 'backend', backend: 'tmux' | 'msmux'): void
 }>()
 
 // 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
@@ -211,6 +214,40 @@ function closeSearch() {
 // 「>> 连接/>> 已断开」两行会把 scrollback 刷成切换日志；意外断线路径照常提示。
 let connectSeq = 0
 let pendingKill = false
+// attach 完成前的 stdin 暂存：服务端 /ws/* 在 attach 未完成时会丢弃二进制帧（mux 侧
+// sid==null 直接 return），建连窗口内用户敲的键就无声消失。入队等首帧（history/输出）
+// 到达即 flush——顺序保真，窗口通常 <300ms；再加 2s 兜底定时器，防「会话永远无输出」
+// 时输入滞留。kill 帧同款手法（见上）。
+let pendingInput: string[] = []
+let inputReady = false
+let inputFlushTimer: ReturnType<typeof setTimeout> | null = null
+// shell 退出（mux {type:'exit'} 帧）：置位后 onclose 不再写「已断开 (1000)」——
+// 会话结束是正常路径，不是断线，提示语也不同。
+let sessionEnded = false
+// 发 stdin 的唯一出口：attach 未完成先入队。onData / sendRaw / 粘贴全走这里。
+function sendStdin(s: string) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return
+  if (!inputReady) {
+    pendingInput.push(s)
+    return
+  }
+  ws.send(new TextEncoder().encode(s))
+}
+function markInputReady() {
+  if (inputReady) return
+  inputReady = true
+  if (inputFlushTimer) {
+    clearTimeout(inputFlushTimer)
+    inputFlushTimer = null
+  }
+  if (pendingInput.length && ws && ws.readyState === WebSocket.OPEN) {
+    const blob = pendingInput.join('')
+    pendingInput = []
+    ws.send(new TextEncoder().encode(blob))
+  } else {
+    pendingInput = []
+  }
+}
 
 // msmux 的目标命名与 server/muxDeploy.ts 一致：host | c:<容器> | s:<服务> | ssh:<目标>。
 function muxTargetOf(): string {
@@ -273,11 +310,18 @@ async function connectWs(quiet = false) {
   }
   const sock = ws
   ws.binaryType = 'arraybuffer'
+  // 每条连接重置 stdin 闸门与会话结束标记：pendingInput 跨连接保留（建连窗口的击键
+  // 不因重连丢失），inputReady 等新连接首帧再打开。
+  inputReady = false
+  sessionEnded = false
+  if (inputFlushTimer) clearTimeout(inputFlushTimer)
+  inputFlushTimer = setTimeout(markInputReady, 2_000)
 
   ws.onopen = () => {
     connState.value = 'ok'
     const label = useMux ? 'msmux' : shell
     if (!wsQuiet) term?.writeln(`\x1b[2m>> 连接 ${props.name}${label ? ` (${label})` : ''}\x1b[0m`)
+    emit('backend', useMux ? 'msmux' : 'tmux')
   }
   ws.onmessage = (ev) => {
     // 刷新/重建连接时旧 socket 可能还有排队消息先到：丢弃，别写进刚 reset 的 buffer。
@@ -304,7 +348,19 @@ async function connectWs(quiet = false) {
         } else if (m.type === 'foreground' && typeof m.text === 'string') {
           foregroundCommand = m.text
           emit('foreground', m.text)
+        } else if (m.type === 'error' && typeof m.text === 'string' && m.text) {
+          // 服务端 attach 失败（agent 未连接/会话名非法/create 失败）：随后就是 1011，
+          // close code 本身不带原因——不消费这帧，用户只能看到无来由的「已断开 (1011)」。
+          term?.writeln(`\x1b[31m>> ${m.text}\x1b[0m`)
+        } else if (m.type === 'exit') {
+          // shell 退出（mux）：会话本体终结，是正常路径不是断线。写明示语并拦下 onclose
+          // 的「已断开 (1000)」；quiet（程序性重连）也要写——否则终端静默变死、输入无声丢弃。
+          sessionEnded = true
+          term?.writeln('\x1b[2m>> 会话已结束（shell 退出）；点击重连会开新会话\x1b[0m')
         }
+        // 控制帧是 attach 完成后的随附物（history/title/cwd/foreground 都在 attach 成功
+        // 后补发）：到此即可放行 stdin。error 帧的下一步是 1011，不开闸。
+        if (m.type !== 'error') markInputReady()
       } catch {
         /* 非法控制帧忽略 */
       }
@@ -320,6 +376,7 @@ async function connectWs(quiet = false) {
       readySent = true
       emit('ready')
     }
+    markInputReady()
   }
   // 非正常关闭（非 1000/1001）视为意外断线，置 lost 徽标；点「重连」条或刷新恢复。
   ws.onclose = (ev) => {
@@ -331,7 +388,8 @@ async function connectWs(quiet = false) {
       hbTimer = null
     }
     if (ev.code !== 1000 && ev.code !== 1001) connState.value = 'lost'
-    if (!wsQuiet) term?.writeln(`\x1b[2m>> 已断开 (${ev.code})\x1b[0m`)
+    // shell 已退出（exit 帧处理过）不再写「已断开」——正常终结不是断线，提示语在 exit 分支。
+    if (!wsQuiet && !sessionEnded) term?.writeln(`\x1b[2m>> 已断开 (${ev.code})\x1b[0m`)
   }
   ws.onerror = () => term?.writeln('\x1b[31m>> socket 错误\x1b[0m')
 
@@ -620,7 +678,7 @@ async function pasteClipboard() {
     }
     try {
       const t = await navigator.clipboard.readText()
-      if (t) ws.send(new TextEncoder().encode(t)) // 走和 onData 同一条 stdin 通道
+      if (t) sendStdin(t) // 走和 onData 同一条 stdin 通道
       return
     } catch {
       /* Firefox 常态拒绝 readText：落兜底对话框 */
@@ -852,7 +910,7 @@ function refreshTerminal() {
 }
 // 直发 stdin（与 onData 同通道）：工具条按键/粘贴共用。
 function sendRaw(s: string) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(s))
+  sendStdin(s)
 }
 // Alt / Ctrl 粘滞修饰（Termux extra-keys 同款交互）：点亮后下一个按键带修饰发出，
 // 用掉即灭；可叠加（Ctrl+Alt 都点亮再按字母 = C-M-x）。Ctrl 的改写只对可编码形状生效
@@ -1576,9 +1634,7 @@ onMounted(async () => {
       if (withAlt) out = '\x1b' + out
     }
     if (data.includes('\r')) emit('enter')
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(out))
-    }
+    sendStdin(out)
   })
   term.onResize(({ cols, rows }) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1642,6 +1698,7 @@ function hideLinkTip() {
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
   if (hbTimer) clearInterval(hbTimer)
+  if (inputFlushTimer) clearTimeout(inputFlushTimer)
   document.removeEventListener('visibilitychange', recoverOnReturn)
   window.removeEventListener('focus', recoverOnReturn)
   window.removeEventListener('online', recoverOnReturn)

@@ -471,12 +471,16 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
     }
     const agent = agents.get(target);
     if (!agent) {
+      // 先发 error 帧（浏览器端会消费并显示）再关——close code 本身到不了页面的
+      // onclose 参数，只发 close 用户只能看到无来由的「已断开 (1011)」。
+      sendJson(socket, { type: 'error', message: 'msmux agent 未连接：请先在 设置 → 终端后端 部署/重连该目标' });
       try { socket.close(1011, 'msmux agent not connected'); } catch { /* noop */ }
       return;
     }
     const termId = q.termId ?? '';
     const name = q.name || (termId ? `mysandbox-${termId}` : '');
     if (!SESSION_RE.test(name)) {
+      sendJson(socket, { type: 'error', message: '会话名非法（termId 格式错误）' });
       try { socket.close(1008, 'invalid session name'); } catch { /* noop */ }
       return;
     }

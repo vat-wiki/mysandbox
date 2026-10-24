@@ -109,6 +109,13 @@ const cwd = ref('')
 // cwd 显示位（每 pane 各自可见，分屏时逐 pane 有标题；tab 标签恒为容器名做身份定位）。
 // 空闲标题（用户@主机:路径）与 cwd 语义重合但更紧凑（~ 缩写），同样适用。
 const paneTitle = computed(() => (leaf.value ? ops.titleOf(leaf.value.termId) : ''))
+// 实际生效的终端后端（Terminal.vue 连接后上抛）：msmux 是静默选路的，头部给个徽标
+// 让人知道当前走的哪条。tmux 是默认路径不标（噪声）；连接建立前不显示。
+const paneBackend = ref<'' | 'tmux' | 'msmux'>('')
+function onBackend(b: 'tmux' | 'msmux') {
+  if (props.node.kind !== 'leaf') return
+  paneBackend.value = b
+}
 let cwdSeq = 0
 let cwdTimer: ReturnType<typeof setInterval> | null = null
 let cwdRun = 0
@@ -192,6 +199,13 @@ if (leaf.value) {
       <span class="shrink-0 text-muted-foreground" :title="leaf.termId">
         {{ ops.groupLabel(group) }}<span v-if="total > 1"> #{{ ordinal + 1 }}</span>
       </span>
+      <!-- 后端徽标：只在 msmux 时显示（tmux 是默认路径，标了全是噪声）；配色与
+           TermSessionList 的 mux 徽标一致（紫）。 -->
+      <span
+        v-if="paneBackend === 'msmux'"
+        class="shrink-0 rounded border border-violet-500/30 bg-violet-500/15 px-1 text-[9px] leading-4 text-violet-500"
+        title="此终端由 msmux 管理（tmux 语义的超集：会话保留 + agent 断开仍可找回）"
+      >mux</span>
       <!-- 动态标题（人读文本）不用 font-mono：mono 栈无 CJK，回退字体与标签 sans 栈的
            回退度量不一致（实测用户 Chrome 里 CJK 偏高 ~2px），同栈才与「组名 #序号」对齐；
            cwd 是路径（机器串）保留 mono。 -->
@@ -261,6 +275,7 @@ if (leaf.value) {
       @focus="onFocus"
       @enter="onEnter"
       @cwd="onCwd"
+      @backend="onBackend"
     />
   </div>
 

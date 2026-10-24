@@ -80,7 +80,9 @@ async function deploy() {
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
     <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
-      <DialogHeader>
+      <!-- pr-8：右上角 × 是 absolute 定位（ui/dialog 通用件），描述在窄屏折两行会
+           钻到 × 底下（实测移动端部署弹框 × 压住「入站端口」字样）——头部整体让位。 -->
+      <DialogHeader class="pr-8">
         <DialogTitle class="flex items-center gap-2">
           <Network class="size-4" /> 部署 msmux agent
         </DialogTitle>

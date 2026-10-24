@@ -123,14 +123,18 @@ async function chooseBackend(value: TerminalBackend) {
   }
 }
 
+// 连续拉取失败标记：首轮失败保留旧列表，连续失败也不再闪烁（模板按 stale 提示）。
+let agentsStale = false
 async function loadAgents() {
   try {
     agents.value = (await listMuxAgents()).agents
+    agentsStale = false
     invalidateMuxAgents()
   } catch (e) {
     if (e instanceof Unauthorized) return emit('unauthorized')
     // agent 查询失败不遮住部署列表：目标是静态清单，仍可部署。
-    agents.value = []
+    // 在线列表保留上一轮数据：瞬时 API 抖动清空 = 全部掉线闪烁「暂无在线 agent」。
+    agentsStale = true
   }
 }
 
@@ -222,6 +226,9 @@ function stateText(row: DeployRow): string {
       </div>
       <p v-if="!agents.length" class="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
         暂无在线 agent。auto 模式下所有终端继续使用 tmux；从下面选一个目标部署即可开始切换。
+      </p>
+      <p v-else-if="agentsStale" class="rounded-md bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-500">
+        在线状态查询失败，以下为上次结果（每 5 秒自动重试）。
       </p>
       <div v-else class="space-y-1">
         <div

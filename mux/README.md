@@ -136,7 +136,7 @@ kind 3 (PING)
 - agent 断开期间无法发现它名下的会话（daemon 仍活着，重新回连后即可恢复）。
 - 应用容器与 SSH 目标的 agent 暂不保证自启；需在设置页重新部署，后续补目标侧自启动。
 - 初次 attach 仍是完整屏幕 + scrollback 回放；目标端没有 tmux 的 pane 布局能力。
-- `fromTermId` 的 cwd 继承、pane 前台进程实时推送已留协议位，尚未接到浏览器桥。
+- pane 前台进程只随 attach 补发一次，无实时推送（tmux 的 `pane_current_command` 轮询等价物未做）。
 - 仅 Unix；Windows ConPTY 版本未做。
 
 ## 下一步
