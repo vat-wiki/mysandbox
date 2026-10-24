@@ -45,6 +45,7 @@ interface AgentRecord {
   connectedAt: number;
   lastSeenAt: number;
   protocol: number | null;
+  appVersion: string | null;
   pid: number | null;
   remote: string;
   channels: Map<number, MuxChannel>;
@@ -58,6 +59,7 @@ interface MuxResponse {
   id?: number;
   type: string;
   version?: number;
+  app_version?: string;
   pid?: number;
   role?: string;
   message?: string;
@@ -213,6 +215,9 @@ function handleAgentMessage(agent: AgentRecord, buf: Buffer): void {
 
   if (response.type === 'hello') {
     agent.protocol = typeof response.version === 'number' ? response.version : agent.protocol;
+    agent.appVersion = typeof response.app_version === 'string' && response.app_version
+      ? response.app_version
+      : agent.appVersion;
     agent.pid = typeof response.pid === 'number' ? response.pid : agent.pid;
     return;
   }
@@ -438,6 +443,7 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
       connectedAt: Date.now(),
       lastSeenAt: Date.now(),
       protocol: null,
+      appVersion: null,
       pid: null,
       remote: req.socket.remoteAddress ?? 'unknown',
       channels: new Map(),
@@ -590,6 +596,7 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
         connectedAt: a.connectedAt,
         lastSeenAt: a.lastSeenAt,
         protocol: a.protocol,
+        appVersion: a.appVersion,
         pid: a.pid,
         remote: a.remote,
         channels: a.channels.size,

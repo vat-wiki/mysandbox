@@ -12,6 +12,9 @@ pub const KIND_JSON: u8 = 1;
 pub const KIND_DATA: u8 = 2;
 pub const KIND_PING: u8 = 3;
 
+// mysandbox 发布版本；npm 构建注入，独立 cargo 构建时回落到 msmux 自己的版本。
+include!(concat!(env!("OUT_DIR"), "/build_version.rs"));
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
@@ -63,6 +66,8 @@ pub enum Response {
         version: u16,
         pid: u32,
         role: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        app_version: Option<String>,
     },
     Ok {
         message: Option<String>,

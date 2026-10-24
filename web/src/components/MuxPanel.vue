@@ -64,6 +64,12 @@ const err = ref('')
 const deployTarget = ref<DeployRow | null>(null)
 
 const online = computed(() => new Map(agents.value.map((a) => [a.target, a])))
+const backendVersion = __APP_VERSION__
+const upgradeable = computed(() => new Map(
+  agents.value
+    .filter((a) => a.appVersion !== backendVersion)
+    .map((a) => [a.target, true]),
+))
 
 const rows = computed<DeployRow[]>(() => {
   const out: DeployRow[] = [
@@ -170,8 +176,14 @@ function onDeployed() {
 }
 
 function stateText(row: DeployRow): string {
+  if (upgradeable.value.has(row.target)) return '可升级'
   if (online.value.has(row.target)) return '在线'
   return row.running ? '未上线' : '未运行'
+}
+
+function upgradeTarget(target: string) {
+  const row = rows.value.find((item) => item.target === target)
+  if (row?.running) deployTarget.value = row
 }
 </script>
 
@@ -232,8 +244,21 @@ function stateText(row: DeployRow): string {
         >
           <span class="size-1.5 shrink-0 rounded-full bg-emerald-500" />
           <code class="min-w-0 flex-1 truncate font-mono">{{ a.target }}</code>
-          <span class="shrink-0 text-muted-foreground">{{ a.protocol ? `v${a.protocol}` : '握手…' }}</span>
+          <span
+            class="shrink-0"
+            :class="upgradeable.has(a.target) ? 'text-amber-600 dark:text-amber-500' : 'text-muted-foreground'"
+          >{{ a.appVersion || '旧协议' }}</span>
           <span class="shrink-0 text-muted-foreground">{{ a.channels }} 会话</span>
+          <Button
+            v-if="upgradeable.has(a.target)"
+            variant="outline"
+            size="xs"
+            class="shrink-0"
+            title="重新上传与目标版本一致的 agent"
+            @click="upgradeTarget(a.target)"
+          >
+            升级
+          </Button>
         </div>
       </div>
     </div>
@@ -276,7 +301,7 @@ function stateText(row: DeployRow): string {
             :title="row.running ? '上传 msmux 并启动/重连 agent' : '目标未运行，先启动再部署'"
             @click="deployTarget = row"
           >
-            {{ online.has(row.target) ? '重连' : '部署' }}
+            {{ upgradeable.has(row.target) ? '升级' : online.has(row.target) ? '重连' : '部署' }}
           </Button>
         </div>
         <p v-if="!rows.length" class="px-2 py-3 text-xs text-muted-foreground">没有可部署目标</p>

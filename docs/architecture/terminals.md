@@ -28,6 +28,7 @@
 `mux/` 是从零开发的 tmux 替代品，不是 tmux 适配层：目标侧跑静态 Rust 二进制，守 PTY + VT 屏幕模型，客户端断开后会话保留；agent 模式主动回连 mysandbox，无需目标暴露入站端口。只复刻会话语义（attach/detach、多客户端、resize、scrollback、capture、kill/rename），**不**复刻 tmux 的键位/pane/status bar。
 
 - **构建**：`mux/README.md`；`npm run build:mux`（musl linker 缺省 `musl-gcc`，可用 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER` 覆盖）；静态产物约 4.7MB。
+- **版本与升级**：`npm run build:mux` 把根 `package.json` 的版本注入二进制，agent hello 上报 `app_version`；`GET /api/mux/agents` 返回 `appVersion`。设置页把和前端构建版本不一致的在线 agent 标成「可升级」，升级按钮复用部署弹框重传二进制；旧版 agent 没有 `app_version` 也视为可升级。重新部署只替换/重启 agent 进程，目标侧 daemon 会话保留。
 - **回连端点**：`server/muxAgent.ts` 的 `/ws/mux-agent`。config 的 `muxToken` 是**宿主 master，不下发**；每个目标用 `muxAgentToken(cfg,target)` 派生的 HMAC token，目标之间不能互相冒充。全局 auth hook 对该精确路径豁免，路由在 upgrade 前自校验。
 - **容器/服务回连桥**：`server/muxBridge.ts` 绑网关 IP:`mux.agentPort`（默认 7333），裸 TCP 透传到本机控制台端口；主服务仍可只监听 127.0.0.1。SSH 远端需显式给可达 url。
 - **分发**：`server/muxDeploy.ts` 的 `POST /api/mux/deploy`（owner），目标语法 `host | c:<容器> | s:<服务/项目> | ssh:<SSH 目标>`。host 写持久 systemd user unit；LXC 先把 unit 源落到 dev 可写目录，再由容器 root 安装 `/etc/systemd/system`（容器重启自启）；服务走 `docker cp` + `docker exec -d`（arbitrary 镜像没有统一 init，暂不保证自启）；SSH 走 `sshFeed` + `nohup`。token 一律落目标侧 0600 文件，避免出现在进程命令行。CLI 等价入口：`mysandbox mux deploy <target> [--url ...]` / `mysandbox mux agents`（走运行中服务的 HTTP API——agent 在线表在服务进程内，不能由一次性进程直判）。

@@ -189,6 +189,7 @@ export interface MuxAgentView {
   connectedAt: number
   lastSeenAt: number
   protocol: number | null
+  appVersion: string | null
   pid: number | null
   remote: string
   channels: number

@@ -17,7 +17,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, warn};
 
-use crate::protocol::{Frame, PROTOCOL_VERSION, Request, Response};
+use crate::protocol::{BUILD_VERSION, Frame, PROTOCOL_VERSION, Request, Response};
 use crate::session::{AttachGuard, Manager, SessionEvent};
 
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -161,6 +161,7 @@ pub async fn serve_conn(
         version: PROTOCOL_VERSION,
         pid: std::process::id(),
         role: role.to_string(),
+        app_version: Some(BUILD_VERSION.to_string()),
     };
     send_control(&out_tx, None, &hello).await;
     if let Some(ready) = ready {

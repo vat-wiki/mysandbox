@@ -68,8 +68,8 @@ msmux agent \
 目标 token **不是** config 里的 `muxToken` 主凭据，而是 `HMAC(muxToken, target)` 派生值；
 一个目标的 token 只能注册它自己的 target。
 
-终端后端有三层选择：单组终端显式选择 > `config.yaml` 的 `mux.backend` > `auto`。
-`auto` 只把在线 agent 的目标切到 msmux；`tmux` / `msmux` 是强制口径。服务启动可
+终端后端没有自动探测：开终端的交互入口都显式在 tmux / msmux 里二选一。
+`config.yaml` 的 `mux.backend` 只服务深链、恢复会话等未显式选择的路径；服务启动可
 用 `mysandbox --mux msmux` 覆盖本次默认；设置页会写回 `mux.backend`。
 
 ### 自动分发
@@ -102,6 +102,9 @@ mysandbox 侧：
 驱动文件面板跟随、pane 头部与分屏继承；`foreground` 驱动图片粘贴桥的前台命令
 判断（剪贴板桥可用性仍由宿主代查 shim）。`/ws/mux-agent` 只认 `muxToken`，不认
 主 token / peerToken；`/ws/mux-terminal` 仍走控制台主 token 且要求 owner。
+
+agent hello 上报 mysandbox 构建版本。`/api/mux/agents` 与设置页据此标记旧版
+agent，并对可部署目标提供升级入口；升级就是重新走部署路径，daemon 会话保留。
 
 ## 协议
 
@@ -143,5 +146,4 @@ kind 3 (PING)
 
 1. 应用容器 / SSH 目标侧自启动（LXC 与宿主已由 systemd 托管）。
 2. tmux 键位/窗口布局兼容层。
-3. 打包发布流程内置 `msmux` 二进制（当前从源码树/`MSMUX_BINARY` 解析）。
-4. muxToken 轮换与一次性 enrollment（当前轮换后重新部署即可）。
+3. muxToken 轮换与一次性 enrollment（当前轮换后重新部署即可）。
