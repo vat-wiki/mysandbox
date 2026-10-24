@@ -366,6 +366,12 @@ async function connectWs(quiet = false) {
         } else if (m.type === 'history-delta' && m.text) {
           // 重连增量：补断线窗口期内错过的输出（锚点去重，见 applyHistoryDelta）。
           applyHistoryDelta(m.text)
+        } else if (m.type === 'modes' && m.text) {
+          // msmux resume 补发终端输入模式（?1000/?1003/?1006 鼠标上报、?2004 括号粘贴）：
+          // 断线窗口内 app 改过模式就靠这帧重同步。触屏滚动的 SGR 滚轮转换
+          // （setupTouchScroll altWheel）依赖 xterm 的 mouseTrackingMode，缺了它 claude
+          // 在手机上没法滚。首次 attach 的模式随首屏 Data 帧来，不经此分支。
+          term?.write(m.text)
         } else if (m.type === 'title' && typeof m.text === 'string') {
           // 重连/刷新后的标题恢复：pane title 留在 tmux 里不会随 attach 重发（历史回填
           // 只有可见文本），服务端 attach 前读 #T 补发此帧（terminal.ts / hostTerminal.ts）。

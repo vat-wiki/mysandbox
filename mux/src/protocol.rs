@@ -81,6 +81,10 @@ pub enum Response {
         /// 已渲染屏幕（含 scrollback），base64 后的 ANSI 字节。
         history: String,
         history_encoding: String,
+        /// 终端输入模式回放（input_mode_formatted），base64。旧 daemon 不发该字段，
+        /// serde default 兼容；消费方见 session.rs attach() 的注释。
+        #[serde(default)]
+        modes: String,
         last_seq: u64,
         title: String,
         cwd: String,

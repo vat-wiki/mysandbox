@@ -271,6 +271,8 @@ pub async fn serve_conn(
                                     history: base64::engine::general_purpose::STANDARD
                                         .encode(&attached_session.history),
                                     history_encoding: "base64".into(),
+                                    modes: base64::engine::general_purpose::STANDARD
+                                        .encode(&attached_session.modes),
                                     last_seq: attached_session.last_seq,
                                     title: attached_session.title,
                                     cwd: attached_session.cwd,

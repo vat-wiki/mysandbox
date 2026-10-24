@@ -66,6 +66,7 @@ interface MuxResponse {
   cols?: number;
   rows?: number;
   history?: string;
+  modes?: string;
   title?: string;
   cwd?: string;
   foreground?: string;
@@ -295,6 +296,15 @@ async function attachChannel(
   agent.channels.set(sid, channel);
   const history = Buffer.from(response.history ?? '', 'base64').toString('utf8');
   sendJson(channel.socket, { type: opts.resume ? 'history-delta' : 'history', text: history });
+  // resume 补发终端输入模式（?1000/?1003/?1006 鼠标上报、?2004 括号粘贴等）：断线窗口内
+  // app 可能改过模式，浏览器端 xterm 要重同步——触屏滚动的 SGR 滚轮转换依赖 xterm 的
+  // mouseTrackingMode。首次 attach 的模式随首屏 Data 帧下发（daemon 侧拼好），不走这里。
+  if (opts.resume && response.modes) {
+    sendJson(channel.socket, {
+      type: 'modes',
+      text: Buffer.from(response.modes, 'base64').toString('utf8'),
+    });
+  }
   if (response.title) sendJson(channel.socket, { type: 'title', text: response.title });
   if (response.cwd) sendJson(channel.socket, { type: 'cwd', text: response.cwd });
   if (response.foreground) sendJson(channel.socket, { type: 'foreground', text: response.foreground });

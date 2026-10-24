@@ -66,6 +66,11 @@ pub struct AttachedSession {
     /// attach 时刻的当前屏（state_formatted，含光标位置）。resume 时空——前端拿
     /// 自己的尾屏做增量拼接，重发当前屏会整体重复。
     pub screen: Vec<u8>,
+    /// 终端输入模式回放（input_mode_formatted：鼠标上报/括号粘贴/应用光标键）。
+    /// app 在无人 attach 时开的这些模式已被 daemon 的 vt100 模型消费、原始字节不再有；
+    /// 不回放的话浏览器端 xterm 永远停在无鼠标模式，触屏滚动的 SGR 滚轮转换
+    /// （Terminal.vue altWheel）判不出来，claude 这类全屏 TUI 在手机上没法滚。
+    pub modes: Vec<u8>,
     pub last_seq: u64,
     pub title: String,
     pub cwd: String,
@@ -122,9 +127,12 @@ impl Session {
         let rx = self.tx.subscribe();
         let last_seq = self.seq.load(Ordering::SeqCst);
         let (scrollback, current) = capture_parts(&mut screen, true);
-        // 重连（resume）只回最近 2000 行：前端拿自己的尾屏做锚点做增量拼接，
-        // 全量历史会重复刷进 scrollback——此时把当前屏拼回尾部（旧组合格式），
-        // screen 字段留空。首次 attach history 只给 scrollback，当前屏走 screen。
+        // 输入模式回放：首次 attach 把备用屏 ?1049h + input 模式拼在当前屏前面走首屏
+        // Data 帧（?1049h 清屏后紧跟 state_formatted 整屏重绘，时序自洽，清掉也无所谓）；
+        // resume 时 screen 留空、modes 单独走应答字段由服务端桥转成控制帧补发（鼠标等
+        // 模式幂等；不带 ?1049——xterm 已在备用屏时重收 ?1049h 会清屏且无人重绘）。
+        // vt100 不把备用屏算 input 模式，按 alternate_screen() 自补。
+        let modes = screen.screen().input_mode_formatted();
         let (history, screen_bytes) = if resume {
             let mut combined = scrollback;
             if !combined.is_empty() && !combined.ends_with(b"\n") {
@@ -133,7 +141,13 @@ impl Session {
             combined.extend_from_slice(&current);
             (tail_lines(&combined, RESUME_HISTORY_LINES), Vec::new())
         } else {
-            (scrollback, current)
+            let mut first_frame = Vec::new();
+            if screen.screen().alternate_screen() {
+                first_frame.extend_from_slice(b"\x1b[?1049h");
+            }
+            first_frame.extend_from_slice(&modes);
+            first_frame.extend_from_slice(&current);
+            (scrollback, first_frame)
         };
         self.attached.fetch_add(1, Ordering::SeqCst);
         let (title, cwd, foreground) = snapshot_meta(self, &screen);
@@ -145,6 +159,7 @@ impl Session {
             rows: self.rows.load(Ordering::SeqCst),
             history,
             screen: screen_bytes,
+            modes,
             last_seq,
             title,
             cwd,
