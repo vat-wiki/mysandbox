@@ -14,6 +14,7 @@ import { muxAgentAvailable } from '@/lib/mux'
 import { isCoarse, isPhone } from '@/composables/useDevice'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
 import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
+import QuickCmdsSheet from '@/components/QuickCmdsSheet.vue'
 
 const props = withDefaults(
   // host=true 时连 /ws/host-terminal（宿主终端，PTY 由 server 管理，无容器 id）。
@@ -995,6 +996,11 @@ function sendToolSeq(seq: string) {
 }
 // ⋯ 打开工具条设置弹窗（ToolbarSettingsDialog）：按钮编排收进独立区域。
 const settingsOpen = ref(false)
+// 「指令」打开快捷指令面板（QuickCmdsSheet）：点条目 = 发送整条命令并回车。
+const cmdsOpen = ref(false)
+function runQuickCmd(cmd: string) {
+  sendSnippet(cmd)
+}
 
 // 工具条方向键长按连发：pointerdown 即发一次，400ms 后起 80ms 间隔连发；抬起/取消/
 // 移出（touch 有隐式指针捕获，pointerup 恒能到达）停止。只用于 ↑↓←→ 这类可重复键。
@@ -1080,8 +1086,9 @@ function tbDown(b: ToolBtn) {
 // 两行是整体：键多于 14 个时整个卡片横向轻扫翻页（阈值 48px 且横向位移须大于纵向，
 // 不成手势就不拦截按钮点击），页面滑动有过渡动画；⋯ 设置入口作为列表最后一项参与
 // 分页，不再是常驻末格。页点指示器只在多于 1 页时出现。
-type TbItem = ToolBtn | { t: 'settings' }
-const toolItems = computed<TbItem[]>(() => [...toolButtons.value, { t: 'settings' }])
+type TbItem = ToolBtn | { t: 'settings' } | { t: 'cmds' }
+// ⋯ 设置与「指令」都是固定入口不进编排列表，恒跟在按钮末尾（⋯ 恒最后一项）。
+const toolItems = computed<TbItem[]>(() => [...toolButtons.value, { t: 'cmds' }, { t: 'settings' }])
 const toolPages = computed<TbItem[][]>(() => {
   const out: TbItem[][] = []
   for (let i = 0; i < toolItems.value.length; i += TB_PER_PAGE) out.push(toolItems.value.slice(i, i + TB_PER_PAGE))
@@ -1896,7 +1903,8 @@ onBeforeUnmount(() => {
          （ESC / - HOME ↑ END 上页 / Tab Ctrl Alt ← ↓ → 下页）+ ⏎ ⇥。Ctrl/Alt 是粘滞修饰
          （点亮→下一个键带修饰发出→用掉即灭，可叠加 C-M-x；软键盘单字符在
          attachCustomKeyEventHandler 接管）。Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
-         快捷短语（一键文本+回车）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
+         快捷短语（一键文本+回车）/「指令」快捷指令面板（命名命令列表，点条目 = 整条命令+回车，
+         管理态增删改，数据 lib/termQuickCmds.ts）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
          参与分页。桌面不渲染。工具条是键盘态覆盖层——始终渲染以便测量高度，但平时不可见，
@@ -1917,7 +1925,7 @@ onBeforeUnmount(() => {
         :style="{ width: `${toolPages.length * 100}%`, transform: `translateX(-${(tbPage * 100) / toolPages.length}%)` }"
       >
         <div v-for="(pg, pi) in toolPages" :key="pi" class="grid shrink-0 grid-cols-7 gap-1" :style="{ width: `${100 / toolPages.length}%` }">
-          <template v-for="(b, bi) in pg" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : b.t === 'settings' ? 'settings' : `s:${b.text}:${pi}:${bi}`">
+          <template v-for="(b, bi) in pg" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : b.t === 'settings' ? 'settings' : b.t === 'cmds' ? 'cmds' : `s:${b.text}:${pi}:${bi}`">
             <button
               v-if="b.t === 'key'"
               type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': (b.id === 'ctrl' && ctrlSticky) || (b.id === 'alt' && altSticky) }"
@@ -1931,6 +1939,10 @@ onBeforeUnmount(() => {
               type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送自定义按键「${b.label}」`"
               @pointerdown.prevent @click="sendToolSeq(b.seq)"
             >{{ b.label }}</button>
+            <button
+              v-else-if="b.t === 'cmds'"
+              type="button" class="tb" title="快捷指令：点开列表，一键发送整条命令并回车" @pointerdown.prevent @click="cmdsOpen = true"
+            >指令</button>
             <button
               v-else-if="b.t === 'settings'"
               type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条按钮设置：增删 / 调序 / 快捷短语" @pointerdown.prevent @click="settingsOpen = true"
@@ -1950,6 +1962,9 @@ onBeforeUnmount(() => {
       </div>
     </Teleport>
     <ToolbarSettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
+    <!-- 快捷指令面板：浏览态点条目 = sendSnippet（命令 + 回车 + cwd 跟随）并收起；管理态增删改。
+         数据 localStorage（lib/termQuickCmds.ts），多终端实例共享同一份。 -->
+    <QuickCmdsSheet v-model:open="cmdsOpen" @run="runQuickCmd" />
     <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox
          readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
          clipboard API，永远可用；@paste/@input 捕获到粘贴动作即自动发送，按钮仅作兜底。 -->
