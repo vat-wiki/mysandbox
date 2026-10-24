@@ -30,7 +30,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
-import { CONFIG_DIR, CONFIG_FILE, type Config } from './config.js';
+import { CONFIG_FILE, type Config } from './config.js';
 import { badRequest, conflict, HttpError, notFound } from './errors.js';
 import { execRun, inspectContainer, rootfsPath } from './engine/index.js';
 import { muxAgentBridgeIp } from './muxBridge.js';
@@ -38,7 +38,6 @@ import { agentForTarget, muxAgentToken } from './muxAgent.js';
 import { findServiceTarget } from './serviceMeta.js';
 import { getMuxDeployInfo, getSshTargets, saveMuxDeployInfo } from './state.js';
 import { sshExec, sshFeed } from './sshChannel.js';
-import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,8 +113,7 @@ async function runIgnored(program: string, args: string[], timeoutMs = 15_000): 
 }
 
 /** 找到可部署的静态二进制。顺序：环境变量 → 当前目录 → 源码/产物相对路径。 */
-async function resolveBinary(): Promise<string> {
-  const here = dirname(fileURLToPath(import.meta.url));
+async function resolveBinary(): Promise<string> {  const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     process.env.MSMUX_BINARY,
     join(process.cwd(), 'mux', 'target', 'x86_64-unknown-linux-musl', 'release', 'msmux'),
@@ -138,6 +136,12 @@ async function resolveBinary(): Promise<string> {
     '找不到 msmux 二进制：先运行 npm run build:mux，或用 MSMUX_BINARY 指定路径',
     'mux_binary_missing',
   );
+}
+
+/** 当前要部署的二进制的 sha256（升级判断用：与部署记录比对，不同 = 该重部署了）。 */
+export async function currentBinarySha256(): Promise<string> {
+  const binary = await readFile(await resolveBinary());
+  return createHash('sha256').update(binary).digest('hex');
 }
 
 function normalizeUrl(cfg: Config, parsed: ParsedTarget, override: unknown): string {
@@ -426,9 +430,9 @@ export async function deployMuxAgent(
   } else {
     detail = await deploySsh(parsed, binary, url, token);
   }
-  // 记下回连地址（部署记录）：连接时自动部署复用——SSH 目标的 url 只能显式给出，
-  // 存最后一次成功部署用的那个。
-  await saveMuxDeployInfo(parsed.target, url);
+  // 记下部署指纹（部署记录）：连接时自动部署/升级复用——SSH 目标的 url 只能显式给出
+  // （存最后一次成功部署用的那个）；sha256 用于「在线但二进制旧了」的升级判断。
+  await saveMuxDeployInfo(parsed.target, url, sha256);
 
   const kind = parsed.kind;
   const connected = await waitForAgent(parsed.target);
@@ -443,20 +447,20 @@ export async function deployMuxAgent(
   };
 }
 
-// 连接时自动部署（muxAgent.ts 的 /ws/mux-terminal 在 agent 不在线时调）：
-// 仅 LXC 与 SSH 目标——LXC 的回连地址可由网桥网段推出；SSH 目标复用上次成功部署
-// 存下的回连地址（没有记录就报错，引导先手动部署一次）。docker 服务与 host 不走
-// 这条路径（服务短命保持手动；host 有 systemd 托管）。
+// 连接时自动部署/升级（muxAgent.ts 的 /ws/mux-terminal 在 agent 不在线或版本陈旧时调）：
+// host、LXC 与 SSH 目标——host/LXC 的回连地址可由网桥网段推出；SSH 目标复用上次成功
+// 部署存下的回连地址（没有记录就报错，引导走 CLI 手动部署一次：控制台只听 127.0.0.1，
+// 远端可达地址只有用户知道，无法推导）。docker 服务目标不参与（服务短命，终端走 tmux）。
 export async function autoDeployMuxAgent(cfg: Config, targetRaw: string): Promise<MuxDeployResult> {
   const parsed = parseTarget(targetRaw);
-  if (parsed.kind !== 'lxc' && parsed.kind !== 'ssh') {
-    throw badRequest(`目标 ${targetRaw} 不支持自动部署（仅 c:/ssh: 目标，host 与 s: 请手动部署）`);
+  if (parsed.kind !== 'host' && parsed.kind !== 'lxc' && parsed.kind !== 'ssh') {
+    throw badRequest(`目标 ${targetRaw} 不支持自动部署（host/c:/ssh: 之外请走 tmux）`);
   }
   let url: string;
   if (parsed.kind === 'ssh') {
     const stored = (await getMuxDeployInfo(parsed.target))?.url;
     if (!stored) {
-      throw badRequest('该 SSH 目标没有回连地址记录：请先在 设置 → 终端后端 手动部署一次');
+      throw badRequest('该 SSH 目标没有回连地址记录：请先手动部署一次（mysandbox mux deploy ssh:<目标> --url <ws(s)://...>）');
     }
     url = stored;
   } else {
@@ -466,38 +470,6 @@ export async function autoDeployMuxAgent(cfg: Config, targetRaw: string): Promis
 }
 
 export async function registerMuxDeploy(app: FastifyInstance, cfg: Config): Promise<void> {
-  // 服务端默认后端（tmux|msmux，手动选择）：启动参数 --mux / config.yaml 都改这里；
-  // 深链/恢复会话等未显式选择的路径按它走，交互入口在菜单里显式二选一。
-  app.get('/api/mux/backend', async (req, reply) => {
-    if (req.sandboxIdentity?.kind !== 'owner') {
-      return reply.code(403).send({ error: { code: 'forbidden', message: 'owner only' } });
-    }
-    return { backend: cfg.mux.backend };
-  });
-
-  app.put('/api/mux/backend', async (req, reply) => {
-    if (req.sandboxIdentity?.kind !== 'owner') {
-      return reply.code(403).send({ error: { code: 'forbidden', message: 'owner only' } });
-    }
-    const body = (req.body ?? {}) as { backend?: unknown };
-    const backend = body.backend;
-    if (backend !== 'tmux' && backend !== 'msmux') {
-      throw badRequest('backend must be tmux or msmux');
-    }
-    cfg.mux.backend = backend;
-    // 服务端默认值落 config.yaml（保留其它键；只改 mux.backend）。前端显式选择的
-    // 终端组不进服务端 config，只随浏览器布局持久化。
-    const raw = await readFile(CONFIG_FILE, 'utf8');
-    const user = (yamlLoad(raw) as Record<string, unknown> | null) || {};
-    const mux = (user.mux && typeof user.mux === 'object' ? user.mux : {}) as Record<string, unknown>;
-    mux.backend = backend;
-    user.mux = mux;
-    await mkdir(CONFIG_DIR, { recursive: true });
-    await writeFile(CONFIG_FILE, yamlDump(user), { mode: 0o600 });
-    await chmod(CONFIG_FILE, 0o600);
-    return { backend };
-  });
-
   app.post('/api/mux/deploy', async (req, reply) => {
     if (req.sandboxIdentity?.kind !== 'owner') {
       return reply.code(403).send({ error: { code: 'forbidden', message: 'owner only' } });

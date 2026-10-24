@@ -68,9 +68,9 @@ msmux agent \
 目标 token **不是** config 里的 `muxToken` 主凭据，而是 `HMAC(muxToken, target)` 派生值；
 一个目标的 token 只能注册它自己的 target。
 
-终端后端没有自动探测：开终端的交互入口都显式在 tmux / msmux 里二选一。
-`config.yaml` 的 `mux.backend` 只服务深链、恢复会话等未显式选择的路径；服务启动可
-用 `mysandbox --mux msmux` 覆盖本次默认；设置页会写回 `mux.backend`。
+终端后端没有配置项：host / LXC / SSH 目标默认走 msmux（agent 不在线或二进制陈旧由
+服务端连接时自动部署/升级兜底，见「自动分发」）；docker 服务目标恒走 tmux。
+URL `?mux=0|1` 可整页临时覆盖；「用 tmux 打开终端」保留为显式退路。
 
 ### 自动分发
 
@@ -103,8 +103,9 @@ mysandbox 侧：
 判断（剪贴板桥可用性仍由宿主代查 shim）。`/ws/mux-agent` 只认 `muxToken`，不认
 主 token / peerToken；`/ws/mux-terminal` 仍走控制台主 token 且要求 owner。
 
-agent hello 上报 mysandbox 构建版本。`/api/mux/agents` 与设置页据此标记旧版
-agent，并对可部署目标提供升级入口；升级就是重新走部署路径，daemon 会话保留。
+agent hello 上报 mysandbox 构建版本（`/api/mux/agents` 返回 `appVersion`）。升级由
+「连接时自动部署」承担：agent 在线但部署记录的 sha256 ≠ 当前二进制（或无记录时
+`app_version` 落后/缺失）→ 连接时当场重部署，daemon 会话保留。
 
 ## 协议
 
@@ -139,7 +140,7 @@ kind 3 (PING)
 - agent 断开期间无法发现它名下的会话（daemon 仍活着，重新回连后即可恢复）。
 - 应用容器与 SSH 目标的 agent 暂不保证自启（重启后 agent 不回来）；LXC/SSH 目标由
   控制台「连接时自动部署」兜底（`mux.autoDeploy`，见 docs/architecture/terminals.md），
-  应用容器目标保持设置页手动部署。
+  应用容器目标保持 CLI 手动部署。
 - 初次 attach 仍是完整屏幕 + scrollback 回放；目标端没有 tmux 的 pane 布局能力。
 - `cwd` / 前台进程在 PTY 输出驱动下实时补发；无输出期间不轮询，attach 时仍先给一次快照。
 - 仅 Unix；Windows ConPTY 版本未做。
@@ -151,5 +152,5 @@ kind 3 (PING)
 
 已评估不做：muxToken 轮换与一次性 enrollment。派生 token 落目标侧 0600 文件，能读到它
 的人本来就已有该目标的完整权限，泄露不构成提权；换 token 的修复路径由「连接时自动
-部署」自愈（重新连一次目标即重新部署），个位数目标手动重部署也只是设置页点几下，
+部署」自愈（重新连一次目标即重新部署），个位数目标手动重部署也只是 CLI 一条命令，
 为此做 enrollment 协议不成比例。

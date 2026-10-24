@@ -11,9 +11,13 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type { Config } from './config.js';
+import { getVersion } from './version.js';
+import { getMuxDeployInfo } from './state.js';
 import { TERMID_RE, type TermSessionView } from './terminal.js';
 
 const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+// 参与连接时自动部署/升级的目标：host、LXC 容器、SSH 目标（docker 服务不参与，走 tmux）。
+const AUTO_DEPLOY_TARGETS = /^host$|^(c|ssh):/;
 const SESSION_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const KIND_JSON = 1;
 const KIND_DATA = 2;
@@ -503,13 +507,13 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
     let agent = agents.get(target);
     if (!agent) {
       // agent 不在线：先给一个重连宽限窗（agent 侧每 2s 重试回连，服务重启等瞬断
-      // 自己会好），仍不在线且目标支持时做连接时自动部署（仅 LXC/SSH，见
-      // autoDeployMuxAgent）；都拿不到再按原样发 error 帧关连接。
+      // 自己会好），仍不在线且目标支持时做连接时自动部署（见 autoDeployMuxAgent）；
+      // 都拿不到再按原样发 error 帧关连接。
       let settled = await waitForAgentQuiet(target, 3_000);
-      if (!settled && cfg.mux.autoDeploy && /^(c|ssh):/.test(target)) {
+      if (!settled && cfg.mux.autoDeploy && AUTO_DEPLOY_TARGETS.test(target)) {
         try {
           // 动态 import：muxDeploy.ts 静态 import 本模块（muxAgentToken/agentForTarget），
-          // 反向引用会成环；部署只在缺 agent 时发生，运行时拉起没有问题。
+          // 反向引用会成环；部署只在缺 agent/升级时发生，运行时拉起没有问题。
           const { autoDeployMuxAgent } = await import('./muxDeploy.js');
           app.log.info({ target }, 'msmux auto deploy: agent offline, deploying');
           const result = await autoDeployMuxAgent(cfg, target);
@@ -529,10 +533,32 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
         // onclose 参数，只发 close 用户只能看到无来由的「已断开 (1011)」。
         sendJson(socket, {
           type: 'error',
-          message: 'msmux agent 未连接：请先在 设置 → 终端后端 部署/重连该目标',
+          message: 'msmux agent 未连接：请检查目标侧 agent（mysandbox mux agents）',
         });
         try { socket.close(1011, 'msmux agent not connected'); } catch { /* noop */ }
         return;
+      }
+    } else if (cfg.mux.autoDeploy && AUTO_DEPLOY_TARGETS.test(target)) {
+      // agent 在线：升级判断——部署记录的 sha256 与当前二进制不同（或无记录时
+      // app_version ≠ 控制台版本，老 agent 未上报版本也视为旧）= 目标侧跑的不是
+      // 当前那份 → 重部署替换。升级失败不阻塞连接，继续用旧 agent。
+      try {
+        const { autoDeployMuxAgent, currentBinarySha256 } = await import('./muxDeploy.js');
+        const rec = await getMuxDeployInfo(target).catch(() => undefined);
+        const stale = rec?.sha256
+          ? (await currentBinarySha256()) !== rec.sha256
+          : agent.appVersion !== getVersion();
+        if (stale) {
+          app.log.info({ target, from: agent.appVersion ?? '?' }, 'msmux auto upgrade: redeploying');
+          const result = await autoDeployMuxAgent(cfg, target);
+          app.log.info({ target, connected: result.connected }, 'msmux auto upgrade done');
+          agent = agents.get(target) ?? agent;
+        }
+      } catch (e) {
+        app.log.warn(
+          { target, message: e instanceof Error ? e.message : String(e) },
+          'msmux auto upgrade failed',
+        );
       }
     }
     const termId = q.termId ?? '';

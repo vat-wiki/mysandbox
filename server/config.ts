@@ -216,19 +216,12 @@ export const ConfigSchema = z.object({
   mux: z
     .object({
       agentPort: z.number().int().default(7333),
-      // 终端后端默认值（深链/恢复会话/popout 种子等未显式选择的路径用；交互入口
-      // 一律菜单里显式二选一，不走这里）。旧版的 auto（目标有 agent 才自动切
-      // msmux）已移除：读入时静默落回 tmux。
-      backend: z.preprocess(
-        (v) => (v === 'auto' ? undefined : v),
-        z.enum(['tmux', 'msmux']).default('tmux'),
-      ),
-      // 连接时自动部署（仅 LXC/SSH 目标）：开 msmux 终端发现 agent 不在线时，等一个
-      // 回连重试窗口，仍不在线就把二进制+派生 token 送过去拉起 agent。docker 服务
-      // 目标不自动部署（服务短命，保持手动）；host 由 systemd 托管不需要。
+      // 连接时自动部署/升级（host、LXC、SSH 目标）：开 msmux 终端发现 agent 不在线
+      // （或在线但二进制不是当前那份）时，等一个回连重试窗口，然后送二进制+派生
+      // token 拉起/替换 agent。docker 服务目标不参与（服务短命，终端走 tmux）。
       autoDeploy: z.boolean().default(true),
     })
-    .default({ agentPort: 7333, backend: 'tmux', autoDeploy: true }),
+    .default({ agentPort: 7333, autoDeploy: true }),
   // ⚠️ 已废弃（server/skillSync.ts）：旧版静态 from→to 规则，首次同步时自动迁移成
   // 技能库安装规则（state.staticMigratedAt 记账），之后此键被忽略。schema 仅为读取
   // 旧 config 做迁移而保留；新配置走面板「AI 工具 → 技能中心」（sidecar state.json）。

@@ -12,7 +12,7 @@ const emit = defineEmits<{
   navigate: [target: MobileNavTarget]
   // 设置 popup 的菜单事件原样上抛（ContainerList 统一处理：openAi / 开详情弹框 / 管理组）
   'open-ai': []
-  'open-section': ['testlens' | 'cluster' | 'notify' | 'mux']
+  'open-section': ['testlens' | 'cluster' | 'notify']
   'open-base': []
   'open-accounts': []
   'open-batch': []

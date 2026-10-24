@@ -57,10 +57,11 @@ interface StateShape {
   containers: Record<string, ContainerMeta>;
   sshTargets?: SshTarget[];
   accounts?: SandboxAccount[];
-  // msmux 部署记录（muxDeploy.ts）：按 target 记最后一次成功部署的回连 url 等信息，
-  // 供「连接时自动部署」复用——SSH 目标的回连地址必须显式给出，这里存上次部署时
-  // 用户填的那个，免去每次自动部署都问一遍。
-  muxDeploys?: Record<string, { url?: string; deployedAt?: string }>;
+  // msmux 部署记录（muxDeploy.ts）：按 target 记最后一次成功部署的回连 url / 二进制
+  // sha256 等信息。url 供「连接时自动部署」复用——SSH 目标的回连地址必须显式给出，
+  // 这里存上次部署时的那个；sha256 供升级判断（在线 agent 的二进制 ≠ 当前要部署的
+  // 那份 → 连接时重部署升级）。
+  muxDeploys?: Record<string, { url?: string; sha256?: string; deployedAt?: string }>;
 }
 
 // docker 服务的策展元数据已迁往每项目 compose/<名>/meta.json（server/serviceMeta.ts）——
@@ -130,14 +131,14 @@ export async function deleteMeta(name: string): Promise<void> {
 
 // —— msmux 部署记录（连接时自动部署用，见 StateShape.muxDeploys）——
 
-export async function getMuxDeployInfo(target: string): Promise<{ url?: string } | undefined> {
+export async function getMuxDeployInfo(target: string): Promise<{ url?: string; sha256?: string } | undefined> {
   return (await load()).muxDeploys?.[target];
 }
 
-export async function saveMuxDeployInfo(target: string, url: string): Promise<void> {
+export async function saveMuxDeployInfo(target: string, url: string, sha256: string): Promise<void> {
   const s = await load();
   if (!s.muxDeploys) s.muxDeploys = {};
-  s.muxDeploys[target] = { url, deployedAt: new Date().toISOString() };
+  s.muxDeploys[target] = { url, sha256, deployedAt: new Date().toISOString() };
   await persist(s);
 }
 

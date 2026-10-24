@@ -146,8 +146,6 @@ Options:
                  listen host (default 127.0.0.1; auto = 默认路由接口的 IPv4；
                  WARNING: binding non-localhost exposes host-root-equivalent access
                  to anyone with the token)
-  --mux <tmux|msmux>
-                 terminal backend default for this run (config: mux.backend)
   -V, --version  print version and exit
   -h, --help     show this help
 
@@ -247,10 +245,6 @@ async function main(): Promise<void> {
   const { config, firstRun, tokenGenerated } = await loadConfig();
   if (args.port) config.listen.port = args.port;
   if (args.host) config.listen.host = args.host;
-  if (args.mux) config.mux.backend = args.mux;
-  if (!['tmux', 'msmux'].includes(config.mux.backend)) {
-    throw new Error('--mux must be tmux or msmux');
-  }
   // --host auto 或 config 里 listen.host: auto → 解析为默认路由接口 IPv4。
   if (config.listen.host === 'auto') config.listen.host = await resolveAutoHost();
 
