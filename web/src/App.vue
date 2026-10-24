@@ -9,6 +9,7 @@ import { gatePoll } from '@/lib/linkQuality'
 import { setEngineInfo } from '@/lib/caps'
 import { loadProxyConfig, proxyPrimary } from '@/lib/proxy'
 import { armWatchingHeartbeat } from '@/lib/pushNotify'
+import { startVersionWatch } from '@/lib/versionCheck'
 import { isPhone } from '@/composables/useDevice'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
@@ -209,6 +210,9 @@ onMounted(() => {
   armWatchingHeartbeat()
   // 受限账户凭证活体校验（失效即清，见 tryGuest）。
   void tryGuest()
+  // 新版本提示（lib/versionCheck）：后端部署新版后旧页面无感知，回前台/联网时对
+  // /api/health 的版本，不一致弹常驻 toast 引导刷新。
+  startVersionWatch()
   // token 在 localStorage 里直接进主界面的场景（TokenGate 只在无 token/校验失败时出现）
   // 也要补 cookie 会话与代理配置。
   if (token.value) afterAuth()
