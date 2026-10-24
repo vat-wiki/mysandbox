@@ -1012,6 +1012,7 @@ function tbTouchEnd(e: TouchEvent) {
 // 工具条上方。没有触点兜底时才按终端底部计算。cols/rows 不变，回滚位置不会被
 // resize/reflow 重置。
 const kbShift = ref(0)
+const kbOpen = ref(false)
 const kbToolbarTop = ref(0)
 const toolbarHeight = ref(0)
 const toolbarEl = ref<HTMLDivElement | null>(null)
@@ -1039,11 +1040,13 @@ function setupViewportWatch() {
   const onVv = () => {
     const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
     if (kb <= 120) {
+      kbOpen.value = false
       kbToolbarTop.value = 0
       kbShift.value = 0 // 透值过滤地址栏小幅伸缩
       focusAnchorY = null
       return
     }
+    kbOpen.value = true
     const root = rootEl.value
     const layoutBottom = root ? root.getBoundingClientRect().bottom : 0
     const visualBottom = vv.offsetTop + vv.height
@@ -1776,8 +1779,8 @@ onBeforeUnmount(() => {
         v-if="isPhone"
         ref="toolbarEl"
         class="fixed inset-x-2 z-[80] select-none overflow-hidden border-t border-zinc-800 bg-black pt-1 transition-opacity md:hidden"
-        :class="kbShift > 0 ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
-        :style="kbShift > 0 ? { top: `${kbToolbarTop}px` } : undefined"
+        :class="kbOpen ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
+        :style="kbOpen ? { top: `${kbToolbarTop}px` } : undefined"
         @touchstart="tbTouchStart"
         @touchend="tbTouchEnd"
       >
