@@ -58,7 +58,14 @@ pub struct AttachedSession {
     pub name: String,
     pub cols: u16,
     pub rows: u16,
+    /// scrollback 历史（每行带 \n）。**不含当前屏**——当前屏经 `screen` 单独走
+    /// attach 应答后的首个数据帧，由前端画在回填后的空视口上（与 tmux 整屏重绘
+    /// 同构；混在 history 里会被前端回填尾部的 rows×CRLF 一并推进 scrollback，
+    /// 视口剩全空白，实测复现过）。
     pub history: Vec<u8>,
+    /// attach 时刻的当前屏（state_formatted，含光标位置）。resume 时空——前端拿
+    /// 自己的尾屏做增量拼接，重发当前屏会整体重复。
+    pub screen: Vec<u8>,
     pub last_seq: u64,
     pub title: String,
     pub cwd: String,
@@ -114,12 +121,20 @@ impl Session {
         let mut screen = self.screen.lock();
         let rx = self.tx.subscribe();
         let last_seq = self.seq.load(Ordering::SeqCst);
-        let mut history = capture_locked(&mut screen, true);
+        let (scrollback, current) = capture_parts(&mut screen, true);
         // 重连（resume）只回最近 2000 行：前端拿自己的尾屏做锚点做增量拼接，
-        // 全量历史会重复刷进 scrollback。首次 attach 仍是完整历史。
-        if resume {
-            history = tail_lines(&history, RESUME_HISTORY_LINES);
-        }
+        // 全量历史会重复刷进 scrollback——此时把当前屏拼回尾部（旧组合格式），
+        // screen 字段留空。首次 attach history 只给 scrollback，当前屏走 screen。
+        let (history, screen_bytes) = if resume {
+            let mut combined = scrollback;
+            if !combined.is_empty() && !combined.ends_with(b"\n") {
+                combined.push(b'\n');
+            }
+            combined.extend_from_slice(&current);
+            (tail_lines(&combined, RESUME_HISTORY_LINES), Vec::new())
+        } else {
+            (scrollback, current)
+        };
         self.attached.fetch_add(1, Ordering::SeqCst);
         let (title, cwd, foreground) = snapshot_meta(self, &screen);
         drop(screen);
@@ -129,6 +144,7 @@ impl Session {
             cols: self.cols.load(Ordering::SeqCst),
             rows: self.rows.load(Ordering::SeqCst),
             history,
+            screen: screen_bytes,
             last_seq,
             title,
             cwd,
@@ -173,7 +189,9 @@ impl Session {
     }
 }
 
-fn capture_locked(screen: &mut vt100::Parser, ansi: bool) -> Vec<u8> {
+/// 拆开捕获：(scrollback, 当前屏)。scrollback 每行带 \n（可能为空）；当前屏为
+/// state_formatted（ansi）/纯文本（非 ansi）。`capture_locked` 在其上拼回组合格式。
+fn capture_parts(screen: &mut vt100::Parser, ansi: bool) -> (Vec<u8>, Vec<u8>) {
     let old = screen.screen().scrollback();
     screen.set_scrollback(usize::MAX);
     let total = screen.screen().scrollback();
@@ -199,20 +217,18 @@ fn capture_locked(screen: &mut vt100::Parser, ansi: bool) -> Vec<u8> {
         screen.screen().contents().into_bytes()
     };
     screen.set_scrollback(old);
+    (history, current)
+}
 
+fn capture_locked(screen: &mut vt100::Parser, ansi: bool) -> Vec<u8> {
+    let (history, current) = capture_parts(screen, ansi);
     if history.is_empty() {
         return current;
     }
     let mut out = history;
-    if ansi {
-        // xterm 的 \x1b[2J 不清 scrollback；当前屏重绘前把历史留在 scrollback 里。
-        if !out.ends_with(b"\n") {
-            out.push(b'\n');
-        }
-    } else {
-        if !out.ends_with(b"\n") {
-            out.push(b'\n');
-        }
+    // xterm 的 \x1b[2J 不清 scrollback；当前屏重绘前把历史留在 scrollback 里。
+    if !out.ends_with(b"\n") {
+        out.push(b'\n');
     }
     out.extend_from_slice(&current);
     out

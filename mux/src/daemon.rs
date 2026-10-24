@@ -257,7 +257,7 @@ pub async fn serve_conn(
                             continue;
                         };
                         match session.attach(cols, rows, resume) {
-                            Ok(attached_session) => {
+                            Ok(mut attached_session) => {
                                 let sid = attached_session.sid;
                                 let name = attached_session.name.clone();
                                 let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -277,6 +277,17 @@ pub async fn serve_conn(
                                     foreground: attached_session.foreground,
                                 };
                                 send_control(&out_tx, req_id, &resp).await;
+                                // 首次 attach：当前屏紧跟应答作为本连接首个数据帧——前端把
+                                // history 推进 scrollback 后视口为空，这里把 attach 时刻的
+                                // 屏幕画回去（与 tmux 的整屏重绘同构；时序在 output_task
+                                // 订阅的事件回放之前，保证「快照 → 后续增量」顺序）。
+                                if !resume && !attached_session.screen.is_empty() {
+                                    let _ = out_tx
+                                        .send(Frame::data(sid, std::mem::take(
+                                            &mut attached_session.screen,
+                                        )))
+                                        .await;
+                                }
                                 tokio::spawn(output_task(
                                     manager,
                                     sid,

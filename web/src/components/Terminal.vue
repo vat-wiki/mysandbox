@@ -330,6 +330,16 @@ async function connectWs(quiet = false) {
 
   ws.onopen = () => {
     connState.value = 'ok'
+    // 重连成功：取消未落笔的断线横幅；若横幅已写出（慢重连），补一行「已重连」闭环，
+    // 别让回滚末尾那行「已断开 (1006)」成了最后状态。
+    if (closeBannerTimer) {
+      clearTimeout(closeBannerTimer)
+      closeBannerTimer = null
+    }
+    if (closeBannerShown) {
+      closeBannerShown = false
+      term?.writeln('\x1b[2m>> 已重连\x1b[0m')
+    }
     const label = useMux ? 'msmux' : shell
     if (!wsQuiet) term?.writeln(`\x1b[2m>> 连接 ${props.name}${label ? ` (${label})` : ''}\x1b[0m`)
     emit('backend', useMux ? 'msmux' : 'tmux')
@@ -342,11 +352,16 @@ async function connectWs(quiet = false) {
     if (typeof ev.data === 'string') {
       try {
         const m = JSON.parse(ev.data) as { type?: string; text?: string }
-        if (m.type === 'history' && m.text && !backfilled) {
-          backfilled = true
-          // N 行历史 + rows 个 CRLF = N+rows-1 个换行：恰好全部推进 scrollback、零空行
-          // 缝隙、光标落底行（数学上精确成立，与 N 无关）；重绘的绝对定位画在空视口上。
-          term?.write(m.text.split('\n').join('\r\n') + '\r\n'.repeat(term?.rows ?? 24))
+        if (m.type === 'history') {
+          // history 帧到达即视为完成过一次全量回填，后续重连一律走 resume 增量。
+          // 空历史（新会话尚无 scrollback）也要置位：否则重连 resume=0 全量重写，
+          // 与 buffer 里已有的内容整体重复。
+          if (!backfilled) {
+            backfilled = true
+            // N 行历史 + rows 个 CRLF = N+rows-1 个换行：恰好全部推进 scrollback、零空行
+            // 缝隙、光标落底行（数学上精确成立，与 N 无关）；重绘的绝对定位画在空视口上。
+            if (m.text) term?.write(m.text.split('\n').join('\r\n') + '\r\n'.repeat(term?.rows ?? 24))
+          }
         } else if (m.type === 'history-delta' && m.text) {
           // 重连增量：补断线窗口期内错过的输出（锚点去重，见 applyHistoryDelta）。
           applyHistoryDelta(m.text)
@@ -400,7 +415,15 @@ async function connectWs(quiet = false) {
     }
     if (ev.code !== 1000 && ev.code !== 1001) connState.value = 'lost'
     // shell 已退出（exit 帧处理过）不再写「已断开」——正常终结不是断线，提示语在 exit 分支。
-    if (!wsQuiet && !sessionEnded) term?.writeln(`\x1b[2m>> 已断开 (${ev.code})\x1b[0m`)
+    // 横幅延迟 1.5s 落笔（见 closeBannerTimer 注释）：快速重连直接取消，不污染 scrollback。
+    if (!wsQuiet && !sessionEnded) {
+      const code = ev.code
+      closeBannerTimer = setTimeout(() => {
+        closeBannerTimer = null
+        closeBannerShown = true
+        term?.writeln(`\x1b[2m>> 已断开 (${code})\x1b[0m`)
+      }, 1_500)
+    }
   }
   // onerror 不写横幅：错误后面必然跟着 onclose（「已断开 (code)」或 lost 徽标 + 重连条），
   // 单独一行「socket 错误」只是噪声——手机上回前台/网络抖动每次都刷两三行，把回滚刷花。
@@ -522,6 +545,11 @@ let hbTimer: ReturnType<typeof setInterval> | null = null
 // tmux 历史回填只做一次（组件首连）：reconnect 时 term 实例还在、scrollback 已有内容，
 // 再回填会重复整段历史。断线期间产生的输出留在 tmux 历史里滚不到（可接受的缺口）。
 let backfilled = false
+// 断线横幅延迟落笔：自愈/手动重连大多在 1.5s 内完成，直接取消——重连成功后回滚末尾
+// 躺着一行「已断开 (1006)」会被当成「还断着」（重连静默下它是屏幕最后一行）。
+// 慢重连（横幅已写出）由 onopen 补一行「已重连」闭环。refreshTerminal 清空 buffer 时一并复位。
+let closeBannerTimer: ReturnType<typeof setTimeout> | null = null
+let closeBannerShown = false
 // ready 只在本次挂载内发一次：首个二进制帧 = 后端已 attach、PTY 可以稳定接收输入。
 let readySent = false
 // 当前连接是否走 msmux；foreground 事件只在 msmux 后端可用。
@@ -914,6 +942,12 @@ function refreshTerminal() {
   }
   currentTerm.reset()
   backfilled = false
+  // buffer 清空后旧横幅已不存在，别再补「已重连」、也别让延迟横幅写进新现场。
+  if (closeBannerTimer) {
+    clearTimeout(closeBannerTimer)
+    closeBannerTimer = null
+  }
+  closeBannerShown = false
   connState.value = 'ok'
   connectWs(true) // 程序性重连：不要往刚清空的 buffer 写「连接/断开」横幅
   if (!isCoarse.value) {
@@ -1147,8 +1181,9 @@ function setupViewportWatch() {
 // 不动（桌面 wheel 同一注册点，所以桌面无感）。这里 capture 阶段自管：preventDefault 在手
 // 保证 touchmove 必达，stopPropagation 防 xterm 内部 handler 双重滚动。touchstart/touchend
 // 不截获——点按聚焦、长按等原生行为保持。顺带补惯性滑动（xterm 内建无 momentum，长历史
-// 1:1 跟手翻不动）。只动本地 scrollback、不向 PTY 发字节：alternate screen（全屏 TUI）没有
-// scrollback，ybase 恒 0 自然 no-op，不会干扰 TUI。
+// 1:1 跟手翻不动）。普通缓冲只动本地 scrollback、不向 PTY 发字节；备用屏 + 应用开鼠标
+// 上报时例外——触摸位移转 SGR 滚轮发给应用（见 altWheel/sendWheelRows），否则 claude
+// 这类全屏 TUI 在手机上完全没法滚。
 //
 // ⚠️ 必须走 term.scrollLines()（整行）而不是直改 .xterm-viewport.scrollTop（像素）：xterm 的
 // 权威滚动状态是 ydisp（整行坐标），viewport 每次渲染刷新都把 scrollTop 重置回 ydisp × 行高——
@@ -1182,9 +1217,26 @@ function setupTouchScroll() {
     accPx += px
     const rows = Math.trunc(accPx / rowHeightOf())
     if (rows !== 0 && term) {
-      term.scrollLines(rows)
       accPx -= rows * rowHeightOf()
+      if (altWheel()) sendWheelRows(rows)
+      else term.scrollLines(rows)
     }
+  }
+  // 备用屏（全屏 TUI）+ 应用开了鼠标上报（claude 开 ?1000h/?1003h/?1006h，实测确认）：
+  // 本地 scrollback 没内容可滚（ybase 恒 0），触摸位移转成 SGR 滚轮序列发给 PTY，
+  // 让应用自己滚（claude 滚 transcript）——与桌面滚轮同构（xterm 对鼠标追踪中的真实
+  // 滚轮就是这么发的）。应用没开鼠标上报时保持 no-op：触摸滚动不该给纯 TUI 发位移。
+  const altWheel = (): boolean =>
+    !!term &&
+    term.buffer.active.type === 'alternate' &&
+    term.modes.mouseTrackingMode !== 'none'
+  const sendWheelRows = (rows: number) => {
+    if (!term) return
+    const col = Math.ceil(term.cols / 2)
+    const row = Math.ceil(term.rows / 2)
+    const btn = rows < 0 ? 64 : 65 // 64=滚轮上（看更早），65=滚轮下
+    const n = Math.min(Math.abs(rows), 6) // 惯性高速限流，一次手势别刷爆 PTY
+    for (let i = 0; i < n; i++) sendRaw(`\x1b[<${btn};${col};${row}M`)
   }
   const onStart = (e: TouchEvent) => {
     stopMomentum()
@@ -1716,6 +1768,7 @@ onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
   if (hbTimer) clearInterval(hbTimer)
   if (inputFlushTimer) clearTimeout(inputFlushTimer)
+  if (closeBannerTimer) clearTimeout(closeBannerTimer)
   document.removeEventListener('visibilitychange', recoverOnReturn)
   window.removeEventListener('focus', recoverOnReturn)
   window.removeEventListener('online', recoverOnReturn)
