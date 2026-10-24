@@ -319,6 +319,17 @@ export function agentForTarget(target: string): AgentRecord | undefined {
   return agents.get(target);
 }
 
+// 短轮询等 agent 上线：agent 侧每 2s 重试回连，服务重启等瞬断在这个窗口内自愈，
+// 不值得直接触发重部署。超时返回 false（不抛错）。
+async function waitForAgentQuiet(target: string, timeoutMs: number): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  while (!agents.get(target)) {
+    if (Date.now() >= until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return true;
+}
+
 export function sendAgentFrame(target: string, frame: Buffer): boolean {
   const agent = agents.get(target);
   return agent ? sendAgent(agent, frame) : false;
@@ -489,13 +500,40 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
       try { socket.close(1008, 'invalid mux target'); } catch { /* noop */ }
       return;
     }
-    const agent = agents.get(target);
+    let agent = agents.get(target);
     if (!agent) {
-      // 先发 error 帧（浏览器端会消费并显示）再关——close code 本身到不了页面的
-      // onclose 参数，只发 close 用户只能看到无来由的「已断开 (1011)」。
-      sendJson(socket, { type: 'error', message: 'msmux agent 未连接：请先在 设置 → 终端后端 部署/重连该目标' });
-      try { socket.close(1011, 'msmux agent not connected'); } catch { /* noop */ }
-      return;
+      // agent 不在线：先给一个重连宽限窗（agent 侧每 2s 重试回连，服务重启等瞬断
+      // 自己会好），仍不在线且目标支持时做连接时自动部署（仅 LXC/SSH，见
+      // autoDeployMuxAgent）；都拿不到再按原样发 error 帧关连接。
+      let settled = await waitForAgentQuiet(target, 3_000);
+      if (!settled && cfg.mux.autoDeploy && /^(c|ssh):/.test(target)) {
+        try {
+          // 动态 import：muxDeploy.ts 静态 import 本模块（muxAgentToken/agentForTarget），
+          // 反向引用会成环；部署只在缺 agent 时发生，运行时拉起没有问题。
+          const { autoDeployMuxAgent } = await import('./muxDeploy.js');
+          app.log.info({ target }, 'msmux auto deploy: agent offline, deploying');
+          const result = await autoDeployMuxAgent(cfg, target);
+          app.log.info({ target, connected: result.connected }, 'msmux auto deploy done');
+          settled = result.connected;
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          app.log.warn({ target, message }, 'msmux auto deploy failed');
+          sendJson(socket, { type: 'error', message: `msmux 自动部署失败：${message}` });
+          try { socket.close(1011, 'msmux auto deploy failed'); } catch { /* noop */ }
+          return;
+        }
+      }
+      agent = settled ? agents.get(target) : undefined;
+      if (!agent) {
+        // 先发 error 帧（浏览器端会消费并显示）再关——close code 本身到不了页面的
+        // onclose 参数，只发 close 用户只能看到无来由的「已断开 (1011)」。
+        sendJson(socket, {
+          type: 'error',
+          message: 'msmux agent 未连接：请先在 设置 → 终端后端 部署/重连该目标',
+        });
+        try { socket.close(1011, 'msmux agent not connected'); } catch { /* noop */ }
+        return;
+      }
     }
     const termId = q.termId ?? '';
     const name = q.name || (termId ? `mysandbox-${termId}` : '');

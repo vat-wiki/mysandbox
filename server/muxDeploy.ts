@@ -36,7 +36,7 @@ import { execRun, inspectContainer, rootfsPath } from './engine/index.js';
 import { muxAgentBridgeIp } from './muxBridge.js';
 import { agentForTarget, muxAgentToken } from './muxAgent.js';
 import { findServiceTarget } from './serviceMeta.js';
-import { getSshTargets } from './state.js';
+import { getMuxDeployInfo, getSshTargets, saveMuxDeployInfo } from './state.js';
 import { sshExec, sshFeed } from './sshChannel.js';
 import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
 
@@ -426,6 +426,9 @@ export async function deployMuxAgent(
   } else {
     detail = await deploySsh(parsed, binary, url, token);
   }
+  // 记下回连地址（部署记录）：连接时自动部署复用——SSH 目标的 url 只能显式给出，
+  // 存最后一次成功部署用的那个。
+  await saveMuxDeployInfo(parsed.target, url);
 
   const kind = parsed.kind;
   const connected = await waitForAgent(parsed.target);
@@ -438,6 +441,28 @@ export async function deployMuxAgent(
     binary: { path: binaryPath, bytes: binary.length, sha256 },
     detail,
   };
+}
+
+// 连接时自动部署（muxAgent.ts 的 /ws/mux-terminal 在 agent 不在线时调）：
+// 仅 LXC 与 SSH 目标——LXC 的回连地址可由网桥网段推出；SSH 目标复用上次成功部署
+// 存下的回连地址（没有记录就报错，引导先手动部署一次）。docker 服务与 host 不走
+// 这条路径（服务短命保持手动；host 有 systemd 托管）。
+export async function autoDeployMuxAgent(cfg: Config, targetRaw: string): Promise<MuxDeployResult> {
+  const parsed = parseTarget(targetRaw);
+  if (parsed.kind !== 'lxc' && parsed.kind !== 'ssh') {
+    throw badRequest(`目标 ${targetRaw} 不支持自动部署（仅 c:/ssh: 目标，host 与 s: 请手动部署）`);
+  }
+  let url: string;
+  if (parsed.kind === 'ssh') {
+    const stored = (await getMuxDeployInfo(parsed.target))?.url;
+    if (!stored) {
+      throw badRequest('该 SSH 目标没有回连地址记录：请先在 设置 → 终端后端 手动部署一次');
+    }
+    url = stored;
+  } else {
+    url = normalizeUrl(cfg, parsed, undefined);
+  }
+  return deployMuxAgent(cfg, parsed.target, url);
 }
 
 export async function registerMuxDeploy(app: FastifyInstance, cfg: Config): Promise<void> {

@@ -137,7 +137,9 @@ kind 3 (PING)
 - 每个会话只有一个 pane；没有窗口/pane 布局与 tmux 键位。
 - agent 只支持系统信任库验证的 `wss://`；自签 CA / 跳过校验尚未做。
 - agent 断开期间无法发现它名下的会话（daemon 仍活着，重新回连后即可恢复）。
-- 应用容器与 SSH 目标的 agent 暂不保证自启；需在设置页重新部署，后续补目标侧自启动。
+- 应用容器与 SSH 目标的 agent 暂不保证自启（重启后 agent 不回来）；LXC/SSH 目标由
+  控制台「连接时自动部署」兜底（`mux.autoDeploy`，见 docs/architecture/terminals.md），
+  应用容器目标保持设置页手动部署。
 - 初次 attach 仍是完整屏幕 + scrollback 回放；目标端没有 tmux 的 pane 布局能力。
 - `cwd` / 前台进程在 PTY 输出驱动下实时补发；无输出期间不轮询，attach 时仍先给一次快照。
 - 仅 Unix；Windows ConPTY 版本未做。
@@ -146,4 +148,8 @@ kind 3 (PING)
 
 1. 应用容器 / SSH 目标侧自启动（LXC 与宿主已由 systemd 托管）。
 2. tmux 键位/窗口布局兼容层。
-3. muxToken 轮换与一次性 enrollment（当前轮换后重新部署即可）。
+
+已评估不做：muxToken 轮换与一次性 enrollment。派生 token 落目标侧 0600 文件，能读到它
+的人本来就已有该目标的完整权限，泄露不构成提权；换 token 的修复路径由「连接时自动
+部署」自愈（重新连一次目标即重新部署），个位数目标手动重部署也只是设置页点几下，
+为此做 enrollment 协议不成比例。

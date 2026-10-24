@@ -223,8 +223,12 @@ export const ConfigSchema = z.object({
         (v) => (v === 'auto' ? undefined : v),
         z.enum(['tmux', 'msmux']).default('tmux'),
       ),
+      // 连接时自动部署（仅 LXC/SSH 目标）：开 msmux 终端发现 agent 不在线时，等一个
+      // 回连重试窗口，仍不在线就把二进制+派生 token 送过去拉起 agent。docker 服务
+      // 目标不自动部署（服务短命，保持手动）；host 由 systemd 托管不需要。
+      autoDeploy: z.boolean().default(true),
     })
-    .default({ agentPort: 7333, backend: 'tmux' }),
+    .default({ agentPort: 7333, backend: 'tmux', autoDeploy: true }),
   // ⚠️ 已废弃（server/skillSync.ts）：旧版静态 from→to 规则，首次同步时自动迁移成
   // 技能库安装规则（state.staticMigratedAt 记账），之后此键被忽略。schema 仅为读取
   // 旧 config 做迁移而保留；新配置走面板「AI 工具 → 技能中心」（sidecar state.json）。
