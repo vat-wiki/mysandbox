@@ -49,6 +49,8 @@ pub struct Session {
     default_cwd: String,
     default_command: String,
     last_title: Mutex<String>,
+    last_cwd: Mutex<String>,
+    last_foreground: Mutex<String>,
 }
 
 pub struct AttachedSession {
@@ -286,6 +288,22 @@ fn snapshot_meta(session: &Session, screen: &vt100::Parser) -> (String, String, 
     (title, cwd, foreground)
 }
 
+/// 输出驱动式元数据探测：PTY 有新数据时检查 cwd / 前台进程。
+/// 无输出的等待变化仍靠 attach 快照兜底，避免常驻轮询每个会话。
+fn emit_meta_if_changed(session: &Arc<Session>) {
+    let screen = session.screen.lock();
+    let (_, cwd, foreground) = snapshot_meta(session, &screen);
+    drop(screen);
+    if *session.last_cwd.lock() != cwd {
+        *session.last_cwd.lock() = cwd.clone();
+        let _ = session.tx.send(SessionEvent::Cwd { cwd });
+    }
+    if *session.last_foreground.lock() != foreground {
+        *session.last_foreground.lock() = foreground.clone();
+        let _ = session.tx.send(SessionEvent::Foreground { foreground });
+    }
+}
+
 pub struct Manager {
     sessions: RwLock<HashMap<u32, Arc<Session>>>,
     by_name: RwLock<HashMap<String, u32>>,
@@ -384,10 +402,14 @@ impl Manager {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| argv[0].clone()),
             last_title: Mutex::new(String::new()),
+            last_cwd: Mutex::new(String::new()),
+            last_foreground: Mutex::new(String::new()),
         });
 
         self.sessions.write().insert(id, Arc::clone(&session));
         self.by_name.write().insert(name, id);
+        *session.last_cwd.lock() = session.default_cwd.clone();
+        *session.last_foreground.lock() = session.default_command.clone();
 
         let reader_session = Arc::clone(&session);
         thread::Builder::new()
@@ -475,6 +497,7 @@ fn read_loop(mut reader: Box<dyn Read + Send>, session: Arc<Session>) {
                     seq
                 };
                 let _ = session.tx.send(SessionEvent::Output { seq, data });
+                emit_meta_if_changed(&session);
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
