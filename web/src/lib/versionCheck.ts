@@ -24,7 +24,9 @@ export function checkStaleVersion(force = false): void {
       stale = true
       toast.info('新版本已部署', {
         description: `服务端已更新到 v${h.version}，当前页面还是 v${__APP_VERSION__}；旧页面可能缺新功能甚至静默失能，刷新即生效。`,
-        duration: Infinity,
+        // 7 天（2^31 内 setTimeout 安全）：等价于常驻。实测 duration: Infinity 偶发
+        // 不生效（toast ~4s 即被收走，原因未查明），有限值绕开。
+        duration: 7 * 24 * 3600 * 1000,
         closeButton: true,
         action: { label: '刷新', onClick: () => location.reload() },
       })
