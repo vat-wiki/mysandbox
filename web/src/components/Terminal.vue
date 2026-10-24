@@ -1007,15 +1007,24 @@ function tbTouchEnd(e: TouchEvent) {
 
 // —— 软键盘纯 CSS 裁切（仅手机）——
 // 键盘弹起时不改终端盒子尺寸：xterm/PTY 的 cols/rows 保持不变，不再触发 fit/resize。
-// 键盘弹起时不改 xterm 盒子尺寸：外层 root 固定并裁切，内层 shift 整盒上移。
-// 顶部被裁掉，底部和光标保持在键盘上方；工具条 Teleport 到 body 并固定在
-// 可视区底边上方。cols/rows 不变，回滚位置不会被 resize/reflow 重置。
+// 键盘弹起时不改 xterm 盒子尺寸：外层 root 固定并裁切，内层 shift 按焦点整盒上移。
+// pointerdown 记录触点对应的原始内容坐标；键盘出现后只抬到刚好让这个坐标保持在
+// 工具条上方。没有触点兜底时才按终端底部计算。cols/rows 不变，回滚位置不会被
+// resize/reflow 重置。
 const kbShift = ref(0)
 const kbToolbarTop = ref(0)
 const toolbarHeight = ref(0)
 const toolbarEl = ref<HTMLDivElement | null>(null)
+let focusAnchorY: number | null = null
 let toolbarResizeObs: ResizeObserver | null = null
 let vvCleanup: (() => void) | null = null
+function saveFocusAnchor(event: PointerEvent) {
+  if (!isPhone.value) return
+  const textarea = term?.textarea
+  const rect = textarea?.getBoundingClientRect()
+  const focusY = rect && rect.height > 0 ? rect.top + rect.height / 2 : event.clientY
+  focusAnchorY = focusY + kbShift.value
+}
 function setupViewportWatch() {
   const vv = window.visualViewport
   if (!vv) return
@@ -1032,15 +1041,17 @@ function setupViewportWatch() {
     if (kb <= 120) {
       kbToolbarTop.value = 0
       kbShift.value = 0 // 透值过滤地址栏小幅伸缩
+      focusAnchorY = null
       return
     }
     const root = rootEl.value
     const layoutBottom = root ? root.getBoundingClientRect().bottom : 0
     const visualBottom = vv.offsetTop + vv.height
-    const clearance = root ? Math.max(0, layoutBottom - visualBottom) : 0
+    const safeBottom = visualBottom - toolbarHeight.value - 14
+    const contentBottom = layoutBottom - 6
+    const anchorBottom = focusAnchorY ?? contentBottom
     kbToolbarTop.value = Math.max(0, visualBottom - toolbarHeight.value - 6)
-    // 终端保持原尺寸，再整体抬过工具条并留 8px 呼吸。
-    kbShift.value = clearance + toolbarHeight.value + 8
+    kbShift.value = Math.max(0, Math.round(anchorBottom - safeBottom))
   }
   vv.addEventListener('resize', onVv)
   vv.addEventListener('scroll', onVv)
@@ -1693,7 +1704,11 @@ onBeforeUnmount(() => {
          document 顶部 overscroll 触发下拉刷新、手势被浏览器抢走。touch-action: none 让终端区域的手势
          完全交给 JS（xterm 自滚），浏览器不再启动原生平移/下拉刷新/双指缩放。中间层挂 overscroll-none
          挡不住这个——touch 侧的原生滚动链跳过 overflow:hidden 的祖先直达 document。 -->
-    <div class="absolute inset-x-2 top-1.5 bottom-1.5 will-change-transform" :style="kbShift > 0 ? { transform: `translate3d(0, -${kbShift}px, 0)` } : undefined">
+    <div
+      class="absolute inset-x-2 top-1.5 bottom-1.5 will-change-transform"
+      :style="kbShift > 0 ? { transform: `translate3d(0, -${kbShift}px, 0)` } : undefined"
+      @pointerdown.capture="saveFocusAnchor"
+    >
       <div ref="el" class="absolute inset-0 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
     </div>
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
