@@ -40,6 +40,7 @@ import { TmuxMultiplexer, hostTransport, LIST_FMT } from './multiplexer.js';
 import { spawnPty, type PtyTerm } from './pty.js';
 import { notFound, badRequest, HttpError } from './errors.js';
 import { withPollCache } from './cache.js';
+import { muxSessionMeta } from './muxAgent.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -348,8 +349,12 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     // Windows：宿主侧没有 tmux，pane_current_path 无从谈起，cwd 的来源只剩「宿主 home」
     // 这个起点（真实跟随靠 shell 打出的 OSC 7，见容器的 files.ts/前端 FilePanel 同款链路）。
     if (platform() === 'win32') return { cwd: homedir() };
-    // TTL 缓存同 files.ts /cwd：前端双 poller（跟随 + pane 标题）共用，2.5s 内收敛为一次 tmux 查询
+    // msmux 优先：host 会话默认已迁到 msmux，agent 的 list 元数据里有前台进程 cwd；
+    // 老 tmux 会话不在 agent 里，回落原查询。TTL 缓存同 files.ts /cwd：前端双 poller
+    // （跟随 + pane 标题）共用，2.5s 内收敛为一次元数据查询。
     const cwd = await withPollCache(`cwd:h:${termId}`, 2_500, async (): Promise<string> => {
+      const meta = await muxSessionMeta('host', termId).catch(() => undefined);
+      if (meta?.cwd?.startsWith('/')) return meta.cwd;
       const v = await hostMux.paneCwd(hostSessionName(termId));
       if (!v || !v.startsWith('/')) throw notFound('terminal session not found');
       return v;
@@ -570,7 +575,10 @@ async function windowsPane(
       // 服务终端无宿主 cwd 概念（窗口命令进的是容器 fs），恒落 homedir（不进 tmux 参数）。
       let cwd = homedir();
       if (mode === 'host' && useTmux && from) {
-        const src = await hostMux.paneCwd(hostSessionName(from));
+        // 分屏可能来自 msmux host 会话：先读 agent 元数据；tmux 会话不在其中时再查 tmux。
+        const src =
+          (await muxSessionMeta('host', from).catch(() => undefined))?.cwd ||
+          (await hostMux.paneCwd(hostSessionName(from)));
         if (src.startsWith('/')) cwd = src;
       }
 

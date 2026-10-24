@@ -390,7 +390,7 @@ export async function listMuxSessions(): Promise<TermSessionView[]> {
   return settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
 }
 
-/** 单目标会话元数据（分屏继承源 pane cwd 用；会话不存在返回 undefined）。 */
+/** 单目标会话元数据（host cwd 轮询/分屏继承源 pane cwd 用；会话不存在返回 undefined）。 */
 export async function muxSessionMeta(target: string, termId: string): Promise<MuxSessionMeta | undefined> {
   const agent = agents.get(target);
   if (!agent) return undefined;

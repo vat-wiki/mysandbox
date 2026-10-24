@@ -14,6 +14,7 @@
 容器 `files.ts`（`/api/files/*`，execRun）、宿主 `hostFiles.ts`（node:fs 直操作，前端以 `__host__` 哨兵切端点）、服务 `serviceFiles.ts`（`'s:'+名`）、SSH `sshFiles.ts`（`'ssh:'+名`）——路由形状/2MB 上限/mtime 乐观锁一比对齐，`api.ts` 的 `filesBase` 哨兵分发让 `FilePanel`/`FileEditorDialog` 零改动换端点。
 
 - **cd 跟随**：shell 集成发 OSC 7 直达文件面板（回车事件即时检查），1s cwd 轮询降级为兜底；pane 落焦即切换跟随目标，切组按组记忆恢复。
+- **host msmux cwd**：文件面板的 cwd 轮询优先读 host msmux agent 元数据；老 host tmux 会话回落 tmux `pane_current_path`。否则 msmux 会话会被 `/api/host-terminal/cwd` 误查 tmux 而一直 404。
 - **Git 独立视图**：目录路径行下切「文件 / Git」，Git 占满整列，内分「变更 / 历史」；历史走 `git/history`（四端同协议，解析单源 `gitpanel.ts`），按当前/任选分支分页读提交。
 
 ## peer exec（容器间命令互通，`server/peer.ts`）
