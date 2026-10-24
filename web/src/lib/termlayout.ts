@@ -195,3 +195,8 @@ export interface TermPaneOps {
 }
 
 export const TERM_OPS: InjectionKey<TermPaneOps> = Symbol('mysandbox-term-pane-ops')
+
+// 恢复会话时从 localStorage 布局带回来的叶子 termId 集合（ContainerList 装载布局后
+// 注入一次）。Terminal 据此区分「恢复出来的重连」（连接横幅静默——刷新/回前台不该
+// 往 scrollback 刷「>> 连接」）与「新建终端的首连」（写一次横幅，标记新连接的身份）。
+export const RESTORED_TERM_IDS: InjectionKey<Set<string>> = Symbol('mysandbox-restored-term-ids')

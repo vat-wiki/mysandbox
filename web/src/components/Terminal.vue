@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, inject, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { toast } from 'vue-sonner'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -11,6 +11,7 @@ import '@xterm/xterm/css/xterm.css'
 import { authToken, writeFileBase64, resolveTermPath, pushTerminalClipboard, getTermFg, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { noteTermOutput } from '@/lib/terminalActivity'
 import { muxAgentAvailable } from '@/lib/mux'
+import { RESTORED_TERM_IDS } from '@/lib/termlayout'
 import { isCoarse, isPhone } from '@/composables/useDevice'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
 import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
@@ -342,7 +343,11 @@ async function connectWs(quiet = false) {
       term?.writeln('\x1b[2m>> 已重连\x1b[0m')
     }
     const label = useMux ? 'msmux' : shell
-    if (!wsQuiet) term?.writeln(`\x1b[2m>> 连接 ${props.name}${label ? ` (${label})` : ''}\x1b[0m`)
+    // 横幅只在「新建终端的首连」写一次：恢复布局出来的重连（wsQuiet 或 termId 属
+    // RESTORED_TERM_IDS）一律静默，避免刷新/回前台时 scrollback 被连接日志刷花。
+    if (!wsQuiet && !restoredTermIds.has(props.termId)) {
+      term?.writeln(`\x1b[2m>> 连接 ${props.name}${label ? ` (${label})` : ''}\x1b[0m`)
+    }
     emit('backend', useMux ? 'msmux' : 'tmux')
   }
   ws.onmessage = (ev) => {
@@ -523,6 +528,9 @@ const onFocusIn = () => {
 }
 let fit: FitAddon | null = null
 let ws: WebSocket | null = null
+// 恢复会话的叶子 termId（ContainerList 注入）：恢复出来的重连不写「>> 连接」横幅——
+// 刷新/回前台时往 scrollback 刷连接日志是噪声；只有新建终端的首连才写（见 onopen）。
+const restoredTermIds = inject(RESTORED_TERM_IDS) ?? new Set<string>()
 // 当前连接是否程序性静默（tab 切换的 detach/attach 路径）：onopen/onclose 不写 banner。
 // 共享可变量而非闭包捕获：detach 要让「已存在连接」的 onclose 也静默，只能事后改标记
 // （同一时刻至多一条活连接，事件读到的值必然对应当前连接）。

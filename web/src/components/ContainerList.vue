@@ -143,6 +143,7 @@ import {
   normalizeRoot,
   ordinalOf,
   removeLeaf,
+  RESTORED_TERM_IDS,
   splitLeaf,
   type LayoutDir,
   type LayoutNode,
@@ -309,6 +310,9 @@ const savedTabs = loadTabs()
 const groups = ref<TermGroup[]>(savedTabs.groups)
 const activeIdx = ref(savedTabs.activeIdx)
 const hiddenGroups = ref<TermGroup[]>(loadHidden())
+// 恢复布局里的叶子 termId：Terminal 用它区分「恢复重连」（横幅静默）与「新建首连」
+// （写一次「>> 连接 …」横幅）。之后 createGroup 的新 termId 不在集合里，照常写横幅。
+provide(RESTORED_TERM_IDS, new Set(savedTabs.groups.flatMap((g) => leafIds(g.root))))
 
 // —— SSH 终端目标（侧栏终端区的「本机之外」条目）——
 // 只作终端延伸（非被管理对象）：加载一次 + 管理对话框增删后刷新，无轮询。
