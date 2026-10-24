@@ -195,7 +195,7 @@ export interface MuxAgentView {
 }
 export const listMuxAgents = () =>
   api('/api/mux/agents') as Promise<{ agents: MuxAgentView[] }>
-export type MuxBackend = 'auto' | 'tmux' | 'msmux'
+export type MuxBackend = 'tmux' | 'msmux'
 export const getMuxBackend = () =>
   api('/api/mux/backend') as Promise<{ backend: MuxBackend }>
 export const setMuxBackend = (backend: MuxBackend) =>

@@ -1,11 +1,12 @@
-// 终端后端选择：auto（目标有 agent 才走 msmux）| tmux | msmux。
+// 终端后端选择：tmux | msmux，**没有 auto**——每次开终端由用户显式二选一
+// （桌面右键菜单 / 手机动作面板都有两个入口），本库不再做「agent 在线才切 msmux」
+// 的自动探测。
 //
-// 渐进替代的开关语义：服务端 config 的 mux.backend 是默认值（auto——只有目标上部署过
-// msmux agent 且当前在线，才把新连接切到 /ws/mux-terminal）。新开终端组可显式选择
-// tmux/msmux，覆盖服务端默认；URL ?mux=0|1 只作为整页临时覆盖。
-import { getMuxBackend, listMuxAgents, setMuxBackend, type MuxBackend } from './api'
+// 服务端 config 的 mux.backend 是未显式选择路径（深链、恢复会话、popout 种子、
+// 分屏继承）的默认值，同样是手动二选一；URL ?mux=0|1 只作为整页临时覆盖。
+import { getMuxBackend, setMuxBackend, type MuxBackend } from './api'
 
-export type TerminalBackend = 'auto' | 'tmux' | 'msmux'
+export type TerminalBackend = MuxBackend
 const CACHE_MS = 4_000
 let serverBackend: { at: number; mode: TerminalBackend } | null = null
 let serverBackendInflight: Promise<TerminalBackend> | null = null
@@ -18,7 +19,7 @@ async function serverTerminalBackend(): Promise<TerminalBackend> {
       serverBackend = { at: Date.now(), mode: r.backend }
       return r.backend
     })
-    .catch(() => 'auto' as TerminalBackend)
+    .catch(() => 'tmux' as TerminalBackend)
     .finally(() => {
       serverBackendInflight = null
     })
@@ -38,39 +39,13 @@ export async function setTerminalBackend(mode: MuxBackend): Promise<MuxBackend> 
   return saved.backend
 }
 
-let cached: { at: number; targets: Set<string> } | null = null
-let inflight: Promise<Set<string>> | null = null
-
-async function agents(): Promise<Set<string>> {
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.targets
-  if (inflight) return inflight
-  inflight = listMuxAgents()
-    .then((r) => {
-      const targets = new Set(r.agents.map((a) => a.target))
-      cached = { at: Date.now(), targets }
-      return targets
-    })
-    .finally(() => {
-      inflight = null
-    })
-  return inflight
-}
-
-/** 该 target 当前是否应走 msmux。tmux 模式恒 false；msmux 模式强制执行（成败由连接反馈）。 */
+/**
+ * 该 target 本次连接是否走 msmux。显式选择（tmux/msmux）一票定音；未显式选择
+ * （深链/恢复会话等）按服务端默认。选 msmux 但目标没上线：成败由连接反馈
+ * （连不上直接报连接错误），这里不做可用性探测。
+ */
 export async function muxAgentAvailable(target: string, explicit?: 'tmux' | 'msmux'): Promise<boolean> {
-  if (explicit === 'tmux' || !target) return false
-  if (explicit === 'msmux') return true
-  const mode = await terminalBackend()
-  if (mode === 'tmux') return false
-  if (mode === 'msmux') return true
-  try {
-    return (await agents()).has(target)
-  } catch {
-    return false
-  }
-}
-
-/** 部署/重连后清掉在线缓存，下一次连接立刻重新探测。 */
-export function invalidateMuxAgents(): void {
-  cached = null
+  if (!target) return false
+  if (explicit) return explicit === 'msmux'
+  return (await terminalBackend()) === 'msmux'
 }

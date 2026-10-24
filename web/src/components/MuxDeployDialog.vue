@@ -13,7 +13,6 @@ import {
   Unauthorized,
   type MuxDeployResult,
 } from '@/lib/api'
-import { invalidateMuxAgents } from '@/lib/mux'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -53,7 +52,6 @@ async function deploy() {
   busy.value = true
   try {
     const r = await deployMuxAgent(props.target, isSsh.value ? url.value.trim() : undefined)
-    invalidateMuxAgents()
     result.value = r
     if (r.connected) {
       toast.success('msmux agent 已上线', {
@@ -97,7 +95,7 @@ async function deploy() {
             目标：<code class="font-mono text-foreground">{{ target }}</code>
           </p>
           <p class="mt-1">
-            agent 在线后，`auto` 模式的新终端会在这个目标上使用 msmux；其他目标继续走 tmux。
+            agent 上线后，开终端时选「用 msmux 打开」即可用在这个目标上；tmux 终端不受影响。
           </p>
         </div>
 

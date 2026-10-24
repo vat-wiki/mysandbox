@@ -48,7 +48,7 @@ const SYSTEMD_USER_DIR = join(homedir(), '.config', 'systemd', 'user');
 
 type TargetKind = 'host' | 'lxc' | 'service' | 'ssh';
 
-type MuxBackend = 'auto' | 'tmux' | 'msmux';
+type MuxBackend = 'tmux' | 'msmux';
 
 interface ParsedTarget {
   kind: TargetKind;
@@ -441,7 +441,8 @@ export async function deployMuxAgent(
 }
 
 export async function registerMuxDeploy(app: FastifyInstance, cfg: Config): Promise<void> {
-  // 服务端默认后端：启动参数 --mux / config.yaml 都改这里；单个终端组显式选择覆盖。
+  // 服务端默认后端（tmux|msmux，手动选择）：启动参数 --mux / config.yaml 都改这里；
+  // 深链/恢复会话等未显式选择的路径按它走，交互入口在菜单里显式二选一。
   app.get('/api/mux/backend', async (req, reply) => {
     if (req.sandboxIdentity?.kind !== 'owner') {
       return reply.code(403).send({ error: { code: 'forbidden', message: 'owner only' } });
@@ -455,8 +456,8 @@ export async function registerMuxDeploy(app: FastifyInstance, cfg: Config): Prom
     }
     const body = (req.body ?? {}) as { backend?: unknown };
     const backend = body.backend;
-    if (backend !== 'auto' && backend !== 'tmux' && backend !== 'msmux') {
-      throw badRequest('backend must be auto, tmux, or msmux');
+    if (backend !== 'tmux' && backend !== 'msmux') {
+      throw badRequest('backend must be tmux or msmux');
     }
     cfg.mux.backend = backend;
     // 服务端默认值落 config.yaml（保留其它键；只改 mux.backend）。前端显式选择的

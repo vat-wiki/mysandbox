@@ -34,7 +34,8 @@ const props = withDefaults(
     // SSH 主机终端：连 /ws/ssh-terminal（PTY = script 包 ssh，会话在远端 tmux 专用 socket）。
     ssh?: string
     fromTermId?: string
-    // 显式后端：新建终端组时用户选过就固定；undefined = 服务端 mux.backend。
+    // 显式后端：新建终端组时菜单里二选一给定就固定；undefined = 服务端 mux.backend
+    // （深链/恢复会话等未显式选择路径）。没有 auto。
     backend?: 'tmux' | 'msmux'
   }>(),
   {

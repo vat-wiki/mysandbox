@@ -38,8 +38,8 @@ export interface ServiceActionDeps {
 
 export function containerActions(c: ContainerView, ports: ContainerPortRow[], directOpenExtra: boolean): CardAction[] {
   const actions: CardAction[] = [
-    { id: 'open', label: '打开终端', primary: true },
-    { id: 'open-msmux', label: '打开 msmux 终端', detail: '强制走 msmux' },
+    { id: 'open', label: '用 tmux 打开终端', primary: true },
+    { id: 'open-msmux', label: '用 msmux 打开终端' },
   ]
   if (!c.managed && !c.adopted) {
     actions.push({ id: 'adopt', label: '纳入管理' })
@@ -77,7 +77,7 @@ export function containerActions(c: ContainerView, ports: ContainerPortRow[], di
 
 export function runContainerAction(c: ContainerView, action: CardAction, deps: ContainerActionDeps): void {
   if (action.id === 'open') {
-    deps.openTerminal(c)
+    deps.openTerminal(c, 'tmux')
     return
   }
   if (action.id === 'open-msmux') {
@@ -106,8 +106,8 @@ export function runContainerAction(c: ContainerView, action: CardAction, deps: C
 
 export function serviceActions(s: ServiceView, ports: ServicePortRow[], directOpenExtra: boolean): CardAction[] {
   const actions: CardAction[] = [
-    { id: 'open', label: '打开终端', primary: true },
-    { id: 'open-msmux', label: '打开 msmux 终端', detail: '强制走 msmux' },
+    { id: 'open', label: '用 tmux 打开终端', primary: true },
+    { id: 'open-msmux', label: '用 msmux 打开终端' },
     { id: 'detail', label: '详情' },
     { id: 'rename', label: '重命名' },
   ]
@@ -134,7 +134,7 @@ export function serviceActions(s: ServiceView, ports: ServicePortRow[], directOp
 
 export function runServiceAction(s: ServiceView, action: CardAction, deps: ServiceActionDeps): void {
   if (action.id === 'open') {
-    deps.openTerminal(s)
+    deps.openTerminal(s, 'tmux')
     return
   }
   if (action.id === 'open-msmux') {
@@ -171,15 +171,15 @@ export interface TermCardActionDeps {
 
 export function hostTermActions(): CardAction[] {
   return [
-    { id: 'open', label: '打开终端', primary: true },
-    { id: 'open-msmux', label: '打开 msmux 终端', detail: '强制走 msmux' },
+    { id: 'open', label: '用 tmux 打开终端', primary: true },
+    { id: 'open-msmux', label: '用 msmux 打开终端' },
     { id: 'popout', label: '在独立窗口打开' },
     { id: 'sessions', label: '全部终端会话', detail: '找回 / 结束活跃会话' },
   ]
 }
 
 export function runHostTermAction(action: CardAction, deps: TermCardActionDeps): void {
-  if (action.id === 'open') deps.openTerminal()
+  if (action.id === 'open') deps.openTerminal('tmux')
   else if (action.id === 'open-msmux') deps.openTerminal('msmux')
   else if (action.id === 'popout') deps.popout()
   else if (action.id === 'sessions') deps.openSessions()
@@ -199,8 +199,8 @@ export interface SshCardActionDeps extends TermCardActionDeps {
 
 export function sshTermActions(t: SshTargetView): CardAction[] {
   return [
-    { id: 'open', label: '打开终端', primary: true },
-    { id: 'open-msmux', label: '打开 msmux 终端', detail: '强制走 msmux' },
+    { id: 'open', label: '用 tmux 打开终端', primary: true },
+    { id: 'open-msmux', label: '用 msmux 打开终端' },
     { id: 'popout', label: '在独立窗口打开' },
     { id: 'copy', label: '复制 ssh 命令', detail: sshSshCommand(t) },
     { id: 'edit', label: '编辑 / 改密码' },
@@ -211,7 +211,7 @@ export function sshTermActions(t: SshTargetView): CardAction[] {
 }
 
 export function runSshTermAction(t: SshTargetView, action: CardAction, deps: SshCardActionDeps): void {
-  if (action.id === 'open') deps.openTerminal()
+  if (action.id === 'open') deps.openTerminal('tmux')
   else if (action.id === 'open-msmux') deps.openTerminal('msmux')
   else if (action.id === 'popout') deps.popout()
   else if (action.id === 'copy') deps.copySsh(sshSshCommand(t))

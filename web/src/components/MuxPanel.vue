@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// msmux 终端后端设置页（设置 → 终端后端）：全局切换 auto/tmux/msmux，
+// msmux 终端后端设置页（设置 → 终端后端）：保存服务端默认后端（tmux|msmux），
 // 查看当前在线 agent，并对本机/系统容器/应用容器/SSH 目标逐个部署或重连。
 //
-// 这里只负责“让目标上线 + 保存服务端默认后端”；真正建会话仍走 Terminal.vue 的
-// /ws/mux-terminal。auto 是渐进替代的默认值：没有 agent 的目标绝不会因为本页
-// 改动而断掉旧 tmux 路径。
+// 这里只负责“让目标上线 + 保存默认后端”；真正建会话仍走 Terminal.vue 的
+// /ws/mux-terminal。没有 auto：开终端的交互入口（右键菜单/动作面板）一律显式
+// 二选一，本页的默认值只管深链、恢复会话等未显式选择的路径。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { Loader2, RefreshCw, Server, Terminal, Waypoints } from 'lucide-vue-next'
@@ -21,7 +21,6 @@ import {
   type SshTargetView,
 } from '@/lib/api'
 import {
-  invalidateMuxAgents,
   setTerminalBackend,
   terminalBackend,
   type TerminalBackend,
@@ -36,19 +35,14 @@ const emit = defineEmits<{
 
 const BACKENDS: { value: TerminalBackend; title: string; detail: string }[] = [
   {
-    value: 'auto',
-    title: '自动',
-    detail: '目标有 agent 时用 msmux，否则继续走 tmux（推荐）',
-  },
-  {
     value: 'tmux',
-    title: '只用 tmux',
-    detail: '完全保留旧路径，不改任何目标',
+    title: 'tmux',
+    detail: '经典 tmux 会话；目标不需要部署 agent',
   },
   {
     value: 'msmux',
-    title: '强制 msmux',
-    detail: '新终端总是尝试 msmux；目标没上线会直接报连接错误',
+    title: 'msmux',
+    detail: '自研轻量会话；目标需先部署 agent，没上线会直接报连接错误',
   },
 ]
 
@@ -60,7 +54,7 @@ interface DeployRow {
   running: boolean
 }
 
-const backend = ref<TerminalBackend>('auto')
+const backend = ref<TerminalBackend>('tmux')
 const agents = ref<MuxAgentView[]>([])
 const containers = ref<ContainerView[]>([])
 const services = ref<ServiceView[]>([])
@@ -114,7 +108,7 @@ async function chooseBackend(value: TerminalBackend) {
   try {
     await setTerminalBackend(value)
     toast.success(`终端默认后端：${BACKENDS.find((x) => x.value === value)?.title}`, {
-      description: '已打开的终端保持不变；未显式选择的新终端按新设置选择后端。',
+      description: '已打开的终端保持不变；深链、恢复会话等未显式选择的新终端按新设置走。',
     })
   } catch (e) {
     if (e instanceof Unauthorized) return emit('unauthorized')
@@ -129,7 +123,6 @@ async function loadAgents() {
   try {
     agents.value = (await listMuxAgents()).agents
     agentsStale = false
-    invalidateMuxAgents()
   } catch (e) {
     if (e instanceof Unauthorized) return emit('unauthorized')
     // agent 查询失败不遮住部署列表：目标是静态清单，仍可部署。
@@ -147,7 +140,7 @@ async function loadAll() {
       listContainers(),
       listServices().catch(() => ({ items: [] as ServiceView[] })),
       listSshTargets().catch(() => ({ targets: [] as SshTargetView[] })),
-      getMuxBackend().catch(() => ({ backend: 'auto' as TerminalBackend })),
+      getMuxBackend().catch(() => ({ backend: 'tmux' as TerminalBackend })),
     ])
     containers.value = cs.items
     services.value = sv.items
@@ -190,7 +183,8 @@ function stateText(row: DeployRow): string {
         <h3 class="text-sm font-medium">浏览器终端后端</h3>
       </div>
       <p class="text-xs leading-relaxed text-muted-foreground">
-        msmux 是内置的轻量会话语义替代品。默认自动切换，逐个目标部署即可渐进迁移，不需要一次切完。
+        msmux 是内置的轻量会话语义替代品。开终端时每次都在 tmux / msmux 里显式二选一；
+        这里设的是深链、恢复会话等未显式选择场景的默认后端。部署 agent 见下方目标清单。
       </p>
       <div class="grid gap-2">
         <button
@@ -225,7 +219,7 @@ function stateText(row: DeployRow): string {
         </Button>
       </div>
       <p v-if="!agents.length" class="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        暂无在线 agent。auto 模式下所有终端继续使用 tmux；从下面选一个目标部署即可开始切换。
+        暂无在线 agent。msmux 终端需要目标先部署 agent（见下方清单）；tmux 终端不受影响。
       </p>
       <p v-else-if="agentsStale" class="rounded-md bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-500">
         在线状态查询失败，以下为上次结果（每 5 秒自动重试）。

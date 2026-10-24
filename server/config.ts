@@ -216,11 +216,15 @@ export const ConfigSchema = z.object({
   mux: z
     .object({
       agentPort: z.number().int().default(7333),
-      // 终端新建时的服务端默认后端；auto = 目标在线才用 msmux。单个终端组显式选择
-      // 时覆盖这里。
-      backend: z.enum(['auto', 'tmux', 'msmux']).default('auto'),
+      // 终端后端默认值（深链/恢复会话/popout 种子等未显式选择的路径用；交互入口
+      // 一律菜单里显式二选一，不走这里）。旧版的 auto（目标有 agent 才自动切
+      // msmux）已移除：读入时静默落回 tmux。
+      backend: z.preprocess(
+        (v) => (v === 'auto' ? undefined : v),
+        z.enum(['tmux', 'msmux']).default('tmux'),
+      ),
     })
-    .default({ agentPort: 7333, backend: 'auto' }),
+    .default({ agentPort: 7333, backend: 'tmux' }),
   // ⚠️ 已废弃（server/skillSync.ts）：旧版静态 from→to 规则，首次同步时自动迁移成
   // 技能库安装规则（state.staticMigratedAt 记账），之后此键被忽略。schema 仅为读取
   // 旧 config 做迁移而保留；新配置走面板「AI 工具 → 技能中心」（sidecar state.json）。

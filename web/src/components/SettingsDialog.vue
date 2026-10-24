@@ -62,7 +62,7 @@ const SECTION_DESC: Record<typeof props.section, string> = {
   testlens: 'TestLens 配置批量下发',
   cluster: '跨机组网与资源互通',
   notify: '无输出提醒的系统通知出口',
-  mux: 'msmux 渐进替代 tmux：部署 agent、查看在线状态、切换浏览器终端后端',
+  mux: 'msmux 会话：部署 agent、查看在线状态、设终端默认后端（开终端时仍可显式二选一）',
 }
 
 const DEFAULT_HOST = 'http://testlens:10004'
