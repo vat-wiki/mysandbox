@@ -904,7 +904,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     return withPollCache(`fg:c:${r.id}:${termId}:${backend}`, 2_500, async () => {
       let cmd: string;
       if (backend === 'msmux') {
-        const sessions = await listMuxSessions();
+        const sessions = await listMuxSessions(cfg);
         cmd = sessions.find((s) =>
           s.backend === 'msmux' && s.kind === 'container' && s.containerId === r.id && s.termId === termId,
         )?.foreground ?? '';

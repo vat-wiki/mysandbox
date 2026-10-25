@@ -231,9 +231,10 @@ async function tick(): Promise<void> {
     ),
     scanHost().then((rows): Source => ({ kind: 'host', id: '', rows })),
   ]);
-  // msmux 会话发现：在线 agent 逐个 list（每拍很轻）。listMuxSessions 内部单目标失败会
-  // 降级为空；断线目标由 onlineTargets 统一清理，避免把抖动误判成「会话结束」。
-  const muxRows = await listMuxSessions().catch(() => []);
+  // msmux 会话发现：在线 agent 逐个 list（每拍很轻；不含离线枚举——那是主动查询的
+  // 路径，每拍起 lxc exec/ssh exec 太重）。listMuxSessions 内部单目标失败会降级为空；
+  // 断线目标由 onlineTargets 统一清理，避免把抖动误判成「会话结束」。
+  const muxRows = await listMuxSessions(cfg).catch(() => []);
   const onlineMuxTargets = new Set(muxAgentTargets());
 
   const seen = new Set<string>();

@@ -135,6 +135,11 @@ export async function getMuxDeployInfo(target: string): Promise<{ url?: string; 
   return (await load()).muxDeploys?.[target];
 }
 
+/** 部署过的全部 msmux 目标（离线枚举的候选名单：只查部署过的，不瞎扫）。 */
+export async function getMuxDeployTargets(): Promise<string[]> {
+  return Object.keys((await load()).muxDeploys ?? {});
+}
+
 export async function saveMuxDeployInfo(target: string, url: string, sha256: string): Promise<void> {
   const s = await load();
   if (!s.muxDeploys) s.muxDeploys = {};

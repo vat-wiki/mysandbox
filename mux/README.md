@@ -51,7 +51,9 @@ msmux attach mysandbox-abcd-1234
 ```
 
 socket 缺省在 `$XDG_RUNTIME_DIR/msmux/msmux.sock`，没有 XDG 时落在
-`/tmp/msmux-<uid>.sock`，权限 0600。
+`/tmp/msmux-<uid>.sock`，权限 0600。`agent` 模式同样绑这个 socket（与回连共享同一个
+Manager）：回连断开期间本机 `msmux ls / kill / attach` 照常可用，控制台也靠它经
+exec 通道枚举离线目标的会话（tmux 的「查询时问源头」语义）。
 
 ## 回连 mysandbox
 
@@ -137,7 +139,9 @@ kind 3 (PING)
 
 - 每个会话只有一个 pane；没有窗口/pane 布局与 tmux 键位。
 - agent 只支持系统信任库验证的 `wss://`；自签 CA / 跳过校验尚未做。
-- agent 断开期间无法发现它名下的会话（daemon 仍活着，重新回连后即可恢复）。
+- agent 断开期间控制台无法实时推其会话，但会话仍可发现：agent 在目标侧绑本地
+  daemon socket（见上），控制台经 exec 通道跑 `msmux ls --json` 查询时枚举（见
+  docs/architecture/terminals.md「会话找回」）。
 - 应用容器与 SSH 目标的 agent 暂不保证自启（重启后 agent 不回来）；LXC/SSH 目标由
   控制台「连接时自动部署」兜底（`mux.autoDeploy`，见 docs/architecture/terminals.md），
   应用容器目标保持 CLI 手动部署。

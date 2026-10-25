@@ -145,9 +145,10 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     sessions.push(...(await listServiceSessions()));
     // SSH 目标会话（会话本体在远端 tmux，见 sshTerminal.ts）：逐目标并行、失败降级为 0。
     sessions.push(...(await listSshSessions()));
-    // msmux 在线 agent 的会话与 tmux 可能短暂并存（同一 termId 迁移中）：按逻辑会话 key
+    // msmux 会话与 tmux 可能短暂并存（同一 termId 迁移中）：按逻辑会话 key
     // 去重，后到的 msmux 覆盖先到的 tmux——与 auto 模式当前会选的后端一致。
-    sessions.push(...(await listMuxSessions()));
+    // includeOffline：这是用户主动查会话清单，离线目标走目标侧枚举（见 muxAgent.ts）。
+    sessions.push(...(await listMuxSessions(cfg, { includeOffline: true })));
     const byKey = new Map<string, (typeof sessions)[number]>();
     for (const s of sessions) {
       const key = s.kind === 'host'
@@ -193,7 +194,7 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const target = (req.query as { target?: string }).target ?? '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
     try {
-      await killMuxSession(target, termId);
+      await killMuxSession(cfg, target, termId);
     } catch (e) {
       throw badRequest(e instanceof Error ? e.message : String(e));
     }

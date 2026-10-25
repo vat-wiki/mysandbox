@@ -8,11 +8,17 @@
 // 一个 agent 连接可承载多个 sid。控制请求带单调递增 id，响应按 id 关联；
 // 终端数据帧与 title/cwd/foreground/exit 事件按 sid 直接路由。
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type { Config } from './config.js';
+import { execRun } from './engine/index.js';
 import { getVersion } from './version.js';
-import { getMuxDeployInfo } from './state.js';
+import { getMuxDeployInfo, getMuxDeployTargets, getSshTargets } from './state.js';
+import { sshExec } from './sshChannel.js';
 import { TERMID_RE, type TermSessionView } from './terminal.js';
 
 const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
@@ -340,7 +346,13 @@ export function sendAgentFrame(target: string, frame: Buffer): boolean {
 }
 
 // —— 会话发现 / 结束（/api/terminal-sessions 的 msmux 段，routes.ts 组合）——
-// agent 在线时直接问它 daemon 的 list；单个 agent 超时/断线只丢该目标，不影响 tmux 段。
+// 会话发现沿用 tmux 的思路：**查询时去源头枚举，不自维护清单**。
+//   agent 在线 → 经 agent 问 daemon 的 list（轻，活动监测每拍都走这条）；
+//   agent 回连断开但进程还活着（mysandbox 重启/网络抖动）→ 目标侧 daemon socket 仍在，
+//     经既有执行通道跑 `msmux ls --json` 直接问（仅显式 includeOffline 的主动查询走，
+//     不进活动监测/前台探测这类高频路径——那会每拍起 lxc exec / ssh exec）；
+//   agent 进程死了（远端重启）→ socket 不在，命令失败，该目标降级为空——与 tmux
+//     server 不在时的语义一致。
 // 会话名沿用浏览器侧的 mysandbox-<termId> 约定，回复给前端的 termId 剥掉前缀后可直接
 // 交给 /ws/mux-terminal?name=mysandbox-<termId> 重新 attach。
 function termSessionOfMuxTarget(target: string): Pick<TermSessionView, 'kind' | 'containerId'> | null {
@@ -353,40 +365,102 @@ function termSessionOfMuxTarget(target: string): Pick<TermSessionView, 'kind' | 
   };
 }
 
-export async function listMuxSessions(): Promise<TermSessionView[]> {
-  const settled = await Promise.allSettled(
-    [...agents.values()].map(async (agent): Promise<TermSessionView[]> => {
-      const where = termSessionOfMuxTarget(agent.target);
-      if (!where) return [];
-      let response: MuxResponse;
-      try {
-        response = await withControl(agent, () => sendAndWait(agent, { type: 'list' }, 8_000));
-      } catch {
-        return [];
-      }
-      if (response.type !== 'sessions' || !Array.isArray(response.sessions)) return [];
-      const rows: TermSessionView[] = [];
-      for (const info of response.sessions) {
-        if (info.alive === false) continue;
-        const m = /^mysandbox-([A-Za-z0-9_-]{4,64})$/.exec(info.name);
-        if (!m || !TERMID_RE.test(m[1])) continue;
-        rows.push({
-          kind: where.kind,
-          containerId: where.containerId,
-          termId: m[1],
-          attached: Number(info.attached) || 0,
-          created: Number(info.created_at) || 0,
-          cwd: info.cwd || undefined,
-          title: info.title || undefined,
-          foreground: info.foreground || undefined,
-          backend: 'msmux',
-          target: agent.target,
-          lastSeq: Number(info.last_seq) || 0,
-        });
-      }
-      return rows;
-    }),
-  );
+const execFileAsync = promisify(execFile);
+// host 部署的二进制固定路径（muxDeploy.ts deployHost 写入）。
+const HOST_MUX_BIN = join(homedir(), '.mysandbox', 'mux', 'msmux');
+
+function rowsFromSessions(
+  target: string,
+  where: Pick<TermSessionView, 'kind' | 'containerId'>,
+  sessions: MuxResponse['sessions'],
+): TermSessionView[] {
+  const rows: TermSessionView[] = [];
+  if (!sessions) return rows;
+  for (const info of sessions) {
+    if (info.alive === false) continue;
+    const m = /^mysandbox-([A-Za-z0-9_-]{4,64})$/.exec(info.name);
+    if (!m || !TERMID_RE.test(m[1])) continue;
+    rows.push({
+      kind: where.kind,
+      containerId: where.containerId,
+      termId: m[1],
+      attached: Number(info.attached) || 0,
+      created: Number(info.created_at) || 0,
+      cwd: info.cwd || undefined,
+      title: info.title || undefined,
+      foreground: info.foreground || undefined,
+      backend: 'msmux',
+      target,
+      lastSeq: Number(info.last_seq) || 0,
+    });
+  }
+  return rows;
+}
+
+// 离线目标的目标侧枚举：按 target 种类挑执行通道跑 `msmux ls --json`（daemon 的
+// Unix socket 就在目标上）。socket 路径推导（session.rs socket_path）：
+//   有 XDG_RUNTIME_DIR → $XDG_RUNTIME_DIR/msmux/msmux.sock；否则 /tmp/msmux-<uid>.sock。
+// 容器/宿主 agent 由 systemd 单元拉起、无 XDG_RUNTIME_DIR → /tmp 兜底；exec 侧用
+// `env -u` 保持同款环境才命中同一个 socket。SSH 目标 agent 经 nohup（登录会话带
+// XDG_RUNTIME_DIR）→ ssh 登录同样带，天然一致。
+async function listOfflineTargetSessions(cfg: Config, target: string): Promise<TermSessionView[]> {
+  const where = termSessionOfMuxTarget(target);
+  if (!where) return [];
+  let stdout = '';
+  try {
+    if (target === 'host') {
+      stdout = (
+        await execFileAsync(HOST_MUX_BIN, ['ls', '--json'], { timeout: 8_000, maxBuffer: 4 * 1024 * 1024 })
+      ).stdout;
+    } else if (target.startsWith('c:')) {
+      const r = await execRun(cfg, target.slice(2), {
+        Cmd: ['sh', '-c', 'exec env -u XDG_RUNTIME_DIR /home/dev/.local/bin/msmux ls --json'],
+        User: 'dev',
+        WorkingDir: '/home/dev',
+        timeoutMs: 8_000,
+      });
+      if (r.exitCode !== 0) return [];
+      stdout = r.stdout;
+    } else if (target.startsWith('ssh:')) {
+      const t = (await getSshTargets()).find((x) => x.name === target.slice(4));
+      if (!t) return [];
+      const r = await sshExec(t, ['sh', '-c', 'exec "$HOME/.local/bin/msmux" ls --json'], 8_000);
+      if (r.exitCode !== 0) return [];
+      stdout = r.stdout;
+    } else {
+      return [];
+    }
+    return rowsFromSessions(target, where, JSON.parse(stdout) as MuxResponse['sessions']);
+  } catch {
+    return [];
+  }
+}
+
+export async function listMuxSessions(
+  cfg: Config,
+  opts: { includeOffline?: boolean } = {},
+): Promise<TermSessionView[]> {
+  const online = [...agents.values()];
+  const onlineTargets = new Set(online.map((a) => a.target));
+  const tasks = online.map(async (agent): Promise<TermSessionView[]> => {
+    const where = termSessionOfMuxTarget(agent.target);
+    if (!where) return [];
+    let response: MuxResponse;
+    try {
+      response = await withControl(agent, () => sendAndWait(agent, { type: 'list' }, 8_000));
+    } catch {
+      return [];
+    }
+    if (response.type !== 'sessions') return [];
+    return rowsFromSessions(agent.target, where, response.sessions);
+  });
+  // 离线枚举只查部署过的目标（state.muxDeploys），已在线的跳过。
+  if (opts.includeOffline) {
+    for (const target of await getMuxDeployTargets()) {
+      if (!onlineTargets.has(target)) tasks.push(listOfflineTargetSessions(cfg, target));
+    }
+  }
+  const settled = await Promise.allSettled(tasks);
   return settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
 }
 
@@ -406,15 +480,42 @@ export function muxAgentTargets(): string[] {
   return [...agents.keys()];
 }
 
-export async function killMuxSession(target: string, termId: string): Promise<void> {
+export async function killMuxSession(cfg: Config, target: string, termId: string): Promise<void> {
   if (!TERMID_RE.test(termId)) throw new Error('invalid termId');
   if (!/^(host|c:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}|s:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}|ssh:[A-Za-z0-9][A-Za-z0-9_.-]{0,62})$/.test(target)) {
     throw new Error('invalid mux target');
   }
+  const name = `mysandbox-${termId}`;
   const agent = agents.get(target);
-  if (!agent) throw new Error('msmux agent not connected');
+  if (!agent) {
+    // 离线兜底（与查询枚举同思路）：目标侧 daemon 还在（agent 回连断开）就经执行通道
+    // 直接 kill；agent 进程死了会话本来已不存在，报错让前端提示即可。
+    try {
+      if (target === 'host') {
+        await execFileAsync(HOST_MUX_BIN, ['kill', name], { timeout: 8_000 });
+      } else if (target.startsWith('c:')) {
+        const r = await execRun(cfg, target.slice(2), {
+          Cmd: ['sh', '-c', `exec env -u XDG_RUNTIME_DIR /home/dev/.local/bin/msmux kill ${JSON.stringify(name)}`],
+          User: 'dev',
+          WorkingDir: '/home/dev',
+          timeoutMs: 8_000,
+        });
+        if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'msmux kill failed');
+      } else if (target.startsWith('ssh:')) {
+        const t = (await getSshTargets()).find((x) => x.name === target.slice(4));
+        if (!t) throw new Error(`SSH 目标 ${target.slice(4)} 不存在`);
+        const r = await sshExec(t, ['sh', '-c', `exec "$HOME/.local/bin/msmux" kill ${JSON.stringify(name)}`], 8_000);
+        if (r.exitCode !== 0) throw new Error(r.stderr.trim() || 'msmux kill failed');
+      } else {
+        throw new Error('msmux agent not connected');
+      }
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : String(e));
+    }
+    return;
+  }
   const response = await withControl(agent, () =>
-    sendAndWait(agent, { type: 'kill', name: `mysandbox-${termId}` }, 8_000),
+    sendAndWait(agent, { type: 'kill', name }, 8_000),
   );
   if (response.type === 'error') throw new Error(response.message ?? 'msmux kill failed');
 }
