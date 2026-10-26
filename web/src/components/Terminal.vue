@@ -366,9 +366,9 @@ function toolScrollEnd(top: boolean) {
 }
 
 // —— 手机软键盘 + 触屏工具条（usePhoneToolbar 整体归属，边界规则见其头注）——
-// 焦点闸 / 键盘让位（kbInset/kbMask）/ 粘滞修饰 / 分页 / 长按连发全在 composable；
-// 这里注入终端本体能力（发键/滚动/粘贴/复制/刷新/字号）并保留短语发送
-// （工具条短语键与快捷指令面板共用）。
+// 焦点闸 / 键盘让位（kbInset/kbMask）/ 粘滞修饰 / 分页 / 长按连发 / 设置入口全在 composable；
+// 这里只注入终端本体能力（发键/滚动/粘贴/复制/刷新/字号）。按键与指令的配置统一在
+// ToolbarSettingsDialog（『按键』『指令』两个平级 tab），工具条不再有文本短语按钮。
 const tb = usePhoneToolbar({
   rootEl,
   el,
@@ -397,15 +397,14 @@ const {
   toolPages,
   tbPage,
   settingsOpen,
+  settingsTab,
+  openSettings,
   cmdsOpen,
+  openCmdsConfig,
   runQuickCmd,
   tbTouchStart,
   tbTouchEnd,
 } = tb
-function sendSnippet(s: string) {
-  sendRaw(s + '\r')
-  emit('enter') // 短语多带命令语义，与工具条回车一致走 cwd 跟随
-}
 
 // 字体探测串：终端会用到的 Cascadia 各分片都要触发加载。load() 不带 text 时只拉 latin
 // 分片（默认探测文本是 ASCII）；盲文（▐▛█▘▝）、框线（╭─╮│）、箭头等在独立分片里，未就绪时
@@ -790,13 +789,14 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
          按钮全部 @pointerdown.prevent：点按钮不抢终端 textarea 焦点（否则软键盘收起→refit 的
          term.focus() 又抢回 = 键盘闪一下，且正在输入的 composition 被中断吞字——粘滞 Ctrl 后
          敲字母不响应就是它）。prevent 不影响 click 派发，各按钮 @click 照常工作。
-         按钮全可配置（⋯ 设置弹窗编排，存 lib/termToolbar.ts 模块级状态 + localStorage），7 列 grid 自然换行（对齐 Termux 一行 7 键）——
-         「哪个键高频」由使用者编排，代码不硬编码。预置布局 = Termux 默认 extra-keys 两行
-         （ESC / - HOME ↑ END 上页 / Tab Ctrl Alt ← ↓ → 下页）+ ⏎ ⇥。Ctrl/Alt 是粘滞修饰
-         （点亮→下一个键带修饰发出→用掉即灭，可叠加 C-M-x；软键盘单字符在
+         按钮只放按键（文本类动作走「指令」面板）；按键配置与指令配置地位平等，同在 ⋯ 设置的
+         『按键』『指令』两个 tab（存 lib/termToolbar.ts 模块级状态 + localStorage），7 列 grid
+         自然换行（对齐 Termux 一行 7 键）——「哪个键高频」由使用者编排，代码不硬编码。预置布局 =
+         Termux 默认 extra-keys 两行（ESC / - HOME ↑ END 上页 / Tab Ctrl Alt ← ↓ → 下页）+ ⏎ ⇥。
+         Ctrl/Alt 是粘滞修饰（点亮→下一个键带修饰发出→用掉即灭，可叠加 C-M-x；软键盘单字符在
          attachCustomKeyEventHandler 接管）。Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
-         快捷短语（一键文本+回车）/「指令」快捷指令面板（命名命令列表，点条目 = 整条命令+回车，
-         管理态增删改，数据 lib/termQuickCmds.ts）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
+         「指令」面板（命名命令列表，点条目 = 整条命令+回车，面板只负责运行；增删改在 ⋯ 设置的
+         指令 tab）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
          参与分页。桌面不渲染。工具条是「键盘态 + 本实例持焦」双闸覆盖层——始终渲染以便
@@ -825,7 +825,7 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
         :style="{ width: `${toolPages.length * 100}%`, transform: `translateX(-${(tbPage * 100) / toolPages.length}%)` }"
       >
         <div v-for="(pg, pi) in toolPages" :key="pi" class="grid shrink-0 grid-cols-7 gap-1" :style="{ width: `${100 / toolPages.length}%` }">
-          <template v-for="(b, bi) in pg" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : b.t === 'settings' ? 'settings' : b.t === 'cmds' ? 'cmds' : `s:${b.text}:${pi}:${bi}`">
+          <template v-for="b in pg" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : b.t === 'cmds' ? 'cmds' : 'settings'">
             <button
               v-if="b.t === 'key'"
               type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': (b.id === 'ctrl' && ctrlSticky) || (b.id === 'alt' && altSticky) }"
@@ -844,14 +844,9 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
               type="button" class="tb" title="快捷指令：点开列表，一键发送整条命令并回车" @pointerdown.prevent @click="cmdsOpen = true"
             >指令</button>
             <button
-              v-else-if="b.t === 'settings'"
-              type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条按钮设置：增删 / 调序 / 快捷短语" @pointerdown.prevent @click="settingsOpen = true"
-            >⋯</button>
-            <button
               v-else
-              type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送「${b.text}」并回车`"
-              @pointerdown.prevent @click="sendSnippet(b.text)"
-            >{{ b.text }}</button>
+              type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条设置：按键编排 / 指令管理" @pointerdown.prevent @click="openSettings('keys')"
+            >⋯</button>
           </template>
         </div>
       </div>
@@ -861,10 +856,11 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
       </div>
       </div>
     </Teleport>
-    <ToolbarSettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
-    <!-- 快捷指令面板：浏览态点条目 = sendSnippet（命令 + 回车 + cwd 跟随）并收起；管理态增删改。
-         数据 localStorage（lib/termQuickCmds.ts），多终端实例共享同一份。 -->
-    <QuickCmdsSheet v-model:open="cmdsOpen" @run="runQuickCmd" />
+    <!-- 配置中心：按键与指令两个平级 tab（initialTab 由入口决定：⋯ → 按键，指令面板「配置」→ 指令） -->
+    <ToolbarSettingsDialog v-if="settingsOpen" :initial-tab="settingsTab" @close="settingsOpen = false" />
+    <!-- 快捷指令面板只负责运行：点条目 = 整条命令 + 回车 + cwd 跟随并收起；配置跳回 ⋯ 设置。
+         数据 localStorage（lib/termToolbar.ts），多终端实例共享同一份。 -->
+    <QuickCmdsSheet v-model:open="cmdsOpen" @run="runQuickCmd" @config="openCmdsConfig" />
     <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox
          readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
          clipboard API，永远可用；@paste/@input 捕获到粘贴动作即自动发送，按钮仅作兜底。 -->

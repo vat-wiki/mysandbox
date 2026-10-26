@@ -1,7 +1,9 @@
-// 触屏工具条按钮配置（Terminal.vue 渲染按钮，ToolbarSettingsDialog.vue 编排，
-// 两边共用这一份状态）。查看偏好按项目约定只进 localStorage，不进 sidecar。
-// 「哪个键高频」是使用者自己的事，代码不替人猜：两行按钮全部从候选池编排。
-// 预置一套 Termux 风格布局作起点；首次加载迁移旧版快捷短语键（term-quick-snippets）。
+// 触屏工具条配置：按键（工具条按钮）与指令（「指令」面板条目）共用这一份模块级状态，
+// Terminal.vue 渲染、ToolbarSettingsDialog.vue 编排（『按键』『指令』两个平级 tab）。
+// 查看偏好按项目约定只进 localStorage，不进 sidecar。
+//
+// v3 起两类条目地位平等：工具条只放按键，文本类动作（原「快捷短语」与「快捷指令」）
+// 统一收进指令列表——语义都是「发送文本 + 回车」，不再维护两套模型、两个配置入口。
 import { ref } from 'vue'
 
 export type PoolAct =
@@ -63,11 +65,22 @@ export const KEY_POOL: Record<string, PoolEntry> = {
 
 export type ToolBtn =
   | { t: 'key'; id: string }
-  | { t: 'snippet'; text: string }
   // 自定义按键：label 显示在按钮上，seq 是发送给 PTY 的原始字节序列
   | { t: 'custom'; label: string; seq: string }
 
-const TOOLBAR_KEY = 'mysandbox:term-toolbar-v2'
+// 「指令」面板条目：点条目发送 cmd + 回车。id 只服务列表 key 与拖拽（改名不换身份）。
+export interface QuickCmd {
+  id: string
+  label: string
+  cmd: string
+}
+
+const STORE_KEY = 'mysandbox:term-toolbar-v3'
+// v3 之前的三个键：v2 工具条（含快捷短语）、独立快捷指令列表、v1 短语
+const LEGACY_TOOLBAR_KEY = 'mysandbox:term-toolbar-v2'
+const LEGACY_CMDS_KEY = 'mysandbox:term-quick-cmds'
+const LEGACY_SNIPPETS_KEY = 'mysandbox:term-quick-snippets'
+
 export const TOOLBAR_MAX = 24
 // 一页 = 2 行 × 7 列（对齐 Termux 一行 7 键）。键超出自动溢到下一页，工具条横向轻扫翻页；
 // Terminal.vue 的分页渲染与 ToolbarSettingsDialog 的按页分区共用这个常数。
@@ -97,55 +110,99 @@ const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'stab' },
   { t: 'key', id: 'redraw' },
 ]
+// 首次进入的指令样例（原工具条短语「继续」并入这里）
+const DEFAULT_CMDS: QuickCmd[] = [{ id: 'qc-default-continue', label: '继续', cmd: '继续' }]
 
-function loadToolButtons(): ToolBtn[] {
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem(TOOLBAR_KEY) ?? 'null')
-    if (Array.isArray(raw)) {
-      const out: ToolBtn[] = []
-      const seen = new Set<string>()
-      for (const b of raw) {
-        if (b?.t === 'key' && KEY_POOL[b.id] && !seen.has('k:' + b.id)) {
-          out.push({ t: 'key', id: b.id })
-          seen.add('k:' + b.id)
-        } else if (b?.t === 'snippet' && typeof b.text === 'string' && b.text.trim() && !seen.has('s:' + b.text)) {
-          out.push({ t: 'snippet', text: b.text })
-          seen.add('s:' + b.text)
-        } else if (
-          b?.t === 'custom' &&
-          typeof b.label === 'string' && b.label.trim() &&
-          typeof b.seq === 'string' && b.seq && !seen.has('c:' + b.label.trim())
-        ) {
-          out.push({ t: 'custom', label: b.label.trim(), seq: b.seq })
-          seen.add('c:' + b.label.trim())
-        }
-      }
-      if (out.length) return out.slice(0, TOOLBAR_MAX)
-    }
-  } catch {
-    /* 坏数据落默认 */
-  }
-  // 首次：默认布局 + 迁移旧版快捷短语（旧默认「继续」也已含在迁移里）
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem('mysandbox:term-quick-snippets') ?? 'null')
-    if (Array.isArray(raw)) {
-      for (const s of raw) {
-        if (typeof s === 'string' && s.trim()) DEFAULT_BTNS.push({ t: 'snippet', text: s })
-      }
-    }
-  } catch {
-    /* 迁移失败不影响默认布局 */
-  }
-  if (!DEFAULT_BTNS.some((b) => b.t === 'snippet')) DEFAULT_BTNS.push({ t: 'snippet', text: '继续' })
-  return DEFAULT_BTNS
+let cmdSeq = 0
+function newCmdId(): string {
+  cmdSeq += 1
+  return `qc-${Date.now().toString(36)}-${cmdSeq}`
 }
 
-// 模块级单例：工具条与设置弹窗看到同一份列表，改动即时互见。
-export const toolButtons = ref<ToolBtn[]>(loadToolButtons())
-
-export function saveToolButtons() {
+function parseJSON(raw: string | null): unknown {
   try {
-    localStorage.setItem(TOOLBAR_KEY, JSON.stringify(toolButtons.value))
+    return JSON.parse(raw ?? 'null')
+  } catch {
+    return null
+  }
+}
+
+function asArray(raw: unknown): unknown[] {
+  return Array.isArray(raw) ? raw : []
+}
+
+function normalizeBtns(raw: unknown): ToolBtn[] {
+  const out: ToolBtn[] = []
+  const seen = new Set<string>()
+  for (const b of asArray(raw) as Array<Record<string, unknown>>) {
+    if (b?.t === 'key' && typeof b.id === 'string' && KEY_POOL[b.id] && !seen.has('k:' + b.id)) {
+      out.push({ t: 'key', id: b.id })
+      seen.add('k:' + b.id)
+    } else if (
+      b?.t === 'custom' &&
+      typeof b.label === 'string' && b.label.trim() &&
+      typeof b.seq === 'string' && b.seq && !seen.has('c:' + b.label.trim())
+    ) {
+      out.push({ t: 'custom', label: b.label.trim(), seq: b.seq })
+      seen.add('c:' + b.label.trim())
+    }
+  }
+  return out.slice(0, TOOLBAR_MAX)
+}
+
+// 指令统一成 { id, label, cmd }：兼容 v3 / 旧快捷指令（label+cmd）/ 旧短语（text 或纯字符串）。
+function normalizeCmds(raw: unknown): QuickCmd[] {
+  const out: QuickCmd[] = []
+  const seen = new Set<string>()
+  for (const item of asArray(raw)) {
+    const obj = item && typeof item === 'object' ? (item as Record<string, unknown>) : null
+    const rawLabel =
+      obj && typeof obj.label === 'string' ? obj.label
+        : obj && typeof obj.text === 'string' ? obj.text
+          : typeof item === 'string' ? item : ''
+    const cmd = obj && typeof obj.cmd === 'string' ? obj.cmd : rawLabel
+    const label = rawLabel.trim()
+    if (!label || !cmd.trim() || seen.has(label)) continue
+    const id = obj && typeof obj.id === 'string' && obj.id ? obj.id : newCmdId()
+    out.push({ id, label, cmd })
+    seen.add(label)
+  }
+  return out
+}
+
+function loadConfig(): { keys: ToolBtn[]; cmds: QuickCmd[] } {
+  const v3 = parseJSON(localStorage.getItem(STORE_KEY)) as { keys?: unknown; cmds?: unknown } | null
+  // v3 存在即以它为准：空列表是合法状态（用户全删了），不能拿默认值兜底。
+  // 例外：keys 数组非空但条目全不合法（坏数据）→ 落回默认布局。
+  if (v3 && typeof v3 === 'object' && Array.isArray(v3.keys) && Array.isArray(v3.cmds)) {
+    const keys = normalizeBtns(v3.keys)
+    if (keys.length || v3.keys.length === 0) return { keys, cmds: normalizeCmds(v3.cmds) }
+  }
+
+  // v2 → v3 迁移：按键保留；快捷短语（发送文本+回车）与旧快捷指令、v1 短语全部并进指令列表。
+  const v2 = parseJSON(localStorage.getItem(LEGACY_TOOLBAR_KEY))
+  const keys = normalizeBtns(v2)
+  const cmds = normalizeCmds([
+    ...asArray(v2).filter((b) => (b as Record<string, unknown>)?.t === 'snippet'),
+    ...asArray(parseJSON(localStorage.getItem(LEGACY_SNIPPETS_KEY))),
+    ...asArray(parseJSON(localStorage.getItem(LEGACY_CMDS_KEY))),
+  ])
+  // 从没存过 v2 布局 = 没动过工具条配置：补上原有默认短语「继续」（旧版是运行时追加的）。
+  if (!Array.isArray(v2) && !cmds.some((c) => c.label === '继续')) cmds.unshift(...DEFAULT_CMDS)
+  return {
+    keys: keys.length ? keys : DEFAULT_BTNS,
+    cmds,
+  }
+}
+
+// 模块级单例：工具条、设置弹窗、指令面板看到同一份列表，改动即时互见。
+const initial = loadConfig()
+export const toolButtons = ref<ToolBtn[]>(initial.keys)
+export const quickCmds = ref<QuickCmd[]>(initial.cmds)
+
+export function saveConfig() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ v: 3, keys: toolButtons.value, cmds: quickCmds.value }))
   } catch {
     /* 不可用就只本次生效 */
   }
@@ -153,22 +210,14 @@ export function saveToolButtons() {
 
 export function rmBtn(i: number) {
   toolButtons.value.splice(i, 1)
-  saveToolButtons()
+  saveConfig()
 }
 
 export function addKeyBtn(id: string) {
   if (!KEY_POOL[id] || toolButtons.value.length >= TOOLBAR_MAX) return
   if (toolButtons.value.some((b) => b.t === 'key' && b.id === id)) return
   toolButtons.value.push({ t: 'key', id })
-  saveToolButtons()
-}
-
-export function addSnippet(text: string) {
-  const t = text.trim()
-  if (!t || toolButtons.value.length >= TOOLBAR_MAX) return
-  if (toolButtons.value.some((b) => b.t === 'snippet' && b.text === t)) return
-  toolButtons.value.push({ t: 'snippet', text: t })
-  saveToolButtons()
+  saveConfig()
 }
 
 export function addCustomKey(label: string, seq: string) {
@@ -176,7 +225,32 @@ export function addCustomKey(label: string, seq: string) {
   if (!l || !seq || toolButtons.value.length >= TOOLBAR_MAX) return
   if (toolButtons.value.some((b) => b.t === 'custom' && b.label === l)) return
   toolButtons.value.push({ t: 'custom', label: l, seq })
-  saveToolButtons()
+  saveConfig()
+}
+
+// —— 指令增删改（label 作展示名，重名拒绝；cmd 原样发送，补 \r 由发送方负责）——
+export function addQuickCmd(label: string, cmd: string): boolean {
+  const l = label.trim()
+  if (!l || !cmd.trim() || quickCmds.value.some((c) => c.label === l)) return false
+  quickCmds.value.push({ id: newCmdId(), label: l, cmd })
+  saveConfig()
+  return true
+}
+
+export function updateQuickCmd(i: number, label: string, cmd: string): boolean {
+  const c = quickCmds.value[i]
+  const l = label.trim()
+  if (!c || !l || !cmd.trim()) return false
+  if (quickCmds.value.some((o, oi) => oi !== i && o.label === l)) return false
+  c.label = l
+  c.cmd = cmd
+  saveConfig()
+  return true
+}
+
+export function rmQuickCmd(i: number) {
+  quickCmds.value.splice(i, 1)
+  saveConfig()
 }
 
 // —— 自定义按键的两种序列来源 ——

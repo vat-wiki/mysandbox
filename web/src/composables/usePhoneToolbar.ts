@@ -200,13 +200,24 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     }
     deps.sendRaw(seq)
   }
-  // ⋯ 打开工具条设置弹窗（ToolbarSettingsDialog）：按钮编排收进独立区域。
+  // ⋯ 打开工具条设置弹窗（ToolbarSettingsDialog）：『按键』『指令』两个平级 tab，
+  // 移动端两类配置只留这一个入口（initialTab 决定落在哪一页）。
   const settingsOpen = ref(false)
-  // 「指令」打开快捷指令面板（QuickCmdsSheet）：点条目 = 发送整条命令并回车。
+  const settingsTab = ref<'keys' | 'cmds'>('keys')
+  function openSettings(tab: 'keys' | 'cmds' = 'keys') {
+    settingsTab.value = tab
+    settingsOpen.value = true
+  }
+  // 「指令」打开快捷指令面板（QuickCmdsSheet）：面板只负责运行（点条目 = 发送整条命令并回车）；
+  // 面板右上「配置」跳回工具条设置的『指令』tab——运行与配置不混在同一个面板里。
   const cmdsOpen = ref(false)
+  function openCmdsConfig() {
+    cmdsOpen.value = false
+    openSettings('cmds')
+  }
   function runQuickCmd(cmd: string) {
     deps.sendRaw(cmd + '\r')
-    deps.emitEnter() // 短语多带命令语义，与工具条回车一致走 cwd 跟随
+    deps.emitEnter() // 命令语义，与工具条回车一致走 cwd 跟随
   }
 
   // 工具条方向键长按连发：pointerdown 即发一次，400ms 后起 80ms 间隔连发；抬起/取消/
@@ -287,6 +298,7 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   // 不成手势就不拦截按钮点击），页面滑动有过渡动画；⋯ 设置入口作为列表最后一项参与
   // 分页，不再是常驻末格。页点指示器只在多于 1 页时出现。
   // ⋯ 设置与「指令」都是固定入口不进编排列表，恒跟在按钮末尾（⋯ 恒最后一项）。
+  // 工具条按钮只放按键；文本类动作（指令）统一在「指令」面板里，配置走 ⋯ 的『指令』tab。
   const toolItems = computed<TbItem[]>(() => [...toolButtons.value, { t: 'cmds' }, { t: 'settings' }])
   const toolPages = computed<TbItem[][]>(() => {
     const out: TbItem[][] = []
@@ -352,7 +364,10 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     toolPages,
     tbPage,
     settingsOpen,
+    settingsTab,
+    openSettings,
     cmdsOpen,
+    openCmdsConfig,
     runQuickCmd,
     tbTouchStart,
     tbTouchEnd,
