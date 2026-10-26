@@ -523,8 +523,20 @@ let term: XTerm | null = null
 // 不代表用户把焦点落在哪个 pane——DOM focus 事件在 focus() 调用内同步派发，同步开关
 // 即可拦住。分屏新 pane / 点击 pane / 重连按钮的聚焦是真实落焦，照常上抛。
 let suppressFocusEmit = false
+// 本实例是否持有焦点（手机工具条显隐的第二把闸，见模板工具条注释）：focusin 置真，
+// focusout 后下一拍核实——焦点可能在容器内子元素间移动（textarea ↔ 搜索框），真离开
+// 才算失焦。后台实例（display:none / v-show 切走）不可能收到 focusin，天然不显工具条
+// ——没有这把闸，多组/分屏时每个实例的工具条会随 kbOpen 同时显形叠在 body 上，
+// 点到的是 DOM 末尾那个（不一定是眼前终端），输入进它断连的 pendingInput 黑洞。
+const termFocused = ref(false)
 const onFocusIn = () => {
+  termFocused.value = true
   if (!suppressFocusEmit) emit('focus')
+}
+const onFocusOut = () => {
+  setTimeout(() => {
+    termFocused.value = !!el.value?.contains(document.activeElement)
+  })
 }
 let fit: FitAddon | null = null
 let ws: WebSocket | null = null
@@ -1743,6 +1755,7 @@ onMounted(async () => {
   // 重建实例的 mount focus 会多出一次老 pane 落焦上抛——ContainerList 的去重窗口按
   // 「分屏新 pane（cwdSourceOf 命中）优先」消解，见 onPaneFocus。
   el.value.addEventListener('focusin', onFocusIn)
+  el.value.addEventListener('focusout', onFocusOut)
   // 图片粘贴入口（capture，原因见 onTermPaste 注释）。
   el.value.addEventListener('paste', onTermPaste, { capture: true })
   // 触摸设备不 mount 聚焦（弹系统键盘）：同 refit，键盘只由用户点终端触发。
@@ -1800,6 +1813,7 @@ onBeforeUnmount(() => {
   vvCleanup?.()
   resizeObs?.disconnect()
   el.value?.removeEventListener('focusin', onFocusIn)
+  el.value?.removeEventListener('focusout', onFocusOut)
   el.value?.removeEventListener('paste', onTermPaste, { capture: true })
   try {
     ws?.close()
@@ -1921,15 +1935,20 @@ onBeforeUnmount(() => {
          管理态增删改，数据 lib/termQuickCmds.ts）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
-         参与分页。桌面不渲染。工具条是键盘态覆盖层——始终渲染以便测量高度，但平时不可见，
-         且不参与终端盒子布局。 -->
+         参与分页。桌面不渲染。工具条是「键盘态 + 本实例持焦」双闸覆盖层——始终渲染以便
+         测量高度，但平时不可见，且不参与终端盒子布局。焦点闸必须：终端组件按组/分屏
+         多实例常驻，kbOpen（window.visualViewport）是全局信号、所有实例同时为真，
+         而工具条 Teleport 到 body 不受源组件 v-show 约束——不按焦点收敛的话多实例
+         工具条会全部显形精确叠放，tap 落到 DOM 末尾实例（不一定是眼前终端），其 WS
+         已 detach，输入进 pendingInput 无声黑洞（表现：软键盘字母正常、快捷键全灭）。
+         -->
     <Teleport to="body">
       <div
         v-if="isPhone"
         ref="toolbarEl"
         class="fixed inset-x-2 z-[80] select-none overflow-hidden border-t border-zinc-800 bg-black pt-1 transition-opacity md:hidden"
-        :class="kbOpen ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
-        :style="kbOpen ? { top: `${kbToolbarTop}px` } : undefined"
+        :class="kbOpen && termFocused ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
+        :style="kbOpen && termFocused ? { top: `${kbToolbarTop}px` } : undefined"
         @touchstart="tbTouchStart"
         @touchend="tbTouchEnd"
       >
