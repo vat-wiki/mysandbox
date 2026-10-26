@@ -13,8 +13,9 @@
 
 容器 `files.ts`（`/api/files/*`，execRun）、宿主 `hostFiles.ts`（node:fs 直操作，前端以 `__host__` 哨兵切端点）、服务 `serviceFiles.ts`（`'s:'+名`）、SSH `sshFiles.ts`（`'ssh:'+名`）——路由形状/2MB 上限/mtime 乐观锁一比对齐，`api.ts` 的 `filesBase` 哨兵分发让 `FilePanel`/`FileEditorDialog` 零改动换端点。
 
-- **cd 跟随**：shell 集成发 OSC 7 直达文件面板（回车事件即时检查），1s cwd 轮询降级为兜底；pane 落焦即切换跟随目标，切组按组记忆恢复。
-- **host msmux cwd**：文件面板的 cwd 轮询优先读 host msmux agent 元数据；老 host tmux 会话回落 tmux `pane_current_path`。否则 msmux 会话会被 `/api/host-terminal/cwd` 误查 tmux 而一直 404。
+- **cd 跟随**：三层来源（快→慢）——OSC 7 事件直达、回车后 250ms nudge、5s 轮询兜底。pane 落焦即切换跟随目标，切组按组记忆恢复；刷新恢复多 pane 的挂载聚焦连发取**最后一个**（实际持有 DOM 焦点的 pane），不能按首 pane 跟（mux 下各 pane cwd 独立，跟错 pane 表现为「面板动不动跳 home」）。
+- **msmux 会话的 cwd 数据源**：`/api/containers/:id/cwd` 与 `/api/host-terminal/cwd` 都**先问 agent 元数据**（daemon 的前台进程 cwd），老 tmux 会话回落 `pane_current_path`。只查 tmux 的话 mux 会话恒 404——跟随退化成「只靠 OSC 7」，面板打开空白、切 pane 后不再恢复（2026-10-26 修）。相对路径链接的基准目录同源：容器 `/resolve` 用 agent cwd 兜底、宿主 `/resolve` 同理，否则 mux 模式下 Ctrl+点击相对路径恒 404。
+- **刷新不暂停跟随**：面板把当前路径 replace 进 `?path=`（自写，非用户深链），挂载恢复路径时不能走 `locate()` 的「暂停跟随」分支——否则刷新一次就永久停在「已暂停跟随终端目录」黄条，表现为跟随功能时灵时不灵。
 - **Git 独立视图**：目录路径行下切「文件 / Git」，Git 占满整列，内分「变更 / 历史」；历史走 `git/history`（四端同协议，解析单源 `gitpanel.ts`），按当前/任选分支分页读提交。
 
 ## peer exec（容器间命令互通，`server/peer.ts`）

@@ -1017,7 +1017,10 @@ watch(
     if (!open || !target || !routeFilePath.value) return
     if (prevOpen && prevTarget === target) return
     await nextTick()
-    filePanelRef.value?.locate(target, routeFilePath.value)
+    // 首挂载（刷新/首次打开面板）恢复路径但不暂停跟随：`?path=` 是面板自己 replace
+    // 进去的，不是用户深链意图（外部定位走 locate/reveal 的显式调用）。否则刷新一次
+    // 就停在「已暂停跟随」，用户会以为跟着跟着不跟了。
+    filePanelRef.value?.locate(target, routeFilePath.value, { pauseOnSame: prevOpen })
   },
   { immediate: true },
 )
@@ -1057,8 +1060,11 @@ function onPaneFocus(group: TermGroup, termId: string) {
       let ids = [...w.ids]
       if (ids.length > 1) {
         const fresh = ids.filter((id) => splitCwdFrom.has(id))
-        if (fresh.length !== 1) return
-        ids = fresh
+        // 单发的新分屏 pane 最代表用户意图；纯恢复连发（没有新 pane）取**最后一个**——
+        // onMounted 按树序挨个 term.focus()，最后一个就是实际持有 DOM 焦点、用户敲键盘
+        // 的那块。原先整体 return 会停在首 pane：mux 下各 pane 的 cwd 独立，跟着首 pane
+        // （常是 home）跑，表现为「文件面板跟错 pane / 动不动跳 home」（实测）。
+        ids = fresh.length === 1 ? fresh : [ids[ids.length - 1]]
       }
       filePaneIdx.value = ordinalOf(g.root, ids[0])
     }, 60)

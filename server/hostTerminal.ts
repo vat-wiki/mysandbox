@@ -378,7 +378,10 @@ export async function registerHostTerminal(app: FastifyInstance, cfg: Config): P
     const home = homedir();
     let cwd = home;
     if (platform() !== 'win32') {
-      cwd = await hostMux.paneCwd(hostSessionName(termId));
+      // 同 /cwd：msmux 优先（默认后端），老 tmux 会话回落 paneCwd——只问 tmux 的话
+      // mux 模式的相对路径链接恒 404。
+      const meta = await muxSessionMeta('host', termId).catch(() => undefined);
+      cwd = meta?.cwd?.startsWith('/') ? meta.cwd : await hostMux.paneCwd(hostSessionName(termId));
       if (!cwd || !cwd.startsWith('/')) throw notFound('terminal session not found');
     }
     // Windows：绝对路径带盘符；相对路径 join 到 cwd（Windows 上 cwd 恒宿主 home）。

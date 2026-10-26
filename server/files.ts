@@ -23,7 +23,7 @@ import { findServiceTarget } from './serviceMeta.js';
 import { sshExec, sshSpawn, sshSpawnIn, sshTest } from './sshChannel.js';
 import { mintShareToken } from './shareLink.js';
 import { TERMID_RE, sessionName } from './terminal.js';
-import { listMuxSessions } from './muxAgent.js';
+import { listMuxSessions, muxSessionMeta } from './muxAgent.js';
 import {
   parsePorcelainZ,
   parseBranchList,
@@ -871,6 +871,11 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     // 双 poller 收敛为每 termId 每 2.5s 至多一次真实执行。cwd 本身 5s 粒度消费，
     // 2.5s 内的复用无感。
     const cwd = await withPollCache(`cwd:c:${r.id}:${termId}`, 2_500, async (): Promise<string> => {
+      // msmux 优先（终端默认后端）：agent 的会话元数据里有前台进程 cwd。老 tmux 会话不在
+      // agent 里，回落 list-panes。⚠️ 只问 tmux 的话 mux 会话恒 404——文件面板跟随退化成
+      // 「只靠 OSC 7 事件」，打开时空白、切 pane/tab 后不再恢复（实测）。
+      const meta = await muxSessionMeta(`c:${r.id}`, termId).catch(() => undefined);
+      if (meta?.cwd?.startsWith('/')) return meta.cwd;
       const res = await execRun(cfg, r.id, {
         Cmd: [
           'sh', '-c',
@@ -957,12 +962,16 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
     if (typeof raw !== 'string' || !raw || raw.includes('\0') || raw.includes('\n') || raw.length > 4096) {
       throw badRequest('invalid path');
     }
+    // 相对路径的基准目录：msmux 会话问 agent 元数据，老 tmux 会话回落 list-panes。
+    // 只认 tmux 的话 mux 模式下的相对路径链接（Ctrl+点击）恒 404。
+    const muxCwd = (await muxSessionMeta(`c:${r.id}`, termId).catch(() => undefined))?.cwd;
+    const baseCwd = muxCwd?.startsWith('/') ? muxCwd : '';
     const res = await execRun(cfg, r.id, {
       Cmd: [
         'sh', '-c',
         [
-          'p="$1"; s="$2"',
-          'cwd=$(tmux list-panes -t "$s" -F "#{pane_active} #{pane_current_path}" 2>/dev/null | sed -n "s/^1 //p")',
+          'p="$1"; s="$2"; cwd="$3"',
+          '[ -n "$cwd" ] || cwd=$(tmux list-panes -t "$s" -F "#{pane_active} #{pane_current_path}" 2>/dev/null | sed -n "s/^1 //p")',
           '[ -n "$cwd" ] || exit 2',
           'case "$p" in',
           '  "") p="$cwd" ;;',
@@ -977,7 +986,7 @@ export async function registerFileRoutes(app: FastifyInstance, cfg: Config): Pro
           'elif [ -e "$p" ]; then printf "f %s\\n" "$p"',
           'else printf "m %s\\n" "$p"; fi',
         ].join('\n'),
-        'sh', raw, `=${sessionName(r.id, termId)}`,
+        'sh', raw, `=${sessionName(r.id, termId)}`, baseCwd,
       ],
       User: '1000:1000',
       Tty: false,

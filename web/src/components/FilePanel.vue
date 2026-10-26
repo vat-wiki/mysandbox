@@ -954,11 +954,15 @@ function refresh() {
   gitRef.value?.refresh()
 }
 
-// 外部定位入口（CLI open / 父组件请求）：直接展示某容器某目录，暂停跟随。
-function locate(containerId: string, p: string) {
+// 外部定位入口（CLI open / 父组件请求）：直接展示某容器某目录，默认暂停跟随。
+// pauseOnSame=false 用于**挂载时**从 URL 恢复路径（刷新）：`?path=` 是面板自己写进
+// 路由的，不是用户「我要看这个目录」的意图——原先无条件暂停会让每次刷新都留在
+// 「已暂停跟随」态，表现为跟随功能时灵时不灵。
+function locate(containerId: string, p: string, opts: { pauseOnSame?: boolean } = {}) {
   setPanelView('files')
   manualContainerId.value = containerId
-  follow.value = containerId !== props.containerId // 同容器也暂停（用户明确要看这个目录）
+  const pause = opts.pauseOnSame ?? true
+  follow.value = containerId !== props.containerId ? true : !pause
   loadDir(p)
 }
 
