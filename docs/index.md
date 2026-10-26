@@ -29,6 +29,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [mobile-navigation.md](notes/mobile-navigation.md) | 移动端底部导航的信息架构与交互规则 |
+| [mobile-keyboard-qa.md](notes/mobile-keyboard-qa.md) | 手机软键盘让位的真机验收清单（两种浏览器模式、12 条用例、resize 计数方法） |
 
 截图在 `screenshots/`（README 引用）。
 

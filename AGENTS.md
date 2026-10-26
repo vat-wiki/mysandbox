@@ -16,7 +16,7 @@ mysandbox：本地 dev 容器的网页控制台。后端 fastify，管理 **unpr
 | --- | --- |
 | `server/engine/`、lifecycle、模板/基座 | [containers.md](docs/architecture/containers.md)（+ [migrations/lxc-migration.md](docs/migrations/lxc-migration.md)） |
 | `server/docker*`/`service*`/`jobs.ts`（应用容器） | [services.md](docs/architecture/services.md) |
-| 终端/文件面板/msmux/SSH/剪贴板/活动提醒 | [terminals.md](docs/architecture/terminals.md) |
+| 终端/文件面板/msmux/SSH/剪贴板/活动提醒 | [terminals.md](docs/architecture/terminals.md)（+ [notes/mobile-keyboard-qa.md](docs/notes/mobile-keyboard-qa.md) 手机软键盘真机验收） |
 | Web 代理（`proxy.ts`/`facade.ts`/`lib/proxy.ts`） | [web-proxy.md](docs/architecture/web-proxy.md) |
 | `aiconfig`/`skillSync`/技能库/TestLens | [ai-skills.md](docs/architecture/ai-skills.md) |
 | desktop/code-server | [desktop.md](docs/architecture/desktop.md) |
