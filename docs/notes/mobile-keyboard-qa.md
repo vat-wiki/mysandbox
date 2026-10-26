@@ -52,6 +52,7 @@ adb shell am start -a android.intent.action.VIEW -d "http://localhost:7321/"
 | 10 | 小屏（≈667pt 高） | 终端至少留 7~9 行（`KB_MIN_TERM=120px` 兜底），工具条不压内容 | |
 | 11 | 滚动地址栏伸缩（无键盘） | 不该出现遮罩闪烁或 resize | 基线只在键盘确认关闭时抬高 |
 | 12 | 转屏 | 键盘态清空、重新开合仍正常 | 宽度变化即重置基线 |
+| 13 | 收键盘的最后一拍事件丢了（用例 2 后停在半屏：终端卡在上半、工具条浮在屏幕中间、底栏不出来） | ≤0.3s 内被兜底轮询发现，随后按用例 2 正常收尾（工具条消失、底栏回来、0.9s 后撑满） | `WATCHDOG_MS`；真机难主动触发，判定只看 `kbRaw`/`kbOpen` 最终是否落回 false（临时挂 `window` 观察即可） |
 
 ## 计数方法（页面内钩 WS 发送）
 
@@ -86,6 +87,7 @@ WebSocket.prototype.send = function (d) {
 | `KB_STEP` | 48 | 高度量化（≈2 行）；调大更能吞候选栏变化，代价是让位更迟钝 |
 | `KB_SETTLE` | 80 | 开键盘等动画停住；调大更稳但更慢 |
 | `KB_CLOSE_DELAY` | 900 | 收起后延迟恢复；**用例 3 全靠它**，调小会让「看一眼再点回来」重新变成两次 resize |
+| `WATCHDOG_MS` | 300 | 会话期间兜底轮询（用例 13）：收键盘最后一拍事件丢失时靠它自愈；调大恢复更慢，调小只是多几次属性读取 |
 
 `web/src/composables/usePhoneToolbar.ts`：`KB_GAP=6`（终端底与工具条间距）、`KB_MIN_TERM=120`（让位后最少保留高度）、`KB_MASK_MS=260`（遮罩窗口）。
 `web/src/components/Terminal.vue`：`onResize` 140ms 去抖 + 与上次已发尺寸去重。

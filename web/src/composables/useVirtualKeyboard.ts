@@ -83,7 +83,31 @@ function clearClose() {
 let rechecks: number[] = []
 function scheduleRecheck() {
   for (const t of rechecks) clearTimeout(t)
-  rechecks = [320, 820].map((d) => window.setTimeout(onVv, d))
+  rechecks = [320, 820].map((d) => window.setTimeout(() => onVv(), d))
+}
+/**
+ * 键盘会话兜底轮询（仅会话期间跑，键盘确认收起后自己停）。
+ *
+ * 收键盘那一拍 vv 事件实测**可能整拍不来**，而且可能停在半路（键盘已收起、
+ * innerHeight 只回了一部分）。事件驱动 + 翻转时的两次重测都救不了这种情形：
+ * 翻转闸也挂在事件上——`raw` 停在 KB_MIN 之上就永远不翻，状态永久停在
+ * 「键盘还在」（kbRaw/kbOpen 恒真）。表现就是收起键盘后布局直接乱掉：工具条浮在
+ * 屏幕中间、底栏不出来、终端盒子卡在半高，随手点一下屏幕（又派发一次 vv）
+ * 立刻恢复正常（2026-10-26 修）。轮询是这条路上唯一可靠的自愈信号。
+ */
+const WATCHDOG_MS = 300
+let watchdog = 0
+function ensureWatchdog() {
+  if (watchdog) return
+  watchdog = window.setInterval(() => {
+    onVv(true)
+    // 延迟窗口（kbOpen 的 KB_CLOSE_DELAY）走完才算会话结束——最后一拍顺便把
+    // baseHeight 抬高（onVv 里 !kbOpen 才记基线，正常路径常常错过这一拍）。
+    if (!kbRaw.value && !kbOpen.value) {
+      clearInterval(watchdog)
+      watchdog = 0
+    }
+  }, WATCHDOG_MS)
 }
 
 function applyKeyboard(raw: number, byLayout: boolean) {
@@ -96,17 +120,26 @@ function applyKeyboard(raw: number, byLayout: boolean) {
   layoutMode.value = byLayout
 }
 
-function scheduleClose() {
-  if (!kbOpen.value || closeTimer) return
-  closeTimer = window.setTimeout(() => {
-    closeTimer = 0
-    kbOpen.value = false
-    kbHeight.value = 0
-    layoutMode.value = false
-  }, KB_CLOSE_DELAY)
+function finishClose() {
+  if (closeTimer) clearTimeout(closeTimer)
+  closeTimer = 0
+  kbOpen.value = false
+  kbHeight.value = 0
+  layoutMode.value = false
 }
 
-function onVv() {
+function scheduleClose() {
+  if (!kbOpen.value || closeTimer) return
+  closeTimer = window.setTimeout(finishClose, KB_CLOSE_DELAY)
+}
+
+/**
+ * fromWatchdog = 这次重算是轮询发起的（不是浏览器事件）。
+ * 收键盘的事件整拍不来时，翻转只会发生在轮询里——那说明**没有动画在进行**，
+ * 「收起来看一眼再点回来」的窗口也无从谈起，可以跳过 KB_CLOSE_DELAY 立刻收尾，
+ * 别让半屏空着的样子再多挂 0.9s。
+ */
+function onVv(fromWatchdog = false) {
   const vv = window.visualViewport
   if (!vv) return
   const ih = window.innerHeight
@@ -147,12 +180,21 @@ function onVv() {
   const wasRaw = kbRaw.value
   kbRaw.value = raw > KB_MIN
   if (wasRaw !== kbRaw.value) scheduleRecheck()
+  // 会话期间（含收起后的延迟窗口）挂上兜底轮询：收键盘那一拍事件可能整拍不来，
+  // 事件驱动没法自己发现「键盘已经走了」，见 ensureWatchdog 注释。
+  if (raw > KB_MIN || kbOpen.value) ensureWatchdog()
   if (raw <= KB_MIN) {
     // 基线只在键盘确认关闭时抬高（max：地址栏自动隐藏会让 innerHeight 变大，
     // 取 max 才能让下次键盘出现时的差值仍是真实键盘高度量级）
     if (!kbOpen.value) baseHeight = Math.max(baseHeight, ih)
-    // 键盘收起（或地址栏伸缩）：稳定态延迟恢复，窗口内重开则取消
     clearSettle()
+    if (fromWatchdog && wasRaw) {
+      // 轮询自己发现「键盘已经走了」：浏览器连收起的事件都没发，几何是终态，
+      // 立刻收尾（见 onVv 的 fromWatchdog 说明）。
+      finishClose()
+      return
+    }
+    // 键盘收起（或地址栏伸缩）：稳定态延迟恢复，窗口内重开则取消
     scheduleClose()
     return
   }
@@ -172,10 +214,12 @@ function startWatch() {
   baseHeight = window.innerHeight
   const vv = window.visualViewport
   if (!vv) return
-  vv.addEventListener('resize', onVv)
-  vv.addEventListener('scroll', onVv)
+  // 包一层：监听器会把 Event 当第一个实参传进来，别让它冒充 fromWatchdog。
+  const onEvent = () => onVv()
+  vv.addEventListener('resize', onEvent)
+  vv.addEventListener('scroll', onEvent)
   // 布局视口模式（②）下 vv 的 resize 未必每次都来，window.resize 兜一层
-  window.addEventListener('resize', onVv)
+  window.addEventListener('resize', onEvent)
   onVv()
 }
 
