@@ -1,6 +1,16 @@
 <script setup lang="ts">
+// 终端 pane：xterm 实例与渲染接线 + 模板。连接生命周期、搜索、剪贴板、触屏滚动、
+// OSC/链接已拆到 composables / lib（2026-10-26 治理，原单文件 2000 行）：
+//   useTermSocket        建连/重连/detach/心跳/stdin 闸门/回填锚点/后端选路
+//   useTermSearch        搜索浮层状态与命中跳转
+//   useTermClipboard     文本/图片粘贴、剪贴板桥、兜底输入框
+//   useTermTouchScroll   触屏滚动 + 惯性 + 备用屏滚轮转换
+//   useTermLinks         OSC（标题/cwd/深链/52）与 Ctrl+点击路径链接
+//   lib/termScreen       屏幕快照与 history-delta 回填（纯函数）
+//   lib/termPaths        路径 token 识别（纯函数）
+//   lib/termScrollRegion CSI S 滚动区修正
+// 本文件只保留：xterm 创建/addon/键盘拦截/尺寸自适应/焦点与手机工具条接线。
 import { ref, computed, inject, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { toast } from 'vue-sonner'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -8,13 +18,18 @@ import { CaseSensitive, ChevronDown, ChevronUp, Regex, WholeWord, X } from 'luci
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { authToken, writeFileBase64, resolveTermPath, pushTerminalClipboard, getTermFg, HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
-import { noteTermOutput } from '@/lib/terminalActivity'
-import { muxAgentAvailable } from '@/lib/mux'
+import { HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { RESTORED_TERM_IDS } from '@/lib/termlayout'
 import { isCoarse, isPhone } from '@/composables/useDevice'
 import { KEY_POOL } from '@/lib/termToolbar'
 import { usePhoneToolbar } from '@/composables/usePhoneToolbar'
+import { useTermSocket } from '@/composables/useTermSocket'
+import { useTermSearch } from '@/composables/useTermSearch'
+import { useTermClipboard } from '@/composables/useTermClipboard'
+import { useTermTouchScroll } from '@/composables/useTermTouchScroll'
+import { useTermLinks } from '@/composables/useTermLinks'
+import { screenHash as screenHashOf } from '@/lib/termScreen'
+import { registerScrollRegionHandler, type TerminalViewportHost } from '@/lib/termScrollRegion'
 import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
 import QuickCmdsSheet from '@/components/QuickCmdsSheet.vue'
 
@@ -74,516 +89,148 @@ const emit = defineEmits<{
   (e: 'backend', backend: 'tmux' | 'msmux'): void
 }>()
 
+// —— 终端实例与布局（所有 composable 只拿 getter，setup 期不读取）——
+const el = ref<HTMLDivElement | null>(null)
+// 根容器（带键盘占位 padding 的那层）：软键盘自适应要量它底边到布局视口底的距离，
+// 扣掉布局自带的底部留白（移动端底部 tab 的 pb），见 usePhoneToolbar 的 setupViewportWatch。
+const rootEl = ref<HTMLDivElement | null>(null)
+let term: XTerm | null = null
+let fit: FitAddon | null = null
+let searchAddon: SearchAddon | null = null
+let webglAddon: WebglAddon | null = null
+let resizeObs: ResizeObserver | null = null
+let rafId = 0
+// 程序性聚焦抑制标志：refit 的 term.focus() 是「切 tab 恢复/窗口 resize」的附带动作，
+// 不代表用户把焦点落在哪个 pane——DOM focus 事件在 focus() 调用内同步派发，同步开关
+// 即可拦住。分屏新 pane / 点击 pane / 重连按钮的聚焦是真实落焦，照常上抛。
+let suppressFocusEmit = false
+const restoredTermIds = inject(RESTORED_TERM_IDS) ?? new Set<string>()
+
+// —— 连接（WS 生命周期全部归属 useTermSocket）——
+const sock = useTermSocket({
+  props,
+  events: {
+    backend: (b) => emit('backend', b),
+    title: (t) => emit('title', t),
+    cwd: (p) => emit('cwd', p),
+    foreground: (c) => emit('foreground', c),
+    ready: () => emit('ready'),
+  },
+  term: () => term,
+  restoredTermIds,
+})
+const { connState, sendStdin, sendResize, detachWs, recoverOnReturn } = sock
+
+// 重连 = 重建 WS（termId 不变 -> 回到同一会话）。触摸设备不程序性聚焦（弹系统键盘）。
+function reconnect(quiet = false) {
+  sock.reconnect(quiet)
+  if (!isCoarse.value) term?.focus()
+}
+
+// —— 搜索（浮层状态与命中跳转）——
+const searchUi = useTermSearch({ addon: () => searchAddon, term: () => term })
+const {
+  searchVisible,
+  searchQuery,
+  searchInput,
+  searchInputWidth,
+  searchResultIndex,
+  searchResultCount,
+  searchCaseSensitive,
+  searchRegex,
+  searchWholeWord,
+  runSearch,
+  openSearch,
+  closeSearch,
+  setResults: setSearchResults,
+  toggleCaseSensitive,
+  toggleWholeWord,
+  toggleRegex,
+} = searchUi
+
+// —— 直发 stdin（与 onData 同通道）：工具条按键/粘贴/滚轮共用 ——
+function sendRaw(s: string) {
+  sendStdin(s)
+}
+
+// —— 剪贴板（文本/图片/桥/兜底弹框）——
+const clipboard = useTermClipboard({
+  term: () => term,
+  connected: sock.isOpen,
+  send: sendRaw,
+  // 图片落盘目标（四足文件端点哨兵）：宿主用 HOST_ID、SSH/服务加前缀、容器用 id。
+  fileTargetId: () => fileTargetId.value,
+  termId: () => props.termId,
+  backend: sock.backend,
+  foreground: sock.foreground,
+  // 剪贴板桥只对容器终端成立：宿主/服务/SSH 没有 xclip shim 种子。
+  bridgeContainerId: () =>
+    props.host || props.ssh || props.service || !props.id ? undefined : props.id,
+})
+const {
+  pasteFallback,
+  pasteText,
+  fallbackTa,
+  pasteClipboard,
+  copyText,
+  copySelection,
+  onTermPaste,
+  onContextMenu,
+  toolPaste,
+  toolPasteConfirm,
+  onFallbackPaste,
+  onFallbackInput,
+} = clipboard
+
+// 图片粘贴落盘目标：文件端点四侧（容器/宿主/服务/SSH）同形，按哨兵分发。
+const fileTargetId = computed(() =>
+  props.host
+    ? HOST_ID
+    : props.ssh
+      ? sshGroupId(props.ssh)
+      : props.service
+        ? serviceFileId(props.service)
+        : props.id ?? '',
+)
+
+// —— OSC 集成与路径链接（Ctrl+点击打开）——
+const links = useTermLinks({
+  term: () => term,
+  events: {
+    title: (t) => emit('title', t),
+    cwd: (p) => emit('cwd', p),
+    oscOpen: (p) => emit('osc-open', p),
+    linkOpen: (p, line, col) => emit('link-open', p, line, col),
+  },
+  copy: (text) => void copyText(text),
+})
+
+// —— 触屏滚动 ——
+const touchScroll = useTermTouchScroll({ root: () => el.value, term: () => term, send: sendRaw })
+
 // 点 ✕ 关闭时由父组件调用。真杀会话由父组件经 HTTP 端点（killTermSessionByTerm）完成——
-// 非激活 tab 的 socket 已经 detach（detachWs 把 ws 置空），这里**不能**指望 kill 帧：
-// 以前 `if (!ws) pendingKill = true` 在后台 tab 上会永远等不到 socket，关闭静默失效。
-// 这里只做两件事：① socket 存在时顺手补一发 `{type:'kill'}`（服务端把它当墓碑，覆盖
-// 「attach/create 正在飞、HTTP kill 先到一步扑空」的竞态）；② 断开自己的 socket。
+// 非激活 tab 的 socket 已经 detach，靠 kill 帧会静默失效。这里只断自己的 socket（socket
+// 存在时顺手补一发 kill 墓碑，覆盖 attach 飞行中 HTTP kill 先到的竞态）。
 // **不在 onBeforeUnmount 里发**：刷新页面同样触发 unmount，那时杀掉会话会破坏刷新保留。
 function kill() {
-  const sock = ws
-  if (sock) {
-    const send = () => {
-      try {
-        sock.send(JSON.stringify({ type: 'kill' }))
-      } catch {
-        /* socket 已关：HTTP 端点那条路负责真杀 */
-      }
-      try {
-        sock.close(1000)
-      } catch {
-        /* noop */
-      }
-    }
-    if (sock.readyState === WebSocket.OPEN) send()
-    // 建连窗口（含自动部署）：open 后立刻补发；连接失败则随 socket 一起丢弃，
-    // 会话由父组件的 HTTP kill 兜底。
-    else if (sock.readyState === WebSocket.CONNECTING) sock.addEventListener('open', send, { once: true })
-  }
-  ws = null
-  if (hbTimer) {
-    clearInterval(hbTimer)
-    hbTimer = null
-  }
+  sock.killSocket()
 }
 
-// 当前视口内容快照（逐行文本拼接）：「无输出提醒」的内容基线用——离开时快照 vs
-// 安静判定时快照，相同 = 只是重绘（attach 整屏还原/重连/resize），不算新内容。
-// 只取底部 rows 行（用户看到的画面）：⚠️ buffer.getLine(y) 的 y 是**全缓冲区绝对行号**，
-// 0 = scrollback 顶——从 0 读会把「最老的 24 行」当视口（输出一超屏哈希就永远冻结，
-// 基线恒等于当前，内容门槛全废，实测踩过）；文本行不含颜色/光标属性，重绘前后逐字节稳定。
+// 视口快照（「无输出提醒」的内容基线）——实现见 lib/termScreen。
 function screenHash(): string | undefined {
-  if (!term) return undefined
-  const buf = term.buffer.active
-  const from = Math.max(0, buf.length - term.rows)
-  const lines: string[] = []
-  for (let y = from; y < buf.length; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? '')
-  return lines.join('\n')
-}
-
-// 剥 ANSI 序列（CSI + OSC）：delta 锚点匹配要用纯文本与 buffer 行（translateToString
-// 本身已剥序列）对齐，写入时才用原始行（带色）。
-const ANSI_SEQ = /\x1b\[[0-9;:?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g
-
-// 重连增量回填：后端在 resume=1 时发 history-delta（最近 2000 物理行、含当前屏、带
-// SGR）。前端拿 buffer 尾部（= 断线瞬间的最后一屏，必然也是 delta 内容里的一段）做
-// 锚点，在 delta 里定位后只写入其后的部分——断线窗口期内错过的输出原位补齐、零重复。
-// 找不到锚点（窗口期输出超 -2000 行 / 重连间列宽变化 reflow / 纯空屏无区分度）就静默
-// 放弃，等同旧行为（只靠 attach 重绘恢复当前屏）。capture 用物理行（无 -J）正是为了
-// 与 buffer 逐行对应；跨列宽的 reflow 会自然导致匹配失败，无需特判。
-function applyHistoryDelta(text: string): void {
-  const t = term
-  if (!t) return
-  const lines = text.split('\n')
-  const buf = t.buffer.active
-  // 锚点 = buffer 最后几行。我们自己写进 buffer 的横幅（>> 已断开 / >> 连接 / >> socket
-  // 错误）不在 tmux 历史里，滤掉再取；全空锚点（清屏后的空画面）没有区分度，直接放弃。
-  const ANCHOR = 6
-  const raw: string[] = []
-  for (let y = Math.max(0, buf.length - (ANCHOR + 4)); y < buf.length; y++) {
-    raw.push(buf.getLine(y)?.translateToString(true) ?? '')
-  }
-  const anchor = raw.filter((l) => !l.startsWith('>> ')).slice(-ANCHOR)
-  if (anchor.length < ANCHOR || anchor.every((l) => l === '')) return
-  const plain = lines.map((l) => l.replace(ANSI_SEQ, '').replace(/\s+$/, ''))
-  for (let i = 0; i + ANCHOR <= plain.length; i++) {
-    let hit = true
-    for (let j = 0; j < ANCHOR; j++) {
-      if (plain[i + j] !== anchor[j]) {
-        hit = false
-        break
-      }
-    }
-    if (!hit) continue
-    // 锚点之后 = 断线窗口输出；delta 比一屏长时末尾还挂着重连时的当前屏（capture 默认
-    // 到可见屏底），这 rows 行不写——交给 attach 重绘画进视口，否则滚动区出现整屏重复。
-    const restCount = lines.length - (i + ANCHOR)
-    const rest = restCount > t.rows ? lines.slice(i + ANCHOR, lines.length - t.rows) : lines.slice(i + ANCHOR)
-    // 前缀复位 SGR：-e 行可能以未闭合的属性态结束，别带进后续输出流。结尾不加 CRLF：
-    // 光标停在哪由 attach 重绘的绝对定位接管。
-    if (rest.length) t.write(`\x1b[0m${rest.join('\r\n')}`)
-    return
-  }
-}
-
-// 搜索选项固定开装饰：xterm 的全部高亮和结果统计只有在 decorations 启用时才工作。
-// incremental 让输入过程中的命中延续选区，避免每敲一个字符都从头跳一遍。
-function searchOptions() {
-  return {
-    caseSensitive: searchCaseSensitive.value,
-    regex: searchRegex.value,
-    wholeWord: searchWholeWord.value,
-    incremental: true,
-    decorations: {
-      matchBackground: '#3f3f46',
-      matchBorder: '#52525b',
-      matchOverviewRuler: '#71717a',
-      activeMatchBackground: '#b45309',
-      activeMatchBorder: '#fbbf24',
-      activeMatchColorOverviewRuler: '#fbbf24',
-    },
-  }
-}
-
-function runSearch(direction: 'next' | 'previous') {
-  if (!search || !searchQuery.value) {
-    searchResultIndex.value = -1
-    searchResultCount.value = 0
-    search?.clearDecorations()
-    return
-  }
-  const query = searchQuery.value
-  if (direction === 'next') search.findNext(query, searchOptions())
-  else search.findPrevious(query, searchOptions())
-}
-
-function openSearch() {
-  searchVisible.value = true
-  void nextTick(() => {
-    searchInput.value?.focus()
-    searchInput.value?.select()
-    runSearch('next')
-  })
-}
-
-function closeSearch() {
-  searchVisible.value = false
-  searchQuery.value = ''
-  searchResultIndex.value = -1
-  searchResultCount.value = 0
-  search?.clearDecorations()
-  term?.focus()
-}
-// 建 WS 连接（含事件挂接与心跳）。抽到模块级：断线重连（reconnect）、tab 激活懒挂载与
-// 首连共用。termId 不变 -> 后端 attach 回同一 tmux 会话（无限期保留，直到显式 ✕ 或 shell 退出）。
-// quiet：程序性连接/断开（tab 切换的 detach/attach）不打 banner——每次切 tab 都写
-// 「>> 连接/>> 已断开」两行会把 scrollback 刷成切换日志；意外断线路径照常提示。
-let connectSeq = 0
-// attach 完成前的 stdin 暂存：服务端 /ws/* 在 attach 未完成时会丢弃二进制帧（mux 侧
-// sid==null 直接 return），建连窗口内用户敲的键就无声消失。入队等首帧（history/输出）
-// 到达即 flush——顺序保真，窗口通常 <300ms；再加 2s 兜底定时器，防「会话永远无输出」
-// 时输入滞留。
-let pendingInput: string[] = []
-let inputReady = false
-let inputFlushTimer: ReturnType<typeof setTimeout> | null = null
-// shell 退出（mux {type:'exit'} 帧）：置位后 onclose 不再写「已断开 (1000)」——
-// 会话结束是正常路径，不是断线，提示语也不同。
-let sessionEnded = false
-// 发 stdin 的唯一出口：attach 未完成先入队。onData / sendRaw / 粘贴全走这里。
-// 连接不在 OPEN（重连空窗：旧 socket CLOSING、新 socket 未建 / CONNECTING / 首帧未到）
-// 一律入队而不是丢弃——手机回前台、agent 断连重连的窗口里敲的键曾经被这里无声吃掉
-//（表现就是「重连后快捷键/输入无效」）。上限兜底：连接死透（服务端不可达）时不无限积压。
-const PENDING_INPUT_MAX = 512
-function queueStdin(s: string) {
-  pendingInput.push(s)
-  if (pendingInput.length > PENDING_INPUT_MAX) pendingInput.splice(0, pendingInput.length - PENDING_INPUT_MAX)
-}
-function sendStdin(s: string) {
-  if (ws && ws.readyState === WebSocket.OPEN && inputReady) {
-    ws.send(new TextEncoder().encode(s))
-    return
-  }
-  queueStdin(s)
-}
-function markInputReady() {
-  if (!inputReady) {
-    inputReady = true
-    if (inputFlushTimer) {
-      clearTimeout(inputFlushTimer)
-      inputFlushTimer = null
-    }
-  }
-  flushPendingInput()
-}
-// 入队输入的冲刷：OPEN 且闸门已开时整体发出。onopen（重连前敲的键）与 markInputReady
-//（首帧到达 / 2s 兜底定时器）都会调，保证任何入队路径都有冲刷出口、不滞留。
-function flushPendingInput() {
-  if (!pendingInput.length || !ws || ws.readyState !== WebSocket.OPEN) return
-  const blob = pendingInput.join('')
-  pendingInput = []
-  ws.send(new TextEncoder().encode(blob))
-}
-
-// msmux 的目标命名与 server/muxDeploy.ts 一致：host | c:<容器> | s:<服务> | ssh:<目标>。
-function muxTargetOf(): string {
-  if (props.host) return 'host'
-  if (props.service) return `s:${props.service}`
-  if (props.ssh) return `ssh:${props.ssh}`
-  return props.id ? `c:${props.id}` : ''
-}
-
-async function connectWs(quiet = false) {
-  const seq = ++connectSeq
-  wsQuiet = quiet
-  const token = authToken()
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  // SSH 远端 shell 由远端自己决定（不传 shell）；其余目标沿用 defaultShell。
-  const shell = props.ssh ? '' : props.shell || 'zsh'
-  const target = muxTargetOf()
-  const useMux = await muxAgentAvailable(target, props.backend)
-  currentBackend = useMux ? 'msmux' : 'tmux'
-  // 等在线探测期间组件可能已被切走/重建：过期连接直接作废。
-  if (seq !== connectSeq || !props.active) return
-  const cols = term ? term.cols : 80
-  const rows = term ? term.rows : 24
-  let url: string
-  if (useMux) {
-    const q = new URLSearchParams({
-      target,
-      termId: props.termId,
-      cols: String(cols),
-      rows: String(rows),
-      create: '1',
-      token,
-    })
-    if (shell) q.set('shell', shell)
-    if (props.fromTermId) q.set('from', props.fromTermId)
-    if (backfilled) q.set('resume', '1')
-    url = `${proto}://${location.host}/ws/mux-terminal?${q}`
-  } else {
-    const base = props.host
-      ? `${proto}://${location.host}/ws/host-terminal?token=${encodeURIComponent(token)}`
-      : props.ssh
-        ? `${proto}://${location.host}/ws/ssh-terminal?target=${encodeURIComponent(props.ssh)}&token=${encodeURIComponent(token)}`
-        : props.service
-          ? `${proto}://${location.host}/ws/service-terminal?name=${encodeURIComponent(props.service)}&token=${encodeURIComponent(token)}`
-          : `${proto}://${location.host}/ws/terminal?id=${encodeURIComponent(props.id ?? '')}&token=${encodeURIComponent(token)}`
-    url =
-      base +
-      (props.ssh ? '' : `&shell=${encodeURIComponent(shell)}`) +
-      `&cols=${cols}&rows=${rows}` +
-      `&termId=${encodeURIComponent(props.termId)}` +
-      (props.fromTermId ? `&from=${encodeURIComponent(props.fromTermId)}` : '') +
-      // 重连（本组件已回填过一次）告诉后端走增量分支：history-delta 只补断线窗口的输出，
-      // 而不是把整个历史重写一遍（scrollback 里已有内容，全量回填会整体重复）。
-      (backfilled ? '&resume=1' : '')
-  }
-  ws = new WebSocket(url)
-  const sock = ws
-  ws.binaryType = 'arraybuffer'
-  // 每条连接重置 stdin 闸门与会话结束标记：pendingInput 跨连接保留（建连窗口的击键
-  // 不因重连丢失），inputReady 等新连接首帧再打开。
-  inputReady = false
-  sessionEnded = false
-  if (inputFlushTimer) clearTimeout(inputFlushTimer)
-  inputFlushTimer = setTimeout(markInputReady, 2_000)
-
-  ws.onopen = () => {
-    connState.value = 'ok'
-    // 重连成功：取消未落笔的断线横幅；若横幅已写出（慢重连），补一行「已重连」闭环，
-    // 别让回滚末尾那行「已断开 (1006)」成了最后状态。
-    if (closeBannerTimer) {
-      clearTimeout(closeBannerTimer)
-      closeBannerTimer = null
-    }
-    if (closeBannerShown) {
-      closeBannerShown = false
-      term?.writeln('\x1b[2m>> 已重连\x1b[0m')
-    }
-    const label = useMux ? 'msmux' : shell
-    // 横幅只在「新建终端的首连」写一次：恢复布局出来的重连（wsQuiet 或 termId 属
-    // RESTORED_TERM_IDS）一律静默，避免刷新/回前台时 scrollback 被连接日志刷花。
-    if (!wsQuiet && !restoredTermIds.has(props.termId)) {
-      term?.writeln(`\x1b[2m>> 连接 ${props.name}${label ? ` (${label})` : ''}\x1b[0m`)
-    }
-    emit('backend', useMux ? 'msmux' : 'tmux')
-  }
-  ws.onmessage = (ev) => {
-    // 刷新/重建连接时旧 socket 可能还有排队消息先到：丢弃，别写进刚 reset 的 buffer。
-    if (ws !== sock) return
-    // 文本帧 = 服务端控制帧（二进制才是终端流）。目前只有 history：tmux pane 历史回填
-    // （后端 attach 前 capture-pane 发来），写入 scrollback 后 tmux 整屏重绘落在空视口上。
-    if (typeof ev.data === 'string') {
-      try {
-        const m = JSON.parse(ev.data) as { type?: string; text?: string }
-        if (m.type === 'history') {
-          // history 帧到达即视为完成过一次全量回填，后续重连一律走 resume 增量。
-          // 空历史（新会话尚无 scrollback）也要置位：否则重连 resume=0 全量重写，
-          // 与 buffer 里已有的内容整体重复。
-          if (!backfilled) {
-            backfilled = true
-            // N 行历史 + rows 个 CRLF = N+rows-1 个换行：恰好全部推进 scrollback、零空行
-            // 缝隙、光标落底行（数学上精确成立，与 N 无关）；重绘的绝对定位画在空视口上。
-            if (m.text) term?.write(m.text.split('\n').join('\r\n') + '\r\n'.repeat(term?.rows ?? 24))
-          }
-        } else if (m.type === 'history-delta' && m.text) {
-          // 重连增量：补断线窗口期内错过的输出（锚点去重，见 applyHistoryDelta）。
-          applyHistoryDelta(m.text)
-        } else if (m.type === 'modes' && m.text) {
-          // msmux resume 补发终端输入模式（?1000/?1003/?1006 鼠标上报、?2004 括号粘贴）：
-          // 断线窗口内 app 改过模式就靠这帧重同步。触屏滚动的 SGR 滚轮转换
-          // （setupTouchScroll altWheel）依赖 xterm 的 mouseTrackingMode，缺了它 claude
-          // 在手机上没法滚。首次 attach 的模式随首屏 Data 帧来，不经此分支。
-          term?.write(m.text)
-        } else if (m.type === 'title' && typeof m.text === 'string') {
-          // 重连/刷新后的标题恢复：pane title 留在 tmux 里不会随 attach 重发（历史回填
-          // 只有可见文本），服务端 attach 前读 #T 补发此帧（terminal.ts / hostTerminal.ts）。
-          emit('title', m.text)
-        } else if (m.type === 'cwd' && typeof m.text === 'string' && m.text) {
-          emit('cwd', m.text)
-        } else if (m.type === 'foreground' && typeof m.text === 'string') {
-          foregroundCommand = m.text
-          emit('foreground', m.text)
-        } else if (m.type === 'error' && typeof m.text === 'string' && m.text) {
-          // 服务端 attach 失败（agent 未连接/会话名非法/create 失败）：随后就是 1011，
-          // close code 本身不带原因——不消费这帧，用户只能看到无来由的「已断开 (1011)」。
-          term?.writeln(`\x1b[31m>> ${m.text}\x1b[0m`)
-        } else if (m.type === 'exit') {
-          // shell 退出（mux）：会话本体终结，是正常路径不是断线。写明示语并拦下 onclose
-          // 的「已断开 (1000)」；quiet（程序性重连）也要写——否则终端静默变死、输入无声丢弃。
-          sessionEnded = true
-          term?.writeln('\x1b[2m>> 会话已结束（shell 退出）；点击重连会开新会话\x1b[0m')
-        }
-        // 控制帧是 attach 完成后的随附物（history/title/cwd/foreground 都在 attach 成功
-        // 后补发）：到此即可放行 stdin。error 帧的下一步是 1011，不开闸。
-        if (m.type !== 'error') markInputReady()
-      } catch {
-        /* 非法控制帧忽略 */
-      }
-      return
-    }
-    // 终端数据帧 = 有输出：登记最后输出时刻（「无输出提醒」用，见 lib/terminalActivity）。
-    // 非激活 tab 已 detach（懒挂载）不再收流，登记只对当前激活 tab 生效；历史回填（文本帧）
-    // 不算。prime 窗口内的帧只点亮光晕、不进提醒资格（attach 重绘/初始 prompt 是打开自带画面）。
-    noteTermOutput(props.termId)
-    const bytes = new Uint8Array(ev.data as ArrayBuffer)
-    term?.write(bytes)
-    if (!readySent) {
-      readySent = true
-      emit('ready')
-    }
-    markInputReady()
-  }
-  // 非正常关闭（非 1000/1001）视为意外断线，置 lost 徽标；点「重连」条或刷新恢复。
-  ws.onclose = (ev) => {
-    // 陈旧关闭守卫：detach/重连已把 ws 换成新连接后，旧 socket 的 onclose 才迟到——
-    // 不能碰新连接的 hbTimer/状态（否则新连接的心跳被清掉，半开探测从此失灵）。
-    if (ws !== sock) return
-    if (hbTimer) {
-      clearInterval(hbTimer)
-      hbTimer = null
-    }
-    if (ev.code !== 1000 && ev.code !== 1001) connState.value = 'lost'
-    // shell 已退出（exit 帧处理过）不再写「已断开」——正常终结不是断线，提示语在 exit 分支。
-    // 横幅延迟 1.5s 落笔（见 closeBannerTimer 注释）：快速重连直接取消，不污染 scrollback。
-    if (!wsQuiet && !sessionEnded) {
-      const code = ev.code
-      closeBannerTimer = setTimeout(() => {
-        closeBannerTimer = null
-        closeBannerShown = true
-        term?.writeln(`\x1b[2m>> 已断开 (${code})\x1b[0m`)
-      }, 1_500)
-    }
-  }
-  // onerror 不写横幅：错误后面必然跟着 onclose（「已断开 (code)」或 lost 徽标 + 重连条），
-  // 单独一行「socket 错误」只是噪声——手机上回前台/网络抖动每次都刷两三行，把回滚刷花。
-  ws.onerror = () => {}
-
-  // 心跳探测：15s 一个空文本帧。服务端收到未知文本帧走 JSON.parse 失败分支静默忽略；
-  // send 抛错（栈已死）则置 lost。TCP 半开（后端挂死不 reset）时 onclose 迟迟不来，
-  // 这是前端唯一能感知的手段。
-  // 帧里捎带当前尺寸做对账：onResize 只在尺寸变化时触发，任何竞态丢帧（隐藏 tab 挂载时
-  // fit 失败、WS 早于 fit 建立、refit 与 resize 帧交错）都会让 PTY/tmux 停在陈旧尺寸，
-  // 表现为 TUI（claude 等）只画终端一半宽且永不恢复。后端 resize 分支尺寸不变即跳过，
-  // 正常路径零成本；尺寸漂移时这里每 15s 纠正一次，作为 onResize 的兜底。
-  hbTimer = setInterval(() => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    try {
-      ws.send(term ? JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }) : '')
-    } catch {
-      connState.value = 'lost'
-    }
-  }, 15_000)
-}
-
-// 断线重连：卸掉旧 WS 重建。termId 不变 -> 后端 attach 回同一 tmux 会话（无时限保留），
-// 历史/正在跑的任务都在。终端上方的「连接已断开 · 点击重连」条与自愈路径（recoverOnReturn）
-// 都走这里。quiet：不写「连接/已断开」横幅——lost 徽标 + 重连条已经把状态说清楚了，重连
-// 成功不需要再往回滚里写一行；手机上回前台自愈一次刷两三行横幅会把 scrollback 刷花。
-function reconnect(quiet = false) {
-  try {
-    ws?.close()
-  } catch {
-    /* noop */
-  }
-  ws = null
-  if (hbTimer) {
-    clearInterval(hbTimer)
-    hbTimer = null
-  }
-  connState.value = 'ok'
-  connectWs(quiet)
-  // 触摸设备不程序性聚焦（弹系统键盘）：自愈重连由 pointerdown 捕获触发，跟着 focus
-  // 会把软键盘在用户没点终端的时候弹出来（点文件 tab / 底部导航都会中招）。
-  if (!isCoarse.value) term?.focus()
+  return screenHashOf(term)
 }
 
 // 程序化输入出口（Claude 终端对话框用）：与键盘输入同通道，调用方负责带回车。
 function sendInput(s: string) {
   sendRaw(s)
 }
-defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput })
 
-// 非激活 tab 的懒挂载（detach）：终端组全部常驻 DOM（v-show 切换、组件不卸载），但
-// WS 只留给激活 tab——非激活 tab 不再吃输出流，省掉三样：xterm 对不可见输出的 VT 解析
-// CPU（输出风暴时是真成本）、服务端每个 attach client 的输出扇出、心跳/半开探测。代价
-// 是切回该 tab 时一拍重连（resume=1 增量回填，锚点去重零重复，~100ms）。组件与 buffer
-// 原样保留，tmux 会话在服务端不受影响（会话只被显式 kill 或 shell 退出终结）。
-function detachWs() {
-  if (!ws) return
-  wsQuiet = true // 程序性断开不打 banner；陈旧 onclose 守卫保证不碰后续连接的状态
-  try {
-    ws.close()
-  } catch {
-    /* noop */
-  }
-  ws = null
-  if (hbTimer) {
-    clearInterval(hbTimer)
-    hbTimer = null
-  }
-}
-
-// 页面回到前台/窗口重新聚焦/网络恢复/任意用户交互时，意外断线的终端立即自愈。离开期间
-// 浏览器、系统休眠或网络切换可能已把 WebSocket 关掉；用户切回来就是要看，不该再等一次
-// 手动点击。有些回前台路径 visibilitychange/focus 都不触发（手机息屏唤醒、页面一直
-// visible 只是断网恢复），所以交互事件也兜底——lost 状态下任何点击/按键即重连。
-function recoverOnReturn() {
-  if (!document.hidden && connState.value === 'lost') reconnect(true)
-}
-
-const el = ref<HTMLDivElement | null>(null)
-// 根容器（带键盘占位 padding 的那层）：软键盘自适应要量它底边到布局视口底的距离，
-// 扣掉布局自带的底部留白（移动端底部 tab 的 pb），见 usePhoneToolbar 的 setupViewportWatch。
-const rootEl = ref<HTMLDivElement | null>(null)
-let term: XTerm | null = null
-// 程序性聚焦抑制标志：refit 的 term.focus() 是「切 tab 恢复/窗口 resize」的附带动作，
-// 不代表用户把焦点落在哪个 pane——DOM focus 事件在 focus() 调用内同步派发，同步开关
-// 即可拦住。分屏新 pane / 点击 pane / 重连按钮的聚焦是真实落焦，照常上抛。
-let suppressFocusEmit = false
-// 焦点落位双通道：上抛（文件面板跟随最后聚焦的 pane）+ 手机工具条焦点闸
-// （termFocused 归属 usePhoneToolbar，tb 在下方声明——监听器挂载后才触发，无 TDZ 问题）。
-const onFocusIn = () => {
-  tb.onFocusedIn()
-  if (!suppressFocusEmit) emit('focus')
-}
-const onFocusOut = () => {
-  tb.onFocusedOut()
-}
-let fit: FitAddon | null = null
-let ws: WebSocket | null = null
-// 恢复会话的叶子 termId（ContainerList 注入）：恢复出来的重连不写「>> 连接」横幅——
-// 刷新/回前台时往 scrollback 刷连接日志是噪声；只有新建终端的首连才写（见 onopen）。
-const restoredTermIds = inject(RESTORED_TERM_IDS) ?? new Set<string>()
-// 当前连接是否程序性静默（tab 切换的 detach/attach 路径）：onopen/onclose 不写 banner。
-// 共享可变量而非闭包捕获：detach 要让「已存在连接」的 onclose 也静默，只能事后改标记
-// （同一时刻至多一条活连接，事件读到的值必然对应当前连接）。
-let wsQuiet = false
-let resizeObs: ResizeObserver | null = null
-let rafId = 0
-let webglAddon: WebglAddon | null = null
-let linkProv: { dispose(): void } | null = null
-let search: SearchAddon | null = null
-// 断线状态（终端上方覆盖条用）：'ok' | 'lost'。TCP 半开（后端挂死/NAT 超时）时 onclose 不会触发，
-// 靠心跳探测置 lost。tmux 会话在后端无限期保留（真 tmux 语义），重连即恢复。
-const connState = ref<'ok' | 'lost'>('ok')
-const searchVisible = ref(false)
-const searchQuery = ref('')
-const searchInputWidth = computed(() => {
-  const text = searchQuery.value || '搜索终端…'
-  const units = [...text].reduce((width, char) => width + ((char.codePointAt(0) ?? 0) > 0xff ? 2 : 1), 0)
-  return `${Math.max(8, units + 1)}ch`
-})
-const searchResultIndex = ref(-1)
-const searchResultCount = ref(0)
-const searchCaseSensitive = ref(false)
-const searchRegex = ref(false)
-const searchWholeWord = ref(false)
-const searchInput = ref<HTMLInputElement | null>(null)
-let hbTimer: ReturnType<typeof setInterval> | null = null
-// tmux 历史回填只做一次（组件首连）：reconnect 时 term 实例还在、scrollback 已有内容，
-// 再回填会重复整段历史。断线期间产生的输出留在 tmux 历史里滚不到（可接受的缺口）。
-let backfilled = false
-// 断线横幅延迟落笔：自愈/手动重连大多在 1.5s 内完成，直接取消——重连成功后回滚末尾
-// 躺着一行「已断开 (1006)」会被当成「还断着」（重连静默下它是屏幕最后一行）。
-// 慢重连（横幅已写出）由 onopen 补一行「已重连」闭环。refreshTerminal 清空 buffer 时一并复位。
-let closeBannerTimer: ReturnType<typeof setTimeout> | null = null
-let closeBannerShown = false
-// ready 只在本次挂载内发一次：首个二进制帧 = 后端已 attach、PTY 可以稳定接收输入。
-let readySent = false
-// 当前连接是否走 msmux；foreground 事件只在 msmux 后端可用。
-let currentBackend: 'tmux' | 'msmux' = 'tmux'
-// msmux 最新前台进程名；断线/重连后由 attach 元数据恢复。
-let foregroundCommand = ''
-
-// 内置 Cascadia Code Variable 优先（woff2 打包，跨端一致）；彩色 emoji 走系统字体兜底。
+// —— 字号：随容器宽度自适应（窄屏不溢出、大屏不显小）——
 const FONT_FAMILY =
   '"Cascadia Code Variable", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, ' +
   '"Noto Sans Mono CJK SC", "Noto Sans Mono CJK JP", "Microsoft YaHei Mono", "PingFang SC", ' +
   'monospace, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"'
-
-// 字号随容器宽度自适应：窄屏不溢出、大屏不显小。用户显式调过（触屏工具条 A±）则
-// 记忆优先（clamp 10–18），跨 pane/刷新保持。
 const FONT_SIZE_KEY = 'mysandbox:term-font-size'
 function computeFontSize(): number {
   const saved = Number(localStorage.getItem(FONT_SIZE_KEY))
@@ -605,7 +252,6 @@ function stepFontSize(delta: number) {
   refit()
 }
 
-
 // 防抖 fit：合并一帧内的多次尺寸变化，避免拖窗/字号切换时高频抖动；同时同步字号。
 function refit() {
   if (rafId) cancelAnimationFrame(rafId)
@@ -624,11 +270,7 @@ function refit() {
       // 尺寸也没变，syncScrollArea 之后不再被调用，错误一直留到刷新页面。fit 对
       // 「尺寸没变」是纯 no-op，救不了；这里在可见路径上强制 immediate 重算一次，
       // 健康态下是幂等写、零副作用。
-      const vp = (
-        term as unknown as {
-          _core?: { viewport?: { syncScrollArea?: (immediate?: boolean) => void } }
-        }
-      )._core?.viewport
+      const vp = (term as unknown as TerminalViewportHost)._core?.viewport
       vp?.syncScrollArea?.(true)
       // 粘贴兜底对话框打开期间不抢焦点：term.focus() 会把光标拉回终端，
       // 用户正要在兜底 textarea 里长按/Ctrl+V 粘贴。
@@ -654,7 +296,7 @@ watch(
   () => props.active,
   (a) => {
     if (a) {
-      nextTick(() => {
+      void nextTick(() => {
         // 等 display 生效后先同步 fit 拿真实 cols/rows 再连——恢复时非激活组是
         // display:none 挂载、term 停在 80x24 默认值，URL 带垃圾值会让后端先缩后撑
         // （shrink-then-grow，见 onMounted 同步 fit 注释）；refit 本体推 rAF 异步，
@@ -664,10 +306,7 @@ watch(
         } catch {
           /* noop */
         }
-        if (!ws || ws.readyState > WebSocket.OPEN) {
-          connState.value = 'ok'
-          connectWs(true)
-        }
+        sock.ensureConnected()
         refit()
       })
     } else {
@@ -676,251 +315,31 @@ watch(
   },
 )
 
-// 复制/粘贴：tmux 不再劫持鼠标（后端 set -g mouse off），交互层由 xterm.js 接管。
-// 剪贴板走 navigator.clipboard；OSC 52（TUI 应用请终端代写剪贴板）也汇到 copyText
-// （见下方 registerOscHandler(52)）。
-// 非 https 环境（http://局域网IP 访问）navigator.clipboard 是 undefined——一律走
-// execCommand 兜底 + toast 提示，不再静默吞（否则 Ctrl+C 复制 / Ctrl+V 粘贴双双无声失败）。
-// execCommand 必须在用户手势事件栈里同步调用：keydown（Ctrl+C/V 路径）与 click（工具条/右键）
-// 都是合法手势；不能 await 后再调（手势已过期，Firefox 直接拒绝）。
-function legacyCopy(s: string): boolean {
-  const ta = document.createElement('textarea')
-  ta.value = s
-  // 移出可视区但保持可聚焦；readonly 防软键盘弹出，防止页面滚到底
-  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
-  ta.setAttribute('readonly', '')
-  document.body.appendChild(ta)
-  ta.select()
-  let ok = false
+// 真正刷新：本地 buffer 里的行一旦被 reflow/宽字符错位写坏，repaint 只会把坏内容再画一遍。
+// 清 buffer 后按 resume=0 重连，服务端全量回填 + 重画当前屏，等价于在终端里 detach/attach
+// 一次。代价是回到最新输出、丢弃本地多出的历史。
+function refreshTerminal() {
+  const currentTerm = term
+  if (!currentTerm) return
+  // 顺带清一次字形图集，避免 WebGL 图集损坏在重建后继续存在。
   try {
-    ok = document.execCommand('copy')
+    ;(currentTerm as unknown as TerminalViewportHost)._core?.viewport?.syncScrollArea?.(true)
+    webglAddon?.clearTextureAtlas()
   } catch {
-    ok = false
+    /* 渲染器重建中/上下文丢失时忽略 */
   }
-  ta.remove()
-  return ok
-}
-async function copyText(s: string): Promise<boolean> {
-  if (navigator.clipboard) {
+  currentTerm.reset()
+  sock.refresh()
+  if (!isCoarse.value) {
+    suppressFocusEmit = true
     try {
-      await navigator.clipboard.writeText(s)
-      return true
-    } catch {
-      /* 权限被拒等：落 execCommand 兜底 */
+      currentTerm.focus()
+    } finally {
+      suppressFocusEmit = false
     }
-  }
-  // execCommand 要求同步在用户手势里调——本函数若被 await 了别的异步操作后才调到这里，
-  // 手势可能已过期，但 Chrome/Edge 对 copy 的手势检查较松，值得一试。
-  if (legacyCopy(s)) return true
-  toast.error('复制失败：剪贴板不可用（非 https 访问时浏览器禁用剪贴板 API）')
-  return false
-}
-async function pasteClipboard() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return
-  if (navigator.clipboard) {
-    // 图片优先：secure context 下 Ctrl+V 在 keydown 被 preventDefault（见
-    // attachCustomKeyEventHandler 注释），原生 paste 事件不再派发——这里唯一能拿到图片的
-    // 通道是 clipboard.read()（Chromium/Safari 支持）。Firefox 无此 API 且 readText 对
-    // 图片剪贴板返回空串 → 落兜底弹框（Firefox + https 的图片粘贴不支持，浏览器能力边界）。
-    if (navigator.clipboard.read) {
-      try {
-        const files: File[] = []
-        for (const item of await navigator.clipboard.read()) {
-          const t = item.types.find((t) => t.startsWith('image/'))
-          if (t) files.push(new File([await item.getType(t)], 'clipboard', { type: t }))
-        }
-        if (files.length) {
-          // 桥优先（100% 原生体验）：推剪贴板 + 转发 ^V，前台 CLI（claude 等）自己调
-          // xclip shim 走原生附加；没桥/前台是 shell → 落路径粘贴。
-          if (await tryBridgePaste(files[0])) return
-          await pasteImageFiles(files)
-          return
-        }
-      } catch {
-        /* read() 被拒（权限/失焦）：落文本路径 */
-      }
-    }
-    try {
-      const t = await navigator.clipboard.readText()
-      if (t) sendStdin(t) // 走和 onData 同一条 stdin 通道
-      return
-    } catch {
-      /* Firefox 常态拒绝 readText：落兜底对话框 */
-    }
-  }
-  pasteFallback.value = true // clipboard 不可用/被拒：弹兜底输入框（textarea 原生粘贴永远可用）
-  nextTick(() => fallbackTa.value?.focus())
-}
-
-// —— 图片粘贴（Claude Code 等 AI CLI 的图片输入）——
-// CLI 在 Linux 读剪贴板图片走 xclip/wl-paste，无头容器里不存在；浏览器剪贴板里的图片
-// 二进制也进不了 PTY 字节流。改为「上传落盘 + 粘路径」：图片经文件端点写到目标 home 的
-// .claude-pastes/，再把绝对路径发进终端——CLI 对图片路径是一等公民（拖拽同款），消息
-// 发出即读图。文件端点四侧（容器/宿主/服务/SSH）同形，fileTargetId 按哨兵分发。
-const fileTargetId = computed(() =>
-  props.host
-    ? HOST_ID
-    : props.ssh
-      ? sshGroupId(props.ssh)
-      : props.service
-        ? serviceFileId(props.service)
-        : props.id ?? '',
-)
-function fileToBase64(f: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => {
-      const s = String(r.result)
-      resolve(s.slice(s.indexOf(',') + 1))
-    }
-    r.onerror = () => reject(r.error ?? new Error('read failed'))
-    r.readAsDataURL(f)
-  })
-}
-// —— 剪贴板桥（100% 原生体验的那条路）——
-// 浏览器剪贴板 → /api/terminal-clipboard 暂存 → 容器内 xclip/wl-paste shim（经 peer
-// GET /clipboard 取）→ 前台 AI CLI 调它自己的原生剪贴板读取（xclip 链）→ [Image #1]
-// 内联附加。只对容器终端成立：shim 靠宿主种子铺进 LXC 容器 home，宿主/服务/SSH 没有
-// 种子机制（宿主终端里 CC 读的是宿主自己的剪贴板，本地访问时本来就和浏览器同源）。
-const SHELL_COMMANDS = new Set(['zsh', 'bash', 'sh', 'dash', 'ash', 'fish', 'sudo', 'su'])
-async function imageToPngB64(f: Blob): Promise<string> {
-  // 浏览器剪贴板可能是 jpeg/webp；CC 的取图链只认 png/bmp——canvas 统一转 PNG。
-  const bmp = await createImageBitmap(f)
-  const c = document.createElement('canvas')
-  c.width = bmp.width
-  c.height = bmp.height
-  c.getContext('2d')!.drawImage(bmp, 0, 0)
-  const blob = await new Promise<Blob>((resolve, reject) =>
-    c.toBlob((b) => (b ? resolve(b) : reject(new Error('png encode failed'))), 'image/png'),
-  )
-  bmp.close()
-  return fileToBase64(blob)
-}
-// 返回 true = 桥已送达（^V 已转发，别再路径粘贴）；false = 落路径粘贴。
-async function tryBridgePaste(first: File): Promise<boolean> {
-  if (props.host || props.ssh || props.service || !props.id) return false
-  if (!ws || ws.readyState !== WebSocket.OPEN) return false
-  try {
-    const b64 = await imageToPngB64(first)
-    await pushTerminalClipboard({ image: { b64 } })
-    if (currentBackend === 'msmux') {
-      // msmux 事件已给出权威前台命令；bridge 仍要问 shim 是否在位，但不再解析 tmux。
-      if (!foregroundCommand || SHELL_COMMANDS.has(foregroundCommand)) return false
-      const fg = await getTermFg(props.id, props.termId, 'msmux')
-      return fg.bridge
-    }
-    const fg = await getTermFg(props.id, props.termId)
-    // 前台是普通 shell：^V 会被解释成 quoted-insert 白吃一个键，粘贴落空 → 路径粘贴。
-    // 老容器没补种（bridge=false）：^V 后 CLI 找不到 xclip，无事发生 → 路径粘贴。
-    if (!fg.bridge || SHELL_COMMANDS.has(fg.command)) return false
-    sendRaw('\x16')
-    return true
-  } catch {
-    // 桥链路任何一环失败（读图/编码/推送/fg 查询）：粘贴不因桥失败而丢。
-    return false
-  }
-}
-async function pasteImageFiles(files: File[]) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    toast.error('终端未连接，图片粘贴失败')
-    return
-  }
-  const target = fileTargetId.value
-  if (!target) {
-    toast.error('无法确定粘贴目标，图片粘贴失败')
-    return
-  }
-  try {
-    // home 用 resolve('~') 权威解析（容器 /home/dev、宿主/服务/SSH 各自的 HOME），
-    // 不硬编码——resolve 要求会话在，粘贴场景必然满足。
-    const home = (await resolveTermPath(target, props.termId, '~')).path
-    const extOf = (t: string) =>
-      ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' })[t] ?? 'png'
-    const paths: string[] = []
-    for (const f of files) {
-      const name = `paste-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${extOf(f.type)}`
-      const path = `${home}/.claude-pastes/${name}`
-      await writeFileBase64(target, path, await fileToBase64(f))
-      paths.push(path)
-    }
-    sendRaw(paths.join(' '))
-    toast.success(paths.length === 1 ? `图片已粘贴：${paths[0]}` : `已粘贴 ${paths.length} 张图片到 ${home}/.claude-pastes/`)
-  } catch (e) {
-    toast.error(`图片粘贴失败：${e instanceof Error ? e.message : String(e)}`)
-  }
-}
-// 原生 paste 事件入口（非 https 的 Ctrl+V / 移动端长按）：clipboardData 免权限自带 files。
-// 必须 capture + 命中图片时 stopPropagation——xterm 的 paste handler 注册在 textarea 上且
-// 首行就 stopPropagation（handlePasteEvent），普通冒泡监听永远轮不到我们；反向地，我们不
-// 压掉它的话它会对空 text 再粘一遍（无害但不干净）。纯文本粘贴不拦，xterm 内置通道照走。
-function onTermPaste(e: ClipboardEvent) {
-  const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
-  if (!files.length) return
-  e.preventDefault()
-  e.stopPropagation()
-  void pasteImageFiles(files)
-}
-// 右键：有选区复制（并清选区）、无选区粘贴。.prevent 阻止浏览器原生右键菜单。
-function onContextMenu() {
-  if (term?.hasSelection()) {
-    void copyText(term.getSelection()).then(() => term?.clearSelection())
-  } else {
-    void pasteClipboard()
   }
 }
 
-// —— 手机触屏工具条（重度终端使用的核心补充）——
-// 触屏没有右键/Ctrl 组合，复制粘贴/Esc/方向键/Ctrl+C 中断全走这条工具条（模板里 md:hidden）。
-// 粘贴优先走 navigator.clipboard.readText；iOS Safari 常态性拒绝读取（需用户手势且默认不授权），
-// 拒绝时自动弹兜底输入框——用户在 textarea 里系统级长按粘贴，确认后走同一条 stdin 通道发送。
-const pasteFallback = ref(false)
-const pasteText = ref('')
-const fallbackTa = ref<HTMLTextAreaElement | null>(null)
-async function toolPaste() {
-  if (navigator.clipboard) {
-    try {
-      const t = await navigator.clipboard.readText()
-      if (t) sendRaw(t)
-      return
-    } catch {
-      /* readText 被拒：开兜底输入框 */
-    }
-  }
-  pasteFallback.value = true // clipboard 不可用（非 https）/被拒：同 pasteClipboard 的兜底
-  nextTick(() => fallbackTa.value?.focus())
-}
-function toolPasteConfirm() {
-  if (pasteText.value) sendRaw(pasteText.value)
-  pasteText.value = ''
-  pasteFallback.value = false
-}
-// 系统级粘贴（Ctrl+V / 长按）落进 textarea 时 paste 事件自带 clipboardData —— 直接自动发送，
-// 不再要求点「发送到终端」；个别环境 paste 事件不带数据时不拦默认行为，让文本进 textarea，
-// 由 input(insertFromPaste) 补一枪。两个都扑空才需要手动点按钮（按钮保留作兜底）。
-function fallbackSend(text: string) {
-  if (!text) return
-  sendRaw(text)
-  pasteText.value = ''
-  pasteFallback.value = false
-}
-function onFallbackPaste(e: ClipboardEvent) {
-  // 图片分支：兜底弹框只在剪贴板 API 不可用时出现，但 paste 事件的 files 依然可用
-  // （Firefox + https 粘图片走这里——readText 对图片剪贴板是空串才落的弹框）。
-  const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
-  if (imgs.length) {
-    e.preventDefault()
-    fallbackSend('')
-    void pasteImageFiles(imgs)
-    return
-  }
-  const t = e.clipboardData?.getData('text')
-  if (!t) return
-  e.preventDefault()
-  fallbackSend(t)
-}
-function onFallbackInput(e: InputEvent) {
-  if (e.inputType === 'insertFromPaste' && pasteText.value) fallbackSend(pasteText.value)
-}
 // 选区状态（候选池「复制」按钮的禁用态用）：term 实例非响应式，选区变化时同步到 ref。
 // onSelectionChange 覆盖拖选/清选；工具条渲染期间手动同步一次。
 const termHasSel = ref(false)
@@ -936,52 +355,7 @@ function toolScrollEnd(top: boolean) {
   if (top) term?.scrollToTop()
   else term?.scrollToBottom()
 }
-// 真正刷新：本地 buffer 里的行一旦被 reflow/宽字符错位写坏，repaint 只会把坏内容再画一遍。
-// 清 buffer 后按 resume=0 重连，服务端 capture-pane 全量回填 + tmux attach 重画当前屏，
-// 等价于在终端里 detach/attach 一次。代价是回到最新输出、丢弃本地多出 tmux 的历史。
-function refreshTerminal() {
-  const currentTerm = term
-  if (!currentTerm) return
-  // 顺带清一次字形图集，避免 WebGL 图集损坏在重建后继续存在。
-  try {
-    ;(currentTerm as unknown as TerminalViewportHost)._core?.viewport?.syncScrollArea?.(true)
-    webglAddon?.clearTextureAtlas()
-  } catch {
-    /* 渲染器重建中/上下文丢失时忽略 */
-  }
-  try {
-    ws?.close()
-  } catch {
-    /* noop */
-  }
-  ws = null
-  if (hbTimer) {
-    clearInterval(hbTimer)
-    hbTimer = null
-  }
-  currentTerm.reset()
-  backfilled = false
-  // buffer 清空后旧横幅已不存在，别再补「已重连」、也别让延迟横幅写进新现场。
-  if (closeBannerTimer) {
-    clearTimeout(closeBannerTimer)
-    closeBannerTimer = null
-  }
-  closeBannerShown = false
-  connState.value = 'ok'
-  connectWs(true) // 程序性重连：不要往刚清空的 buffer 写「连接/断开」横幅
-  if (!isCoarse.value) {
-    suppressFocusEmit = true
-    try {
-      currentTerm.focus()
-    } finally {
-      suppressFocusEmit = false
-    }
-  }
-}
-// 直发 stdin（与 onData 同通道）：工具条按键/粘贴共用。
-function sendRaw(s: string) {
-  sendStdin(s)
-}
+
 // —— 手机软键盘 + 触屏工具条（usePhoneToolbar 整体归属，边界规则见其头注）——
 // 焦点闸 / 键盘态（kbOpen/kbShift）/ 粘滞修饰 / 分页 / 长按连发全在 composable；
 // 这里注入终端本体能力（发键/滚动/粘贴/复制/刷新/字号）并保留短语发送
@@ -994,9 +368,7 @@ const tb = usePhoneToolbar({
   toolScroll,
   toolScrollEnd,
   toolPaste,
-  copySelection: () => {
-    if (term?.hasSelection()) void copyText(term.getSelection()).then(() => term?.clearSelection())
-  },
+  copySelection,
   refreshTerminal,
   stepFontSize,
   textarea: () => term?.textarea ?? null,
@@ -1027,241 +399,12 @@ function sendSnippet(s: string) {
   emit('enter') // 短语多带命令语义，与工具条回车一致走 cwd 跟随
 }
 
-// —— 触屏滚动接管（touch 设备）——
-// xterm 内建在 bindMouse 里注册的 touchstart/touchmove 滚 viewport 真机上不可靠：touchmove
-// 非被动但滚动途中不 preventDefault，浏览器手势判定抢走手势后直接 touchcancel，终端纹丝
-// 不动（桌面 wheel 同一注册点，所以桌面无感）。这里 capture 阶段自管：preventDefault 在手
-// 保证 touchmove 必达，stopPropagation 防 xterm 内部 handler 双重滚动。touchstart/touchend
-// 不截获——点按聚焦、长按等原生行为保持。顺带补惯性滑动（xterm 内建无 momentum，长历史
-// 1:1 跟手翻不动）。普通缓冲只动本地 scrollback、不向 PTY 发字节；备用屏 + 应用开鼠标
-// 上报时例外——触摸位移转 SGR 滚轮发给应用（见 altWheel/sendWheelRows），否则 claude
-// 这类全屏 TUI 在手机上完全没法滚。
-//
-// ⚠️ 必须走 term.scrollLines()（整行）而不是直改 .xterm-viewport.scrollTop（像素）：xterm 的
-// 权威滚动状态是 ydisp（整行坐标），viewport 每次渲染刷新都把 scrollTop 重置回 ydisp × 行高——
-// 像素直改会被吃掉、凑满一行才跳一格（实测一卡一卡）。滚轮同理是按行滚动，这里把触摸位移
-// 像素累积、凑整行调 scrollLines，与滚轮同路径、无对齐打架。
-let touchCleanup: (() => void) | null = null
-let momentumRaf = 0
-function stopMomentum() {
-  if (momentumRaf) cancelAnimationFrame(momentumRaf)
-  momentumRaf = 0
-}
-function setupTouchScroll() {
-  const root = el.value
-  if (!root) return
-  let tracking = false
-  let lastY = 0
-  let lastT = 0
-  let vel = 0 // px/ms，指数平滑后的瞬时速度
-  let accPx = 0 // 未凑满整行的像素余量
-  const rowHeightOf = (): number => {
-    // viewport._currentRowHeight 是 xterm 内部行高（与 scrollTop 同一坐标系）；
-    // 内部形状拿不到时用 rows DOM 实测兜底。
-    const core = term as unknown as { _core?: { viewport?: { _currentRowHeight?: number } } }
-    const h = core?._core?.viewport?._currentRowHeight
-    if (h && h > 0) return h
-    const rowsEl = term?.element?.querySelector('.xterm-rows') as HTMLElement | null
-    return rowsEl && term ? rowsEl.getBoundingClientRect().height / term.rows : 20
-  }
-  // 像素 → 整行：余量留在 accPx，凑满一行才调 scrollLines（亚行位移不丢，下次继续凑）
-  const scrollByPx = (px: number) => {
-    accPx += px
-    const rows = Math.trunc(accPx / rowHeightOf())
-    if (rows !== 0 && term) {
-      accPx -= rows * rowHeightOf()
-      if (altWheel()) sendWheelRows(rows)
-      else term.scrollLines(rows)
-    }
-  }
-  // 备用屏（全屏 TUI）+ 应用开了鼠标上报（claude 开 ?1000h/?1003h/?1006h，实测确认）：
-  // 本地 scrollback 没内容可滚（ybase 恒 0），触摸位移转成 SGR 滚轮序列发给 PTY，
-  // 让应用自己滚（claude 滚 transcript）——与桌面滚轮同构（xterm 对鼠标追踪中的真实
-  // 滚轮就是这么发的）。应用没开鼠标上报时保持 no-op：触摸滚动不该给纯 TUI 发位移。
-  const altWheel = (): boolean =>
-    !!term &&
-    term.buffer.active.type === 'alternate' &&
-    term.modes.mouseTrackingMode !== 'none'
-  const sendWheelRows = (rows: number) => {
-    if (!term) return
-    const col = Math.ceil(term.cols / 2)
-    const row = Math.ceil(term.rows / 2)
-    const btn = rows < 0 ? 64 : 65 // 64=滚轮上（看更早），65=滚轮下
-    const n = Math.min(Math.abs(rows), 6) // 惯性高速限流，一次手势别刷爆 PTY
-    for (let i = 0; i < n; i++) sendRaw(`\x1b[<${btn};${col};${row}M`)
-  }
-  const onStart = (e: TouchEvent) => {
-    stopMomentum()
-    tracking = e.touches.length === 1
-    if (!tracking) return
-    lastY = e.touches[0].clientY
-    lastT = e.timeStamp
-    vel = 0
-    accPx = 0
-  }
-  const onMove = (e: TouchEvent) => {
-    if (!tracking || e.touches.length !== 1) {
-      tracking = false // 多指（双指残留）丢弃，防跳变
-      return
-    }
-    e.preventDefault()
-    e.stopPropagation()
-    const y = e.touches[0].clientY
-    const dy = lastY - y
-    const dt = Math.max(1, e.timeStamp - lastT)
-    lastY = y
-    lastT = e.timeStamp
-    if (dy === 0) return
-    scrollByPx(dy)
-    vel = vel * 0.8 + (dy / dt) * 0.2
-  }
-  const onEnd = () => {
-    if (!tracking) return
-    tracking = false
-    // 惯性 glide：按毫秒速度外推，指数衰减 τ≈0.3s（每秒剩 3%）——自然减速不急刹
-    if (Math.abs(vel) < 0.1) return
-    let last = performance.now()
-    const step = (now: number) => {
-      const dt = now - last
-      last = now
-      scrollByPx(vel * dt)
-      vel *= Math.pow(0.03, dt / 1000)
-      if (Math.abs(vel) > 0.02) momentumRaf = requestAnimationFrame(step)
-      else momentumRaf = 0
-    }
-    momentumRaf = requestAnimationFrame(step)
-  }
-  root.addEventListener('touchstart', onStart, { capture: true, passive: true })
-  root.addEventListener('touchmove', onMove, { capture: true, passive: false })
-  root.addEventListener('touchend', onEnd, { capture: true })
-  root.addEventListener('touchcancel', onEnd, { capture: true })
-  touchCleanup = () => {
-    stopMomentum()
-    root.removeEventListener('touchstart', onStart, { capture: true })
-    root.removeEventListener('touchmove', onMove, { capture: true })
-    root.removeEventListener('touchend', onEnd, { capture: true })
-    root.removeEventListener('touchcancel', onEnd, { capture: true })
-  }
-}
-
-// 滚轮/滚动条：交给 xterm.js 原生处理（与 VSCode 集成终端一致）--tmux 不再开 mouse 劫持，
-// 终端流不带鼠标追踪序列，xterm 默认即把滚轮滚 scrollback 并保留右侧滚动条。无需手写 wheel 接管，
-// 手写反而会 preventDefault 掉原生滚动、破坏滚动条。
-
 // 字体探测串：终端会用到的 Cascadia 各分片都要触发加载。load() 不带 text 时只拉 latin
 // 分片（默认探测文本是 ASCII）；盲文（▐▛█▘▝）、框线（╭─╮│）、箭头等在独立分片里，未就绪时
 // WebGL 图集按 fallback 字体栅格化这些字形——宽度错、布局乱，且图集缓存不自动失效。
 // 宿主终端连接即时（无 docker exec 延迟兜时间），竞态窗口比容器终端宽得多（实测踩过：
 // claude 欢迎框半屏 + 字形错位）。
 const FONT_PROBE = 'W█▘▝▐▛▜▌╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝●✢❯⏵⎿→←…'
-
-// —— 路径链接识别（Ctrl+点击打开）——
-// 规则：token 以 / ~/ ./ ../ 开头或恰好是裸 ~；前一字符（若有）必须是空白或 "'=[({<
-// 之一（防 URL/普通词中段误配；`?a=/tmp/x` 的 = 后可配是刻意保留——`--out=/path` 场景）；
-// 主体字符集 [A-Za-z0-9._~+@%$-] 加 /；结尾剥句读；支持 :行(:列) 后缀（栈跟踪）。
-// 明确不匹配：不含 / 的裸文件名（防误报）、// 开头（协议相对 URL）、跨行 wrap、含空格路径。
-interface PathToken {
-  start: number
-  end: number
-  path: string
-  line?: number
-  col?: number
-}
-const PRE_BOUNDARY = /[\s"'=[({<]/
-const TOKEN_CHAR = /[A-Za-z0-9._~+@%$-]/
-const TRAIL_PUNCT = /[.,;:)\]"'`]/
-
-function findPathTokens(text: string): PathToken[] {
-  const out: PathToken[] = []
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (ch !== '/' && ch !== '~' && ch !== '.') continue
-    if (i > 0 && !PRE_BOUNDARY.test(text[i - 1]!)) continue
-    let start = -1
-    if (ch === '/') {
-      if (text[i + 1] === '/') {
-        i++ // // 开头 = 协议相对 URL，不碰
-        continue
-      }
-      start = i
-    } else if (text.startsWith('~/', i) || text.startsWith('./', i) || text.startsWith('../', i)) {
-      start = i
-    } else if (ch === '~' && !(text[i + 1] && TOKEN_CHAR.test(text[i + 1]!))) {
-      start = i // 裸 ~ = home（~user 形态不支持）
-    } else {
-      continue
-    }
-    let j = start + 1
-    while (j < text.length && (TOKEN_CHAR.test(text[j]!) || text[j] === '/')) j++
-    let raw = text.slice(start, j)
-    while (raw.length > 1 && TRAIL_PUNCT.test(raw[raw.length - 1]!)) raw = raw.slice(0, -1)
-    if (raw.length < 2 && raw !== '~') continue // 单个 / 噪音太大（散文里的斜杠）
-    if (!raw.includes('/') && raw !== '~') continue // 裸文件名不匹配（防误报）
-    // :行(:列) 后缀：不在字符集内，须从原文另行消费
-    let line: number | undefined
-    let col: number | undefined
-    const lm = /^:(\d{1,7})(?::(\d{1,7}))?/.exec(text.slice(start + raw.length))
-    if (lm) {
-      line = Number(lm[1])
-      if (lm[2]) col = Number(lm[2])
-    }
-    const end = start + raw.length + (line !== undefined ? lm![0].length : 0)
-    out.push({ start, end, path: raw, line, col })
-    i = end - 1
-  }
-  return out
-}
-
-// xterm 5.5 的 CSI S 直接 splice 滚动区行，绕过了 BufferService.scroll 的 scrollback
-// 路径：顶部行被丢弃，滚动区外内容也可能被应用重绘后残留/覆盖。这里接管 SU，让它走
-// 同一个 buffer 滚动实现——顶部行进 scrollback，滚动区外的固定行保持原位。
-type ScrollRegionInputHandler = {
-  _activeBuffer?: { scrollTop: number; scrollBottom: number }
-  _bufferService?: { isUserScrolling?: boolean; scroll?: (attr: unknown) => void }
-  _dirtyRowTracker?: { markRangeDirty?: (start: number, end: number) => void }
-  _eraseAttrData?: () => unknown
-}
-
-type TerminalViewportHost = {
-  _core?: { viewport?: { syncScrollArea?: (immediate?: boolean) => void } }
-}
-
-function registerScrollRegionHandler() {
-  const currentTerm = term
-  if (!currentTerm) return
-  currentTerm.parser.registerCsiHandler({ final: 'S' }, (params) => {
-    const inputHandler = (
-      currentTerm as unknown as { _core?: { _inputHandler?: ScrollRegionInputHandler } }
-    )._core?._inputHandler
-    const buffer = inputHandler?._activeBuffer
-    const bufferService = inputHandler?._bufferService
-    const eraseAttrData = inputHandler?._eraseAttrData?.bind(inputHandler)
-    const markRangeDirty = inputHandler?._dirtyRowTracker?.markRangeDirty?.bind(
-      inputHandler._dirtyRowTracker,
-    )
-    if (!buffer || !bufferService?.scroll || !eraseAttrData) return false
-
-    const first = params[0]
-    const requested = typeof first === 'number' && Number.isFinite(first) && first > 0
-      ? Math.floor(first)
-      : 1
-    const regionHeight = buffer.scrollBottom - buffer.scrollTop + 1
-    const count = Math.min(requested, regionHeight)
-    if (count <= 0) return false
-
-    for (let index = 0; index < count; index += 1) {
-      if (buffer.scrollTop >= buffer.scrollBottom) break
-      bufferService.scroll(eraseAttrData())
-    }
-    markRangeDirty?.(0, currentTerm.rows - 1)
-    // BufferService.scroll 已发 scroll 事件，但移动端 DOM 渲染器在软键盘/visualViewport
-    // 变化期间可能拿到过期几何。这里幂等强制重算滚动区，并对 DOM 渲染器补一次全量重绘。
-    const viewport = (currentTerm as TerminalViewportHost)._core?.viewport
-    viewport?.syncScrollArea?.(true)
-    if (!webglAddon) currentTerm.refresh(0, currentTerm.rows - 1)
-    return true
-  })
-}
 
 onMounted(async () => {
   if (!el.value) return
@@ -1280,136 +423,21 @@ onMounted(async () => {
     cursorBlink: true,
     // ⚠️ 不开 smoothScrollDuration：它的动画每次 scrollLines 都从当前显示位置重置进度重跑
     // （origin = viewportElement.scrollTop），触摸连发调用下位置逐步落后手指、停手才补跳
-    // ——快滑呈「一小块一小块」。行步进的平滑交给 setupTouchScroll 自己的惯性 glide。
+    // ——快滑呈「一小块一小块」。行步进的平滑交给 useTermTouchScroll 自己的惯性 glide。
     scrollback: 10000, // 回滚行数，与 VSCode 集成终端默认一致（xterm 默认仅 1000）
     theme: { background: '#000000' },
   })
   fit = new FitAddon()
   term.loadAddon(fit)
-  search = new SearchAddon({ highlightLimit: 1000 })
-  search.onDidChangeResults(({ resultIndex, resultCount }) => {
-    searchResultIndex.value = resultIndex
-    searchResultCount.value = resultCount
+  searchAddon = new SearchAddon({ highlightLimit: 1000 })
+  searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+    setSearchResults(resultIndex, resultCount)
   })
-  term.loadAddon(search)
+  term.loadAddon(searchAddon)
   term.loadAddon(new WebLinksAddon())
   term.open(el.value)
-  registerScrollRegionHandler()
-  // OSC 0/2（窗口标题）：shell 钩子（scripts/zshrc / 宿主 ~/.zshrc 的 preexec/precmd）
-  // 与 TUI 应用（CC/opencode）发的标题，经 tmux set-titles on（session 级选项）转发到
-  // 这里——ContainerList 拿去更新 tab 标签/popout 窗口标题。plain shell 降级（无 tmux）
-  // 时序列直达，同样走这里，链路两种模式天然覆盖。
-  term.onTitleChange((t) => emit('title', t.trim()))
-  // 容器内 mysandbox 命令：捕获 OSC 7677（tmux 下走 DCS passthrough，到这里已还原为裸 OSC）。
-  // payload 形如 "open;<path>"：action 取首个 ; 之前，路径取其后全部（路径可含 ;）。
-  // 返回 true = 已消费，不落入默认处理。
-  term.parser.registerOscHandler(7677, (data) => {
-    const i = data.indexOf(';')
-    if (i >= 0 && data.slice(0, i) === 'open') {
-      const path = data.slice(i + 1)
-      if (path.startsWith('/')) emit('osc-open', path)
-    }
-    return true
-  })
-  // OSC 7（shell cwd 上报）：zsh precmd 钩子（scripts/zshrc）每次出提示符时发
-  // `file://<路径>`（tmux 下 DCS passthrough 包裹，到这里已还原为裸 OSC）。业界标准
-  // 的 shell 集成序列（iTerm2/VS Code/WezTerm 同款），cd 生效即上报——文件面板跟随
-  // 的事件源，取代轮询。兼容他方 shell 集成（VS Code 端等）发的不带/带 host 的
-  // file:// URI，且可能做了 percent 编码（我们 zshrc 发原样路径，解码失败就原样用）。
-  term.parser.registerOscHandler(7, (data) => {
-    const rest = data.startsWith('file://') ? data.slice(7) : data
-    let p = rest.startsWith('/') ? rest : rest.slice(Math.max(rest.indexOf('/'), 0))
-    if (!p.startsWith('/')) return true
-    try {
-      p = decodeURIComponent(p)
-    } catch {
-      /* 原样路径里本就有 %（未编码形态）：解码失败按原文用 */
-    }
-    emit('cwd', p)
-    return true
-  })
-  // 环境，xclip/wl-copy 全失败，唯一的复制通道就是「请终端代写剪贴板」的 OSC 52。
-  // xterm.js 核心不实现它——不接的话应用提示「已复制」但剪贴板纹丝不动（VSCode 终端
-  // 实现了 OSC 52，所以同样的 opencode 在 VSCode 里能复制）。
-  // payload：`<selection>;<base64|?>`；? = 查询剪贴板（只回空——我们只做写入侧，
-  // 读回会话里粘贴已有 navigator.clipboard 通道，且查询有剪贴板内容外泄面）。
-  // tmux 下它以 DCS passthrough 到达，xterm 解包后仍是 52 号 OSC，无需特判。
-  term.parser.registerOscHandler(52, (data) => {
-    const i = data.indexOf(';')
-    if (i < 0) return true
-    if (data.slice(i + 1) === '?') return true // 查询：不回应
-    // base64 → UTF-8：atob 出的是 latin1 字节，中文等非 ASCII 必须经 Uint8Array 解码
-    try {
-      const b64 = data.slice(i + 1)
-      const bin = atob(b64)
-      const bytes = new Uint8Array(bin.length)
-      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k)
-      const text = new TextDecoder().decode(bytes)
-      if (text) void copyText(text)
-    } catch {
-      /* 非法 base64：静默 */
-    }
-    return true
-  })
-  // 路径链接 provider（Ctrl+点击打开）。必须在上面 WebLinksAddon 之后注册：xterm 按注册
-  // 顺序取第一个命中位置的链接，URL 撞位时归 web-links，别调换顺序。
-  // 宽字符映射是核心：translateToString 的字符串索引 ≠ cell 列（CJK 占 2 cell，其后还有
-  // 1 个 width=0 的续格），必须 cell walk 建「字符串索引 -> cell 列」映射（xterm 内部
-  // web-links 的 _mapStrIdx 同款手法）。
-  linkProv = term.registerLinkProvider({    provideLinks(bufferLineNumber, callback) {
-      const t = term
-      if (!t) return callback(undefined)
-      const line = t.buffer.active.getLine(bufferLineNumber - 1)
-      // 折行续行跳过：URL 折行后的 /xxx 段会误配，且不支持跨行 token（v1 限制）
-      if (!line || line.isWrapped) return callback(undefined)
-      const limit = Math.min(line.length, t.cols) // resize 后 line.length 可能 > cols（陈旧尾格）
-      const cell = t.buffer.active.getNullCell() // 复用 scratch cell，避免逐格建对象
-      const cellOf: number[] = [] // 字符串索引 -> 所在 cell 的 0 基列
-      const widthAt: number[] = [] // cell 列 -> 宽度
-      let text = ''
-      for (let x = 0; x < limit; x++) {
-        if (!line.getCell(x, cell)) break
-        const w = cell.getWidth()
-        widthAt[x] = w
-        if (w === 0) continue // 宽字符续格：不产生字符串内容
-        const chars = cell.getChars()
-        for (let k = 0; k < chars.length; k++) cellOf.push(x)
-        text += chars
-      }
-      // 快速出局：scrollback 大量鼠标移动时不做无谓扫描
-      if (!text.includes('/') && !text.includes('~')) return callback(undefined)
-      const toks = findPathTokens(text)
-      if (!toks.length) return callback(undefined)
-      callback(
-        toks.map((tk) => ({
-          range: {
-            // xterm 的 range 是 1 基；_linkAtPosition 用闭区间 start<=x<=end，end.x 是
-            // 末字符的下一列（与 web-links 的 _mapStrIdx 返回值同语义；实测 underline
-            // 宽度 = x2-x1 = token 精确 cell 数）。末字符是宽字符时 +1 覆盖续格。
-            start: { x: cellOf[tk.start]! + 1, y: bufferLineNumber },
-            end: {
-              x: cellOf[tk.end - 1]! + 1 + (widthAt[cellOf[tk.end - 1]!] === 2 ? 1 : 0),
-              y: bufferLineNumber,
-            },
-          },
-          text: tk.path,
-          // 显式声明 hover 装饰（缺省值也是全开，显式写防止默认值随版本漂移）。
-          decorations: { underline: true, pointerCursor: true },
-          // 只在按住 Ctrl/Cmd（macOS）时激活；普通点击 no-op，选区/聚焦等原生行为不受影响。
-          activate(event: MouseEvent) {
-            if (!(event.ctrlKey || event.metaKey)) return
-            emit('link-open', tk.path, tk.line, tk.col)
-          },
-          hover(event: MouseEvent) {
-            showLinkTip(event, tk.path)
-          },
-          leave() {
-            hideLinkTip()
-          },
-        })),
-      )
-    },
-  })
+  registerScrollRegionHandler(term, () => !!webglAddon)
+  links.register()
   // 键盘复制/粘贴拦截。返回 false=吞掉（不发 onData）、true=透传给终端。
   //   - Ctrl+Shift+C：复制选中（无选区也不发 ^C，纯复制键不应中断当前命令）。
   //   - Ctrl+V / Ctrl+Shift+V：粘贴（与桌面终端习惯一致；吞掉 ^V，牺牲 shell 的
@@ -1532,9 +560,9 @@ onMounted(async () => {
     /* noop */
   }
 
-  // 构建 WS（见下方模块级 connectWs）。懒挂载：非激活 tab（会话恢复时 display:none
-  // 挂载）不连，等切到该 tab 时由 active watcher 重连——那时才同步 fit + 拿真实尺寸。
-  if (props.active) connectWs()
+  // 懒挂载：非激活 tab（会话恢复时 display:none 挂载）不连，等切到该 tab 时由 active
+  // watcher 重连——那时才同步 fit + 拿真实尺寸。
+  if (props.active) void sock.connect()
 
   term.onData((data) => {
     // 回车即提交命令：上抛给文件面板做即时的 cwd 跟随检查（cd 提交后壳立即改目录，
@@ -1557,12 +585,8 @@ onMounted(async () => {
     if (data.includes('\r')) emit('enter')
     sendStdin(out)
   })
-  term.onResize(({ cols, rows }) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'resize', cols, rows }))
-    }
-  })
-  resizeObs = new ResizeObserver(refit)
+  term.onResize(({ cols, rows }) => sendResize(cols, rows))
+  resizeObs = new ResizeObserver(() => refit())
   resizeObs.observe(el.value)
   // 选区同步：工具条「复制」按钮的禁用态跟随选区（仅手机工具条用，桌面无成本——一行回调）。
   term.onSelectionChange(syncSel)
@@ -1580,11 +604,8 @@ onMounted(async () => {
   // 触摸设备不 mount 聚焦（弹系统键盘）：同 refit，键盘只由用户点终端触发。
   if (props.active && !isCoarse.value) term.focus()
 
-  // 软键盘自适应（usePhoneToolbar）：isPhone watch immediate + flush post 自管挂/拆，
-  // 设备形态翻转（桌面缩窄）也会补挂，不再依赖挂载时刻的一次性判定。
-
   // 触屏滚动接管：所有 touch 设备（含平板/触屏本）都挂，鼠标环境零成本（listener 不会被触发）。
-  if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) setupTouchScroll()
+  if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) touchScroll.setup()
   document.addEventListener('visibilitychange', recoverOnReturn)
   window.addEventListener('focus', recoverOnReturn)
   window.addEventListener('online', recoverOnReturn)
@@ -1594,58 +615,32 @@ onMounted(async () => {
     document.addEventListener(t, recoverOnReturn, { capture: true, passive: true })
 })
 
-// 路径链接 tooltip：挂在 term.element 内的动态 DOM（带 xterm-hover class——xterm 的
-// mousemove 会沿 composedPath 找到它，视为「仍在链接上」不误触发 leave）。
-// pointer-events:none 让它永不抢鼠标事件。leave() 里必须移除：xterm 在行重绘/resize/
-// mouseleave/跨 cell 时都会清当前链接。样式在下方非 scoped <style>（动态 DOM 带不上
-// Vue scoped 的 data 属性）。
-let linkTip: HTMLDivElement | null = null
-function showLinkTip(ev: MouseEvent, path: string) {
-  const root = term?.element
-  if (!root) return
-  if (!linkTip) {
-    linkTip = document.createElement('div')
-    linkTip.className = 'ms-term-link-tip xterm-hover'
-    root.appendChild(linkTip)
-  }
-  const short = path.length > 64 ? path.slice(0, 61) + '…' : path
-  linkTip.textContent = `Ctrl+点击打开 ${short}`
-  linkTip.style.left = `${ev.clientX + 10}px`
-  linkTip.style.top = `${ev.clientY + 14}px`
+// 焦点落位双通道：上抛（文件面板跟随最后聚焦的 pane）+ 手机工具条焦点闸
+// （termFocused 归属 usePhoneToolbar，tb 在下方声明——监听器挂载后才触发，无 TDZ 问题）。
+const onFocusIn = () => {
+  tb.onFocusedIn()
+  if (!suppressFocusEmit) emit('focus')
 }
-function hideLinkTip() {
-  linkTip?.remove()
-  linkTip = null
+const onFocusOut = () => {
+  tb.onFocusedOut()
 }
 
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
-  if (hbTimer) clearInterval(hbTimer)
-  if (inputFlushTimer) clearTimeout(inputFlushTimer)
-  if (closeBannerTimer) clearTimeout(closeBannerTimer)
+  sock.dispose()
   document.removeEventListener('visibilitychange', recoverOnReturn)
   window.removeEventListener('focus', recoverOnReturn)
   window.removeEventListener('online', recoverOnReturn)
   for (const t of ['pointerdown', 'keydown'] as const)
     document.removeEventListener(t, recoverOnReturn, { capture: true })
-  touchCleanup?.()
+  touchScroll.stop()
   resizeObs?.disconnect()
   el.value?.removeEventListener('focusin', onFocusIn)
   el.value?.removeEventListener('focusout', onFocusOut)
   el.value?.removeEventListener('paste', onTermPaste, { capture: true })
-  try {
-    ws?.close()
-  } catch {
-    /* noop */
-  }
   // 链接 provider 与 tooltip 先于 WebGL addon 拆（同款防御性顺序：term.dispose 会连带
   // 清理，但显式 dispose 保证卸载路径上 tooltip 不残留 DOM）。
-  try {
-    linkProv?.dispose()
-  } catch {
-    /* noop */
-  }
-  hideLinkTip()
+  links.dispose()
   // dispose 顺序：先 addon（WebGL renderer 挂在 term 上，得在 term 还活着时拆），
   // 再 term。反序会触发 term.dispose 内部访问已释放的 renderer -> TypeError。
   try {
@@ -1655,7 +650,7 @@ onBeforeUnmount(() => {
   }
   webglAddon = null
   try {
-    search?.clearDecorations()
+    searchAddon?.clearDecorations()
   } catch {
     /* 搜索插件已随终端清理则忽略 */
   }
@@ -1666,8 +661,10 @@ onBeforeUnmount(() => {
   }
   term = null
   fit = null
-  search = null
+  searchAddon = null
 })
+
+defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput })
 </script>
 
 <template>
@@ -1712,13 +709,13 @@ onBeforeUnmount(() => {
         />
       </div>
       <div class="search-filters">
-        <button type="button" class="search-toggle" :class="{ 'search-on': searchCaseSensitive }" title="区分大小写" :aria-pressed="searchCaseSensitive" @click="searchCaseSensitive = !searchCaseSensitive; runSearch('next')">
+        <button type="button" class="search-toggle" :class="{ 'search-on': searchCaseSensitive }" title="区分大小写" :aria-pressed="searchCaseSensitive" @click="toggleCaseSensitive">
           <CaseSensitive class="size-3" />
         </button>
-        <button type="button" class="search-toggle" :class="{ 'search-on': searchWholeWord }" title="全字匹配" :aria-pressed="searchWholeWord" @click="searchWholeWord = !searchWholeWord; runSearch('next')">
+        <button type="button" class="search-toggle" :class="{ 'search-on': searchWholeWord }" title="全字匹配" :aria-pressed="searchWholeWord" @click="toggleWholeWord">
           <WholeWord class="size-3" />
         </button>
-        <button type="button" class="search-toggle" :class="{ 'search-on': searchRegex }" title="正则匹配" :aria-pressed="searchRegex" @click="searchRegex = !searchRegex; runSearch('next')">
+        <button type="button" class="search-toggle" :class="{ 'search-on': searchRegex }" title="正则匹配" :aria-pressed="searchRegex" @click="toggleRegex">
           <Regex class="size-3" />
         </button>
       </div>

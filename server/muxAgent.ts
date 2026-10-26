@@ -183,6 +183,8 @@ function addChannel(agent: AgentRecord, sid: number, channel: MuxChannel): void 
     set = new Set();
     agent.channels.set(sid, set);
   }
+  // 允许多个窗口同时接入同一会话（共享语义）：PTY 只有一份尺寸，由最后 attach/心跳的
+  // 客户端决定（tmux `window-size latest` 的等价行为），这里不做独占踢人。
   set.add(channel);
 }
 
