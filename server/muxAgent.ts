@@ -60,6 +60,8 @@ interface AgentRecord {
   remote: string;
   channels: Map<number, MuxChannel>;
   pending: Map<number, PendingControl>;
+  // attach 注册窗口内暂存的数据帧（key = sid）。见 handleAgentMessage data 分支注释。
+  pendingData: Map<number, { data: Buffer; ts: number }[]>;
   nextControlId: number;
   control: Promise<void>;
   log: FastifyInstance['log'];
@@ -216,8 +218,25 @@ function handleAgentMessage(agent: AgentRecord, buf: Buffer): void {
   if (!frame) return;
   if (frame.kind === 'ping') return;
   if (frame.kind === 'data') {
+    if (!frame.data) return;
     const channel = frame.sid != null ? agent.channels.get(frame.sid) : undefined;
-    if (channel && frame.data) sendBinary(channel.socket, Buffer.from(frame.data));
+    if (channel) {
+      sendBinary(channel.socket, Buffer.from(frame.data));
+      return;
+    }
+    // ⚠️ 注册窗口的帧不能丢：daemon 在 attach 应答后**立刻**发首屏重绘帧
+    // （?1049h + state_formatted），两帧经常落在同一 TCP 段，而 ws 库对同段多帧是
+    // 同步连发 message 事件（allowSynchronousEvents 默认 true）——此刻
+    // attachChannel 的 channels.set（微任务）还没跑，按 sid 找不到通道。
+    // 直接丢 = 浏览器只收到空 history（alt screen 应用如 claude 的 scrollback 恒空），
+    // 当前屏无人重绘 → 刷新后随机黑屏（两终端背靠背 attach 时同段合并概率大增，
+    // 实测高发）。暂存到 pendingData，attachChannel 注册后按序补发；永不注册的
+    // 残留（会话已死等）靠时间戳修剪。
+    if (frame.sid == null) return;
+    const now = Date.now();
+    const list = (agent.pendingData.get(frame.sid) ?? []).filter((x) => now - x.ts < 5_000);
+    list.push({ data: Buffer.from(frame.data), ts: now });
+    agent.pendingData.set(frame.sid, list);
     return;
   }
   const response = frame.json;
@@ -323,6 +342,12 @@ async function attachChannel(
   if (response.title) sendJson(channel.socket, { type: 'title', text: response.title });
   if (response.cwd) sendJson(channel.socket, { type: 'cwd', text: response.cwd });
   if (response.foreground) sendJson(channel.socket, { type: 'foreground', text: response.foreground });
+  // 补发注册窗口内暂存的数据帧（首屏重绘 + 可能的早期输出）：必须在 history JSON
+  // 之后（「回填 scrollback → 当前屏画视口」是顺序约定），又必须赶在下一个实时帧
+  // 之前——本函数从这里到结尾全是同步代码，此刻还没有新帧能插进来，顺序保真。
+  const stashed = agent.pendingData.get(sid);
+  agent.pendingData.delete(sid);
+  if (stashed) for (const item of stashed) sendBinary(channel.socket, item.data);
 }
 
 export function agentForTarget(target: string): AgentRecord | undefined {
@@ -564,6 +589,7 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
       remote: req.socket.remoteAddress ?? 'unknown',
       channels: new Map(),
       pending: new Map(),
+      pendingData: new Map(),
       nextControlId: 1,
       control: Promise.resolve(),
       log: app.log,
@@ -584,6 +610,7 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
         pending.reject(new Error('msmux agent disconnected'));
       }
       record.pending.clear();
+      record.pendingData.clear();
       for (const channel of record.channels.values()) {
         try { channel.socket.close(1011, 'msmux agent disconnected'); } catch { /* noop */ }
       }
