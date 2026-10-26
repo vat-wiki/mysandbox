@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use parking_lot::{Mutex, RwLock};
@@ -34,6 +34,8 @@ pub enum SessionEvent {
 pub struct Session {
     pub id: u32,
     pub name: Mutex<String>,
+    /// shell（会话首进程 = session leader / 进程组组长）的 pid：SIGKILL 升级用。
+    pid: u32,
     created_at: u64,
     cols: AtomicU16,
     rows: AtomicU16,
@@ -117,8 +119,31 @@ impl Session {
         Ok(())
     }
 
+    /// 先礼后兵的第一步：SIGHUP（portable-pty 的 killer 语义），让 shell 正常退出并
+    /// 带上它自己的作业；忽略/捕获 HUP 的进程由 `Manager::kill` 的 SIGKILL 升级兜底。
     pub fn kill(&self) {
         let _ = self.killer.lock().kill();
+    }
+
+    /// 第二步：SIGKILL 整个会话（shell 自身进程组 + tcgetpgrp 得到的前台进程组）。
+    /// 只发 SIGHUP 时，`sh -c 'trap "" HUP; …'`、nohup 包装器、部分 TUI 会让会话变成
+    /// 幽灵（`kill` 返回成功、会话永远在列表里、同名建不回来）——实测复现过。
+    pub fn force_kill(&self) {
+        if self.pid > 0 {
+            unsafe {
+                libc::kill(-(self.pid as i32), libc::SIGKILL);
+                libc::kill(self.pid as i32, libc::SIGKILL);
+            }
+        }
+        // 交互式 shell 的前台作业在独立进程组（tcgetpgrp 指向它），不在 shell 的组里。
+        if let Some(fg) = self.master.lock().process_group_leader()
+            && fg > 0
+            && fg as u32 != self.pid
+        {
+            unsafe {
+                libc::kill(-fg, libc::SIGKILL);
+            }
+        }
     }
 
     pub fn attach(self: &Arc<Self>, cols: u16, rows: u16, resume: bool) -> Result<AttachedSession> {
@@ -179,6 +204,31 @@ impl Session {
             bytes = tail_lines(&bytes, max_lines);
         }
         (bytes, seq)
+    }
+
+    /// 输出积压（broadcast lagged）后的自愈快照：清掉浏览器端 scrollback 后重放
+    /// daemon 侧的完整状态——等价于原地重新 attach 一次，不用断连接重连。
+    /// `3J` 连 scrollback 一起清（否则重放的历史会和浏览器已有内容叠成两份）；备用屏
+    /// 没有 scrollback，只重进 alt screen 并重绘当前屏。
+    pub fn resync(&self) -> (u64, Vec<u8>) {
+        let mut screen = self.screen.lock();
+        let seq = self.seq.load(Ordering::SeqCst);
+        let modes = screen.screen().input_mode_formatted();
+        let alt = screen.screen().alternate_screen();
+        let (history, current) = capture_parts(&mut screen, true);
+        let mut out = Vec::with_capacity(history.len() + current.len() + modes.len() + 32);
+        if alt {
+            out.extend_from_slice(b"\x1b[?1049h");
+        } else {
+            out.extend_from_slice(b"\x1b[3J\x1b[2J\x1b[H");
+        }
+        out.extend_from_slice(&modes);
+        out.extend_from_slice(&history);
+        if !history.is_empty() && !out.ends_with(b"\n") {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(&current);
+        (seq, out)
     }
 
     pub fn info(&self) -> SessionInfo {
@@ -408,6 +458,7 @@ impl Manager {
         let reader = pair.master.try_clone_reader().context("pty reader")?;
         let writer = pair.master.take_writer().context("pty writer")?;
         let killer = child.clone_killer();
+        let pid = child.process_id().unwrap_or(0);
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let created_at = now_ms();
@@ -415,6 +466,7 @@ impl Manager {
         let session = Arc::new(Session {
             id,
             name: Mutex::new(name.clone()),
+            pid,
             created_at,
             cols: AtomicU16::new(cols),
             rows: AtomicU16::new(rows),
@@ -478,6 +530,28 @@ impl Manager {
             return false;
         };
         session.kill();
+        // 宽限期（2s）后仍未退出 → SIGKILL。见 Session::force_kill 注释：只发 SIGHUP
+        // 时忽略 HUP 的进程会让会话永远杀不掉，UI 关不掉、同名也建不回来。
+        let s = Arc::clone(&session);
+        let label = session.name.lock().clone();
+        let spawned = thread::Builder::new()
+            .name(format!("msmux-kill-{}", session.id))
+            .spawn(move || {
+                for _ in 0..20 {
+                    if !s.alive() {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                if !s.alive() {
+                    return;
+                }
+                tracing::warn!(session = %label, "kill: SIGHUP ignored, escalating to SIGKILL");
+                s.force_kill();
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("spawn kill escalation failed: {e}");
+        }
         true
     }
 
@@ -604,6 +678,30 @@ mod tests {
         assert!(validate_name("-bad").is_err());
         assert!(validate_name("bad name").is_err());
         assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn kill_escalates_when_hup_ignored() {
+        let manager = Arc::new(Manager::new(1000));
+        let req = Request::New {
+            name: "test-hup".into(),
+            cwd: None,
+            // 只发 SIGHUP 时这种会话会永远活着（实测过），靠 2s 后的 SIGKILL 兜底。
+            argv: vec!["sh".into(), "-c".into(), "trap '' HUP; sleep 30".into()],
+            env: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        manager.create(req).unwrap();
+        thread::sleep(Duration::from_millis(300));
+        assert!(manager.kill("test-hup"));
+        for _ in 0..50 {
+            if manager.get("test-hup").is_none() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        panic!("session survived SIGHUP + SIGKILL escalation");
     }
 
     #[test]

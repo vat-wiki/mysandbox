@@ -173,6 +173,9 @@ export interface TermPaneOps {
   // shell 钩子（执行命令/空闲路径）与 TUI 应用（CC/opencode）经 tmux set-titles 转发。
   // 实现侧存内存 map，tab 标签优先显示动态标题（空标题忽略，回落默认组名）。
   onTitle(group: TermGroup, termId: string, title: string): void
+  // pane 实际生效的终端后端（Terminal 连接建立后上报）：pane 头部徽标 + 关闭时选结束
+  // 端点（msmux/tmux 各走自己的 API）。未知表示还没连过（新 tab/恢复后未激活）。
+  onBackend(group: TermGroup, termId: string, backend: 'tmux' | 'msmux'): void
   // pane 当前动态标题（无 → ''）：pane 头部各自显示（tab 用「最近更新」聚合，多 pane
   // 时头部才是逐 pane 可见的完整视图）。
   titleOf(termId: string): string

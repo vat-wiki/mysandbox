@@ -102,7 +102,16 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Command::Daemon => {
             let manager = Arc::new(Manager::new(50_000));
-            run_daemon(socket, manager).await
+            match run_daemon(socket, manager).await {
+                Ok(()) => Ok(()),
+                // 已有 daemon 占着 socket（部署的 unit 与 agent 兜底撞车）：按正常退出处理，
+                // 别让 Restart=on-failure 反复重启抢 socket。
+                Err(e) if e.to_string().contains("already running") => {
+                    eprintln!("msmux daemon already running; exiting");
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         }
         Command::New {
             name,
@@ -218,8 +227,8 @@ async fn main() -> Result<()> {
             if token.is_empty() {
                 anyhow::bail!("agent token 为空");
             }
-            let manager = Arc::new(Manager::new(50_000));
-            run_agent(url, token, target, manager).await
+            // 会话归独立 daemon 进程所有（agent 只转发帧）：agent 重启不再带走会话。
+            run_agent(url, token, target, socket).await
         }
         Command::Version => {
             println!("msmux protocol {}", PROTOCOL_VERSION);

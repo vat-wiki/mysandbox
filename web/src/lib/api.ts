@@ -730,6 +730,48 @@ export const killTermSession = (s: TermSessionView) =>
     { method: 'DELETE' },
   ) as Promise<{ ok: true }>
 
+/**
+ * 关闭 tab（✕）结束会话的唯一出口。**刻意不读 WS 状态**：后台 tab / 重连窗口里
+ * Terminal 的 socket 已经 detach（`if (!ws)` 曾让 kill 帧永远发不出去，关闭静默失效）。
+ * msmux 目标优先走 mux 结束端点（agent 离线时服务端经 exec 通道兜底），失败再回落
+ * tmux 同款端点——同一 termId 的 tmux 会话可能是迁移前的残留。
+ *
+ * backend 未知（tab 还没连过）按 msmux 试：`s:`（docker 服务）恒 tmux，不进 mux 分支。
+ */
+export async function killTermSessionByTerm(opts: {
+  termId: string
+  kind?: 'host' | 'service' | 'ssh'
+  /** kind=ssh 时传裸目标名；service 传服务名；容器传容器 id；host 不需要 */
+  containerId?: string
+  /** mux 目标（host | c:<容器> | s:<服务> | ssh:<目标>） */
+  muxTarget: string
+  backend?: 'tmux' | 'msmux'
+}): Promise<void> {
+  const { termId, kind, containerId, muxTarget, backend } = opts
+  const tmuxPath =
+    kind === 'host'
+      ? `/api/terminal-sessions/host/${encodeURIComponent(termId)}`
+      : kind === 'service'
+        ? `/api/terminal-sessions/service/${encodeURIComponent(termId)}`
+        : kind === 'ssh'
+          ? `/api/terminal-sessions/ssh/${encodeURIComponent(containerId ?? '')}/${encodeURIComponent(termId)}`
+          : `/api/terminal-sessions/container/${encodeURIComponent(containerId ?? '')}/${encodeURIComponent(termId)}`
+  // 服务目标不参与 msmux（见 web/src/lib/mux.ts），别为它白跑一次必然失败的请求。
+  const muxCapable = kind !== 'service' && !!muxTarget && !muxTarget.startsWith('s:')
+  if (muxCapable && backend !== 'tmux') {
+    try {
+      await api(
+        `/api/terminal-sessions/mux/${encodeURIComponent(termId)}?target=${encodeURIComponent(muxTarget)}`,
+        { method: 'DELETE' },
+      )
+      return
+    } catch {
+      /* 会话不存在/agent 不可达：回落 tmux 端点（同 termId 的迁移残留） */
+    }
+  }
+  if (backend !== 'msmux') await api(tmuxPath, { method: 'DELETE' })
+}
+
 // —— SSH 终端目标（server/sshTerminal.ts；存 sidecar，UI 可增删）——
 export interface SshTargetView {
   name: string

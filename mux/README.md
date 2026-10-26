@@ -51,9 +51,11 @@ msmux attach mysandbox-abcd-1234
 ```
 
 socket 缺省在 `$XDG_RUNTIME_DIR/msmux/msmux.sock`，没有 XDG 时落在
-`/tmp/msmux-<uid>.sock`，权限 0600。`agent` 模式同样绑这个 socket（与回连共享同一个
-Manager）：回连断开期间本机 `msmux ls / kill / attach` 照常可用，控制台也靠它经
-exec 通道枚举离线目标的会话（tmux 的「查询时问源头」语义）。
+`/tmp/msmux-<uid>.sock`，权限 0600。**会话归 daemon 进程，agent 只是转发层**：
+`agent` 连上这个 socket 做 WS ↔ Unix 帧转发，自己不持有会话——回连断开、agent 重启、
+升级都不影响 daemon 里正在跑的 shell；本机 `msmux ls / kill / attach` 与控制的离线枚举
+都问这个常驻 daemon（tmux 的「查询时问源头」语义）。agent 启动时若 socket 上没有
+daemon，会 `setsid` 兜底拉起一个（正式部署由独立 unit / nohup 承担）。
 
 ## 回连 mysandbox
 
@@ -78,14 +80,19 @@ URL `?mux=0|1` 可整页临时覆盖；「用 tmux 打开终端」保留为显�
 
 owner 调 `POST /api/mux/deploy`（主 token），body：`{"target":"host"}` 或
 `{"target":"c:<容器>"}` / `{"target":"s:<服务>"}` / `{"target":"ssh:<目标>","url":"wss://..."}`。
-接口会上传静态二进制、写目标侧 0600 token、拉起 agent，并等待最多 6s 确认回连。
-CLI 等价入口：`mysandbox mux deploy <target> [--url ...]`、`mysandbox mux agents`。
+接口会上传静态二进制、写目标侧 0600 token、拉起 **daemon（会话宿主）+ agent（回连）**
+两个进程，并等待最多 6s 确认回连。CLI 等价入口：`mysandbox mux deploy <target> [--url ...]`、
+`mysandbox mux agents`。
 
-- host：`~/.mysandbox/mux/msmux` + 持久 systemd user unit（宿主重启自启）；
-- LXC：写 rootfs 的 `~/.local/bin/msmux`，并安装 `/etc/systemd/system/msmux-agent.service`
-  （容器重启自启）；
-- 服务容器：`docker cp` 到 `/tmp/mysandbox-msmux` + `docker exec -d`；
-- SSH：`sshFeed` 上传到远端 `~/.local/bin/msmux` + `nohup`。
+- host：`~/.mysandbox/mux/msmux` + 两个持久 systemd user unit（`msmux-daemon-<target>` /
+  `msmux-agent-<target>`，宿主重启自启）；
+- LXC：写 rootfs 的 `~/.local/bin/msmux`，并安装 `/etc/systemd/system/msmux-daemon.service`
+  与 `msmux-agent.service`（容器重启自启）；
+- 服务容器：`docker cp` 到 `/tmp/mysandbox-msmux` + `docker exec -d`（daemon 已在跑则复用）；
+- SSH：`sshFeed` 上传到远端 `~/.local/bin/msmux` + `nohup`（daemon 已在跑则复用）。
+
+部署顺序是「停 agent → `systemctl start` daemon（已 active 时 no-op）→ 重启 agent」：
+老版本的 agent 内嵌 daemon 会占着 socket，迁移时先让位；完成后重部署只重启控制通道。
 
 容器/服务走网关 IP:7333 的回连桥（`server/muxBridge.ts` → 本机控制台端口）。SSH 远端
 必须显式给 `url`。
@@ -105,9 +112,11 @@ mysandbox 侧：
 判断（剪贴板桥可用性仍由宿主代查 shim）。`/ws/mux-agent` 只认 `muxToken`，不认
 主 token / peerToken；`/ws/mux-terminal` 仍走控制台主 token 且要求 owner。
 
-agent hello 上报 mysandbox 构建版本（`/api/mux/agents` 返回 `appVersion`）。升级由
-「连接时自动部署」承担：agent 在线但部署记录的 sha256 ≠ 当前二进制（或无记录时
-`app_version` 落后/缺失）→ 连接时当场重部署，daemon 会话保留。
+daemon hello 上报 mysandbox 构建版本（`/api/mux/agents` 返回 `appVersion`；agent 只转发）。
+升级由「连接时自动部署」承担：部署记录的 sha256 ≠ 当前二进制（或无记录时 `app_version`
+落后/缺失）→ 重部署。**目标上还有活会话时跳过升级**；升级只替换磁盘上的二进制并重启
+agent，daemon 用 `start`（已 active 即 no-op）保持不动，因此会话不丢（老 daemon 继续跑
+旧二进制，下次 daemon 重启自然换新）。
 
 ## 协议
 
@@ -129,19 +138,24 @@ kind 3 (PING)
 
 ## 目标侧部署注意
 
-- 宿主进程不能挂在 `mysandbox.service` 的 cgroup 里；自动分发用独立 systemd user
-  unit，否则服务重启会连带杀掉会话。
+- **两个进程都要离开 `mysandbox.service` 的 cgroup**：daemon 是会话宿主，agent 是控制
+  通道。自动分发为两者各起独立 systemd unit（host/LXC）或独立 nohup 进程（SSH/docker）；
+  只靠 agent 兜底 spawn 的 daemon 仍在其 cgroup 里，服务重启会连带杀掉会话。
 - 容器：直接把静态二进制写进 rootfs / `docker cp`，以目标用户启动。
-- SSH：`scp` 到 `~/.local/bin/msmux` 后启动 agent。
+- SSH：`scp` 到 `~/.local/bin/msmux` 后分别启动 daemon 与 agent。
 - 目标无需安装 tmux、node 或其它运行时。
 
 ## 当前限制
 
 - 每个会话只有一个 pane；没有窗口/pane 布局与 tmux 键位。
 - agent 只支持系统信任库验证的 `wss://`；自签 CA / 跳过校验尚未做。
-- agent 断开期间控制台无法实时推其会话，但会话仍可发现：agent 在目标侧绑本地
-  daemon socket（见上），控制台经 exec 通道跑 `msmux ls --json` 查询时枚举（见
+- agent 断开期间控制台无法实时推其会话，但会话仍可发现：daemon 在目标侧绑本地
+  socket（见上），控制台经 exec 通道跑 `msmux ls --json` 查询时枚举（见
   docs/architecture/terminals.md「会话找回」）。
+- `kill` 是 SIGHUP → 2s 宽限 → SIGKILL（shell 进程组 + 前台进程组）：忽略/捕获 HUP 的
+  程序也能被杀掉，代价是这种会话要等满 2s 才从列表消失。
+- 输出广播积压（慢链路/浏览器跟不上）时按 vt100 模型原地重绘（清 scrollback 后重放），
+  不主动断连接；浏览器本地多出 daemon 的 scrollback 行会在这时被丢弃。
 - 应用容器与 SSH 目标的 agent 暂不保证自启（重启后 agent 不回来）；LXC/SSH 目标由
   控制台「连接时自动部署」兜底（`mux.autoDeploy`，见 docs/architecture/terminals.md），
   应用容器目标保持 CLI 手动部署。

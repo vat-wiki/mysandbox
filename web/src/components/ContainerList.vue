@@ -26,6 +26,7 @@ import {
   updateServiceMeta,
   listTermActivity,
   listTermSessions,
+  killTermSessionByTerm,
   termSessionKey,
   HOST_ID,
   SVC_FILE_PREFIX,
@@ -685,6 +686,33 @@ const splitCwdFrom = new Map<string, string>()
 // → 这里。纯内存态：重连时服务端补发 title 帧恢复，恢复不了（首连）回落默认组名。
 // 值带更新时刻：多 pane 组取「最近更新」的那块当组标题（谁在动显示谁）。
 const termTitles = ref<Record<string, { text: string; at: number }>>({})
+// termId -> 实际生效的后端（Terminal 建连后上报）：关闭时据此选结束端点。未连过
+// （新 tab、恢复布局里还没激活的组）为 undefined——killTermSessionByTerm 按 msmux 试、
+// tmux 回落处理。
+const termBackend = new Map<string, 'tmux' | 'msmux'>()
+// 组的 msmux 目标串：与 server/muxDeploy.ts 的 target 语法、Terminal.vue 的 muxTargetOf 同构。
+function groupMuxTarget(group: TermGroup): string {
+  if (group.kind === 'host') return 'host'
+  if (group.kind === 'service') return `s:${group.containerId}`
+  if (group.kind === 'ssh') return `ssh:${sshTargetName(group.containerId)}`
+  return `c:${group.containerId}`
+}
+// 真杀一条终端会话：一律走 HTTP，**不看 Terminal 的 WS 状态**——后台 tab 的 socket
+// 已经 detach（Terminal.detachWs 置空）、建连窗口里也还没有 socket，靠它发 kill 帧会
+// 静默丢（后台 tab 关完会话还在「终端会话」里挂着的根因）。失败静默：容器已停/会话本来
+// 就不存在时，关 tab 不该被结束会话的错误卡住。
+function killLeafSession(group: TermGroup, termId: string) {
+  const backend = termBackend.get(termId)
+  termBackend.delete(termId)
+  void killTermSessionByTerm({
+    termId,
+    kind: group.kind,
+    containerId:
+      group.kind === 'host' ? undefined : group.kind === 'ssh' ? sshTargetName(group.containerId) : group.containerId,
+    muxTarget: groupMuxTarget(group),
+    backend,
+  }).catch(() => {})
+}
 provide(TERM_OPS, {
   split(group, termId, dir) {
     const fresh = newTermId()
@@ -692,7 +720,8 @@ provide(TERM_OPS, {
     group.root = splitLeaf(group.root, termId, dir, fresh)
   },
   close(group, termId) {
-    termRefs.get(termId)?.kill()
+    termRefs.get(termId)?.kill() // 只负责断 socket（顺带让 mux daemon 立即 detach）
+    killLeafSession(group, termId) // 真杀走 HTTP
     delete termTitles.value[termId]
     splitCwdFrom.delete(termId) // 陈旧项会干扰 onPaneFocus 去重的新 pane 识别，随 pane 生命周期清掉
     const root = removeLeaf(group.root, termId)
@@ -701,7 +730,10 @@ provide(TERM_OPS, {
   },
   setRef(termId, el) {
     if (el) termRefs.set(termId, el as { kill(): void; screenHash?(): string | undefined })
-    else termRefs.delete(termId)
+    else {
+      termRefs.delete(termId)
+      termBackend.delete(termId)
+    }
   },
   cwdSourceOf(termId) {
     return splitCwdFrom.get(termId)
@@ -710,6 +742,9 @@ provide(TERM_OPS, {
     const t = title.trim()
     if (!t) return
     termTitles.value[termId] = { text: t, at: Date.now() }
+  },
+  onBackend(_group, termId, backend) {
+    termBackend.set(termId, backend)
   },
   titleOf(termId) {
     return termTitles.value[termId]?.text ?? ''
@@ -1949,7 +1984,11 @@ watch(
 function closeGroupById(gId: string) {
   const gi = groups.value.findIndex((g) => g.id === gId)
   if (gi < 0) return
-  for (const t of leafIds(groups.value[gi].root)) termRefs.get(t)?.kill()
+  const g = groups.value[gi]
+  for (const t of leafIds(g.root)) {
+    termRefs.get(t)?.kill() // 断 socket
+    killLeafSession(g, t) // 真杀走 HTTP（不看 socket 是否还活着）
+  }
   groups.value.splice(gi, 1)
   if (groups.value.length === 0) {
     activeIdx.value = 0

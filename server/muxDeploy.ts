@@ -201,8 +201,36 @@ async function deployHost(
   await chmod(tokenFile, 0o600);
 
   const unit = `msmux-agent-${parsed.target.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
+  const daemonUnit = `msmux-daemon-${parsed.target.replace(/[^A-Za-z0-9_.-]/g, '-')}`;
   const logFile = join(HOST_DIR, `${unit}.log`);
+  const daemonLog = join(HOST_DIR, `${daemonUnit}.log`);
   await mkdir(SYSTEMD_USER_DIR, { recursive: true, mode: 0o700 });
+  // 会话宿主：独立 daemon 单元。**永远 start（不是 restart）**——重部署/升级只换磁盘上
+  // 的二进制，正在跑的 daemon 与它托管的会话保持不动；agent 重启不再连带杀会话。
+  await writeFile(
+    join(SYSTEMD_USER_DIR, `${daemonUnit}.service`),
+    [
+      '[Unit]',
+      `Description=mysandbox msmux daemon (${parsed.target})`,
+      'After=network-online.target',
+      'Wants=network-online.target',
+      '',
+      '[Service]',
+      'Type=simple',
+      `ExecStart=${[bin, 'daemon'].map(systemdQuote).join(' ')}`,
+      // 崩了才重启：socket 已被别的 daemon 占用时进程按正常退出（main 里把
+      // "already running" 收敛成 exit 0），不能让它每 1s 起来抢一次。
+      'Restart=on-failure',
+      'RestartSec=1',
+      `StandardOutput=append:${daemonLog}`,
+      `StandardError=append:${daemonLog}`,
+      '',
+      '[Install]',
+      'WantedBy=default.target',
+      '',
+    ].join('\n'),
+    { mode: 0o644 },
+  );
   await writeFile(
     join(SYSTEMD_USER_DIR, `${unit}.service`),
     [
@@ -210,6 +238,8 @@ async function deployHost(
       `Description=mysandbox msmux agent (${parsed.target})`,
       'After=network-online.target',
       'Wants=network-online.target',
+      `Wants=${daemonUnit}.service`,
+      `After=${daemonUnit}.service`,
       '',
       '[Service]',
       'Type=simple',
@@ -225,13 +255,15 @@ async function deployHost(
     ].join('\n'),
     { mode: 0o644 },
   );
-  // 兼容旧版 transient unit：同名先停/清失败态，再切换到持久 enable 的用户单元。
+  // 迁移顺序：先停 agent（老版本 agent 内嵌 daemon，还占着 socket），再启动独立 daemon
+  // （已是 active 时 start 是 no-op，不会碰正在托管的会话），最后重启 agent 接上新拓扑。
   await runIgnored('systemctl', ['--user', 'stop', unit]);
   await runIgnored('systemctl', ['--user', 'reset-failed', unit]);
   await run('systemctl', ['--user', 'daemon-reload'], 10_000);
-  await run('systemctl', ['--user', 'enable', unit], 10_000);
+  await run('systemctl', ['--user', 'enable', daemonUnit, unit], 10_000);
+  await run('systemctl', ['--user', 'start', daemonUnit], 15_000);
   await run('systemctl', ['--user', 'restart', unit], 15_000);
-  return `宿主 agent 已由持久 systemd 用户单元 ${unit} 托管（日志 ${logFile}）`;
+  return `宿主会话由 ${daemonUnit} 托管，agent 由 ${unit} 托管（日志 ${daemonLog} / ${logFile}）`;
 }
 
 async function deployLxc(
@@ -268,6 +300,33 @@ async function deployLxc(
 
   // unit 源文件先落在 dev 可写的 state 目录，再由容器 root 安装到 /etc；rootfs 的
   // /etc 属容器 root，宿主用户直写会 Permission denied。
+  // 两个 unit：daemon 是会话宿主（独立进程/独立 cgroup），agent 只回连转发。
+  const daemonSource = join(stateDir, 'msmux-daemon.service');
+  await writeFile(
+    daemonSource,
+    [
+      '[Unit]',
+      `Description=mysandbox msmux daemon (${parsed.target})`,
+      'After=network.target',
+      '',
+      '[Service]',
+      'Type=simple',
+      'User=dev',
+      'WorkingDirectory=/home/dev',
+      'Environment=HOME=/home/dev',
+      'ExecStart=/home/dev/.local/bin/msmux daemon',
+      // 语义同宿主：socket 被占用时进程正常退出，不反复重启抢 socket。
+      'Restart=on-failure',
+      'RestartSec=1',
+      'StandardOutput=append:/home/dev/.config/msmux/daemon.log',
+      'StandardError=append:/home/dev/.config/msmux/daemon.log',
+      '',
+      '[Install]',
+      'WantedBy=multi-user.target',
+      '',
+    ].join('\n'),
+    { mode: 0o644 },
+  );
   const unitSource = join(stateDir, 'msmux-agent.service');
   await writeFile(
     unitSource,
@@ -275,6 +334,8 @@ async function deployLxc(
       '[Unit]',
       `Description=mysandbox msmux agent (${parsed.target})`,
       'After=network.target',
+      'Wants=msmux-daemon.service',
+      'After=msmux-daemon.service',
       '',
       '[Service]',
       'Type=simple',
@@ -299,10 +360,15 @@ async function deployLxc(
     'p=/home/dev/.config/msmux/agent.pid',
     'if [ -f "$p" ]; then kill "$(cat "$p")" 2>/dev/null || true; rm -f "$p"; fi',
     'mkdir -p /etc/systemd/system',
+    `cp ${shellQuote(daemonSource.replace(rootfs, ''))} /etc/systemd/system/msmux-daemon.service`,
     `cp ${shellQuote(unitSource.replace(rootfs, ''))} /etc/systemd/system/msmux-agent.service`,
-    'chmod 644 /etc/systemd/system/msmux-agent.service',
+    'chmod 644 /etc/systemd/system/msmux-daemon.service /etc/systemd/system/msmux-agent.service',
     'systemctl daemon-reload',
-    'systemctl enable msmux-agent',
+    'systemctl enable msmux-daemon msmux-agent',
+    // 先停 agent（老版本 agent 内嵌 daemon，占着 socket），再 start daemon（已 active
+    // 时是 no-op，不碰正在托管的会话），最后重启 agent。
+    'systemctl stop msmux-agent',
+    'systemctl start msmux-daemon',
     'systemctl restart msmux-agent',
   ].join('\n');
   const r = await execRun(cfg, parsed.name, {
@@ -314,7 +380,7 @@ async function deployLxc(
   if (r.exitCode !== 0) {
     throw new HttpError(502, `容器内安装 msmux agent 服务失败：${r.stderr.trim() || r.stdout.trim()}`, 'mux_deploy_failed');
   }
-  return '容器内 agent 已由 systemd 服务 msmux-agent 托管（容器重启自启）';
+  return '容器内会话由 msmux-daemon 托管、agent 由 msmux-agent 托管（容器重启自启）';
 }
 
 async function deployService(
@@ -348,11 +414,16 @@ async function deployService(
   const script = [
     `p=${dir}/agent.pid`,
     'if [ -f "$p" ]; then kill "$(cat "$p")" 2>/dev/null || true; rm -f "$p"; fi',
+    // 独立 daemon 做会话宿主：没在跑就起一个，agent 重启不带走会话。
+    `if ! ${dir}/msmux ls >/dev/null 2>&1; then`,
+    `  nohup ${dir}/msmux daemon >>${dir}/daemon.log 2>&1 </dev/null &`,
+    `  echo $! > ${dir}/daemon.pid`,
+    'fi',
     `nohup ${dir}/msmux agent --url ${shellQuote(url)} --token-file ${dir}/agent.token --target ${shellQuote(parsed.target)} >>${dir}/agent.log 2>&1 </dev/null &`,
     'echo $! > "$p"',
   ].join('\n');
   await run('docker', ['exec', '-d', hit.container, 'sh', '-c', script], 15_000);
-  return `应用容器 ${hit.container} 内 agent 已启动（${dir}）`;
+  return `应用容器 ${hit.container} 内 daemon（会话宿主）与 agent 已启动（${dir}）`;
 }
 
 async function deploySsh(
@@ -397,6 +468,11 @@ async function deploySsh(
     'chmod 600 "$HOME/.config/msmux/agent.token"',
     'p="$HOME/.config/msmux/agent.pid"',
     'if [ -f "$p" ]; then kill "$(cat "$p")" 2>/dev/null || true; rm -f "$p"; fi',
+    // 独立 daemon 做会话宿主：会话在 daemon 进程里，agent 重部署/重启不带走它们。
+    'if ! "$HOME/.local/bin/msmux" ls >/dev/null 2>&1; then',
+    '  nohup "$HOME/.local/bin/msmux" daemon >>"$HOME/.config/msmux/daemon.log" 2>&1 </dev/null &',
+    '  echo $! > "$HOME/.config/msmux/daemon.pid"',
+    'fi',
     `nohup "$HOME/.local/bin/msmux" agent --url ${shellQuote(url)} --token-file "$HOME/.config/msmux/agent.token" --target ${shellQuote(parsed.target)} >>"$HOME/.config/msmux/agent.log" 2>&1 </dev/null &`,
     'echo $! > "$p"',
   ].join('\n');
@@ -404,7 +480,7 @@ async function deploySsh(
   if (launched.exitCode !== 0) {
     throw new HttpError(502, `远端启动 agent 失败：${launched.stderr.trim().slice(0, 300)}`, 'mux_deploy_failed');
   }
-  return '远端 agent 已以 nohup 独立进程启动';
+  return '远端 daemon（会话宿主）与 agent 已以 nohup 独立进程启动';
 }
 
 export async function deployMuxAgent(

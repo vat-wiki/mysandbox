@@ -58,7 +58,9 @@ interface AgentRecord {
   appVersion: string | null;
   pid: number | null;
   remote: string;
-  channels: Map<number, MuxChannel>;
+  // sid -> 浏览器通道集合。同一个会话可以被多个窗口/标签同时接入（跨窗口「接入」复用
+  // termId），单值映射会让后接入者覆盖先接入者、先关的那个还会把后者的通道删掉。
+  channels: Map<number, Set<MuxChannel>>;
   pending: Map<number, PendingControl>;
   // attach 注册窗口内暂存的数据帧（key = sid）。见 handleAgentMessage data 分支注释。
   pendingData: Map<number, { data: Buffer; ts: number }[]>;
@@ -170,6 +172,38 @@ function sendAgent(agent: AgentRecord, frame: Buffer): boolean {
   return true;
 }
 
+function channelsFor(agent: AgentRecord, sid: number): MuxChannel[] {
+  return [...(agent.channels.get(sid) ?? [])];
+}
+
+function addChannel(agent: AgentRecord, sid: number, channel: MuxChannel): void {
+  channel.sid = sid;
+  let set = agent.channels.get(sid);
+  if (!set) {
+    set = new Set();
+    agent.channels.set(sid, set);
+  }
+  set.add(channel);
+}
+
+/** 从 sid 集合里摘掉这一条浏览器通道（仅影响自己，同会话的其它窗口不受牵连）。 */
+function removeChannel(agent: AgentRecord, channel: MuxChannel): void {
+  const sid = channel.sid;
+  if (sid == null) return;
+  const set = agent.channels.get(sid);
+  if (set) {
+    set.delete(channel);
+    if (!set.size) agent.channels.delete(sid);
+  }
+  channel.sid = null;
+}
+
+function channelCount(agent: AgentRecord): number {
+  let n = 0;
+  for (const set of agent.channels.values()) n += set.size;
+  return n;
+}
+
 function sendAndWait(
   agent: AgentRecord,
   payload: Record<string, unknown>,
@@ -219,9 +253,9 @@ function handleAgentMessage(agent: AgentRecord, buf: Buffer): void {
   if (frame.kind === 'ping') return;
   if (frame.kind === 'data') {
     if (!frame.data) return;
-    const channel = frame.sid != null ? agent.channels.get(frame.sid) : undefined;
-    if (channel) {
-      sendBinary(channel.socket, Buffer.from(frame.data));
+    const targets = frame.sid != null ? channelsFor(agent, frame.sid) : [];
+    if (targets.length) {
+      for (const channel of targets) sendBinary(channel.socket, Buffer.from(frame.data));
       return;
     }
     // ⚠️ 注册窗口的帧不能丢：daemon 在 attach 应答后**立刻**发首屏重绘帧
@@ -251,26 +285,31 @@ function handleAgentMessage(agent: AgentRecord, buf: Buffer): void {
     return;
   }
   if (response.type === 'title') {
-    const channel = response.sid != null ? agent.channels.get(response.sid) : undefined;
-    if (channel && response.title) sendJson(channel.socket, { type: 'title', text: response.title });
+    if (response.sid != null && response.title) {
+      for (const channel of channelsFor(agent, response.sid)) {
+        sendJson(channel.socket, { type: 'title', text: response.title });
+      }
+    }
     return;
   }
   if (response.type === 'cwd' || response.type === 'foreground') {
-    const channel = response.sid != null ? agent.channels.get(response.sid) : undefined;
-    if (channel) {
-      sendJson(channel.socket, {
-        type: response.type,
-        text: response.type === 'cwd' ? response.cwd ?? '' : response.foreground ?? '',
-      });
+    if (response.sid != null) {
+      const text = response.type === 'cwd' ? response.cwd ?? '' : response.foreground ?? '';
+      for (const channel of channelsFor(agent, response.sid)) {
+        sendJson(channel.socket, { type: response.type, text });
+      }
     }
     return;
   }
   if (response.type === 'exit') {
-    const channel = response.sid != null ? agent.channels.get(response.sid) : undefined;
-    if (channel) {
-      agent.channels.delete(response.sid!);
-      sendJson(channel.socket, { type: 'exit', code: null });
-      try { channel.socket.close(1000, 'session exited'); } catch { /* noop */ }
+    if (response.sid != null) {
+      const targets = channelsFor(agent, response.sid);
+      agent.channels.delete(response.sid);
+      for (const channel of targets) {
+        channel.sid = null;
+        sendJson(channel.socket, { type: 'exit', code: null });
+        try { channel.socket.close(1000, 'session exited'); } catch { /* noop */ }
+      }
     }
     return;
   }
@@ -326,8 +365,7 @@ async function attachChannel(
     throw new Error(response.message ?? 'msmux attach failed');
   }
   const sid = response.sid;
-  channel.sid = sid;
-  agent.channels.set(sid, channel);
+  addChannel(agent, sid, channel);
   const history = Buffer.from(response.history ?? '', 'base64').toString('utf8');
   sendJson(channel.socket, { type: opts.resume ? 'history-delta' : 'history', text: history });
   // resume 补发终端输入模式（?1000/?1003/?1006 鼠标上报、?2004 括号粘贴等）：断线窗口内
@@ -573,8 +611,10 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
       // "agent disconnected"，换连接不留痕——排查 agent 侧反复掉线重连（浏览器终端被连带
       // 1012 关闭、用户看到断连横幅风暴）时这里曾是盲区。
       app.log.info({ target, previousPid: previous.pid }, 'msmux agent replaced by newer connection');
-      for (const channel of previous.channels.values()) {
-        try { channel.socket.close(1012, 'agent replaced'); } catch { /* noop */ }
+      for (const set of previous.channels.values()) {
+        for (const channel of set) {
+          try { channel.socket.close(1012, 'agent replaced'); } catch { /* noop */ }
+        }
       }
       try { previous.socket.close(1012, 'replaced by newer agent'); } catch { /* noop */ }
     }
@@ -611,8 +651,11 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
       }
       record.pending.clear();
       record.pendingData.clear();
-      for (const channel of record.channels.values()) {
-        try { channel.socket.close(1011, 'msmux agent disconnected'); } catch { /* noop */ }
+      for (const set of record.channels.values()) {
+        for (const channel of set) {
+          channel.sid = null;
+          try { channel.socket.close(1011, 'msmux agent disconnected'); } catch { /* noop */ }
+        }
       }
       record.channels.clear();
       app.log.info({ target }, 'msmux agent disconnected');
@@ -632,8 +675,91 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
       try { socket.close(1008, 'invalid mux target'); } catch { /* noop */ }
       return;
     }
-    let agent = agents.get(target);
-    if (!agent) {
+    const termId = q.termId ?? '';
+    const name = q.name || (termId ? `mysandbox-${termId}` : '');
+    if (!SESSION_RE.test(name)) {
+      sendJson(socket, { type: 'error', message: '会话名非法（termId 格式错误）' });
+      try { socket.close(1008, 'invalid session name'); } catch { /* noop */ }
+      return;
+    }
+    const cols = Math.max(1, Number(q.cols) || 120);
+    const rows = Math.max(1, Number(q.rows) || 40);
+    // 没传 shell 时让目标侧 agent 用它的 $SHELL（SSH 远端常用 bash；容器/宿主终端
+    // 仍显式传 zsh/bash）。
+    const shell = q.shell || '';
+    const create = q.create !== '0';
+    const resume = q.resume === '1';
+    const fromTermId = q.from ?? '';
+
+    // ⚠️ 通道对象与消息监听必须**先于** agent 探测/自动部署建立：那一段会 await 3s
+    // 宽限 + 部署（最长十几秒），期间浏览器可能已经发来 kill（点了 ✕）或直接断开。
+    // ws 库在挂上 message 监听之前到达的帧会被丢掉——「关闭时灵时不灵」的另一半根因。
+    const channel: MuxChannel = {
+      socket,
+      target,
+      name,
+      sid: null,
+      createdAt: Date.now(),
+    };
+    // agent 在探测/部署完成后才有值；窗口内收到的 kill 先记成墓碑，等拿到 agent 再补。
+    let agent: AgentRecord | undefined;
+    let killRequested = false;
+    const detachChannel = () => {
+      if (channel.sid == null) return;
+      if (agent) {
+        sendAgent(agent, encodeJson({ type: 'detach', sid: channel.sid }));
+        removeChannel(agent, channel);
+      } else {
+        channel.sid = null;
+      }
+    };
+
+    socket.on('message', (data: unknown, isBinary?: boolean) => {
+      const sid = channel.sid;
+      if (isBinary !== false) {
+        // attach 完成前的输入直接丢：前端 pendingInput 会在首帧后按序补发。
+        if (sid == null || !agent) return;
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        sendAgent(agent, encodeData(sid, buf));
+        return;
+      }
+      if (typeof data !== 'string' && !Buffer.isBuffer(data)) return;
+      let msg: { type?: string; cols?: number; rows?: number };
+      try {
+        msg = JSON.parse((typeof data === 'string' ? data : data.toString()).toString()) as typeof msg;
+      } catch {
+        return;
+      }
+      if (msg.type === 'resize' && sid != null && agent) {
+        sendAgent(agent, encodeJson({
+          type: 'resize',
+          sid,
+          cols: Math.max(1, msg.cols ?? cols),
+          rows: Math.max(1, msg.rows ?? rows),
+        }));
+      } else if (msg.type === 'detach' && sid != null && agent) {
+        sendAgent(agent, encodeJson({ type: 'detach', sid }));
+        removeChannel(agent, channel);
+        try { socket.close(1000, 'detached'); } catch { /* noop */ }
+      } else if (msg.type === 'kill') {
+        // 关闭 tab：attach 还没完成也要记住——不然 kill 帧按名字发出时会话尚未
+        // create，daemon 回 no such session 被丢弃，随后 attach 的 create 把会话建出来
+        // → 关掉的终端在「终端会话」里复活。墓碑由 attach 前后两处检查兑现。
+        killRequested = true;
+        if (agent) {
+          sendAgent(agent, encodeJson({ type: 'kill', name }));
+          if (sid != null) {
+            sendAgent(agent, encodeJson({ type: 'detach', sid }));
+            removeChannel(agent, channel);
+          }
+        }
+      }
+    });
+    socket.on('close', detachChannel);
+    socket.on('error', detachChannel);
+
+    let current = agents.get(target);
+    if (!current) {
       // agent 不在线：先给一个重连宽限窗（agent 侧每 2s 重试回连，服务重启等瞬断
       // 自己会好），仍不在线且目标支持时做连接时自动部署（见 autoDeployMuxAgent）；
       // 都拿不到再按原样发 error 帧关连接。
@@ -655,8 +781,8 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
           return;
         }
       }
-      agent = settled ? agents.get(target) : undefined;
-      if (!agent) {
+      current = settled ? agents.get(target) : undefined;
+      if (!current) {
         // 先发 error 帧（浏览器端会消费并显示）再关——close code 本身到不了页面的
         // onclose 参数，只发 close 用户只能看到无来由的「已断开 (1011)」。
         sendJson(socket, {
@@ -675,12 +801,21 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
         const rec = await getMuxDeployInfo(target).catch(() => undefined);
         const stale = rec?.sha256
           ? (await currentBinarySha256()) !== rec.sha256
-          : agent.appVersion !== getVersion();
+          : current.appVersion !== getVersion();
         if (stale) {
-          app.log.info({ target, from: agent.appVersion ?? '?' }, 'msmux auto upgrade: redeploying');
-          const result = await autoDeployMuxAgent(cfg, target);
-          app.log.info({ target, connected: result.connected }, 'msmux auto upgrade done');
-          agent = agents.get(target) ?? agent;
+          // 目标上还有活会话就先不升：升级要重启 agent（旧部署还会连带 cgroup 里的
+          // 会话一起杀），等终端都关掉后的下一次连接再升。
+          const busy = await withControl(current, () => sendAndWait(current!, { type: 'list' }, 5_000))
+            .then((r) => (Array.isArray(r.sessions) ? r.sessions.some((s) => s.alive !== false) : false))
+            .catch(() => false);
+          if (busy) {
+            app.log.info({ target }, 'msmux auto upgrade skipped: live sessions');
+          } else {
+            app.log.info({ target, from: current.appVersion ?? '?' }, 'msmux auto upgrade: redeploying');
+            const result = await autoDeployMuxAgent(cfg, target);
+            app.log.info({ target, connected: result.connected }, 'msmux auto upgrade done');
+            current = agents.get(target) ?? current;
+          }
         }
       } catch (e) {
         app.log.warn(
@@ -689,76 +824,21 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
         );
       }
     }
-    const termId = q.termId ?? '';
-    const name = q.name || (termId ? `mysandbox-${termId}` : '');
-    if (!SESSION_RE.test(name)) {
-      sendJson(socket, { type: 'error', message: '会话名非法（termId 格式错误）' });
-      try { socket.close(1008, 'invalid session name'); } catch { /* noop */ }
+    agent = current;
+
+    // 握手/部署窗口里浏览器已经关掉这个 tab（或显式 kill 了）：**不要**再为它
+    // attach/create——否则目标侧凭空多出一条会话，没人 attach 也没人再关得掉。
+    if (killRequested) {
+      await withControl(agent, () => sendAndWait(agent!, { type: 'kill', name }, 8_000)).catch(() => {});
+      try { socket.close(1000, 'closed before attach'); } catch { /* noop */ }
       return;
     }
-    const channel: MuxChannel = {
-      socket,
-      target,
-      name,
-      sid: null,
-      createdAt: Date.now(),
-    };
-    const cols = Math.max(1, Number(q.cols) || 120);
-    const rows = Math.max(1, Number(q.rows) || 40);
-    // 没传 shell 时让目标侧 agent 用它的 $SHELL（SSH 远端常用 bash；容器/宿主终端
-    // 仍显式传 zsh/bash）。
-    const shell = q.shell || '';
-    const create = q.create !== '0';
-    const resume = q.resume === '1';
-    const fromTermId = q.from ?? '';
+    if (socket.readyState !== 1) return;
+
     let cwd = q.cwd;
     if (fromTermId && TERMID_RE.test(fromTermId)) {
       cwd = (await muxSessionMeta(target, fromTermId).catch(() => undefined))?.cwd || cwd;
     }
-
-    socket.on('message', (data: unknown, isBinary?: boolean) => {
-      const sid = channel.sid;
-      if (isBinary !== false && sid != null) {
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-        sendAgent(agent, encodeData(sid, buf));
-        return;
-      }
-      if (typeof data !== 'string' && !Buffer.isBuffer(data)) return;
-      let msg: { type?: string; cols?: number; rows?: number };
-      try {
-        msg = JSON.parse((typeof data === 'string' ? data : data.toString()).toString()) as typeof msg;
-      } catch {
-        return;
-      }
-      if (msg.type === 'resize' && sid != null) {
-        sendAgent(agent, encodeJson({
-          type: 'resize',
-          sid,
-          cols: Math.max(1, msg.cols ?? cols),
-          rows: Math.max(1, msg.rows ?? rows),
-        }));
-      } else if (msg.type === 'detach' && sid != null) {
-        sendAgent(agent, encodeJson({ type: 'detach', sid }));
-        agent.channels.delete(sid);
-        channel.sid = null;
-        try { socket.close(1000, 'detached'); } catch { /* noop */ }
-      } else if (msg.type === 'kill') {
-        sendAgent(agent, encodeJson({ type: 'kill', name }));
-        if (sid != null) sendAgent(agent, encodeJson({ type: 'detach', sid }));
-      }
-    });
-    socket.on('close', () => {
-      if (channel.sid != null) {
-        sendAgent(agent, encodeJson({ type: 'detach', sid: channel.sid }));
-        agent.channels.delete(channel.sid);
-      }
-    });
-    socket.on('error', () => {
-      if (channel.sid != null) {
-        sendAgent(agent, encodeJson({ type: 'detach', sid: channel.sid }));
-        agent.channels.delete(channel.sid);
-      }
-    });
 
     try {
       await attachChannel(agent, channel, {
@@ -773,7 +853,19 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
       const message = e instanceof Error ? e.message : String(e);
       sendJson(socket, { type: 'error', message });
       try { socket.close(1011, 'msmux attach failed'); } catch { /* noop */ }
+      return;
     }
+    // attach 期间才到的 kill（message 监听早已挂上，但当时 sid 还是 null）：会话刚建
+    // 就被用户放弃 → 立刻回收，别留孤儿。
+    if (killRequested) {
+      removeChannel(agent, channel);
+      await withControl(agent, () => sendAndWait(agent!, { type: 'kill', name }, 8_000)).catch(() => {});
+      try { socket.close(1000, 'closed after attach'); } catch { /* noop */ }
+      return;
+    }
+    // attach 期间浏览器断开了（刷新/切走）：会话本身按语义保留，这里只补一次 detach，
+    // 别让 daemon 的 attached 计数与输出扇出挂在一个死 socket 上。
+    if (socket.readyState !== 1) detachChannel();
   });
 
   app.get('/api/mux/agents', async (req, reply) => {
@@ -791,7 +883,7 @@ export async function registerMuxAgent(app: FastifyInstance, cfg: Config): Promi
         appVersion: a.appVersion,
         pid: a.pid,
         remote: a.remote,
-        channels: a.channels.size,
+        channels: channelCount(a),
       })),
     };
   });

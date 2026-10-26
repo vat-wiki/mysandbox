@@ -115,6 +115,7 @@ const paneBackend = ref<'' | 'tmux' | 'msmux'>('')
 function onBackend(b: 'tmux' | 'msmux') {
   if (props.node.kind !== 'leaf') return
   paneBackend.value = b
+  ops.onBackend(props.group, props.node.termId, b)
 }
 let cwdSeq = 0
 let cwdTimer: ReturnType<typeof setInterval> | null = null

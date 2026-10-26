@@ -74,34 +74,36 @@ const emit = defineEmits<{
   (e: 'backend', backend: 'tmux' | 'msmux'): void
 }>()
 
-// 点 ✕ 关闭时由父组件调用：发 {type:'kill'} 控制帧让后端 tmux kill-session 真杀会话。
-// 不在 onBeforeUnmount 里发--刷新页面也会触发 unmount，那时发 kill 会误杀会话、破坏刷新保留。
-// CONNECTING 时也不能跳过（原实现只查 OPEN）：断线自动重连未完成的窗口里点 ✕，kill 帧
-// 被静默丢弃 → 服务端当纯 detach → 会话永活（「所有终端」里一直挂着、看似 ✕ 没生效）。
-// 挂到 open 再发；close 先行入队，TCP 保序，服务端先收 kill 再见断开，wantKill 落地。
-// fire-and-forget：open 前组件就卸载也无妨——没送到 kill 就当纯 detach（真 tmux 语义）。
+// 点 ✕ 关闭时由父组件调用。真杀会话由父组件经 HTTP 端点（killTermSessionByTerm）完成——
+// 非激活 tab 的 socket 已经 detach（detachWs 把 ws 置空），这里**不能**指望 kill 帧：
+// 以前 `if (!ws) pendingKill = true` 在后台 tab 上会永远等不到 socket，关闭静默失效。
+// 这里只做两件事：① socket 存在时顺手补一发 `{type:'kill'}`（服务端把它当墓碑，覆盖
+// 「attach/create 正在飞、HTTP kill 先到一步扑空」的竞态）；② 断开自己的 socket。
+// **不在 onBeforeUnmount 里发**：刷新页面同样触发 unmount，那时杀掉会话会破坏刷新保留。
 function kill() {
-  // 在线探测/建连窗口内用户就点了 ✕：记下来，等 socket 建好立即补发。
-  if (!ws) {
-    pendingKill = true
-    return
-  }
-  const send = () => {
-    try {
-      ws?.send(JSON.stringify({ type: 'kill' }))
-    } catch {
-      /* socket 已关就忽略：没送到 kill 就当纯 detach，会话保留（真 tmux 语义） */
+  const sock = ws
+  if (sock) {
+    const send = () => {
+      try {
+        sock.send(JSON.stringify({ type: 'kill' }))
+      } catch {
+        /* socket 已关：HTTP 端点那条路负责真杀 */
+      }
+      try {
+        sock.close(1000)
+      } catch {
+        /* noop */
+      }
     }
-    try {
-      ws?.close(1000)
-    } catch {
-      /* noop */
-    }
+    if (sock.readyState === WebSocket.OPEN) send()
+    // 建连窗口（含自动部署）：open 后立刻补发；连接失败则随 socket 一起丢弃，
+    // 会话由父组件的 HTTP kill 兜底。
+    else if (sock.readyState === WebSocket.CONNECTING) sock.addEventListener('open', send, { once: true })
   }
-  if (ws.readyState === WebSocket.OPEN) send()
-  else if (ws.readyState === WebSocket.CONNECTING) {
-    ws.addEventListener('open', send, { once: true })
-    // 连接失败（onerror 后 open 永不来）：随组件卸载一并丢弃，无需额外清理
+  ws = null
+  if (hbTimer) {
+    clearInterval(hbTimer)
+    hbTimer = null
   }
 }
 
@@ -217,11 +219,10 @@ function closeSearch() {
 // quiet：程序性连接/断开（tab 切换的 detach/attach）不打 banner——每次切 tab 都写
 // 「>> 连接/>> 已断开」两行会把 scrollback 刷成切换日志；意外断线路径照常提示。
 let connectSeq = 0
-let pendingKill = false
 // attach 完成前的 stdin 暂存：服务端 /ws/* 在 attach 未完成时会丢弃二进制帧（mux 侧
 // sid==null 直接 return），建连窗口内用户敲的键就无声消失。入队等首帧（history/输出）
 // 到达即 flush——顺序保真，窗口通常 <300ms；再加 2s 兜底定时器，防「会话永远无输出」
-// 时输入滞留。kill 帧同款手法（见上）。
+// 时输入滞留。
 let pendingInput: string[] = []
 let inputReady = false
 let inputFlushTimer: ReturnType<typeof setTimeout> | null = null
@@ -318,10 +319,6 @@ async function connectWs(quiet = false) {
       (backfilled ? '&resume=1' : '')
   }
   ws = new WebSocket(url)
-  if (pendingKill) {
-    pendingKill = false
-    kill()
-  }
   const sock = ws
   ws.binaryType = 'arraybuffer'
   // 每条连接重置 stdin 闸门与会话结束标记：pendingInput 跨连接保留（建连窗口的击键

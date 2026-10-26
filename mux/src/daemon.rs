@@ -409,7 +409,7 @@ async fn output_task(
     manager: Arc<Manager>,
     sid: u32,
     name: String,
-    last_seq: u64,
+    mut last_seq: u64,
     mut rx: tokio::sync::broadcast::Receiver<SessionEvent>,
     out: mpsc::Sender<Frame>,
     mut cancel: watch::Receiver<bool>,
@@ -438,15 +438,18 @@ async fn output_task(
                     break;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    let _ = send_event(
-                        &out,
-                        &Response::Error {
-                            message: format!("output lagged by {n} frames; reattach to resync"),
-                        },
-                    )
-                    .await;
-                    let _ = manager.get_by_id(sid);
-                    break;
+                    // 事件缓冲被打爆（链路慢/浏览器跟不上）：以前直接 break，输出永久停在
+                    // 这一帧而浏览器 socket 还开着 → 界面静默冻结、只能手动刷新。这里改成
+                    // 原地重绘（真实状态在 vt100 模型里），锚点推到当前 seq 后继续收增量。
+                    warn!(sid, lagged = n, "output lagged; resyncing screen");
+                    let Some(session) = manager.get_by_id(sid) else {
+                        break;
+                    };
+                    let (seq, bytes) = session.resync();
+                    if out.send(Frame::data(sid, bytes)).await.is_err() {
+                        break;
+                    }
+                    last_seq = seq;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
