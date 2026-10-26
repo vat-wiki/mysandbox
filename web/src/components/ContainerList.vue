@@ -622,7 +622,7 @@ const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
 // 软键盘态（全局信号，取立即态）：键盘开着时底栏整条滑出屏幕——这块空间属于终端，
 // 且有的浏览器弹键盘会把 fixed 底栏顶到键盘上方白吃 40px。终端自身的让位（带延迟的
 // 稳定态）见 usePhoneToolbar。
-const { kbRaw: kbRawGlobal } = useVirtualKeyboard()
+const { kbRaw: kbRawGlobal, layoutMode: kbLayoutMode } = useVirtualKeyboard()
 
 // —— 键盘态容器反向补偿（布局视口模式专用）——
 // 华为浏览器/Android adjustResize 这类壳弹键盘时会**缩布局视口**，h-dvh 跟着矮、
@@ -664,7 +664,9 @@ onUnmounted(() => {
   termColObs = null
 })
 const kbPanelStyle = computed(() =>
-  isPhone.value && kbRawGlobal.value && termColH.value > 0 ? { height: `${termColH.value}px` } : undefined,
+  isPhone.value && kbRawGlobal.value && kbLayoutMode.value && termColH.value > 0
+    ? { height: `${termColH.value}px` }
+    : undefined,
 )
 // 产品版本号（vite define 注入，根 package.json）：品牌块展示 + rail 展开键 tooltip。
 watch(collapsed, (v) => {

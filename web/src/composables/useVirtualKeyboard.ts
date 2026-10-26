@@ -38,6 +38,11 @@ const kbRaw = ref(false)
 const kbOpen = ref(false)
 /** 稳定态键盘高度（px）。量化过的值，只在变化 ≥ KB_STEP 时更新 */
 const kbHeight = ref(0)
+/**
+ * 本轮键盘是不是「布局视口模式」（浏览器自己缩了布局）。真 → 消费方需要反向补偿
+ * （把容器钉回开键盘前的高度）；视觉视口模式布局没动，钉高只会引入无谓的漂移。
+ */
+const layoutMode = ref(false)
 /** 键盘顶边在**布局视口**坐标里的位置：position: fixed 的定位基准 */
 const kbTop = ref(0)
 /**
@@ -81,13 +86,14 @@ function scheduleRecheck() {
   rechecks = [320, 820].map((d) => window.setTimeout(onVv, d))
 }
 
-function applyKeyboard(raw: number) {
+function applyKeyboard(raw: number, byLayout: boolean) {
   if (raw <= KB_MIN) return
   // 已开且高度变化不足一个量化台阶：保持原值，不触发下游重排
   if (kbOpen.value && Math.abs(raw - kbHeight.value) < KB_STEP) return
   kbOpen.value = true
   kbHeight.value = raw
   kbTopAtOpen.value = kbTop.value
+  layoutMode.value = byLayout
 }
 
 function scheduleClose() {
@@ -96,6 +102,7 @@ function scheduleClose() {
     closeTimer = 0
     kbOpen.value = false
     kbHeight.value = 0
+    layoutMode.value = false
   }, KB_CLOSE_DELAY)
 }
 
@@ -130,11 +137,12 @@ function onVv() {
   //      「无键盘基线 − 当前 innerHeight」识别。第二种模式下浏览器已经把内容
   //      让过位了，我们只需要再给工具条腾地方（见 kbTopAtOpen 的用法）。
   const rawVisual = Math.max(0, Math.round(ih - vv.height - vv.offsetTop))
+  const byVisual = rawVisual > KB_MIN
   const layoutShrunk = Math.abs(ih - vv.height) < 4 // 布局与视觉同高 = 没有浮层键盘
   // 只在手机宽度内认这种模式：桌面拖窗也会让 innerHeight 小于历史最大值，误判成键盘
   // 会让底栏/工具条跟着抖（虽然各处都有 isPhone 闸，但状态本身也不该乱翻）
   const rawLayout = layoutShrunk && iw <= 768 ? Math.max(0, Math.round(baseHeight - ih)) : 0
-  const raw = rawVisual > KB_MIN ? rawVisual : rawLayout > KB_MIN ? rawLayout : rawVisual
+  const raw = byVisual ? rawVisual : rawLayout > KB_MIN ? rawLayout : rawVisual
 
   const wasRaw = kbRaw.value
   kbRaw.value = raw > KB_MIN
@@ -153,7 +161,7 @@ function onVv() {
   clearSettle()
   settleTimer = window.setTimeout(() => {
     settleTimer = 0
-    applyKeyboard(raw)
+    applyKeyboard(raw, !byVisual)
   }, KB_SETTLE)
 }
 
@@ -173,5 +181,5 @@ function startWatch() {
 
 export function useVirtualKeyboard() {
   startWatch()
-  return { kbRaw, kbOpen, kbHeight, kbTop, kbTopAtOpen, vvHeight, vvOffsetTop, vvTick }
+  return { kbRaw, kbOpen, kbHeight, kbTop, kbTopAtOpen, layoutMode, vvHeight, vvOffsetTop, vvTick }
 }
