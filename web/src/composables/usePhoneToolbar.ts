@@ -1,21 +1,25 @@
 import { ref, computed, watch, onBeforeUnmount, nextTick, type Ref } from 'vue'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
 import { isPhone } from '@/composables/useDevice'
+import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
 
 // 手机软键盘适配 + 触屏工具条的唯一归属（从 Terminal.vue 整体抽出，2026-10-26）。
 // 抽出动机：终端组件按组/分屏多实例常驻，而这里是「全局信号（visualViewport）×
-// 每实例状态（kbOpen/kbShift/工具条）」的交界——叠放 bug（v0.10.5 修）的根子就是
+// 每实例状态（键盘态/工具条）」的交界——叠放 bug（v0.10.5 修）的根子就是
 // 这条边界散落在 2000 行组件里看不全。收进一个文件后，边界规则可以一句话说完：
 //
-//   全局信号只允许驱动「无归属争议」的布尔（kbOpen）；凡涉及位移/定位/交互的
+//   全局信号只允许驱动「无归属争议」的布尔（kbOpen）；凡涉及尺寸/定位/交互的
 //   派生计算与 UI 显示权，一律以「本实例持焦」为前提（termFocused 门控）。
+//
+// 键盘的时序/量化（什么时候算"开了"、收起延迟多久）是全局的，归
+// composables/useVirtualKeyboard.ts；本文件只做「本实例要不要让位、让多少」。
 //
 // 归属判定 = 容器 focusin/focusout（后台实例 display:none 不可能聚焦，天然出局）。
 // deps 是终端本体能力（发键/滚动/粘贴/刷新/字号），由 Terminal.vue 注入——
 // 本文件不 import xterm、不碰 WS，保持纯 UI 逻辑可独立推理。
 
 export interface PhoneToolbarDeps {
-  /** 终端根元素（kbShift 位移作用对象 + 锚点计算），display:none 时 rect 为 0 */
+  /** 终端根元素（让位量测量对象），display:none 时 rect 为 0 */
   rootEl: Ref<HTMLElement | null>
   /** 终端容器元素（焦点监听挂点；xterm 隐藏 textarea 的 focus 事件从这里冒泡） */
   el: Ref<HTMLElement | null>
@@ -32,65 +36,104 @@ export interface PhoneToolbarDeps {
   copySelection: () => void
   refreshTerminal: () => void
   stepFontSize: (delta: number) => void
-  /** xterm 隐藏 textarea 引用（锚点计算用；capture 阶段尚未聚焦，不能查 activeElement） */
-  textarea: () => HTMLTextAreaElement | null
 }
 
 type TbItem = ToolBtn | { t: 'settings' } | { t: 'cmds' }
 
 export function usePhoneToolbar(deps: PhoneToolbarDeps) {
-  // —— 本实例是否持焦（工具条显隐第二把闸）——
+  // —— 本实例是否持焦（工具条显隐 + 让位归属的闸）——
   // focusin 置真；focusout 后下一拍核实——焦点可能在容器内子元素间移动（textarea ↔
-  // 搜索框），真离开才算失焦。后台实例不可能收到 focusin，天然不显工具条。
+  // 搜索框），真离开才算失焦。后台实例不可能收到 focusin，天然不显工具条、也不让位。
   const termFocused = ref(false)
+  // 让位归属 + 粘滞：只在持焦时翻转（开→让位），失焦不立刻收回——键盘收起有
+  // KB_CLOSE_DELAY 的窗口期，窗口内再点回来就不产生任何尺寸变化（A 的核心）。
+  const kbShrink = ref(false)
   const onFocusedIn = () => {
     termFocused.value = true
-    // 夺焦时键盘多半已开着（vv 无新事件）→ kbShift 可能是失焦期间的陈值/0，
-    // 立即按当前锚点重算一次，工具条与位移同步落位。
-    if (kbOpen.value) syncShift()
   }
   const onFocusedOut = () => {
     setTimeout(() => {
-      termFocused.value = !!deps.el.value?.contains(document.activeElement)
+      const active = document.activeElement
+      termFocused.value = !!deps.el.value?.contains(active)
+      // 焦点搬去了**别的终端 pane**（分屏）：立刻交还让位权，别让两份让位叠着算。
+      // 其余失焦（点空白/切视图 = 键盘要收）保持粘滞——延迟窗口正是为这种情形留的。
+      if (!termFocused.value && active instanceof HTMLElement && active.closest('.xterm')) kbShrink.value = false
     })
   }
 
-  // —— 软键盘纯 CSS 裁切（仅手机）——
-  // 键盘弹起时不改终端盒子尺寸：xterm/PTY 的 cols/rows 保持不变，不触发 fit/resize。
-  // 外层 root 固定并裁切，内层按 kbShift 整盒上移。pointerdown 记录触点对应的原始
-  // 内容坐标；键盘出现后只抬到刚好让这个坐标保持在工具条上方。没有触点兜底时才按
-  // 终端底部计算。cols/rows 不变，回滚位置不会被 resize/reflow 重置。
-  const kbShift = ref(0)
-  const kbOpen = ref(false)
-  const kbToolbarTop = ref(0)
+  // —— 软键盘：真实让位（resize），不是整盒平移 ——
+  // 键盘弹起时**缩终端盒子**：rows 跟着可见高度走，xterm fit → 后端 exec.resize →
+  // 备用屏 TUI（claude/codex）拿到的窗口尺寸与可见区一致，光标行/输入框永远在屏内。
+  // 此前是「盒子不动 + 内层整盒上移」，结构上过不去——备用屏没有回滚缓冲，平移切掉的
+  // frame 上半部分滚不回来（alt screen 只有一个屏幕）。
+  //
+  // 三次降噪，让每次开合最多一次 resize 且不刺眼：
+  //   1) 量化：键盘高度变化 < KB_STEP 不重建尺寸（候选栏/预测栏增减被吞掉，见
+  //      useVirtualKeyboard）；细分行数变化交给 xterm fit 的幂等性兜住。
+  //   2) 非对称：开键盘等动画 settle 后让位，收键盘延迟 900ms 再撑回，窗口内重新聚焦
+  //      则取消——「收起来看一眼再点回来」零 resize（时序同样是全局的）。
+  //   3) 遮罩：盒子尺寸变化时盖一层黑（kbMask）盖住 xterm reflow + TUI 整帧重绘，
+  //      观感从「内容跳一下」变成「黑一下」。
+  const KB_GAP = 6 // 终端底与工具条之间的呼吸位（px）
+  const KB_MAX_RATIO = 0.62 // 让位上限：终端至少留 38% 高（≈16 行），防小屏键盘吃光
+  const KB_MASK_MS = 260
+
+  const { kbRaw, kbOpen, kbHeight, kbTop, vvTick } = useVirtualKeyboard()
+
   const toolbarHeight = ref(0)
   const toolbarEl = ref<HTMLDivElement | null>(null)
-  let focusAnchorY: number | null = null
   let toolbarResizeObs: ResizeObserver | null = null
-  let vvCleanup: (() => void) | null = null
-  function saveFocusAnchor(event: PointerEvent) {
-    if (!isPhone.value) return
-    const textarea = deps.textarea()
-    const rect = textarea?.getBoundingClientRect()
-    const focusY = rect && rect.height > 0 ? rect.top + rect.height / 2 : event.clientY
-    focusAnchorY = focusY + kbShift.value
-  }
-  // 位移计算：只对持焦实例有意义（后台实例 root display:none，rect 全 0，算出来是垃圾）。
-  function syncShift() {
-    const vv = window.visualViewport
-    if (!vv) return
+
+  // 稳定态跟随：持焦时 kbShrink 跟键盘走；失焦时只等键盘确认收起再收回（粘滞，见上）。
+  watch(
+    [kbOpen, termFocused],
+    ([open, focused]) => {
+      if (focused) kbShrink.value = open
+      else if (!open) kbShrink.value = false
+    },
+    { immediate: true },
+  )
+
+  // 让位量 = 键盘顶（含工具条）压到终端盒里的高度，量「被压住多少」而不是「键盘多高」：
+  // 分屏时上方 pane 的底边本来就在键盘之上（量出来 0，不参与让位），下方 pane 才是被压的
+  // 那个；有的浏览器弹键盘会顺带缩布局视口（已经让过位了 → 也量出 0）。同一公式都对。
+  // 用稳定态 kbHeight 而不是实时 vv：延迟窗口里键盘已经走了，高度不能跟着变。
+  const kbInset = computed(() => {
+    void vvTick.value
+    if (!isPhone.value || !kbShrink.value) return 0
     const root = deps.rootEl.value
-    const layoutBottom = root ? root.getBoundingClientRect().bottom : 0
-    const visualBottom = vv.offsetTop + vv.height
-    const safeBottom = visualBottom - toolbarHeight.value - 14
-    const contentBottom = layoutBottom - 6
-    const anchorBottom = focusAnchorY ?? contentBottom
-    kbToolbarTop.value = Math.max(0, visualBottom - toolbarHeight.value - 6)
-    kbShift.value = Math.max(0, Math.round(anchorBottom - safeBottom))
-  }
-  function setupViewportWatch() {
-    const vv = window.visualViewport
-    if (!vv || vvCleanup) return
+    if (!root) return 0
+    const rect = root.getBoundingClientRect()
+    if (rect.height <= 0) return 0
+    const toolbarTop = window.innerHeight - kbHeight.value - toolbarHeight.value - KB_GAP
+    const wanted = Math.max(0, rect.bottom - toolbarTop)
+    const cap = Math.round(rect.height * KB_MAX_RATIO)
+    return Math.max(0, Math.min(Math.round(wanted), cap))
+  })
+
+  // 工具条定位用**立即态**几何（kbTop 跟 vv 走）：键盘动画期间它就贴着键盘上沿滑，
+  // 不用等 settle；收起瞬间工具条立刻消失（见 Terminal 模板的 kbRaw 闸）。
+  const kbToolbarTop = computed(() => {
+    void vvTick.value
+    if (!kbRaw.value) return 0
+    return Math.max(0, kbTop.value - toolbarHeight.value - KB_GAP)
+  })
+
+  // 遮罩窗口：尺寸一变立刻盖住，等 xterm refit + 应用重绘落地后再淡出。
+  const kbMask = ref(false)
+  let maskTimer = 0
+  watch(kbInset, () => {
+    kbMask.value = true
+    if (maskTimer) clearTimeout(maskTimer)
+    maskTimer = window.setTimeout(() => {
+      maskTimer = 0
+      kbMask.value = false
+    }, KB_MASK_MS)
+  })
+
+  // 工具条高度测量（让位量与定位都吃它）：键盘态显隐只看 opacity，盒子高度恒可测。
+  function setupToolbarMeasure() {
+    if (toolbarResizeObs) return
     const syncToolbarHeight = () => {
       toolbarHeight.value = toolbarEl.value?.offsetHeight ?? 0
     }
@@ -99,37 +142,17 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
       toolbarResizeObs = new ResizeObserver(syncToolbarHeight)
       toolbarResizeObs.observe(toolbarEl.value)
     }
-    const onVv = () => {
-      const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
-      if (kb <= 120) {
-        kbOpen.value = false
-        kbToolbarTop.value = 0
-        kbShift.value = 0 // 透值过滤地址栏小幅伸缩
-        focusAnchorY = null
-        return
-      }
-      // 键盘态全程跟随（kbOpen 供夺焦瞬间工具条即时正确）；位移只给持焦实例算。
-      kbOpen.value = true
-      if (termFocused.value) syncShift()
-    }
-    vv.addEventListener('resize', onVv)
-    vv.addEventListener('scroll', onVv)
-    vvCleanup = () => {
-      vv.removeEventListener('resize', onVv)
-      vv.removeEventListener('scroll', onVv)
-      toolbarResizeObs?.disconnect()
-      toolbarResizeObs = null
-    }
   }
-  // 设备形态翻转（桌面缩窄 <768 / 窗口还原）：此前只在挂载时按 isPhone 判一次，
-  // 翻转过的实例永远没有键盘监听。flush post 保证翻转后 toolbarEl 已渲染可测量。
+  // 设备形态翻转（桌面缩窄 <768 / 窗口还原）：此前只在挂载时判一次，翻转过的实例
+  // 永远没有工具条高度。nextTick 保证翻转后 toolbarEl 已渲染可测量。
   watch(
     isPhone,
     (v) => {
-      if (v) nextTick(setupViewportWatch)
+      if (v) void nextTick(setupToolbarMeasure)
       else {
-        vvCleanup?.()
-        vvCleanup = null
+        toolbarResizeObs?.disconnect()
+        toolbarResizeObs = null
+        toolbarHeight.value = 0
       }
     },
     { immediate: true },
@@ -287,8 +310,10 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
 
   onBeforeUnmount(() => {
     stopRepeat() // 长按连发的定时器不随组件卸载自动消失
-    vvCleanup?.()
-    vvCleanup = null
+    if (maskTimer) clearTimeout(maskTimer)
+    maskTimer = 0
+    toolbarResizeObs?.disconnect()
+    toolbarResizeObs = null
   })
 
   return {
@@ -297,11 +322,12 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     onFocusedIn,
     onFocusedOut,
     // 键盘态
+    kbRaw,
     kbOpen,
-    kbShift,
+    kbInset,
+    kbMask,
     kbToolbarTop,
     toolbarEl,
-    saveFocusAnchor,
     // 工具条
     ctrlSticky,
     altSticky,

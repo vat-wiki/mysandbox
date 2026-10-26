@@ -68,6 +68,7 @@ import { newId } from '@/lib/id'
 import { containerColor, containerColorA, stateLabel } from '@/lib/utils'
 import { baseLabel, hasBaseAction } from '@/lib/caps'
 import { isPhone, isCoarse } from '@/composables/useDevice'
+import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
 import MobileCard from '@/components/mobile/MobileCard.vue'
 import CardActionSheet from '@/components/mobile/CardActionSheet.vue'
 import type { CardAction } from '@/components/mobile/CardActionSheet.vue'
@@ -618,6 +619,10 @@ function drawerTouchEndHandler() {
 // 收起态只留导航骨架：展开键 / ＋ 新建 / 容器首字图标列（title 带全名与状态）/ 底部环境区。
 // loadBool 为 function 声明（提升），此处可安全前置调用。
 const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
+// 软键盘态（全局信号，取立即态）：键盘开着时底栏整条滑出屏幕——这块空间属于终端，
+// 且有的浏览器弹键盘会把 fixed 底栏顶到键盘上方白吃 40px。终端自身的让位（带延迟的
+// 稳定态）见 usePhoneToolbar。
+const { kbRaw: kbRawGlobal } = useVirtualKeyboard()
 // 产品版本号（vite define 注入，根 package.json）：品牌块展示 + rail 展开键 tooltip。
 watch(collapsed, (v) => {
   railHover.value = null
@@ -5069,11 +5074,13 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     />
 
     <!-- 手机一级导航：终端 / 文件 / AI / 设置。文件 Tab 条与当前 Tab 动作只处理二级编辑态。
-         busy：任一终端组有输出时「终端」图标挂呼吸标（原顶栏 tab 光晕的底栏落点）。 -->
+         busy：任一终端组有输出时「终端」图标挂呼吸标（原顶栏 tab 光晕的底栏落点）。
+         keyboardOpen：软键盘开着时整条滑出（空间让给终端/编辑器）。 -->
     <MobileBottomNav
       v-if="!props.popout"
       :active="mobileNavTarget"
       :busy="busyGroupIds.size > 0"
+      :keyboard-open="kbRawGlobal"
       @navigate="navigateMobileNav"
       @open-ai="openAi()"
       @open-section="settingsSection = $event"

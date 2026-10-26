@@ -6,6 +6,9 @@ import type { MobileNavTarget } from './mobileNavigation'
 defineProps<{
   active: MobileNavTarget
   busy?: boolean // 任一终端组有输出：终端图标挂呼吸标（原顶栏 tab 光晕的底栏落点）
+  // 软键盘开着：整条滑出屏幕。键盘态下这块空间是终端的（且 Android 走 resize 的浏览器
+  // 会把 fixed 底栏顶到键盘上方白吃 40px）；收起后（含延迟窗口）滑回。
+  keyboardOpen?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -29,7 +32,10 @@ const items: { target: MobileNavTarget; label: string; icon: typeof Terminal }[]
 </script>
 
 <template>
-  <nav class="fixed inset-x-0 bottom-0 z-50 flex h-10 border-t border-border bg-background pb-safe md:hidden">
+  <nav
+    class="fixed inset-x-0 bottom-0 z-50 flex h-10 border-t border-border bg-background pb-safe transition-transform duration-200 md:hidden"
+    :class="keyboardOpen ? 'pointer-events-none translate-y-full' : ''"
+  >
     <template v-for="item in items" :key="item.target">
       <!-- 设置：popup 锚定本按钮向上弹（AI 配置/TestLens/集群/通知/版本） -->
       <SettingsMenu

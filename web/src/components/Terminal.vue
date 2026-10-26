@@ -357,7 +357,7 @@ function toolScrollEnd(top: boolean) {
 }
 
 // —— 手机软键盘 + 触屏工具条（usePhoneToolbar 整体归属，边界规则见其头注）——
-// 焦点闸 / 键盘态（kbOpen/kbShift）/ 粘滞修饰 / 分页 / 长按连发全在 composable；
+// 焦点闸 / 键盘让位（kbInset/kbMask）/ 粘滞修饰 / 分页 / 长按连发全在 composable；
 // 这里注入终端本体能力（发键/滚动/粘贴/复制/刷新/字号）并保留短语发送
 // （工具条短语键与快捷指令面板共用）。
 const tb = usePhoneToolbar({
@@ -371,15 +371,14 @@ const tb = usePhoneToolbar({
   copySelection,
   refreshTerminal,
   stepFontSize,
-  textarea: () => term?.textarea ?? null,
 })
 const {
   termFocused,
-  kbOpen,
-  kbShift,
+  kbRaw,
+  kbInset,
+  kbMask,
   kbToolbarTop,
   toolbarEl,
-  saveFocusAnchor,
   ctrlSticky,
   altSticky,
   sendToolSeq,
@@ -671,8 +670,8 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
   <!-- bg-black + 内边距放外层：el 自身不带 padding，FitAddon 量到的 clientWidth/clientHeight 才是
        真实内容区，否则会多算 ~1 行、末行光标被底部边缘切掉一半。
        overscroll-none：iOS 聚焦终端时防页面整体上滚（终端是 body 内唯一内容，链上加锁即可）。
-       手机软键盘弹起时不改 xterm 盒子尺寸（kbShift 只对内层 shift 做整盒上移，见 setupViewportWatch），
-       xterm/PTY 的 cols/rows 保持稳定，回滚位置也不会被 resize/reflow 重置。 -->
+       手机软键盘弹起时**缩内层盒子**（kbInset 抬 bottom，ResizeObserver → refit → exec.resize）：
+       rows 跟着可见高度走，备用屏 TUI 的窗口尺寸与可见区一致，光标行恒在屏内。 -->
   <!-- ⚠️ 根容器必须 flex-1 min-h-0 而不是 h-full：叶子是 flex-col（pane 头部 + 本体），
        h-full = 100% 叶子高，加头部后恒溢出一个头高——终端底部会盖住下方文件 tab 栏
        （旧换显布局溢的是黑底看不出来，编辑器+终端分栏后这 22px 正好压住 tab 栏右侧
@@ -684,13 +683,16 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
          document 顶部 overscroll 触发下拉刷新、手势被浏览器抢走。touch-action: none 让终端区域的手势
          完全交给 JS（xterm 自滚），浏览器不再启动原生平移/下拉刷新/双指缩放。中间层挂 overscroll-none
          挡不住这个——touch 侧的原生滚动链跳过 overflow:hidden 的祖先直达 document。 -->
-    <div
-      class="absolute inset-x-2 top-1.5 bottom-1.5 will-change-transform"
-      :style="kbShift > 0 ? { transform: `translate3d(0, -${kbShift}px, 0)` } : undefined"
-      @pointerdown.capture="saveFocusAnchor"
-    >
+    <div class="absolute inset-x-2 top-1.5" :style="{ bottom: `calc(0.375rem + ${kbInset}px)` }">
       <div ref="el" class="absolute inset-0 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
     </div>
+    <!-- 键盘让位遮罩：盒子尺寸变化的那一下把 xterm reflow + TUI 整帧重绘盖住（kbMask
+         由 usePhoneToolbar 按让位量变化开窗，260ms 后淡出）。只盖内容层，搜索框/兜底框/
+         断线条都在更高 z 上照常可见。 -->
+    <div
+      class="pointer-events-none absolute inset-0 z-[1] bg-black transition-opacity duration-150"
+      :class="kbMask ? 'opacity-100' : 'opacity-0'"
+    />
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
          浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
     <div class="search-shell" v-if="searchVisible">
@@ -751,8 +753,9 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
          参与分页。桌面不渲染。工具条是「键盘态 + 本实例持焦」双闸覆盖层——始终渲染以便
-         测量高度，但平时不可见，且不参与终端盒子布局。焦点闸必须：终端组件按组/分屏
-         多实例常驻，kbOpen（window.visualViewport）是全局信号、所有实例同时为真，
+         测量高度，但平时不可见；定位用 kbToolbarTop 贴键盘上沿，终端自身已按「让位量 =
+         键盘侵入 + 工具条高」缩过盒子，所以工具条落位后不会压住内容。焦点闸必须：终端组件按组/分屏
+         多实例常驻，kbRaw（window.visualViewport）是全局信号、所有实例同时为真，
          而工具条 Teleport 到 body 不受源组件 v-show 约束——不按焦点收敛的话多实例
          工具条会全部显形精确叠放，tap 落到 DOM 末尾实例（不一定是眼前终端），其 WS
          已 detach，输入进 pendingInput 无声黑洞（表现：软键盘字母正常、快捷键全灭）。
@@ -764,8 +767,8 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
         v-if="isPhone"
         ref="toolbarEl"
         class="fixed inset-x-2 z-[80] select-none overflow-hidden border-t border-zinc-800 bg-black pt-1 transition-opacity md:hidden"
-        :class="kbOpen && termFocused ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
-        :style="kbOpen && termFocused ? { top: `${kbToolbarTop}px` } : undefined"
+        :class="kbRaw && termFocused ? 'opacity-100' : 'pointer-events-none invisible opacity-0'"
+        :style="kbRaw && termFocused ? { top: `${kbToolbarTop}px` } : undefined"
         @touchstart="tbTouchStart"
         @touchend="tbTouchEnd"
       >
