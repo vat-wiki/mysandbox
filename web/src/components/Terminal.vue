@@ -13,7 +13,8 @@ import { noteTermOutput } from '@/lib/terminalActivity'
 import { muxAgentAvailable } from '@/lib/mux'
 import { RESTORED_TERM_IDS } from '@/lib/termlayout'
 import { isCoarse, isPhone } from '@/composables/useDevice'
-import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
+import { KEY_POOL } from '@/lib/termToolbar'
+import { usePhoneToolbar } from '@/composables/usePhoneToolbar'
 import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
 import QuickCmdsSheet from '@/components/QuickCmdsSheet.vue'
 
@@ -516,27 +517,21 @@ function recoverOnReturn() {
 
 const el = ref<HTMLDivElement | null>(null)
 // 根容器（带键盘占位 padding 的那层）：软键盘自适应要量它底边到布局视口底的距离，
-// 扣掉布局自带的底部留白（移动端底部 tab 的 pb），见 setupViewportWatch。
+// 扣掉布局自带的底部留白（移动端底部 tab 的 pb），见 usePhoneToolbar 的 setupViewportWatch。
 const rootEl = ref<HTMLDivElement | null>(null)
 let term: XTerm | null = null
 // 程序性聚焦抑制标志：refit 的 term.focus() 是「切 tab 恢复/窗口 resize」的附带动作，
 // 不代表用户把焦点落在哪个 pane——DOM focus 事件在 focus() 调用内同步派发，同步开关
 // 即可拦住。分屏新 pane / 点击 pane / 重连按钮的聚焦是真实落焦，照常上抛。
 let suppressFocusEmit = false
-// 本实例是否持有焦点（手机工具条显隐的第二把闸，见模板工具条注释）：focusin 置真，
-// focusout 后下一拍核实——焦点可能在容器内子元素间移动（textarea ↔ 搜索框），真离开
-// 才算失焦。后台实例（display:none / v-show 切走）不可能收到 focusin，天然不显工具条
-// ——没有这把闸，多组/分屏时每个实例的工具条会随 kbOpen 同时显形叠在 body 上，
-// 点到的是 DOM 末尾那个（不一定是眼前终端），输入进它断连的 pendingInput 黑洞。
-const termFocused = ref(false)
+// 焦点落位双通道：上抛（文件面板跟随最后聚焦的 pane）+ 手机工具条焦点闸
+// （termFocused 归属 usePhoneToolbar，tb 在下方声明——监听器挂载后才触发，无 TDZ 问题）。
 const onFocusIn = () => {
-  termFocused.value = true
+  tb.onFocusedIn()
   if (!suppressFocusEmit) emit('focus')
 }
 const onFocusOut = () => {
-  setTimeout(() => {
-    termFocused.value = !!el.value?.contains(document.activeElement)
-  })
+  tb.onFocusedOut()
 }
 let fit: FitAddon | null = null
 let ws: WebSocket | null = null
@@ -990,222 +985,49 @@ function refreshTerminal() {
 function sendRaw(s: string) {
   sendStdin(s)
 }
-// Alt / Ctrl 粘滞修饰（Termux extra-keys 同款交互）：点亮后下一个按键带修饰发出，
-// 用掉即灭；可叠加（Ctrl+Alt 都点亮再按字母 = C-M-x）。Ctrl 的改写只对可编码形状生效
-// （单字符 @A-Z[\]^_ → 控制字符、CSI 导航键 → ;5 修饰参数），改不动的原样发出；
-// Alt 恒为 ESC 前缀。软键盘敲的单字符在 attachCustomKeyEventHandler 里接管（见下），
-// 工具条自身按键走 sendToolSeq / tbDown。
-const altSticky = ref(false)
-const ctrlSticky = ref(false)
-// Ctrl 修饰的序列改写：返回 null = 该形状没有 Ctrl 编码。
-function ctrlify(s: string): string | null {
-  if (s.length === 1) {
-    const code = s.toUpperCase().charCodeAt(0)
-    if (code < 64 || code > 95) return null
-    return String.fromCharCode(code & 0x1f)
-  }
-  const m = /^\x1b\[(\d*)([A-H~])$/.exec(s)
-  if (m) return `\x1b[${m[1] || '1'};5${m[2]}`
-  return null
-}
-// 工具条按键统一出口（seq 键 / 自定义键 / 粘滞后的单键）：消费粘滞态后发送。
-function sendToolSeq(seq: string) {
-  if (ctrlSticky.value) {
-    ctrlSticky.value = false
-    seq = ctrlify(seq) ?? seq
-  }
-  if (altSticky.value) {
-    altSticky.value = false
-    seq = '\x1b' + seq
-  }
-  sendRaw(seq)
-}
-// ⋯ 打开工具条设置弹窗（ToolbarSettingsDialog）：按钮编排收进独立区域。
-const settingsOpen = ref(false)
-// 「指令」打开快捷指令面板（QuickCmdsSheet）：点条目 = 发送整条命令并回车。
-const cmdsOpen = ref(false)
-function runQuickCmd(cmd: string) {
-  sendSnippet(cmd)
-}
-
-// 工具条方向键长按连发：pointerdown 即发一次，400ms 后起 80ms 间隔连发；抬起/取消/
-// 移出（touch 有隐式指针捕获，pointerup 恒能到达）停止。只用于 ↑↓←→ 这类可重复键。
-let repDelay = 0
-let repIv = 0
-function keyRepeat(ch: string) {
-  sendRaw(ch)
-  stopRepeat()
-  repDelay = window.setTimeout(() => {
-    repIv = window.setInterval(() => sendRaw(ch), 80)
-  }, 400)
-}
-function stopRepeat() {
-  if (repDelay) clearTimeout(repDelay)
-  if (repIv) clearInterval(repIv)
-  repDelay = 0
-  repIv = 0
-}
-
-// —— 触屏工具条按钮（全可配置）——
-// 按钮列表/候选池/增删逻辑在 lib/termToolbar.ts（与设置弹窗共用同一份模块级状态），
-// 这里只负责渲染与把动作派发到终端（runKeyBtn/tbDown）。
+// —— 手机软键盘 + 触屏工具条（usePhoneToolbar 整体归属，边界规则见其头注）——
+// 焦点闸 / 键盘态（kbOpen/kbShift）/ 粘滞修饰 / 分页 / 长按连发全在 composable；
+// 这里注入终端本体能力（发键/滚动/粘贴/复制/刷新/字号）并保留短语发送
+// （工具条短语键与快捷指令面板共用）。
+const tb = usePhoneToolbar({
+  rootEl,
+  el,
+  sendRaw,
+  emitEnter: () => emit('enter'),
+  toolScroll,
+  toolScrollEnd,
+  toolPaste,
+  copySelection: () => {
+    if (term?.hasSelection()) void copyText(term.getSelection()).then(() => term?.clearSelection())
+  },
+  refreshTerminal,
+  stepFontSize,
+  textarea: () => term?.textarea ?? null,
+})
+const {
+  termFocused,
+  kbOpen,
+  kbShift,
+  kbToolbarTop,
+  toolbarEl,
+  saveFocusAnchor,
+  ctrlSticky,
+  altSticky,
+  sendToolSeq,
+  runKeyBtn,
+  tbDown,
+  stopRepeat,
+  toolPages,
+  tbPage,
+  settingsOpen,
+  cmdsOpen,
+  runQuickCmd,
+  tbTouchStart,
+  tbTouchEnd,
+} = tb
 function sendSnippet(s: string) {
   sendRaw(s + '\r')
   emit('enter') // 短语多带命令语义，与工具条回车一致走 cwd 跟随
-}
-// 单个按钮的点击/按住分派：seq 直发；连发键走 pointerdown（click 忽略防双发）。
-function runKeyBtn(id: string) {
-  const e = KEY_POOL[id]
-  if (!e) return
-  const a = e.act
-  switch (a.kind) {
-    case 'seq':
-      sendToolSeq(a.seq)
-      if (id === 'enter' && !ctrlSticky.value && !altSticky.value) emit('enter') // 回车与短语一致走 cwd 跟随
-      break
-    case 'repeat':
-      break // 长按连发在 tbDown 里处理
-    case 'scroll':
-      toolScroll(a.pages)
-      break
-    case 'scrollEnd':
-      toolScrollEnd(a.top)
-      break
-    case 'refresh':
-      refreshTerminal()
-      break
-    case 'paste':
-      void toolPaste()
-      break
-    case 'copy':
-      if (term?.hasSelection()) void copyText(term.getSelection()).then(() => term?.clearSelection())
-      break
-    case 'ctrl':
-    case 'alt':
-      break // 粘滞修饰在 tbDown（pointerdown）里切换——click 生成在某些浏览器不可靠
-    case 'font':
-      stepFontSize(a.delta)
-      break
-  }
-}
-function tbDown(b: ToolBtn) {
-  if (b.t !== 'key') return
-  const a = KEY_POOL[b.id]?.act
-  if (a?.kind === 'ctrl') {
-    ctrlSticky.value = !ctrlSticky.value
-    return
-  }
-  if (a?.kind === 'alt') {
-    altSticky.value = !altSticky.value
-    return
-  }
-  if (a?.kind === 'repeat') {
-    if (ctrlSticky.value || altSticky.value) {
-      sendToolSeq(a.seq) // 粘滞态：首键带修饰发出并消费粘滞（修饰组合没有连发需求）
-      return
-    }
-    keyRepeat(a.seq)
-  }
-}
-
-// —— 工具条分页（固定 2 行 × 7 列，每页键数 TB_PER_PAGE 在 lib/termToolbar.ts）——
-// 两行是整体：键多于 14 个时整个卡片横向轻扫翻页（阈值 48px 且横向位移须大于纵向，
-// 不成手势就不拦截按钮点击），页面滑动有过渡动画；⋯ 设置入口作为列表最后一项参与
-// 分页，不再是常驻末格。页点指示器只在多于 1 页时出现。
-type TbItem = ToolBtn | { t: 'settings' } | { t: 'cmds' }
-// ⋯ 设置与「指令」都是固定入口不进编排列表，恒跟在按钮末尾（⋯ 恒最后一项）。
-const toolItems = computed<TbItem[]>(() => [...toolButtons.value, { t: 'cmds' }, { t: 'settings' }])
-const toolPages = computed<TbItem[][]>(() => {
-  const out: TbItem[][] = []
-  for (let i = 0; i < toolItems.value.length; i += TB_PER_PAGE) out.push(toolItems.value.slice(i, i + TB_PER_PAGE))
-  return out
-})
-const tbPage = ref(0)
-watch(
-  () => toolPages.value.length,
-  (n) => {
-    if (tbPage.value > n - 1) tbPage.value = Math.max(0, n - 1)
-  },
-  { immediate: true },
-)
-let tbTouchX = 0
-let tbTouchY = 0
-let tbTouching = false
-function tbTouchStart(e: TouchEvent) {
-  const t = e.touches[0]
-  tbTouchX = t.clientX
-  tbTouchY = t.clientY
-  tbTouching = true
-}
-function tbTouchEnd(e: TouchEvent) {
-  if (!tbTouching) return
-  tbTouching = false
-  const t = e.changedTouches[0]
-  const dx = t.clientX - tbTouchX
-  const dy = t.clientY - tbTouchY
-  if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return
-  tbPage.value = Math.min(toolPages.value.length - 1, Math.max(0, tbPage.value + (dx < 0 ? 1 : -1)))
-}
-
-// —— 软键盘纯 CSS 裁切（仅手机）——
-// 键盘弹起时不改终端盒子尺寸：xterm/PTY 的 cols/rows 保持不变，不再触发 fit/resize。
-// 键盘弹起时不改 xterm 盒子尺寸：外层 root 固定并裁切，内层 shift 按焦点整盒上移。
-// pointerdown 记录触点对应的原始内容坐标；键盘出现后只抬到刚好让这个坐标保持在
-// 工具条上方。没有触点兜底时才按终端底部计算。cols/rows 不变，回滚位置不会被
-// resize/reflow 重置。
-const kbShift = ref(0)
-const kbOpen = ref(false)
-const kbToolbarTop = ref(0)
-const toolbarHeight = ref(0)
-const toolbarEl = ref<HTMLDivElement | null>(null)
-let focusAnchorY: number | null = null
-let toolbarResizeObs: ResizeObserver | null = null
-let vvCleanup: (() => void) | null = null
-function saveFocusAnchor(event: PointerEvent) {
-  if (!isPhone.value) return
-  const textarea = term?.textarea
-  const rect = textarea?.getBoundingClientRect()
-  const focusY = rect && rect.height > 0 ? rect.top + rect.height / 2 : event.clientY
-  focusAnchorY = focusY + kbShift.value
-}
-function setupViewportWatch() {
-  const vv = window.visualViewport
-  if (!vv) return
-  const syncToolbarHeight = () => {
-    toolbarHeight.value = toolbarEl.value?.offsetHeight ?? 0
-  }
-  syncToolbarHeight()
-  if (toolbarEl.value) {
-    toolbarResizeObs = new ResizeObserver(syncToolbarHeight)
-    toolbarResizeObs.observe(toolbarEl.value)
-  }
-  const onVv = () => {
-    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
-    if (kb <= 120) {
-      kbOpen.value = false
-      kbToolbarTop.value = 0
-      kbShift.value = 0 // 透值过滤地址栏小幅伸缩
-      focusAnchorY = null
-      return
-    }
-    kbOpen.value = true
-    const root = rootEl.value
-    const layoutBottom = root ? root.getBoundingClientRect().bottom : 0
-    const visualBottom = vv.offsetTop + vv.height
-    const safeBottom = visualBottom - toolbarHeight.value - 14
-    const contentBottom = layoutBottom - 6
-    const anchorBottom = focusAnchorY ?? contentBottom
-    kbToolbarTop.value = Math.max(0, visualBottom - toolbarHeight.value - 6)
-    kbShift.value = Math.max(0, Math.round(anchorBottom - safeBottom))
-  }
-  vv.addEventListener('resize', onVv)
-  vv.addEventListener('scroll', onVv)
-  vvCleanup = () => {
-    vv.removeEventListener('resize', onVv)
-    vv.removeEventListener('scroll', onVv)
-    toolbarResizeObs?.disconnect()
-    toolbarResizeObs = null
-  }
 }
 
 // —— 触屏滚动接管（touch 设备）——
@@ -1732,7 +1554,7 @@ onMounted(async () => {
       const withAlt = altSticky.value
       ctrlSticky.value = false
       altSticky.value = false
-      if (withCtrl) out = Array.from(out, (ch) => ctrlify(ch) ?? ch).join('')
+      if (withCtrl) out = Array.from(out, (ch) => tb.ctrlify(ch) ?? ch).join('')
       if (withAlt) out = '\x1b' + out
     }
     if (data.includes('\r')) emit('enter')
@@ -1761,8 +1583,9 @@ onMounted(async () => {
   // 触摸设备不 mount 聚焦（弹系统键盘）：同 refit，键盘只由用户点终端触发。
   if (props.active && !isCoarse.value) term.focus()
 
-  // 软键盘自适应仅手机启用（桌面 visualViewport 变化无意义，少挂监听）。
-  if (isPhone.value) setupViewportWatch()
+  // 软键盘自适应（usePhoneToolbar）：isPhone watch immediate + flush post 自管挂/拆，
+  // 设备形态翻转（桌面缩窄）也会补挂，不再依赖挂载时刻的一次性判定。
+
   // 触屏滚动接管：所有 touch 设备（含平板/触屏本）都挂，鼠标环境零成本（listener 不会被触发）。
   if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) setupTouchScroll()
   document.addEventListener('visibilitychange', recoverOnReturn)
@@ -1808,9 +1631,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('online', recoverOnReturn)
   for (const t of ['pointerdown', 'keydown'] as const)
     document.removeEventListener(t, recoverOnReturn, { capture: true })
-  stopRepeat() // 长按连发的定时器不随组件卸载自动消失
   touchCleanup?.()
-  vvCleanup?.()
   resizeObs?.disconnect()
   el.value?.removeEventListener('focusin', onFocusIn)
   el.value?.removeEventListener('focusout', onFocusOut)
@@ -1941,6 +1762,8 @@ onBeforeUnmount(() => {
          而工具条 Teleport 到 body 不受源组件 v-show 约束——不按焦点收敛的话多实例
          工具条会全部显形精确叠放，tap 落到 DOM 末尾实例（不一定是眼前终端），其 WS
          已 detach，输入进 pendingInput 无声黑洞（表现：软键盘字母正常、快捷键全灭）。
+         显隐/键盘态/粘滞/分页逻辑全部归属 composables/usePhoneToolbar.ts（通用规则见
+         docs/architecture/web.md「Teleport 覆盖层归属」）。
          -->
     <Teleport to="body">
       <div

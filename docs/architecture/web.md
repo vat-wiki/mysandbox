@@ -7,5 +7,6 @@
 - **产品版本号**：唯一真相源 = 根 `package.json` 的 `version`（**手动 semver bump**）。build 时 vite `define` 注入 `__APP_VERSION__`（`env.d.ts` 声明），侧栏品牌块展示 `v<版本>`，rail 收起态挂在展开键 tooltip——零请求，与 `/api/health` 的 `getVersion()` 同源。**提交前 bump 规则见根目录 `AGENTS.md`「Git 工作流」**——界面不会自己变，靠 package.json。
 - **旧页面新版本提示**（`lib/versionCheck.ts`）：SPA 页面 bundle 是加载时刻的快照，部署新版后旧页面无感知——旧 bundle 缺新协议帧分支会静默失能（实例：v0.9.16 msmux resume 补发 `{type:'modes'}`，旧页面收不懂 → 手机回前台触摸滚动失效）。App.vue 挂 `startVersionWatch()`：启动 3s、回前台、网络恢复 + 2min 轮询兜底，对 `/api/health`（免鉴权）的 version 与 `__APP_VERSION__`，不一致弹常驻 toast（60s 节流、只报一次）带「刷新」按钮。
 - dev 模式 vite 代理 `/api` `/ws` 到 7321；build 后 `web/dist` 由后端 `@fastify/static` 同源服务，无 CORS——部署形态决定了前后端接口无需处理跨域。
+- **Teleport 覆盖层归属规则**（2026-10-26 立，学费见 [terminals.md](terminals.md) 手机工具条条目）：凡「每实例组件」往 body Teleport 的覆盖层（工具条、浮动条之类），显隐**不得只依赖全局信号**（`visualViewport`/resize/网络态——所有实例会同时为真，且 Teleport 不受源组件 `v-show` 约束，多实例必然叠放、tap 被 DOM 末尾实例通吃）；必须叠加**归属门控**（本实例持焦 / 活跃 pane 等显式 owner 信号）。全局信号只允许驱动无归属争议的布尔；涉及位移/定位/交互的派生计算一律以持焦为前提。唯一在案实例：手机工具条（逻辑归属 `composables/usePhoneToolbar.ts`，双闸 `kbOpen && termFocused`）。
 - Web 代理的 URL 拼装在 `lib/proxy.ts` 单例，见 [web-proxy.md](web-proxy.md)。
 - 终端体系相关前端约定（tab 分组、msmux 后端切换、OSC 深链、活动提醒）见 [terminals.md](terminals.md)。
