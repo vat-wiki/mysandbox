@@ -76,9 +76,22 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   //      观感从「内容跳一下」变成「黑一下」。
   const KB_GAP = 6 // 终端底与工具条之间的呼吸位（px）
   const KB_MIN_TERM = 120 // 让位上限：终端至少留这么高（≈7~9 行），防小屏键盘吃光
+  /** 盒子尺寸变化时的基础遮盖窗口（xterm 本地 reflow 这一拍） */
   const KB_MASK_MS = 260
+  /**
+   * 「exec.resize 已经发出去」之后再盖多久：覆盖后端往返 + 应用整帧重绘 + xterm 解析渲染。
+   * 比 KB_MASK_MS 短——前面的链路早就走完，只剩最后一跳（本地 LXC/msmux 往返是毫秒级，
+   * 大头是 TUI 自己那帧重绘）。
+   */
+  const KB_MASK_SEND_MS = 220
+  /** 「应用重绘输出停住」的安静窗口：遮罩开着时每收到一帧输出就按它续一次 */
+  const KB_MASK_QUIET_MS = 120
+  /** 遮罩硬上限：重绘链路再慢、输出再刷屏也不能一直黑着（到点按到期收） */
+  const KB_MASK_MAX_MS = 640
 
   const { kbRaw, kbOpen, kbTop, kbTopAtOpen, vvTick } = useVirtualKeyboard()
+  /** 键盘会话中（含收起后的延迟窗口）：遮罩只在会话里开，桌面拖窗/普通 resize 不许黑屏。 */
+  const keyboardSession = () => isPhone.value && (kbRaw.value || kbOpen.value)
 
   const toolbarHeight = ref(0)
   const toolbarEl = ref<HTMLDivElement | null>(null)
@@ -122,15 +135,25 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   })
 
   // 遮罩窗口：尺寸一变立刻盖住，等 xterm refit + 应用重绘落地后再淡出。
+  // 关键是**结束时刻**要对齐真正重绘落地的那一拍，否则就是「闪一下黑、黑退下去内容才跳」
+  // ——遮罩和重排脱节。重绘链路的时序是：盒子变 → (rAF) xterm refit → onResize 140ms 去抖
+  // → exec.resize 发出去 → 后端 SIGWINCH → 应用整帧重绘 → WS 回来 xterm 解析渲染。
+  // 所以只按「盒子变」那一下开 260ms 必然会先于重绘结束，必须再等「已经发出去」的那一拍补一段
+  // （noteResizeSent，被去重掉不发时自然也不用补）。
   const kbMask = ref(false)
   let maskTimer = 0
-  function showMask() {
+  /** 本次窗口开始时刻：硬上限按它算，输出刷屏时也不能一直黑着 */
+  let maskOpenedAt = 0
+  function showMask(ms = KB_MASK_MS) {
+    const now = Date.now()
+    if (!kbMask.value) maskOpenedAt = now
     kbMask.value = true
     if (maskTimer) clearTimeout(maskTimer)
+    const cap = maskOpenedAt + KB_MASK_MAX_MS - now
     maskTimer = window.setTimeout(() => {
       maskTimer = 0
       kbMask.value = false
-    }, KB_MASK_MS)
+    }, Math.max(0, Math.min(ms, cap)))
   }
   watch(kbInset, (v, prev) => {
     if (v !== prev) showMask()
@@ -138,9 +161,21 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   // 布局视口模式（浏览器自己缩布局）下，真正那次 resize 来自浏览器、比 kbInset 早：
   // 网格尺寸在键盘会话里变了就补一次遮罩，让「浏览器重排 + 应用重绘」也落在黑层后面。
   function noteGridChange() {
-    if (!isPhone.value) return
-    if (!kbRaw.value && !kbOpen.value) return
+    if (!keyboardSession()) return
     showMask()
+  }
+  // exec.resize 真的发出去之后补一段（含后端往返 + 应用重绘 + xterm 渲染）。
+  function noteResizeSent() {
+    if (!keyboardSession()) return
+    showMask(KB_MASK_SEND_MS)
+  }
+  // 应用那一帧重绘到了（xterm onWriteParsed）：遮罩开着就按「输出安静窗口」延长，
+  // 让黑层正好盖到最后一帧落地而不是卡在固定时长上（TUI 重绘快慢差很多）。
+  // 硬上限 KB_MASK_MAX_MS 兜住输出刷屏的情形。
+  function noteRepaint() {
+    if (!kbMask.value) return // 没开窗时输出与键盘无关，零成本返回
+    if (!keyboardSession()) return
+    showMask(KB_MASK_QUIET_MS)
   }
 
   // 工具条高度测量（让位量与定位都吃它）：键盘态显隐只看 opacity，盒子高度恒可测。
@@ -352,6 +387,8 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     kbMask,
     kbToolbarTop,
     noteGridChange,
+    noteResizeSent,
+    noteRepaint,
     toolbarEl,
     // 工具条
     ctrlSticky,

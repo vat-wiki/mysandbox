@@ -610,6 +610,9 @@ onMounted(async () => {
       if (key === rzLast) return
       rzLast = key
       sendResize(sz.cols, sz.rows)
+      // 遮罩对齐真正的重绘：应用是在收到这次 resize 之后才整帧重画的（还隔着一次后端
+      // 往返），只按盒子变化开窗必然先于重绘结束——「闪一下黑、黑退下去才重新布局」。
+      tb.noteResizeSent()
     }, 140)
   })
   // 断线重连后要重新声明一次尺寸（期间可能被别的客户端改过）
@@ -620,6 +623,9 @@ onMounted(async () => {
   resizeObs.observe(el.value)
   // 选区同步：工具条「复制」按钮的禁用态跟随选区（仅手机工具条用，桌面无成本——一行回调）。
   term.onSelectionChange(syncSel)
+  // 重绘落地信号：键盘遮罩开着时按「输出安静窗口」续时，黑层正好盖到最后一帧
+  // （见 usePhoneToolbar 的 noteRepaint）。关着窗时是空转，一行判断。
+  term.onWriteParsed(() => tb.noteRepaint())
   // 焦点落位上抛（文件面板跟随最后聚焦的 pane）。xterm 5 公开 API 无 onFocus 事件，
   // 借容器上的 focusin（xterm 隐藏 textarea 的 focus 冒泡上来，DOM focusin 在
   // focus() 调用内同步派发——suppressFocusEmit 开关拦得住）。此处的 mount focus 是
@@ -733,11 +739,14 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
       <div ref="el" class="absolute inset-0 touch-none overflow-hidden" @contextmenu.prevent="onContextMenu" />
     </div>
     <!-- 键盘让位遮罩：盒子尺寸变化的那一下把 xterm reflow + TUI 整帧重绘盖住（kbMask
-         由 usePhoneToolbar 按让位量变化开窗，260ms 后淡出）。只盖内容层，搜索框/兜底框/
-         断线条都在更高 z 上照常可见。 -->
+         由 usePhoneToolbar 按「尺寸变化 → exec.resize 发出 → 重绘输出停下」开窗）。
+         只盖内容层，搜索框/兜底框/断线条都在更高 z 上照常可见。
+         ⚠️ 亮起必须是**瞬时不透明**（duration-0），淡出才 150ms：两边同用 150ms 的话，
+         盒子已经开始重排的头 150ms 只盖了几成黑，等于没盖住 —— 观感就是「闪一下，
+         黑退掉了内容才跳」。 -->
     <div
-      class="pointer-events-none absolute inset-0 z-[1] bg-black transition-opacity duration-150"
-      :class="kbMask ? 'opacity-100' : 'opacity-0'"
+      class="pointer-events-none absolute inset-0 z-[1] bg-black transition-opacity"
+      :class="kbMask ? 'opacity-100 duration-0' : 'opacity-0 duration-150'"
     />
     <!-- 终端搜索：Ctrl+F 打开，Enter/Shift+Enter 跳转，Esc 返回终端。
          浮层用绝对定位，不参与 FitAddon 测量，避免改变终端网格尺寸。 -->
