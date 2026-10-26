@@ -100,6 +100,10 @@ let searchAddon: SearchAddon | null = null
 let webglAddon: WebglAddon | null = null
 let resizeObs: ResizeObserver | null = null
 let rafId = 0
+// PTY resize 去抖（见 term.onResize 处的注释）
+let rzTimer = 0
+let rzPending: { cols: number; rows: number } | null = null
+let rzLast = ''
 // 程序性聚焦抑制标志：refit 的 term.focus() 是「切 tab 恢复/窗口 resize」的附带动作，
 // 不代表用户把焦点落在哪个 pane——DOM focus 事件在 focus() 调用内同步派发，同步开关
 // 即可拦住。分屏新 pane / 点击 pane / 重连按钮的聚焦是真实落焦，照常上抛。
@@ -261,7 +265,12 @@ function refit() {
     const fs = computeFontSize()
     if (term && term.options.fontSize !== fs) term.options.fontSize = fs
     try {
+      const prevCols = term?.cols ?? 0
+      const prevRows = term?.rows ?? 0
       fit?.fit()
+      // 键盘会话里的网格变化（布局视口模式是浏览器先缩、我们再让位）统一盖遮罩：
+      // 这一拍 xterm reflow + 后端 exec.resize + TUI 整帧重绘都在里面。
+      if (term && (term.cols !== prevCols || term.rows !== prevRows)) tb.noteGridChange()
       // 强制重算 xterm 内部滚动区（切回 tab 后「滚动不到最下面」的修复）。
       // xterm 5.5 的 Viewport._innerRefresh 直接读 viewport 的 offsetHeight，而
       // display:none 期间该值是 0——隐藏 tab 收到会推进外层 buffer 的输出（首载
@@ -584,7 +593,30 @@ onMounted(async () => {
     if (data.includes('\r')) emit('enter')
     sendStdin(out)
   })
-  term.onResize(({ cols, rows }) => sendResize(cols, rows))
+  // PTY 尺寸去抖（140ms）：一次键盘开合/拖窗只发一次 exec.resize。中间尺寸不发——每次
+  // 都是后端一次 SIGWINCH + 应用整帧重绘，是「切键盘时一直在闪」的主要来源。xterm 自己的
+  // 网格仍逐帧跟盒子走（本地渲染，不发字节），视觉不断层。
+  term.onResize(({ cols, rows }) => {
+    rzPending = { cols, rows }
+    if (rzTimer) clearTimeout(rzTimer)
+    rzTimer = window.setTimeout(() => {
+      rzTimer = 0
+      const sz = rzPending
+      rzPending = null
+      if (!sz) return
+      // 与上次已发的一致就不发：xterm 的 resize() 每调一次都 fire onResize（哪怕尺寸没变），
+      // 键盘让位那一拍会连着 fit 两三次 —— 每次都送一次 exec.resize = SIGWINCH + 应用整帧
+      // 重绘，白闪。
+      const key = `${sz.cols}x${sz.rows}`
+      if (key === rzLast) return
+      rzLast = key
+      sendResize(sz.cols, sz.rows)
+    }, 140)
+  })
+  // 断线重连后要重新声明一次尺寸（期间可能被别的客户端改过）
+  watch(connState, (s) => {
+    if (s === 'lost') rzLast = ''
+  })
   resizeObs = new ResizeObserver(() => refit())
   resizeObs.observe(el.value)
   // 选区同步：工具条「复制」按钮的禁用态跟随选区（仅手机工具条用，桌面无成本——一行回调）。
@@ -600,6 +632,10 @@ onMounted(async () => {
   el.value.addEventListener('focusout', onFocusOut)
   // 图片粘贴入口（capture，原因见 onTermPaste 注释）。
   el.value.addEventListener('paste', onTermPaste, { capture: true })
+  // 根容器空白区点击 = 聚焦终端。键盘让位（kbInset）会把 xterm 盒子缩到工具条上方，
+  // 下面那片黑属于 root 而不属于 xterm——不收键盘的延迟窗口里点在那里没反应，用户会
+  // 以为终端没响应。排除内容区/输入框/按钮（那些有自己的焦点语义）。
+  rootEl.value?.addEventListener('pointerdown', onRootPointerDown)
   // 触摸设备不 mount 聚焦（弹系统键盘）：同 refit，键盘只由用户点终端触发。
   if (props.active && !isCoarse.value) term.focus()
 
@@ -623,9 +659,19 @@ const onFocusIn = () => {
 const onFocusOut = () => {
   tb.onFocusedOut()
 }
+// 根容器空白处点击 = 交回终端焦点（触摸设备才有意义，桌面沿用原生行为）。
+function onRootPointerDown(e: PointerEvent) {
+  if (!isCoarse.value) return
+  const t = e.target as HTMLElement | null
+  if (!t || t.closest('.xterm, input, textarea, select, button, a, .search-shell')) return
+  term?.focus()
+}
 
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
+  if (rzTimer) clearTimeout(rzTimer)
+  rzTimer = 0
+  rzPending = null
   sock.dispose()
   document.removeEventListener('visibilitychange', recoverOnReturn)
   window.removeEventListener('focus', recoverOnReturn)
@@ -636,6 +682,7 @@ onBeforeUnmount(() => {
   resizeObs?.disconnect()
   el.value?.removeEventListener('focusin', onFocusIn)
   el.value?.removeEventListener('focusout', onFocusOut)
+  rootEl.value?.removeEventListener('pointerdown', onRootPointerDown)
   el.value?.removeEventListener('paste', onTermPaste, { capture: true })
   // 链接 provider 与 tooltip 先于 WebGL addon 拆（同款防御性顺序：term.dispose 会连带
   // 清理，但显式 dispose 保证卸载路径上 tooltip 不残留 DOM）。

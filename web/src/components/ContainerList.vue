@@ -623,6 +623,49 @@ const collapsed = ref(loadBool('mysandbox:sidebar-collapsed'))
 // 且有的浏览器弹键盘会把 fixed 底栏顶到键盘上方白吃 40px。终端自身的让位（带延迟的
 // 稳定态）见 usePhoneToolbar。
 const { kbRaw: kbRawGlobal } = useVirtualKeyboard()
+
+// —— 键盘态容器反向补偿（布局视口模式专用）——
+// 华为浏览器/Android adjustResize 这类壳弹键盘时会**缩布局视口**，h-dvh 跟着矮、
+// 终端盒子跟着变，每次开合都逼着 xterm refit + PTY resize，我们的延迟/取消全白费。
+// 这里在键盘会话期间把终端组容器钉回「开键盘前量到的高度」（多出来的部分落在键盘
+// 后面，被 app 根裁剪）：盒子不动 → 不 refit，让位完全交回 usePhoneToolbar（可延迟、
+// 可遮罩，快速切键盘零 resize）。视觉视口模式（iOS / Chrome 默认）下布局不变，
+// 钉住的高度与当前高度一致，等价于没动。
+const termColEl = ref<HTMLElement | null>(null)
+const termColH = ref(0)
+let termColObs: ResizeObserver | null = null
+watch(termColEl, (el) => {
+  termColObs?.disconnect()
+  termColObs = null
+  if (!el) return
+  // 只认「稳定下来」的高度：键盘弹起前浏览器常会先收起自己的地址栏（布局先长一波再
+  // 被键盘压缩，实测 547 → 603 → 325），那一下 603 若被记成基准，补偿就会虚高几十 px。
+  // 200ms 去抖后读值，键盘在场时直接跳过（高度已被我们自己钉住）；display:none
+  // （AI 主区盖住）量到 0 也不记。
+  const measure = () => {
+    if (kbRawGlobal.value) return
+    const h = Math.round(el.getBoundingClientRect().height)
+    if (h > 0) termColH.value = h
+  }
+  let colTimer = 0
+  const sync = () => {
+    if (colTimer) clearTimeout(colTimer)
+    colTimer = window.setTimeout(() => {
+      colTimer = 0
+      measure()
+    }, 200)
+  }
+  measure()
+  termColObs = new ResizeObserver(sync)
+  termColObs.observe(el)
+})
+onUnmounted(() => {
+  termColObs?.disconnect()
+  termColObs = null
+})
+const kbPanelStyle = computed(() =>
+  isPhone.value && kbRawGlobal.value && termColH.value > 0 ? { height: `${termColH.value}px` } : undefined,
+)
 // 产品版本号（vite define 注入，根 package.json）：品牌块展示 + rail 展开键 tooltip。
 watch(collapsed, (v) => {
   railHover.value = null
@@ -4836,12 +4879,16 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </div>
         <!-- 终端列：主列内唯一常驻内容（AI 打开时隐藏，编辑器列是根级兄弟不受影响；
              编辑器专注时整个主列让位藏起——终端组树仍常驻不卸载）。 -->
-        <div v-show="mainView !== 'ai'" class="relative min-h-0 min-w-0 flex-1 bg-zinc-950">
+        <div ref="termColEl" v-show="mainView !== 'ai'" class="relative min-h-0 min-w-0 flex-1 bg-zinc-950">
+          <!-- 键盘态反向补偿（kbPanelStyle）：浏览器自己缩布局视口时把组容器钉回开键盘前的
+               高度 → 动画期间不触发 refit / PTY resize。多出来的部分在键盘后面（被 app 根
+               裁剪），不影响可见区；让位由 usePhoneToolbar 的 kbInset 统一负责。 -->
           <div
             v-for="(g, gIdx) in groups"
             :key="g.id"
             v-show="gIdx === activeIdx"
             class="absolute inset-0 flex"
+            :style="kbPanelStyle"
           >
             <!-- 布局树根：TermLayoutNode 递归渲染叶子/split；所有组常驻 DOM，v-show 切换 -->
             <TermLayoutNode

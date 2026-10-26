@@ -2,7 +2,12 @@
 <html lang="zh" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- interactive-widget=resizes-visual：声明软键盘只缩**视觉**视口、不动布局视口
+         （Chromium 108+ 默认即此，显式写出来是给「默认值是 adjustResize 的壳」一个
+         机会）。实测华为浏览器忽略该属性、继续缩布局视口 —— 这种模式由
+         useVirtualKeyboard 识别（layoutShrink）+ ContainerList 对终端组容器做反向
+         补偿兜住，行为与视觉视口模式对齐。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />

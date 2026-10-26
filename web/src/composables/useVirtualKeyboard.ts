@@ -40,15 +40,27 @@ const kbOpen = ref(false)
 const kbHeight = ref(0)
 /** 键盘顶边在**布局视口**坐标里的位置：position: fixed 的定位基准 */
 const kbTop = ref(0)
+/**
+ * 稳定态生效那一刻的键盘顶边快照。让位量必须用快照：收键盘的延迟窗口里
+ * 键盘已经走了，实时 kbTop 会跳回屏幕底部，终端会提前撑回去。
+ */
+const kbTopAtOpen = ref(0)
 /** visualViewport 的尺寸/偏移（工具条、让位计算的几何输入） */
 const vvHeight = ref(0)
 const vvOffsetTop = ref(0)
+/**
+ * 无键盘时的布局视口高度基线（只用于**识别**布局视口模式的键盘，不参与让位计算）。
+ * 取历史最大值：地址栏自动隐藏会让 innerHeight 变大，取 max 才能保证键盘出现时的
+ * 「基线 − 当前值」永远是真实键盘高度量级。
+ */
+let baseHeight = 0
 /** 每次 vv 事件自增：给依赖几何量的 computed 当重算触发器 */
 const vvTick = ref(0)
 
 let started = false
 let settleTimer = 0
 let closeTimer = 0
+let baseWidth = 0
 
 function clearSettle() {
   if (settleTimer) clearTimeout(settleTimer)
@@ -60,12 +72,22 @@ function clearClose() {
   closeTimer = 0
 }
 
+// 键盘开/关的最终几何不一定会再派发事件（实测华为浏览器：键盘完全收起后没有最后一拍
+// vv/resize，尺寸量在半路——容器比可视区高几十 px，终端多算几行）。
+// 所以状态一翻转就补两次定时重测（幂等，只是再读一次 innerHeight 重算）。
+let rechecks: number[] = []
+function scheduleRecheck() {
+  for (const t of rechecks) clearTimeout(t)
+  rechecks = [320, 820].map((d) => window.setTimeout(onVv, d))
+}
+
 function applyKeyboard(raw: number) {
   if (raw <= KB_MIN) return
   // 已开且高度变化不足一个量化台阶：保持原值，不触发下游重排
   if (kbOpen.value && Math.abs(raw - kbHeight.value) < KB_STEP) return
   kbOpen.value = true
   kbHeight.value = raw
+  kbTopAtOpen.value = kbTop.value
 }
 
 function scheduleClose() {
@@ -80,6 +102,18 @@ function scheduleClose() {
 function onVv() {
   const vv = window.visualViewport
   if (!vv) return
+  const ih = window.innerHeight
+  const iw = window.innerWidth
+  // 转屏：基线与键盘态全部作废（宽度一变，之前的「无键盘高度」没有参考意义）
+  if (iw !== baseWidth) {
+    baseWidth = iw
+    baseHeight = ih
+    clearSettle()
+    clearClose()
+    kbRaw.value = false
+    kbOpen.value = false
+    kbHeight.value = 0
+  }
   // 只在几何真的动了才打 tick：每个终端实例都挂着一个吃 tick 的 computed
   // （要 getBoundingClientRect），滚动事件空转时别让它反复量布局。
   const moved = vv.height !== vvHeight.value || vv.offsetTop !== vvOffsetTop.value
@@ -87,9 +121,28 @@ function onVv() {
   vvOffsetTop.value = vv.offsetTop
   kbTop.value = Math.round(vv.offsetTop + vv.height)
   if (moved) vvTick.value++
-  const raw = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+
+  // 两种浏览器键盘模式，取能用的那个：
+  //   ① 视觉视口模式（iOS Safari / Chrome Android 默认 resizes-visual）：
+  //      布局不动，vv 矮了 → 差值 = 键盘高。
+  //   ② 布局视口模式（Android adjustResize；华为浏览器实测是这样）：
+  //      布局视口自己缩，innerHeight 与 vv.height 同步变，差值恒为 0 → 用
+  //      「无键盘基线 − 当前 innerHeight」识别。第二种模式下浏览器已经把内容
+  //      让过位了，我们只需要再给工具条腾地方（见 kbTopAtOpen 的用法）。
+  const rawVisual = Math.max(0, Math.round(ih - vv.height - vv.offsetTop))
+  const layoutShrunk = Math.abs(ih - vv.height) < 4 // 布局与视觉同高 = 没有浮层键盘
+  // 只在手机宽度内认这种模式：桌面拖窗也会让 innerHeight 小于历史最大值，误判成键盘
+  // 会让底栏/工具条跟着抖（虽然各处都有 isPhone 闸，但状态本身也不该乱翻）
+  const rawLayout = layoutShrunk && iw <= 768 ? Math.max(0, Math.round(baseHeight - ih)) : 0
+  const raw = rawVisual > KB_MIN ? rawVisual : rawLayout > KB_MIN ? rawLayout : rawVisual
+
+  const wasRaw = kbRaw.value
   kbRaw.value = raw > KB_MIN
+  if (wasRaw !== kbRaw.value) scheduleRecheck()
   if (raw <= KB_MIN) {
+    // 基线只在键盘确认关闭时抬高（max：地址栏自动隐藏会让 innerHeight 变大，
+    // 取 max 才能让下次键盘出现时的差值仍是真实键盘高度量级）
+    if (!kbOpen.value) baseHeight = Math.max(baseHeight, ih)
     // 键盘收起（或地址栏伸缩）：稳定态延迟恢复，窗口内重开则取消
     clearSettle()
     scheduleClose()
@@ -107,14 +160,18 @@ function onVv() {
 function startWatch() {
   if (started) return
   started = true
+  baseWidth = window.innerWidth
+  baseHeight = window.innerHeight
   const vv = window.visualViewport
   if (!vv) return
   vv.addEventListener('resize', onVv)
   vv.addEventListener('scroll', onVv)
+  // 布局视口模式（②）下 vv 的 resize 未必每次都来，window.resize 兜一层
+  window.addEventListener('resize', onVv)
   onVv()
 }
 
 export function useVirtualKeyboard() {
   startWatch()
-  return { kbRaw, kbOpen, kbHeight, kbTop, vvHeight, vvOffsetTop, vvTick }
+  return { kbRaw, kbOpen, kbHeight, kbTop, kbTopAtOpen, vvHeight, vvOffsetTop, vvTick }
 }

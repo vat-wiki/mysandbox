@@ -75,10 +75,10 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   //   3) 遮罩：盒子尺寸变化时盖一层黑（kbMask）盖住 xterm reflow + TUI 整帧重绘，
   //      观感从「内容跳一下」变成「黑一下」。
   const KB_GAP = 6 // 终端底与工具条之间的呼吸位（px）
-  const KB_MAX_RATIO = 0.62 // 让位上限：终端至少留 38% 高（≈16 行），防小屏键盘吃光
+  const KB_MIN_TERM = 120 // 让位上限：终端至少留这么高（≈7~9 行），防小屏键盘吃光
   const KB_MASK_MS = 260
 
-  const { kbRaw, kbOpen, kbHeight, kbTop, vvTick } = useVirtualKeyboard()
+  const { kbRaw, kbOpen, kbTop, kbTopAtOpen, vvTick } = useVirtualKeyboard()
 
   const toolbarHeight = ref(0)
   const toolbarEl = ref<HTMLDivElement | null>(null)
@@ -96,8 +96,8 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
 
   // 让位量 = 键盘顶（含工具条）压到终端盒里的高度，量「被压住多少」而不是「键盘多高」：
   // 分屏时上方 pane 的底边本来就在键盘之上（量出来 0，不参与让位），下方 pane 才是被压的
-  // 那个；有的浏览器弹键盘会顺带缩布局视口（已经让过位了 → 也量出 0）。同一公式都对。
-  // 用稳定态 kbHeight 而不是实时 vv：延迟窗口里键盘已经走了，高度不能跟着变。
+  // 那个；布局视口模式（浏览器自己让过位）下 rect 也已经在键盘之上 → 只剩工具条那点高度。
+  // 用稳定态快照 kbTopAtOpen 而不是实时 kbTop：延迟窗口里键盘已经走了，几何不能跟着变。
   const kbInset = computed(() => {
     void vvTick.value
     if (!isPhone.value || !kbShrink.value) return 0
@@ -105,9 +105,11 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     if (!root) return 0
     const rect = root.getBoundingClientRect()
     if (rect.height <= 0) return 0
-    const toolbarTop = window.innerHeight - kbHeight.value - toolbarHeight.value - KB_GAP
+    const toolbarTop = kbTopAtOpen.value - toolbarHeight.value - KB_GAP
     const wanted = Math.max(0, rect.bottom - toolbarTop)
-    const cap = Math.round(rect.height * KB_MAX_RATIO)
+    // 上限按「留足最少可见行」算。注意布局视口模式下 rect 已被反向补偿拉长（含键盘后
+    // 面那段），所以不能用比例：按比例会在刚好卡边时把工具条压到终端上。
+    const cap = Math.max(0, Math.round(rect.height) - KB_MIN_TERM)
     return Math.max(0, Math.min(Math.round(wanted), cap))
   })
 
@@ -122,14 +124,24 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   // 遮罩窗口：尺寸一变立刻盖住，等 xterm refit + 应用重绘落地后再淡出。
   const kbMask = ref(false)
   let maskTimer = 0
-  watch(kbInset, () => {
+  function showMask() {
     kbMask.value = true
     if (maskTimer) clearTimeout(maskTimer)
     maskTimer = window.setTimeout(() => {
       maskTimer = 0
       kbMask.value = false
     }, KB_MASK_MS)
+  }
+  watch(kbInset, (v, prev) => {
+    if (v !== prev) showMask()
   })
+  // 布局视口模式（浏览器自己缩布局）下，真正那次 resize 来自浏览器、比 kbInset 早：
+  // 网格尺寸在键盘会话里变了就补一次遮罩，让「浏览器重排 + 应用重绘」也落在黑层后面。
+  function noteGridChange() {
+    if (!isPhone.value) return
+    if (!kbRaw.value && !kbOpen.value) return
+    showMask()
+  }
 
   // 工具条高度测量（让位量与定位都吃它）：键盘态显隐只看 opacity，盒子高度恒可测。
   function setupToolbarMeasure() {
@@ -327,6 +339,7 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     kbInset,
     kbMask,
     kbToolbarTop,
+    noteGridChange,
     toolbarEl,
     // 工具条
     ctrlSticky,
