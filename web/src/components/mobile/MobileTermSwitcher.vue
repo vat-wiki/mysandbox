@@ -44,10 +44,13 @@ const appVersion = __APP_VERSION__
 
 <template>
   <Dialog :open="open" @update:open="(v: boolean) => emit('update:open', v)">
-    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
-      <DialogHeader>
-        <DialogTitle class="text-base font-semibold">终端</DialogTitle>
-        <DialogDescription class="sr-only">本窗口打开的终端组</DialogDescription>
+    <!-- 手机整页：flex 列布局。不用 grid 的默认 auto 行——整页高度下各行会被 stretch 均分，
+         标题与列表之间会裂出大片空白；也刻意不让列表 flex-1 撑满（组少时底部动作被推到屏幕最下，
+         中间空一大块），内容自然流、整页滚动即可。 -->
+    <DialogContent class="max-w-lg max-md:flex max-md:h-dvh max-md:max-w-full max-md:flex-col max-md:rounded-none max-md:border-0">
+      <DialogHeader class="max-md:text-left">
+        <DialogTitle class="text-lg font-semibold">终端</DialogTitle>
+        <DialogDescription>{{ rows.length }} 个终端组</DialogDescription>
       </DialogHeader>
 
       <div>

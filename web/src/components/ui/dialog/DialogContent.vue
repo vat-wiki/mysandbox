@@ -54,7 +54,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
       <DialogClose
         v-if="showCloseButton"
         data-slot="dialog-back"
-        class="hidden w-fit items-center gap-0.5 rounded-lg py-1 pr-3 pl-0.5 text-sm text-muted-foreground outline-none active:bg-accent max-md:-mb-1 max-md:ml-2 max-md:flex [&_svg]:pointer-events-none [&_svg]:shrink-0"
+        class="hidden w-fit items-center gap-0.5 rounded-lg py-1 pr-3 pl-0.5 text-sm text-muted-foreground outline-none active:bg-accent max-md:-mb-1 max-md:flex [&_svg]:pointer-events-none [&_svg]:shrink-0"
       >
         <ChevronLeft class="size-5" />
         返回
