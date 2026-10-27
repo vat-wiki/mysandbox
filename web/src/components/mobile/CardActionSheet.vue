@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 手机动作面板（非模态，壳 = BottomPanel）：容器卡 / 文件 tab / 切换条 ⋯ / 网络信息共用。
-// 不铺黑幕、不锁焦点、不挡整屏；点面板外任意处即收，底部另有显式「取消」。
+// 手机动作面板（壳 = BottomPanel，带遮罩的底部 sheet）：容器卡 / 文件 tab / 切换条 ⋯ / 网络信息共用。
+// 这是移动端原生 action sheet 的形态——遮罩压暗底层、点遮罩即收，底部另有显式「取消」。
 import { X } from '@lucide/vue'
 import BottomPanel from './BottomPanel.vue'
 

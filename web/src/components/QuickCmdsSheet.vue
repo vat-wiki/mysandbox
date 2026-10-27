@@ -6,7 +6,7 @@
 // 同一个列表在运行态和配置态语义相反（点 = 执行 vs 点 = 编辑）的问题随之消失。
 // 数据在 lib/termToolbar.ts（localStorage 模块级单例——多终端实例共享一份）。
 // 运行行的 pointerdown.prevent 防抢终端焦点（软键盘收起闪一下 + composition 被吞）。
-// 非模态（壳 = BottomPanel）：不铺黑幕、不锁焦点，点面板外即收；层级压过工具条本体。
+// 形态 = 带遮罩的底部 sheet（壳 = BottomPanel），与移动端 action sheet 一致；层级压过工具条本体。
 import { computed, ref } from 'vue'
 import { ChevronRight, Search, Settings2, X } from '@lucide/vue'
 import { quickCmds, recentCmds, type QuickCmd } from '@/lib/termToolbar'
