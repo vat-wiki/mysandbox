@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DialogContentEmits, DialogContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
-import { X } from "@lucide/vue"
+import { ChevronLeft, X } from "@lucide/vue"
 import { reactiveOmit } from "@vueuse/core"
 import {
   DialogClose,
@@ -49,12 +49,23 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
           props.class,
         )"
     >
+      <!-- 手机整页形态用页内「返回」：悬浮 X 是桌面弹框的语汇，移动端页面顶栏一律是返回/关闭行。
+           放在 grid/flex 第一项 = 标题上方一行；桌面隐藏（悬浮 X 仍在，见下）。 -->
+      <DialogClose
+        v-if="showCloseButton"
+        data-slot="dialog-back"
+        class="hidden w-fit items-center gap-0.5 rounded-lg py-1 pr-3 pl-0.5 text-sm text-muted-foreground outline-none active:bg-accent max-md:-mb-1 max-md:ml-2 max-md:flex [&_svg]:pointer-events-none [&_svg]:shrink-0"
+      >
+        <ChevronLeft class="size-5" />
+        返回
+      </DialogClose>
+
       <slot />
 
       <DialogClose
         v-if="showCloseButton"
         data-slot="dialog-close"
-        class="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+        class="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none max-md:hidden [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
       >
         <X />
         <span class="sr-only">Close</span>

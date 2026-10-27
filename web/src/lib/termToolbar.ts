@@ -4,7 +4,7 @@
 //
 // v3 起两类条目地位平等：工具条只放按键，文本类动作（原「快捷短语」与「快捷指令」）
 // 统一收进指令列表——语义都是「发送文本 + 回车」，不再维护两套模型、两个配置入口。
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 export type PoolAct =
   | { kind: 'seq'; seq: string }
@@ -83,6 +83,8 @@ const STORE_KEY = 'mysandbox:term-toolbar-v3'
 const LEGACY_TOOLBAR_KEY = 'mysandbox:term-toolbar-v2'
 const LEGACY_CMDS_KEY = 'mysandbox:term-quick-cmds'
 const LEGACY_SNIPPETS_KEY = 'mysandbox:term-quick-snippets'
+// 「最近运行过的指令」保留条数：面板置顶 3 条 + 工具条最近条共享这份历史
+const RECENT_MAX = 8
 
 export const TOOLBAR_MAX = 24
 // 一页 = 2 行 × 7 列（对齐 Termux 一行 7 键）。键超出自动溢到下一页，工具条横向轻扫翻页；
@@ -191,15 +193,25 @@ function normalizeCmds(raw: unknown): QuickCmd[] {
   return out
 }
 
-function loadConfig(): { keys: ToolBtn[]; cmds: QuickCmd[] } {
-  const v3 = parseJSON(localStorage.getItem(STORE_KEY)) as { keys?: unknown; cmds?: unknown } | null
+// 最近历史只认当前还存在的指令 id，去重并截断；旧数据没有这个字段时为空
+function normalizeRecent(raw: unknown, cmds: QuickCmd[]): string[] {
+  const valid = new Set(cmds.map((c) => c.id))
+  const out: string[] = []
+  for (const id of asArray(raw)) {
+    if (typeof id === 'string' && valid.has(id) && !out.includes(id)) out.push(id)
+  }
+  return out.slice(0, RECENT_MAX)
+}
+
+function loadConfig(): { keys: ToolBtn[]; cmds: QuickCmd[]; recent: string[] } {
+  const v3 = parseJSON(localStorage.getItem(STORE_KEY)) as { keys?: unknown; cmds?: unknown; recent?: unknown } | null
   // v3 存在即以它为准：空列表是合法状态（用户全删了），不能拿默认值兜底。
   // 例外：keys 数组非空但条目全不合法（坏数据）→ 落回默认布局。
   if (v3 && typeof v3 === 'object' && Array.isArray(v3.keys) && Array.isArray(v3.cmds)) {
     // 先归一化指令再校验按键里的 cmd 引用（id 必须存在）
     const cmds = normalizeCmds(v3.cmds)
     const keys = normalizeBtns(v3.keys, new Set(cmds.map((c) => c.id)))
-    if (keys.length || v3.keys.length === 0) return { keys, cmds }
+    if (keys.length || v3.keys.length === 0) return { keys, cmds, recent: normalizeRecent(v3.recent, cmds) }
   }
 
   // v2 → v3 迁移：按键保留；快捷短语（发送文本+回车）与旧快捷指令、v1 短语全部并进指令列表。
@@ -215,17 +227,23 @@ function loadConfig(): { keys: ToolBtn[]; cmds: QuickCmd[] } {
   return {
     keys: keys.length ? keys : DEFAULT_BTNS,
     cmds,
+    recent: [],
   }
 }
 
-// 模块级单例：工具条、设置弹窗、指令面板看到同一份列表，改动即时互见。
+// 模块级单例：工具条、设置页、指令面板看到同一份列表，改动即时互见。
 const initial = loadConfig()
 export const toolButtons = ref<ToolBtn[]>(initial.keys)
 export const quickCmds = ref<QuickCmd[]>(initial.cmds)
+// 最近运行历史（id，按最近使用排序）：面板「最近 3 条」与工具条「最近」条共用
+export const recentCmdIds = ref<string[]>(initial.recent)
 
 export function saveConfig() {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ v: 3, keys: toolButtons.value, cmds: quickCmds.value }))
+    localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify({ v: 3, keys: toolButtons.value, cmds: quickCmds.value, recent: recentCmdIds.value }),
+    )
   } catch {
     /* 不可用就只本次生效 */
   }
@@ -234,6 +252,23 @@ export function saveConfig() {
 // —— 指令固定到工具条（一键发送；完整列表仍在「指令」面板）——
 export function getQuickCmd(id: string): QuickCmd | undefined {
   return quickCmds.value.find((c) => c.id === id)
+}
+// 最近指令（解析成对象；指令被删后自动跳过）
+export const recentCmds = computed(() =>
+  recentCmdIds.value.map((id) => getQuickCmd(id)).filter((c): c is QuickCmd => !!c),
+)
+// 运行一次指令 = 记一次最近使用（面板「最近」组与工具条「最近」条共享）
+export function recordCmdUse(id: string) {
+  if (!getQuickCmd(id)) return
+  const next = [id, ...recentCmdIds.value.filter((x) => x !== id)].slice(0, RECENT_MAX)
+  if (next.length === recentCmdIds.value.length && next.every((x, i) => x === recentCmdIds.value[i])) return
+  recentCmdIds.value = next
+  saveConfig()
+}
+// 面板只拿得到命令文本（emit run(cmd)）：按 cmd 反查 id；同文本取第一条
+export function recordCmdUseByText(cmd: string) {
+  const c = quickCmds.value.find((x) => x.cmd === cmd)
+  if (c) recordCmdUse(c.id)
 }
 export function isCmdPinned(id: string): boolean {
   return toolButtons.value.some((b) => b.t === 'cmd' && b.id === id)
@@ -294,10 +329,11 @@ export function updateQuickCmd(i: number, label: string, cmd: string): boolean {
 
 export function rmQuickCmd(i: number) {
   const [removed] = quickCmds.value.splice(i, 1)
-  // 指令删了，工具条上固定它的按钮一并解绑（不留发不出去的幽灵键）
+  // 指令删了：工具条固定引用解绑，最近历史也一并清掉（不留发不出去的幽灵项）
   if (removed) {
     const at = toolButtons.value.findIndex((b) => b.t === 'cmd' && b.id === removed.id)
     if (at >= 0) toolButtons.value.splice(at, 1)
+    recentCmdIds.value = recentCmdIds.value.filter((x) => x !== removed.id)
   }
   saveConfig()
 }

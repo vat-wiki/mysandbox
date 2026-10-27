@@ -226,7 +226,7 @@ if (props.section === 'testlens') onMounted(load)
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:py-0 sm:max-w-lg">
+    <DialogContent class="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:rounded-none max-md:border-0 sm:max-w-lg">
       <div class="flex items-center border-b px-5 py-3 pr-10">
         <DialogTitle class="text-lg font-semibold">{{ SECTION_TITLE[props.section] }}</DialogTitle>
         <DialogDescription class="sr-only">{{ SECTION_DESC[props.section] }}</DialogDescription>

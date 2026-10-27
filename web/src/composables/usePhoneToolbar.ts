@@ -1,5 +1,16 @@
 import { ref, computed, watch, onBeforeUnmount, nextTick, type Ref } from 'vue'
-import { toolButtons, getQuickCmd, KEY_POOL, toolbarPages, type ToolbarItem, type ToolBtn } from '@/lib/termToolbar'
+import {
+  toolButtons,
+  getQuickCmd,
+  recentCmds,
+  recentCmdIds,
+  isCmdPinned,
+  recordCmdUseByText,
+  KEY_POOL,
+  toolbarPages,
+  type ToolbarItem,
+  type ToolBtn,
+} from '@/lib/termToolbar'
 import { openToolbarSettings } from '@/lib/termToolbarNav'
 import { isPhone } from '@/composables/useDevice'
 import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
@@ -244,6 +255,8 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     openToolbarSettings('cmds')
   }
   function runQuickCmd(cmd: string) {
+    // 面板只传命令文本：先按文本记一次最近使用，再发
+    recordCmdUseByText(cmd)
     deps.sendRaw(cmd + '\r')
     deps.emitEnter() // 命令语义，与工具条回车一致走 cwd 跟随
   }
@@ -251,6 +264,43 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   function runCmdBtn(id: string) {
     const c = getQuickCmd(id)
     if (c) runQuickCmd(c.cmd)
+  }
+
+  // —— 工具条「最近」条：最近运行过、且没固定的指令（固定项已在主键区，不重复）——
+  // 只占一行 28px（+4px 间距）；没有可显示项时整条不渲染，键盘态不多占高度。
+  const recentStrip = computed(() => recentCmds.value.filter((c) => !isCmdPinned(c.id)).slice(0, 5))
+  const hasLastCmd = computed(() => recentCmds.value.length > 0)
+
+  // —— 长按「指令」= 重发上一条（不占格；短按仍开面板）——
+  // 450ms 触发一次 + 轻震动；按住期间不打开面板；松手后的 click 由 fired 闸门吃掉。
+  let cmdHoldTimer = 0
+  let cmdHoldFired = false
+  function clearCmdHold() {
+    if (cmdHoldTimer) clearTimeout(cmdHoldTimer)
+    cmdHoldTimer = 0
+  }
+  function onCmdBtnDown() {
+    clearCmdHold()
+    cmdHoldFired = false
+    if (!recentCmdIds.value.length) return
+    cmdHoldTimer = window.setTimeout(() => {
+      cmdHoldTimer = 0
+      cmdHoldFired = true
+      const id = recentCmdIds.value[0]
+      if (id) runCmdBtn(id)
+      if ('vibrate' in navigator) navigator.vibrate(10)
+    }, 450)
+  }
+  function onCmdBtnUp() {
+    clearCmdHold()
+  }
+  function onCmdBtnClick() {
+    clearCmdHold()
+    if (cmdHoldFired) {
+      cmdHoldFired = false
+      return
+    }
+    cmdsOpen.value = true
   }
 
   // 工具条方向键长按连发：pointerdown 即发一次，400ms 后起 80ms 间隔连发；抬起/取消/
@@ -363,6 +413,7 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
 
   onBeforeUnmount(() => {
     stopRepeat() // 长按连发的定时器不随组件卸载自动消失
+    clearCmdHold()
     if (maskTimer) clearTimeout(maskTimer)
     maskTimer = 0
     toolbarResizeObs?.disconnect()
@@ -398,6 +449,11 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     openCmdsConfig,
     runQuickCmd,
     runCmdBtn,
+    recentStrip,
+    hasLastCmd,
+    onCmdBtnDown,
+    onCmdBtnUp,
+    onCmdBtnClick,
     tbTouchStart,
     tbTouchEnd,
   }
