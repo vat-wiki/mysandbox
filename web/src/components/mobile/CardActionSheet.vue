@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogClose } from 'reka-ui'
+// 手机动作面板（非模态，壳 = BottomPanel）：容器卡 / 文件 tab / 切换条 ⋯ / 网络信息共用。
+// 不铺黑幕、不锁焦点、不挡整屏；点面板外任意处即收，底部另有显式「取消」。
 import { X } from '@lucide/vue'
+import BottomPanel from './BottomPanel.vue'
 
 export interface CardAction {
   id: string
@@ -31,50 +33,52 @@ function select(action: CardAction) {
 </script>
 
 <template>
-  <DialogRoot :open="open" @update:open="emit('update:open', $event)">
-    <DialogPortal>
-      <DialogOverlay class="z-50 bg-black/70" />
-      <DialogContent
-        class="fixed inset-x-0 bottom-0 z-50 max-h-[78dvh] w-full overflow-y-auto scroll-thin rounded-t-2xl border-border/60 bg-background p-0 pb-[max(env(safe-area-inset-bottom),1rem)] shadow-2xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:slide-in-from-bottom-4 data-[state=closed]:slide-out-to-bottom-4"
+  <BottomPanel :open="open" :label="title" @update:open="emit('update:open', $event)">
+    <div class="flex items-start justify-between gap-3 px-4 pt-3 pb-2">
+      <div class="min-w-0">
+        <p class="truncate text-base font-semibold">{{ title }}</p>
+        <p v-if="description" class="mt-0.5 truncate text-xs text-muted-foreground">{{ description }}</p>
+      </div>
+      <button
+        type="button"
+        class="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-accent"
+        @click="emit('update:open', false)"
       >
-        <div class="mx-auto mt-2.5 h-1 w-10 rounded-full bg-muted-foreground/30" />
-        <div class="flex items-start justify-between gap-3 px-4 pt-3 pb-2">
-          <div class="min-w-0">
-            <DialogTitle class="truncate text-base font-semibold">{{ title }}</DialogTitle>
-            <p v-if="description" class="mt-0.5 truncate text-xs text-muted-foreground">{{ description }}</p>
-          </div>
-          <DialogClose
-            class="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <X class="size-4" />
-            <span class="sr-only">关闭</span>
-          </DialogClose>
-        </div>
-        <div class="px-2 pb-1">
-          <button
-            v-for="action in actions"
-            :key="action.id"
-            type="button"
-            class="flex min-h-14 w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors disabled:pointer-events-none disabled:opacity-40"
-            :class="[
-              action.primary
-                ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:bg-primary/80'
-                : 'hover:bg-accent/60 active:bg-accent',
-              action.destructive && !action.primary ? 'text-destructive' : '',
-              !action.primary && !action.destructive ? 'text-foreground' : '',
-            ]"
-            :disabled="action.disabled"
-            @click="select(action)"
-          >
-            <span class="min-w-0 flex-1">
-              <span class="block text-sm font-medium">{{ action.label }}</span>
-              <span v-if="action.detail" class="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
-                {{ action.detail }}
-              </span>
-            </span>
-          </button>
-        </div>
-      </DialogContent>
-    </DialogPortal>
-  </DialogRoot>
+        <X class="size-4" />
+        <span class="sr-only">关闭</span>
+      </button>
+    </div>
+    <div class="px-2 pb-1">
+      <button
+        v-for="action in actions"
+        :key="action.id"
+        type="button"
+        class="flex min-h-14 w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors disabled:pointer-events-none disabled:opacity-40"
+        :class="[
+          action.primary ? 'bg-primary text-primary-foreground active:bg-primary/80' : 'active:bg-accent',
+          action.destructive && !action.primary ? 'text-destructive' : '',
+          !action.primary && !action.destructive ? 'text-foreground' : '',
+        ]"
+        :disabled="action.disabled"
+        @click="select(action)"
+      >
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm font-medium">{{ action.label }}</span>
+          <span v-if="action.detail" class="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
+            {{ action.detail }}
+          </span>
+        </span>
+      </button>
+    </div>
+    <!-- 显式取消：没有黑幕兜底后，别让用户只能靠「点空白」猜怎么退 -->
+    <div class="mx-2 border-t border-border/60 pt-1 pb-0.5">
+      <button
+        type="button"
+        class="flex min-h-12 w-full items-center justify-center rounded-xl text-sm text-muted-foreground active:bg-accent"
+        @click="emit('update:open', false)"
+      >
+        取消
+      </button>
+    </div>
+  </BottomPanel>
 </template>

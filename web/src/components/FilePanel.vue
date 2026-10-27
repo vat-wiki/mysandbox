@@ -166,6 +166,8 @@ function openInCodeServer(folder?: string | null): void {
 // （拷一份静态快照，与来源解耦；此后任何目标都能「安装技能」拉它，更新在技能中心）。
 // 服务组没有可解析的来源形态，不出现入口。
 const regBusy = ref(false)
+// 同名技能覆盖确认（pending 的来源路径）
+const overwriteSkill = ref<{ from: string } | null>(null)
 const canRegistry = computed(() => !props.restricted && !targetId().startsWith('s:'))
 // 当前目录本身是技能（含 SKILL.md）→ 工具栏露出「就地添加」快捷钮。
 const hasSkillMd = computed(() => entries.value.some((e) => e.name === 'SKILL.md' && e.type === 'file'))
@@ -209,20 +211,29 @@ async function registerSkillFrom(fromPath: string) {
       return
     }
     const msg = e instanceof Error ? e.message : String(e)
-    if (msg.includes('已有同名') && confirm(`${msg}——覆盖库里的同名技能？`)) {
-      try {
-        const r = await registryAddSkill(from, true)
-        toast(`已覆盖添加：${r.name}`)
-      } catch (e2) {
-        if (e2 instanceof Unauthorized) {
-          emit('close')
-          return
-        }
-        toast.error(e2 instanceof Error ? e2.message : String(e2))
-      }
-    } else {
-      toast.error(msg)
+    // 同名覆盖确认走 ConfirmDialog：原生 confirm 在手机上就是浏览器弹框，样式不可控
+    if (msg.includes('已有同名')) overwriteSkill.value = { from }
+    else toast.error(msg)
+  } finally {
+    regBusy.value = false
+  }
+}
+
+// 覆盖库里的同名技能：用户在 ConfirmDialog 里点了覆盖才真正发第二次请求
+async function doOverwriteSkill() {
+  const p = overwriteSkill.value
+  overwriteSkill.value = null
+  if (!p) return
+  regBusy.value = true
+  try {
+    const r = await registryAddSkill(p.from, true)
+    toast(`已覆盖添加：${r.name}`)
+  } catch (e) {
+    if (e instanceof Unauthorized) {
+      emit('close')
+      return
     }
+    toast.error(e instanceof Error ? e.message : String(e))
   } finally {
     regBusy.value = false
   }
@@ -2047,6 +2058,17 @@ function fmtSize(n: number): string {
       :busy="opBusy"
       @confirm="confirmDelete"
       @close="delTarget = null"
+    />
+    <!-- 同名技能覆盖确认 -->
+    <ConfirmDialog
+      v-if="overwriteSkill"
+      title="覆盖同名技能"
+      description="技能库里已有同名条目，覆盖会用当前目录的快照替换它。"
+      confirm-text="覆盖"
+      variant="destructive"
+      :busy="regBusy"
+      @confirm="doOverwriteSkill"
+      @close="overwriteSkill = null"
     />
   </div>
 </template>

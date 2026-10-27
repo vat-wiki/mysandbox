@@ -55,7 +55,7 @@ function submit() {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-md">
+    <DialogContent class="max-w-md max-md:flex max-md:flex-col">
       <DialogHeader>
         <DialogTitle>{{ title }}</DialogTitle>
         <DialogDescription v-if="description">{{ description }}</DialogDescription>
@@ -71,7 +71,8 @@ function submit() {
         />
       </div>
 
-      <DialogFooter>
+      <!-- 手机全屏页形态：按钮组贴底（底座把 DialogContent 变成整页） -->
+      <DialogFooter class="max-md:mt-auto">
         <Button variant="outline" :disabled="busy" @click="emit('close')">{{
           cancelText || '取消'
         }}</Button>

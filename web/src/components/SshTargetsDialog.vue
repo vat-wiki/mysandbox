@@ -176,7 +176,7 @@ function destLabel(t: { name?: string; host?: string; user?: string; port?: numb
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
+    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
           <Server class="size-4" /> SSH 主机

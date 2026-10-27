@@ -130,7 +130,7 @@ async function doDelete() {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
+    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
       <DialogHeader>
         <DialogTitle>账户管理</DialogTitle>
         <DialogDescription>
@@ -182,7 +182,7 @@ async function doDelete() {
 
   <!-- 新建/编辑表单 -->
   <Dialog :open="showForm" @update:open="(v: boolean) => v || (showForm = false)">
-    <DialogContent class="max-w-md max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
+    <DialogContent class="max-w-md max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
       <DialogHeader>
         <DialogTitle>{{ editName ? `编辑账户 ${editName}` : '新建账户' }}</DialogTitle>
         <DialogDescription>

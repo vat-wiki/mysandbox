@@ -181,7 +181,7 @@ const tabLabelOf = (key: string) => tabs.find((t) => t.key === key)?.label ?? ke
          表单占满高度。执行后右栏整体切结果态，表单与结果不共一个滚动区。
          md 以下分栏放不下，左栏折叠回横向 chip 行（移动端不退化）。 -->
     <DialogContent
-      class="flex max-h-[90vh] flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe sm:max-w-5xl"
+      class="flex max-h-[90vh] flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:rounded-none max-md:border-0 sm:max-w-5xl"
     >
       <!-- 头 -->
       <div class="border-b px-5 py-3 pr-10">

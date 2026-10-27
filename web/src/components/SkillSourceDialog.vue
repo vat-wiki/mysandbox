@@ -196,7 +196,7 @@ function openInPanel() {
 
 <template>
   <Dialog :open="!!skill" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="sm:max-w-4xl max-md:h-dvh max-md:max-w-full max-md:grid-rows-[auto_minmax(0,1fr)] max-md:gap-2 max-md:rounded-none max-md:border-0 max-md:pt-safe">
+    <DialogContent class="sm:max-w-4xl max-md:h-dvh max-md:max-w-full max-md:grid-rows-[auto_minmax(0,1fr)] max-md:gap-2 max-md:rounded-none max-md:border-0">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-1.5 font-mono">
           <FileText class="size-4 shrink-0 text-muted-foreground" />

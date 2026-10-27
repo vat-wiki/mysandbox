@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { getClusterStatus, clusterJoin, clusterLeave, clusterPullTemplate, clusterSyncSkills, Unauthorized, type ClusterStatusView, type ClusterPeerInfo } from '@/lib/api'
 
 const emit = defineEmits<{
@@ -58,11 +59,18 @@ async function join() {
   }
 }
 
-async function leave(machineId: string, name: string) {
-  if (!confirm(`确定要断开与 ${name} 的连接吗？`)) return
+// 断开确认走 ConfirmDialog（原生 confirm 在手机上就是浏览器弹框，样式不可控）
+const leaveTarget = ref<{ id: string; name: string } | null>(null)
+function leave(machineId: string, name: string) {
+  leaveTarget.value = { id: machineId, name }
+}
+async function doLeave() {
+  const t = leaveTarget.value
+  leaveTarget.value = null
+  if (!t) return
   try {
-    await clusterLeave(machineId)
-    toast.success(`已断开 ${name}`)
+    await clusterLeave(t.id)
+    toast.success(`已断开 ${t.name}`)
     await refresh()
   } catch (e) {
     toast.error(`断开失败: ${e instanceof Error ? e.message : e}`)
@@ -223,5 +231,15 @@ onMounted(refresh)
         </div>
       </DialogContent>
     </Dialog>
+
+    <ConfirmDialog
+      v-if="leaveTarget"
+      title="断开集群连接"
+      :description="`确定要断开与 ${leaveTarget.name} 的连接吗？`"
+      confirm-text="断开"
+      variant="destructive"
+      @confirm="doLeave"
+      @close="leaveTarget = null"
+    />
   </div>
 </template>

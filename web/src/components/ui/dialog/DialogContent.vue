@@ -40,6 +40,10 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
           // 高度用裸类兜底 max-h + overflow：调用方自带 max-h/overflow-hidden 时经 twMerge 胜出，
           // 中小对话框（max-w-md 一族）在横屏手机上内容过高时自动可滚，无需逐个改。
           'bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid max-h-[85dvh] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto scroll-thin rounded-lg border p-6 shadow-lg duration-200',
+          // 手机（max-md）一律渲染成整页而不是居中卡片：铺满视口、去圆角/边框/阴影、无缩放动画，
+          // 只做轻微上推——「移动端不开 dialog 弹框」由底座兜底，各调用点不必逐个写 max-md:h-dvh。
+          // 调用点自带的 max-md:*（h-dvh/rounded-none/pt-safe…）与之重复也无害（twMerge 去重）。
+          'max-md:top-0 max-md:left-0 max-md:h-dvh max-md:max-h-none max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none max-md:border-0 max-md:shadow-none max-md:px-4 max-md:pt-[max(env(safe-area-inset-top),1rem)] max-md:pb-[max(env(safe-area-inset-bottom),1rem)] max-md:data-[state=open]:zoom-in-100 max-md:data-[state=closed]:zoom-out-100 max-md:data-[state=open]:slide-in-from-bottom-2 max-md:data-[state=closed]:slide-out-to-bottom-2',
           props.class,
         )"
     >

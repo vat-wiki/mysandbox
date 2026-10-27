@@ -112,7 +112,7 @@ onBeforeUnmount(() => {
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || close()">
     <DialogContent
-      class="flex h-[82dvh] max-w-5xl flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:gap-0 max-md:rounded-none max-md:border-0 max-md:pt-safe"
+      class="flex h-[82dvh] max-w-5xl flex-col gap-0 overflow-hidden p-0 max-md:h-dvh max-md:max-h-none max-md:max-w-full max-md:gap-0 max-md:rounded-none max-md:border-0"
     >
       <DialogHeader class="shrink-0 border-b px-4 py-3 pr-12">
         <DialogTitle class="flex items-center gap-2 text-sm">

@@ -14,14 +14,7 @@
 // section=cmds 时滚到指令分区。
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import {
-  DialogRoot,
-  DialogPortal,
-  DialogOverlay,
-  DialogContent as SheetContent,
-  DialogTitle as SheetTitle,
-  DialogClose,
-} from 'reka-ui'
+import BottomPanel from '@/components/mobile/BottomPanel.vue'
 import { ChevronDown, ChevronLeft, ChevronUp, CircleDot, GripVertical, Keyboard, Pencil, Pin, Plus, Trash2, X } from '@lucide/vue'
 import {
   toolButtons,
@@ -401,7 +394,7 @@ onBeforeUnmount(() => {
   <Dialog :open="true" @update:open="(v: boolean) => v || closePage()">
     <DialogContent
       :show-close-button="false"
-      class="z-[100] flex max-h-[85dvh] w-full max-w-lg flex-col gap-0 overflow-hidden border-border/60 bg-background p-0 max-md:h-dvh max-md:max-h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe"
+      class="z-[100] flex max-h-[85dvh] w-full max-w-lg flex-col gap-0 overflow-hidden border-border/60 bg-background p-0 max-md:h-dvh max-md:max-h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0"
     >
       <header class="flex shrink-0 items-center gap-1 border-b border-border/60 px-2 py-1.5">
         <button
@@ -593,55 +586,49 @@ onBeforeUnmount(() => {
   </Dialog>
 
   <!-- 候选按键 -->
-  <DialogRoot :open="pickerOpen" @update:open="(v: boolean) => (pickerOpen = v)">
-    <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-[110] bg-black/70" />
-      <SheetContent
-        class="fixed inset-x-0 bottom-0 z-[110] mx-auto max-h-[78dvh] w-full max-w-lg overflow-y-auto scroll-thin rounded-t-2xl border-border/60 bg-background p-0 pb-[max(env(safe-area-inset-bottom),1rem)] shadow-2xl"
+  <BottomPanel :open="pickerOpen" label="添加快捷键" layer="toolbar" @update:open="pickerOpen = $event">
+    <div class="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
+      <p class="text-base font-semibold">添加快捷键</p>
+      <button
+        type="button"
+        class="flex size-8 items-center justify-center rounded-full text-muted-foreground active:bg-accent"
+        @click="pickerOpen = false"
       >
-        <div class="mx-auto mt-2.5 h-1 w-10 rounded-full bg-muted-foreground/30" />
-        <div class="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
-          <SheetTitle class="text-base font-semibold">添加快捷键</SheetTitle>
-          <DialogClose class="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground">
-            <X class="size-4" />
-            <span class="sr-only">关闭</span>
-          </DialogClose>
-        </div>
-        <p class="px-4 pb-2 text-xs text-muted-foreground">点击追加到工具条末尾；已添加的按键不可重复。</p>
-        <div class="px-2 pb-2">
-          <button
-            v-for="[id, e] in poolEntries"
-            :key="id"
-            type="button"
-            class="flex min-h-12 w-full items-center gap-2 rounded-xl px-3 text-left transition-colors active:bg-accent disabled:opacity-40"
-            :disabled="usedKeyIds.has(id) || toolButtons.length >= TOOLBAR_MAX"
-            @click="addKeyFromPicker(id)"
-          >
-            <span class="w-12 shrink-0 font-mono text-sm text-foreground">{{ e.label }}</span>
-            <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">{{ e.title }}</span>
-            <span v-if="usedKeyIds.has(id)" class="shrink-0 text-[11px] text-muted-foreground">已添加</span>
-            <Plus v-else class="size-4 shrink-0 text-muted-foreground" />
-          </button>
-        </div>
-      </SheetContent>
-    </DialogPortal>
-  </DialogRoot>
+        <X class="size-4" />
+        <span class="sr-only">关闭</span>
+      </button>
+    </div>
+    <p class="px-4 pb-2 text-xs text-muted-foreground">点击追加到工具条末尾；已添加的按键不可重复。</p>
+    <div class="px-2 pb-2">
+      <button
+        v-for="[id, e] in poolEntries"
+        :key="id"
+        type="button"
+        class="flex min-h-12 w-full items-center gap-2 rounded-xl px-3 text-left transition-colors active:bg-accent disabled:opacity-40"
+        :disabled="usedKeyIds.has(id) || toolButtons.length >= TOOLBAR_MAX"
+        @click="addKeyFromPicker(id)"
+      >
+        <span class="w-12 shrink-0 font-mono text-sm text-foreground">{{ e.label }}</span>
+        <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">{{ e.title }}</span>
+        <span v-if="usedKeyIds.has(id)" class="shrink-0 text-[11px] text-muted-foreground">已添加</span>
+        <Plus v-else class="size-4 shrink-0 text-muted-foreground" />
+      </button>
+    </div>
+  </BottomPanel>
 
   <!-- 自定义按键 -->
-  <DialogRoot :open="customOpen" @update:open="onCustomSheetOpen">
-    <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-[110] bg-black/70" />
-      <SheetContent
-        class="fixed inset-x-0 bottom-0 z-[110] mx-auto w-full max-w-lg rounded-t-2xl border-border/60 bg-background p-0 pb-[max(env(safe-area-inset-bottom),1rem)] shadow-2xl"
+  <BottomPanel :open="customOpen" label="自定义按键" layer="toolbar" @update:open="onCustomSheetOpen">
+    <div class="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
+      <p class="text-base font-semibold">自定义按键</p>
+      <button
+        type="button"
+        class="flex size-8 items-center justify-center rounded-full text-muted-foreground active:bg-accent"
+        @click="onCustomSheetOpen(false)"
       >
-        <div class="mx-auto mt-2.5 h-1 w-10 rounded-full bg-muted-foreground/30" />
-        <div class="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
-          <SheetTitle class="text-base font-semibold">自定义按键</SheetTitle>
-          <DialogClose class="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground">
-            <X class="size-4" />
-            <span class="sr-only">关闭</span>
-          </DialogClose>
-        </div>
+        <X class="size-4" />
+        <span class="sr-only">关闭</span>
+      </button>
+    </div>
         <div class="px-3 pb-1">
           <p class="mb-2 px-1 text-xs text-muted-foreground">
             标签显示在按钮上；序列支持 \e \xHH 等转义，或直接录制物理键盘。
@@ -682,25 +669,21 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-      </SheetContent>
-    </DialogPortal>
-  </DialogRoot>
+  </BottomPanel>
 
   <!-- 新建 / 编辑指令 -->
-  <DialogRoot :open="cmdFormOpen" @update:open="onCmdSheetOpen">
-    <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-[110] bg-black/70" />
-      <SheetContent
-        class="fixed inset-x-0 bottom-0 z-[110] mx-auto w-full max-w-lg rounded-t-2xl border-border/60 bg-background p-0 pb-[max(env(safe-area-inset-bottom),1rem)] shadow-2xl"
+  <BottomPanel :open="cmdFormOpen" :label="cmdEditIdx < 0 ? '新建指令' : '编辑指令'" layer="toolbar" @update:open="onCmdSheetOpen">
+    <div class="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
+      <p class="text-base font-semibold">{{ cmdEditIdx < 0 ? '新建指令' : '编辑指令' }}</p>
+      <button
+        type="button"
+        class="flex size-8 items-center justify-center rounded-full text-muted-foreground active:bg-accent"
+        @click="onCmdSheetOpen(false)"
       >
-        <div class="mx-auto mt-2.5 h-1 w-10 rounded-full bg-muted-foreground/30" />
-        <div class="flex items-center justify-between gap-3 px-4 pt-3 pb-1">
-          <SheetTitle class="text-base font-semibold">{{ cmdEditIdx < 0 ? '新建指令' : '编辑指令' }}</SheetTitle>
-          <DialogClose class="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground">
-            <X class="size-4" />
-            <span class="sr-only">关闭</span>
-          </DialogClose>
-        </div>
+        <X class="size-4" />
+        <span class="sr-only">关闭</span>
+      </button>
+    </div>
         <div class="px-3 pb-1">
           <input
             ref="cmdLabelInput"
@@ -728,9 +711,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-      </SheetContent>
-    </DialogPortal>
-  </DialogRoot>
+  </BottomPanel>
 </template>
 
 <style scoped>

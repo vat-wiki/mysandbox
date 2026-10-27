@@ -166,7 +166,7 @@ function submit() {
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0 max-md:pt-safe">
+    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
       <DialogHeader>
         <DialogTitle>新建容器</DialogTitle>
         <DialogDescription class="sr-only">新建系统容器</DialogDescription>

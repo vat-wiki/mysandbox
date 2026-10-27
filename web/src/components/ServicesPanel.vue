@@ -460,8 +460,10 @@ onUnmounted(() => {
 <template>
   <DialogRoot :open="true" @update:open="(v: boolean) => v || emit('close')">
     <DialogPortal>
+      <!-- 手机端抽屉是全宽整页（下面 DialogContent 的 w-full），遮罩只会带来「黑幕闪一下」，
+           直接不渲染——与 ui/dialog 底座同口径（移动端不见弹框感）。 -->
       <DialogOverlay
-        class="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
+        class="fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 max-md:hidden"
       />
       <!-- 右侧滑入抽屉：单服务详情（宽度 xl——配置编辑器/凭据/项目成员都吃宽度） -->
       <DialogContent
