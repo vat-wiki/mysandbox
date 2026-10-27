@@ -1255,14 +1255,21 @@ function navigateMobileNav(target: MobileNavTarget) {
   ;(document.activeElement as HTMLElement | null)?.blur?.()
   if (target === 'terminal') {
     const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
+    // 激活态再点 = 开/收终端切换条（iOS Safari 标签页同款「再点已激活页签出总览」）——
+    // 顶栏取消后终端切换/组管理的唯一落点，也让底栏不再是点了没反应的 no-op。
+    // 切换条是非模态浮层，不是 sheet：再点即收，离开终端视图时也要收（否则挂在文件/AI 上）。
+    if (alreadyTerminal) {
+      termSwitcherOpen.value = !termSwitcherOpen.value
+      return
+    }
+    termSwitcherOpen.value = false
     showFiles.value = false
     if (aiOpen.value) closeAi()
     mainView.value = 'terminal'
-    // 激活态再点 = 弹终端切换 sheet（iOS Safari 标签页同款「再点已激活页签出总览」）——
-    // 顶栏取消后终端切换/组管理的唯一落点，也让底栏不再是点了没反应的 no-op。
-    if (alreadyTerminal) termSwitcherOpen.value = true
     return
   }
+  // 非终端目标一律收切换条（浮层不跨视图滞留）
+  termSwitcherOpen.value = false
   if (target === 'ai') {
     showFiles.value = false
     openAi()
@@ -2570,7 +2577,7 @@ function mobileGroupActionList(group: TermGroup) {
   return groupActions(group, containerRunning(group.containerId))
 }
 
-// —— 手机终端切换 sheet（底栏「终端」再点弹出）——
+// —— 手机终端切换条（底栏「终端」再点开/收，非模态浮层）——
 // 顶栏取消后终端切换/组管理/网络信息的落点。组动作复用 groupActions 清单（CardActionSheet）；
 // 网络信息沿用 tab 栏下拉的数据源（activeContainer 的懒加载缓存），仅当前组有意义，放全局区。
 const termSwitcherOpen = ref(false)
@@ -2578,7 +2585,8 @@ const switcherRows = computed<TermSwitcherRow[]>(() =>
   groups.value.map((g) => ({
     id: g.id,
     label: groupLabel(g),
-    sub: leafCount(g.root) > 1 ? `${leafCount(g.root)} 块分屏` : undefined,
+    // 芯片空间紧：分屏数用短写（「3 块分屏」在横条上会顶掉组名）
+    sub: leafCount(g.root) > 1 ? `${leafCount(g.root)} 屏` : undefined,
     color: tabDotColor(g),
     busy: busyGroupIds.value.has(g.id),
     attention: quietAttention.value.has(g.id),
@@ -2590,7 +2598,7 @@ function onSwitcherSelect(id: string) {
   const i = groups.value.findIndex((g) => g.id === id)
   if (i >= 0) onTabClick(i)
 }
-// 组动作表：sheet 内 ⋯ 开 CardActionSheet（与原顶栏 MobileTabActions 同一份动作清单）。
+// 组动作表：切换条右侧 ⋯ 开 CardActionSheet（作用于当前组，与原顶栏 MobileTabActions 同一份清单）。
 const switcherActionGroup = ref<TermGroup | null>(null)
 const switcherActionOpen = ref(false)
 const switcherActionList = computed(() =>
@@ -4496,7 +4504,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            全关/全隐藏时只剩图标按钮（无纵向 padding），不托底整条栏会塌到 ~14px。
            max-md:min-h-10：手机 40px，对应 max-md:py-2.5 + text-sm。
            手机主窗口整条隐藏（2026-10-21 起）：终端切换/组动作/网络/环境入口全部下沉——
-           底栏「终端」激活态再点弹 MobileTermSwitcher，开抽屉靠左缘右滑 + sheet 兜底入口，
+           底栏「终端」激活态再点开 MobileTermSwitcher 切换条，开抽屉靠左缘右滑 + 条尾兜底入口，
            省出 ~40px 给终端内容。popout 无底栏，保留本条作为手机端唯一切换/动作入口。 -->
       <div class="flex min-h-7 border-b border-border bg-muted/30 max-md:min-h-10" :class="!props.popout && 'max-md:hidden'">
         <button
@@ -5136,20 +5144,22 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @open-base="emit('open-base')"
       @open-accounts="emit('open-accounts')"
       @open-batch="openBatch()"
-    />
-
-    <!-- 手机终端切换 sheet：底栏「终端」激活态再点弹出（组列表 + 组动作 + 网络信息 +
-         所有终端 / 环境列表）。顶栏取消后这些功能的唯一手机入口，popout 不经此路径。 -->
-    <MobileTermSwitcher
-      v-model:open="termSwitcherOpen"
-      :rows="switcherRows"
-      @select="onSwitcherSelect"
-      @close="closeGroupById($event)"
-      @actions="onSwitcherActions"
-      @sessions="termSwitcherOpen = false; showSessions = true"
-      @environments="termSwitcherOpen = false; drawerOpen = true"
-      @network="openNetworkSheet"
-    />
+    >
+      <!-- 手机终端切换条（非模态）：底栏「终端」激活态再点开/收（组 chips + 当前组动作 +
+           所有终端 / 环境列表 / 网络信息）。挂进底栏做 absolute bottom-full 浮层——
+           底栏高度/安全区由底栏自己算，条不用猜；顶栏取消后这些功能的唯一手机入口，
+           popout 无底栏也不经此路径。 -->
+      <MobileTermSwitcher
+        v-model:open="termSwitcherOpen"
+        :rows="switcherRows"
+        :keyboard-open="kbRawGlobal"
+        @select="onSwitcherSelect"
+        @actions="onSwitcherActions"
+        @sessions="termSwitcherOpen = false; showSessions = true"
+        @environments="termSwitcherOpen = false; drawerOpen = true"
+        @network="openNetworkSheet"
+      />
+    </MobileBottomNav>
     <CardActionSheet
       v-model:open="switcherActionOpen"
       :title="switcherActionGroup ? groupLabel(switcherActionGroup) : ''"

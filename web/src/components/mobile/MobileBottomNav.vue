@@ -33,6 +33,7 @@ const items: { target: MobileNavTarget; label: string; icon: typeof Terminal }[]
 
 <template>
   <nav
+    data-mobile-bottom-nav
     class="fixed inset-x-0 bottom-0 z-50 flex h-10 border-t border-border bg-background pb-safe transition-transform duration-200 md:hidden"
     :class="keyboardOpen ? 'pointer-events-none translate-y-full' : ''"
   >
@@ -81,5 +82,8 @@ const items: { target: MobileNavTarget; label: string; icon: typeof Terminal }[]
         <span class="truncate">{{ item.label }}</span>
       </button>
     </template>
+    <!-- 底栏上方浮层（手机终端切换条）：绝对定位挂在底栏顶上（bottom-full），
+         底栏高度/安全区怎么算都不用跟着改；键盘收起时整条一起滑走。 -->
+    <slot />
   </nav>
 </template>
