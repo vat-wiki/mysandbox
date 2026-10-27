@@ -1,5 +1,5 @@
 // 触屏工具条配置：按键（工具条按钮）与指令（「指令」面板条目）共用这一份模块级状态，
-// Terminal.vue 渲染、ToolbarSettingsDialog.vue 编排（『按键』『指令』两个平级 tab）。
+// Terminal.vue 渲染、TerminalToolbarPage.vue（全屏设置页）编排（两个平级分区）。
 // 查看偏好按项目约定只进 localStorage，不进 sidecar。
 //
 // v3 起两类条目地位平等：工具条只放按键，文本类动作（原「快捷短语」与「快捷指令」）
@@ -83,7 +83,7 @@ const LEGACY_SNIPPETS_KEY = 'mysandbox:term-quick-snippets'
 
 export const TOOLBAR_MAX = 24
 // 一页 = 2 行 × 7 列（对齐 Termux 一行 7 键）。键超出自动溢到下一页，工具条横向轻扫翻页；
-// Terminal.vue 的分页渲染与 ToolbarSettingsDialog 的按页分区共用这个常数。
+// Terminal.vue 的分页渲染与 TerminalToolbarPage 的顺序说明共用这个常数。
 export const TB_PER_PAGE = 14
 
 // 预置布局 = Termux 默认 extra-keys 两行（各 7 键）逐位对齐：第一行 ESC / ^C / - HOME UP END PGUP，
@@ -283,6 +283,20 @@ export function parseSeq(input: string): string {
     } else out += n
   }
   return out
+}
+
+// 序列反向转义成可读形式（设置页的自定义按键描述用；可再手改回 parseSeq 的输入）。
+export function formatSeq(seq: string): string {
+  return [...seq].map((ch) => {
+    const code = ch.charCodeAt(0)
+    if (ch === '\\') return '\\\\'
+    if (ch === '\x1b') return '\\e'
+    if (ch === '\n') return '\\n'
+    if (ch === '\r') return '\\r'
+    if (ch === '\t') return '\\t'
+    if (code < 0x20 || code === 0x7f) return '\\x' + code.toString(16).padStart(2, '0')
+    return ch
+  }).join('')
 }
 
 // 物理键盘录制：把 keydown 编码成终端序列（xterm 风格 CSI/SS3 + 修饰位 1+shift+2*alt+4*ctrl）。

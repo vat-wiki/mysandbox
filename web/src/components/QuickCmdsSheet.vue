@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // 快捷指令面板（手机终端工具条「指令」键弹出，底栏 sheet）：**只负责运行**——
 // 点条目 = 发送整条命令并回车（run 事件交回 Terminal.vue，含 cwd 跟随）并收起面板。
-// 配置（增删改 / 调序）与工具条按键配置同级，统一收在 ToolbarSettingsDialog 的
-// 『指令』tab；面板右上「配置」直接跳过去（emit config），不再有「管理」态——
+// 配置（增删改 / 调序）与工具条按键配置同级，统一收在全屏「终端工具条」页的
+// 指令分区；面板右上「配置」直接跳过去（emit config），不再有「管理」态——
 // 同一个列表在运行态和配置态语义相反（点 = 执行 vs 点 = 编辑）的问题随之消失。
 // 数据在 lib/termToolbar.ts（localStorage 模块级单例——多终端实例共享一份）。
 // 运行行的 pointerdown.prevent 防抢终端焦点（软键盘收起闪一下 + composition 被吞）。
@@ -42,7 +42,7 @@ function onCloseAutoFocus(e: Event) {
 <template>
   <DialogRoot :open="open" @update:open="emit('update:open', $event)">
     <DialogPortal>
-      <DialogOverlay class="z-[90] bg-black/70" />
+      <DialogOverlay class="fixed inset-0 z-[90] bg-black/70" />
       <DialogContent
         class="fixed inset-x-0 bottom-0 z-[90] max-h-[78dvh] w-full overflow-y-auto scroll-thin rounded-t-2xl border-border/60 bg-background p-0 pb-[max(env(safe-area-inset-bottom),1rem)] shadow-2xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:slide-in-from-bottom-4 data-[state=closed]:slide-out-to-bottom-4"
         @close-auto-focus="onCloseAutoFocus"

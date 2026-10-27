@@ -10,11 +10,13 @@ import { setEngineInfo } from '@/lib/caps'
 import { loadProxyConfig, proxyPrimary } from '@/lib/proxy'
 import { armWatchingHeartbeat } from '@/lib/pushNotify'
 import { startVersionWatch } from '@/lib/versionCheck'
+import { TERMINAL_TOOLBAR_ROUTE } from '@/router'
 import { isPhone } from '@/composables/useDevice'
 import ContainerList from '@/components/ContainerList.vue'
 import type { OpenReq } from '@/components/ContainerList.vue'
 import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
+import TerminalToolbarPage from '@/components/TerminalToolbarPage.vue'
 import GuestConsole from '@/components/GuestConsole.vue'
 import { Toaster } from '@/components/ui/sonner'
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
@@ -147,6 +149,14 @@ const ready = computed(() => !!token.value || !!guest.value)
 const route = useRoute()
 const router = useRouter()
 const showServicesPanel = computed(() => route.name === 'services' || route.name === 'service')
+// 手机工具条设置页：全屏页（路由承载），离开终端编辑按键/指令。
+const showToolbarPage = computed(() => route.name === TERMINAL_TOOLBAR_ROUTE)
+const toolbarPageSection = computed<'keys' | 'cmds'>(() => (route.query.section === 'cmds' ? 'cmds' : 'keys'))
+function closeToolbarPage() {
+  if (route.name !== TERMINAL_TOOLBAR_ROUTE) return
+  if (typeof history.state?.back === 'string') void router.back()
+  else void router.replace({ name: 'workspace' })
+}
 // 服务卡片点击带服务名：抽屉打开即定位到该服务详情。
 const svcSelect = computed(() => (route.name === 'service' && typeof route.params.name === 'string' ? route.params.name : ''))
 function openServices(_create = false, select?: string) {
@@ -263,6 +273,11 @@ onUnmounted(() => {
       />
       <BasePanel v-if="showBasePanel" @close="closeBase" @changed="refreshBaseStatus" />
       <AccountsPanel v-if="showAccountsPanel" @close="closeAccounts" />
+      <TerminalToolbarPage
+        v-if="ready && showToolbarPage"
+        :section="toolbarPageSection"
+        @close="closeToolbarPage"
+      />
       <ServicesPanel
         v-if="showServicesPanel"
         :initial-select="svcSelect"

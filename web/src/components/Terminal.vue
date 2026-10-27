@@ -30,8 +30,8 @@ import { useTermTouchScroll } from '@/composables/useTermTouchScroll'
 import { useTermLinks } from '@/composables/useTermLinks'
 import { screenHash as screenHashOf } from '@/lib/termScreen'
 import { registerScrollRegionHandler, type TerminalViewportHost } from '@/lib/termScrollRegion'
-import ToolbarSettingsDialog from '@/components/ToolbarSettingsDialog.vue'
 import QuickCmdsSheet from '@/components/QuickCmdsSheet.vue'
+import { openToolbarSettings } from '@/lib/termToolbarNav'
 
 const props = withDefaults(
   // host=true 时连 /ws/host-terminal（宿主终端，PTY 由 server 管理，无容器 id）。
@@ -368,7 +368,7 @@ function toolScrollEnd(top: boolean) {
 // —— 手机软键盘 + 触屏工具条（usePhoneToolbar 整体归属，边界规则见其头注）——
 // 焦点闸 / 键盘让位（kbInset/kbMask）/ 粘滞修饰 / 分页 / 长按连发 / 设置入口全在 composable；
 // 这里只注入终端本体能力（发键/滚动/粘贴/复制/刷新/字号）。按键与指令的配置统一在
-// ToolbarSettingsDialog（『按键』『指令』两个平级 tab），工具条不再有文本短语按钮。
+// 全屏设置页 TerminalToolbarPage（路由 terminal-toolbar），工具条不再有文本短语按钮。
 const tb = usePhoneToolbar({
   rootEl,
   el,
@@ -396,9 +396,6 @@ const {
   stopRepeat,
   toolPages,
   tbPage,
-  settingsOpen,
-  settingsTab,
-  openSettings,
   cmdsOpen,
   openCmdsConfig,
   runQuickCmd,
@@ -808,7 +805,8 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
          指令 tab）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
-         参与分页。桌面不渲染。工具条是「键盘态 + 本实例持焦」双闸覆盖层——始终渲染以便
+         参与分页（点开全屏 TerminalToolbarPage；设置菜单里也有同一个稳定入口）。
+         桌面不渲染。工具条是「键盘态 + 本实例持焦」双闸覆盖层——始终渲染以便
          测量高度，但平时不可见；定位用 kbToolbarTop 贴键盘上沿，终端自身已按「让位量 =
          键盘侵入 + 工具条高」缩过盒子，所以工具条落位后不会压住内容。焦点闸必须：终端组件按组/分屏
          多实例常驻，kbRaw（window.visualViewport）是全局信号、所有实例同时为真，
@@ -854,7 +852,7 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
             >指令</button>
             <button
               v-else
-              type="button" class="tb" :class="{ 'tb-on': settingsOpen }" title="工具条设置：按键编排 / 指令管理" @pointerdown.prevent @click="openSettings('keys')"
+              type="button" class="tb" title="终端工具条设置（全屏页）" @pointerdown.prevent @click="openToolbarSettings('keys')"
             >⋯</button>
           </template>
         </div>
@@ -865,9 +863,8 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
       </div>
       </div>
     </Teleport>
-    <!-- 配置中心：按键与指令两个平级 tab（initialTab 由入口决定：⋯ → 按键，指令面板「配置」→ 指令） -->
-    <ToolbarSettingsDialog v-if="settingsOpen" :initial-tab="settingsTab" @close="settingsOpen = false" />
-    <!-- 快捷指令面板只负责运行：点条目 = 整条命令 + 回车 + cwd 跟随并收起；配置跳回 ⋯ 设置。
+    <!-- 快捷指令面板只负责运行：点条目 = 整条命令 + 回车 + cwd 跟随并收起；
+         配置跳全屏「终端工具条」页的指令分区（lib/termToolbarNav.ts），不再就地弹管理表单。
          数据 localStorage（lib/termToolbar.ts），多终端实例共享同一份。 -->
     <QuickCmdsSheet v-model:open="cmdsOpen" @run="runQuickCmd" @config="openCmdsConfig" />
     <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox

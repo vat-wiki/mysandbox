@@ -5,6 +5,9 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 // Vue Router 的 record 类型要求 component，空渲染组件让类型显式成立。
 const RouteAnchor = defineComponent({ name: 'RouteAnchor', render: () => null })
 
+// 手机工具条设置页（全屏）。路由名给 lib/termToolbarNav.ts 与 App 共用，避免三处手写漂移。
+export const TERMINAL_TOOLBAR_ROUTE = 'terminal-toolbar'
+
 // 移动端全屏页的第一批路由只描述导航层级，不拥有业务数据：Workspace（终端 + 侧栏）
 // 常驻挂载，路由只决定当前展开的全屏层级。这样系统后退/前进由 Vue Router 接管，
 // 而 xterm、tmux attach、分屏树和轮询状态不会被页面切换销毁。
@@ -31,6 +34,12 @@ const pageRoutes: RouteRecordRaw[] = [
   {
     path: '/settings',
     name: 'settings',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
+  {
+    path: '/terminal-toolbar',
+    name: TERMINAL_TOOLBAR_ROUTE,
     component: RouteAnchor,
     meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
   },

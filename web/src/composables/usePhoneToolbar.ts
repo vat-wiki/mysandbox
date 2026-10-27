@@ -1,5 +1,6 @@
 import { ref, computed, watch, onBeforeUnmount, nextTick, type Ref } from 'vue'
 import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
+import { openToolbarSettings } from '@/lib/termToolbarNav'
 import { isPhone } from '@/composables/useDevice'
 import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
 
@@ -235,20 +236,14 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     }
     deps.sendRaw(seq)
   }
-  // ⋯ 打开工具条设置弹窗（ToolbarSettingsDialog）：『按键』『指令』两个平级 tab，
-  // 移动端两类配置只留这一个入口（initialTab 决定落在哪一页）。
-  const settingsOpen = ref(false)
-  const settingsTab = ref<'keys' | 'cmds'>('keys')
-  function openSettings(tab: 'keys' | 'cmds' = 'keys') {
-    settingsTab.value = tab
-    settingsOpen.value = true
-  }
+  // ⋯ 不再打开弹窗：跳全屏「终端工具条」设置页（lib/termToolbarNav.ts，路由承载）。
+  // 配置页是全局单例、不依赖键盘——设置菜单里也有同一个入口。
   // 「指令」打开快捷指令面板（QuickCmdsSheet）：面板只负责运行（点条目 = 发送整条命令并回车）；
-  // 面板右上「配置」跳回工具条设置的『指令』tab——运行与配置不混在同一个面板里。
+  // 面板右上「配置」关面板并跳到设置页的指令分区——运行与配置不混在同一个面板里。
   const cmdsOpen = ref(false)
   function openCmdsConfig() {
     cmdsOpen.value = false
-    openSettings('cmds')
+    openToolbarSettings('cmds')
   }
   function runQuickCmd(cmd: string) {
     deps.sendRaw(cmd + '\r')
@@ -400,9 +395,6 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     stopRepeat,
     toolPages,
     tbPage,
-    settingsOpen,
-    settingsTab,
-    openSettings,
     cmdsOpen,
     openCmdsConfig,
     runQuickCmd,

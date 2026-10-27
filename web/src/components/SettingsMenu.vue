@@ -2,12 +2,14 @@
 // 设置弹出菜单（侧栏底行 / rail 底列 / popout 顶栏 / 手机底栏共用的唯一设置入口）。
 // 目录层从弹框降格为锚定按钮的 popup 列表——模态目录页给轻量配置不值得：
 // AI 配置只给跳转（主区 AI 工作区页签，openAi 语义在 ContainerList）；
-// TestLens / 集群 / 浏览器通知开 SettingsDialog 直落对应分区（大体量详情仍住弹框）。
+// TestLens / 集群 / 浏览器通知开 SettingsDialog 直落对应分区（大体量详情仍住弹框）；
+// 「终端工具条」直接跳全屏设置页（手机本地偏好，见 lib/termToolbarNav.ts）。
 // 「管理」组（模板/账户/批量配置）2026-10-22 起从系统容器分区头 ⋯ 菜单收编进来——
 // 管理动作统一走设置一个路口（分区头只留刷新/新建两个高频直连钮）。
 // 版本号收编在列表末行（2026-10-22 起，品牌块 / rail 展开键 tooltip / 手机抽屉底
 // 不再重复展示）。触发按钮由使用方以默认插槽传入（各处样式不同，as-child 接管）。
-import { Bell, Bot, Globe, Network, Settings2, Users, ListChecks } from 'lucide-vue-next'
+import { Bell, Bot, Globe, Keyboard, Network, Settings2, Users, ListChecks } from 'lucide-vue-next'
+import { openToolbarSettings } from '@/lib/termToolbarNav'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,6 +58,10 @@ const appVersion = __APP_VERSION__
       </DropdownMenuItem>
       <DropdownMenuItem @click="emit('open-section', 'notify')">
         <Bell class="size-4" /> 浏览器通知
+      </DropdownMenuItem>
+      <!-- 手机工具条是本地偏好（localStorage），不占服务端设置分区；全屏页由路由承载 -->
+      <DropdownMenuItem @click="openToolbarSettings('keys')">
+        <Keyboard class="size-4" /> 终端工具条
       </DropdownMenuItem>
       <template v-if="showManage !== false">
         <DropdownMenuSeparator />
