@@ -18,6 +18,7 @@ import TokenGate from '@/components/TokenGate.vue'
 import BasePanel from '@/components/BasePanel.vue'
 import TerminalToolbarPage from '@/components/TerminalToolbarPage.vue'
 import GuestConsole from '@/components/GuestConsole.vue'
+import StaleVersionPill from '@/components/StaleVersionPill.vue'
 import { Toaster } from '@/components/ui/sonner'
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
 const AccountsPanel = defineAsyncComponent(() => import('@/components/AccountsPanel.vue'))
@@ -288,5 +289,8 @@ onUnmounted(() => {
     <!-- 全局通知（服务创建任务完成/失败等）。桌面右下角——终端主体在左上，避开视觉焦点；
          手机改顶部居中——右下角会压住终端底部输入区，且要避开软键盘与底部 home indicator。 -->
     <Toaster :position="isPhone ? 'top-center' : 'bottom-right'" />
+    <!-- 新版本浮动胶囊（lib/versionCheck 置 staleVersion 时出现）：右下角浮动，
+         点按刷新、拖拽甩走收成圆点——不再用常驻 toast（手机上划不掉还压内容区）。 -->
+    <StaleVersionPill />
   </div>
 </template>
