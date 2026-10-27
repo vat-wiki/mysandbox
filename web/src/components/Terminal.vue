@@ -400,11 +400,6 @@ const {
   openCmdsConfig,
   runQuickCmd,
   runCmdBtn,
-  recentStrip,
-  hasLastCmd,
-  onCmdBtnDown,
-  onCmdBtnUp,
-  onCmdBtnClick,
   tbTouchStart,
   tbTouchEnd,
 } = tb
@@ -812,9 +807,7 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
          Ctrl/Alt 是粘滞修饰（点亮→下一个键带修饰发出→用掉即灭，可叠加 C-M-x；软键盘单字符在
          attachCustomKeyEventHandler 接管）。Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
          「指令」面板（命名命令列表，点条目 = 整条命令+回车，面板只负责运行；增删改在设置页的
-         指令分区，行尾图钉可把常用指令固定到工具条 = 一键发送）。工具条上方还有一条 28px 的
-         「最近」条：运行过且未固定的指令自动出现，点一下直发；没有可显示项时整条不占高。
-         长按「指令」= 重发上一条（带 ↻ 角标提示）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
+         指令分区，行尾图钉可把常用指令固定到工具条 = 一键发送）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
          参与分页（点开全屏 TerminalToolbarPage；设置菜单里也有同一个稳定入口）。
@@ -838,32 +831,6 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
         @touchstart="tbTouchStart"
         @touchend="tbTouchEnd"
       >
-      <!-- 最近指令条：运行过的指令（未固定的）自动出现，点一下即发；固定项已在主键区，不重复。
-           只有 28px 高；没有可显示项时整条不渲染，键盘态不多占高度。 -->
-      <div
-        v-if="recentStrip.length"
-        class="mb-1 flex touch-pan-x items-center gap-1 overflow-x-auto scroll-thin"
-        @touchstart.stop
-        @touchend.stop
-      >
-        <span class="shrink-0 pl-1 text-[10px] text-zinc-500">最近</span>
-        <button
-          v-for="c in recentStrip"
-          :key="c.id"
-          type="button"
-          class="tb-cmd"
-          :title="`发送指令「${c.label}」并回车`"
-          @pointerdown.prevent
-          @click="runCmdBtn(c.id)"
-        >{{ c.label }}</button>
-        <button
-          type="button"
-          class="tb-cmd"
-          title="全部指令"
-          @pointerdown.prevent
-          @click="cmdsOpen = true"
-        >更多</button>
-      </div>
       <!-- 分页轨道：每页固定 2 行 × 7 列，横向轻扫翻页（手势见脚本 tbTouchStart/End） -->
       <div
         class="flex transition-transform duration-200 ease-out"
@@ -891,11 +858,8 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
             >{{ cmdLabel(b.id) }}</button>
             <button
               v-else-if="b.t === 'cmds'"
-              type="button" class="tb"
-              :title="hasLastCmd ? '点开指令列表；长按重发上一条' : '快捷指令：点开列表，一键发送整条命令并回车'"
-              @pointerdown.prevent="onCmdBtnDown" @pointerup="onCmdBtnUp" @pointercancel="onCmdBtnUp" @pointerleave="onCmdBtnUp"
-              @click="onCmdBtnClick"
-            >指令<span v-if="hasLastCmd" class="ml-0.5 text-[9px] text-zinc-500">↻</span></button>
+              type="button" class="tb" title="快捷指令：点开列表，一键发送整条命令并回车" @pointerdown.prevent @click="cmdsOpen = true"
+            >指令</button>
             <button
               v-else
               type="button" class="tb" title="终端工具条设置（全屏页）" @pointerdown.prevent @click="openToolbarSettings('keys')"
@@ -982,30 +946,6 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
 .tb-on {
   border-color: #f59e0b;
   color: #fbbf24;
-}
-/* 「最近指令」条 chip：比主键矮一档（28px），一行放 3~4 条 + 更多。
-   全局类（不 scoped）：设置页的布局预览复用同一套尺寸/配色，避免预览和实际漂移。 */
-.tb-cmd {
-  height: 1.75rem;
-  min-width: 2.75rem;
-  max-width: 8rem;
-  padding: 0 0.5rem;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-radius: 0.375rem;
-  border: 1px solid #3f3f46;
-  background: #18181b;
-  color: #d4d4d8;
-  font-size: 11px;
-  font-family: var(--font-mono), ui-monospace, monospace;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
-}
-.tb-cmd:active {
-  background: #27272a;
 }
 /* 终端搜索：单行控件。渐变和内高光让浮层在纯黑终端上有清晰的边界层次。 */
 .search-shell {

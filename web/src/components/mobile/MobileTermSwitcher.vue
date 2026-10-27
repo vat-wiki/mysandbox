@@ -1,10 +1,17 @@
 <script setup lang="ts">
-// 手机终端切换条（非模态）：底栏「终端」激活态再点是开关——不铺遮罩、不抢焦点、不盖终端，
-// 点条外任意处即收。行 = 组（身份色点 + busy 呼吸标 + 无输出琥珀标 + ·N 屏），
-// 右侧固定全局动作：⋯（当前组动作表）/ 所有终端（会话列表）/ 环境列表（容器抽屉）/ 网络信息。
-// 桌面不渲染（底栏本身 md:hidden）；popout 无底栏，也不经这里。
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { FolderTree, Layers, MoreHorizontal, Network } from '@lucide/vue'
+// 手机终端切换页（本窗口的终端组列表）：底栏「终端」激活态再点进入（iOS Safari「再点已激活
+// 页签出总览」同款），路由 /terminals/switch（mobileOnly），系统后退即退出。
+// 形态 = 独立整页（桌面 dialog 底座在 max-md 已整页化，页内左上「返回」），不是弹层：
+// 行 = 组（身份色点 + busy 呼吸标 + 无输出琥珀标 + ·N 分屏），点行切换、✕ 关闭该组、
+// ⋯ 开组动作表；底部三条全局动作：所有终端（会话列表）/ 环境列表（容器抽屉）/ 网络信息。
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { FolderTree, MoreHorizontal, Network, Terminal, X } from '@lucide/vue'
 
 export interface TermSwitcherRow {
   id: string
@@ -16,158 +23,114 @@ export interface TermSwitcherRow {
   active: boolean
 }
 
-const props = defineProps<{
+defineProps<{
   open: boolean
   rows: TermSwitcherRow[]
-  // 软键盘开着：底栏整条滑出，切换条跟随让位（键盘态下空间归终端）
-  keyboardOpen?: boolean
 }>()
 
 const emit = defineEmits<{
   'update:open': [value: boolean]
   select: [id: string]
+  close: [id: string]
   actions: [id: string]
   sessions: []
   environments: []
   network: []
 }>()
 
-const barEl = ref<HTMLElement | null>(null)
-const activeRow = computed(() => props.rows.find((r) => r.active) ?? null)
-
-function close() {
-  emit('update:open', false)
-}
-
-// 点条外即收：非模态浮层没有遮罩兜底，点击外部自己管。
-// 底栏（data-mobile-bottom-nav）除外——「终端」按钮自己开关，否则 pointerdown 先关、click 又开，
-// 条就永远关不掉。
-function onPointerDown(e: PointerEvent) {
-  if (!props.open) return
-  const t = e.target as HTMLElement | null
-  if (!t || barEl.value?.contains(t) || t.closest('[data-mobile-bottom-nav]')) return
-  close()
-}
-function onKeydown(e: KeyboardEvent) {
-  if (props.open && e.key === 'Escape') close()
-}
-onMounted(() => {
-  document.addEventListener('pointerdown', onPointerDown, true)
-  document.addEventListener('keydown', onKeydown)
-})
-onBeforeUnmount(() => {
-  document.removeEventListener('pointerdown', onPointerDown, true)
-  document.removeEventListener('keydown', onKeydown)
-})
-
-// 展开时把当前组滚进视野：组多了横滑条默认停在最左，看不到自己在哪。
-// 手算 scrollLeft 而不是 scrollIntoView——后者会连带滚动祖先/页面，浮层上表现不可控。
-watch(
-  () => props.open,
-  async (open) => {
-    if (!open) return
-    await nextTick()
-    const el = barEl.value?.querySelector<HTMLElement>('[data-chip-active]')
-    const box = el?.parentElement
-    if (el && box) box.scrollLeft = el.offsetLeft - (box.clientWidth - el.clientWidth) / 2
-  },
-)
+// 产品版本号（vite define 注入，根 package.json）：手机端品牌块不占顶部的对位——钉在页脚。
+const appVersion = __APP_VERSION__
 </script>
 
 <template>
-  <Transition
-    enter-active-class="transition duration-150 ease-out"
-    enter-from-class="translate-y-2 opacity-0"
-    enter-to-class="translate-y-0 opacity-100"
-    leave-active-class="transition duration-100 ease-in"
-    leave-from-class="translate-y-0 opacity-100"
-    leave-to-class="translate-y-2 opacity-0"
-  >
-    <div
-      v-if="open && !keyboardOpen"
-      ref="barEl"
-      role="toolbar"
-      aria-label="终端切换"
-      class="absolute inset-x-0 bottom-full z-10 border-t border-border/60 bg-background/95 shadow-[0_-6px_20px_-12px_rgba(0,0,0,0.5)] backdrop-blur md:hidden"
-    >
-      <div class="flex items-center gap-1 py-1.5 pr-1.5 pl-2">
-        <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scroll-thin">
-          <p v-if="!rows.length" class="px-2 py-1 text-xs text-muted-foreground">
-            还没有终端——点右侧「环境列表」选容器打开
-          </p>
-          <button
-            v-for="row in rows"
-            :key="row.id"
-            type="button"
-            :data-chip-active="row.active ? '' : undefined"
-            class="flex h-9 max-w-[13rem] shrink-0 items-center gap-2 rounded-lg border px-2.5 transition-colors"
-            :class="
-              row.active
-                ? 'border-primary/50 bg-accent text-foreground'
-                : 'border-border/60 text-muted-foreground active:bg-accent/60'
-            "
-            :aria-current="row.active ? 'true' : undefined"
-            @click="emit('select', row.id)"
-          >
-            <span class="relative flex size-2 shrink-0">
-              <span
-                v-if="row.busy"
-                class="term-busy-halo absolute -inset-1 rounded-full"
-                :style="{ backgroundColor: row.color, '--dot': row.color }"
-              />
-              <span
-                class="relative inline-flex size-2 rounded-full"
-                :class="row.busy && 'term-busy-dot'"
-                :style="{ backgroundColor: row.color }"
-              />
-            </span>
-            <span class="truncate text-xs" :class="row.active && 'font-medium text-foreground'">{{ row.label }}</span>
-            <span v-if="row.sub" class="shrink-0 text-[10px] tabular-nums text-muted-foreground">{{ row.sub }}</span>
-            <!-- 无输出提醒标（tmux bell 形态，切回即消） -->
-            <span v-if="row.attention" class="size-1.5 shrink-0 rounded-full bg-amber-400" title="有输出等待查看" />
-          </button>
-        </div>
-        <!-- 全局动作固定在右侧不参与横滑：⋯ 只对当前组，其余三条是「跳转」而非组动作 -->
-        <div class="flex shrink-0 items-center gap-0.5 border-l border-border/60 pl-1">
+  <Dialog :open="open" @update:open="(v: boolean) => emit('update:open', v)">
+    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
+      <DialogHeader>
+        <DialogTitle class="text-base font-semibold">终端</DialogTitle>
+        <DialogDescription class="sr-only">本窗口打开的终端组</DialogDescription>
+      </DialogHeader>
+
+      <div>
+        <p v-if="!rows.length" class="px-3 py-6 text-center text-sm text-muted-foreground">
+          还没有终端——去环境列表选容器打开
+        </p>
+        <div
+          v-for="row in rows"
+          :key="row.id"
+          class="flex min-h-14 items-center gap-3 rounded-xl px-3 py-2 transition-colors"
+          :class="row.active ? 'bg-accent' : 'active:bg-accent'"
+          @click="emit('select', row.id)"
+        >
+          <span class="relative flex size-2.5 shrink-0">
+            <span
+              v-if="row.busy"
+              class="term-busy-halo absolute -inset-1 rounded-full"
+              :style="{ backgroundColor: row.color, '--dot': row.color }"
+            />
+            <span
+              class="relative inline-flex size-2.5 rounded-full"
+              :class="row.busy && 'term-busy-dot'"
+              :style="{ backgroundColor: row.color }"
+            />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-sm font-medium" :class="row.active && 'text-foreground'">{{ row.label }}</span>
+            <span v-if="row.sub" class="mt-0.5 block truncate text-xs text-muted-foreground">{{ row.sub }}</span>
+          </span>
+          <!-- 无输出提醒标（tmux bell 形态，切回即消） -->
+          <span v-if="row.attention" class="size-1.5 shrink-0 rounded-full bg-amber-400" title="有输出等待查看" />
           <button
             type="button"
-            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors active:bg-accent disabled:pointer-events-none disabled:opacity-40"
-            :disabled="!activeRow"
+            class="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground active:bg-accent"
             title="组动作（新开一组 / 独立窗口 / 提醒 / 隐藏 / 关闭）"
-            aria-label="当前组动作"
-            @click="activeRow && emit('actions', activeRow.id)"
+            @click.stop="emit('actions', row.id)"
           >
             <MoreHorizontal class="size-4.5" />
           </button>
           <button
             type="button"
-            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors active:bg-accent"
-            title="所有终端（含其他窗口）"
-            aria-label="所有终端（含其他窗口）"
-            @click="emit('sessions')"
+            class="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground active:bg-destructive/10 active:text-destructive"
+            title="关闭终端组"
+            @click.stop="emit('close', row.id)"
           >
-            <Layers class="size-4" />
-          </button>
-          <button
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors active:bg-accent"
-            title="环境列表（容器 / SSH）"
-            aria-label="环境列表（容器 / SSH）"
-            @click="emit('environments')"
-          >
-            <FolderTree class="size-4" />
-          </button>
-          <button
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors active:bg-accent"
-            title="网络信息（当前组容器）"
-            aria-label="网络信息（当前组容器）"
-            @click="emit('network')"
-          >
-            <Network class="size-4" />
+            <X class="size-4" />
           </button>
         </div>
       </div>
-    </div>
-  </Transition>
+
+      <!-- 全局动作：与会话/环境的关系是「跳转」而非组动作，视觉上与组列表分隔 -->
+      <div class="border-t border-border/60 pt-1">
+        <button
+          type="button"
+          class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors active:bg-accent"
+          @click="emit('sessions')"
+        >
+          <Terminal class="size-4 text-muted-foreground" />
+          <span>所有终端</span>
+          <span class="ml-auto text-xs text-muted-foreground">含其他窗口</span>
+        </button>
+        <button
+          type="button"
+          class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors active:bg-accent"
+          @click="emit('environments')"
+        >
+          <FolderTree class="size-4 text-muted-foreground" />
+          <span>环境列表</span>
+          <span class="ml-auto text-xs text-muted-foreground">容器 / SSH</span>
+        </button>
+        <button
+          type="button"
+          class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors active:bg-accent"
+          @click="emit('network')"
+        >
+          <Network class="size-4 text-muted-foreground" />
+          <span>网络信息</span>
+          <span class="ml-auto text-xs text-muted-foreground">当前组容器</span>
+        </button>
+      </div>
+
+      <!-- 版本号钉页脚：弱化居中 -->
+      <p class="pb-0.5 text-center text-[10px] tabular-nums text-muted-foreground/70">v{{ appVersion }}</p>
+    </DialogContent>
+  </Dialog>
 </template>

@@ -82,8 +82,5 @@ const items: { target: MobileNavTarget; label: string; icon: typeof Terminal }[]
         <span class="truncate">{{ item.label }}</span>
       </button>
     </template>
-    <!-- 底栏上方浮层（手机终端切换条）：绝对定位挂在底栏顶上（bottom-full），
-         底栏高度/安全区怎么算都不用跟着改；键盘收起时整条一起滑走。 -->
-    <slot />
   </nav>
 </template>

@@ -1255,11 +1255,11 @@ function navigateMobileNav(target: MobileNavTarget) {
   ;(document.activeElement as HTMLElement | null)?.blur?.()
   if (target === 'terminal') {
     const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
-    // 激活态再点 = 开/收终端切换条（iOS Safari 标签页同款「再点已激活页签出总览」）——
+    // 激活态再点 = 进终端切换页（iOS Safari 标签页同款「再点已激活页签出总览」）——
     // 顶栏取消后终端切换/组管理的唯一落点，也让底栏不再是点了没反应的 no-op。
-    // 切换条是非模态浮层，不是 sheet：再点即收，离开终端视图时也要收（否则挂在文件/AI 上）。
+    // 它是路由页（/terminals/switch），退出走系统后退或页内「返回」。
     if (alreadyTerminal) {
-      termSwitcherOpen.value = !termSwitcherOpen.value
+      termSwitcherOpen.value = true
       return
     }
     termSwitcherOpen.value = false
@@ -2577,16 +2577,15 @@ function mobileGroupActionList(group: TermGroup) {
   return groupActions(group, containerRunning(group.containerId))
 }
 
-// —— 手机终端切换条（底栏「终端」再点开/收，非模态浮层）——
+// —— 手机终端切换页（底栏「终端」再点进入，路由 /terminals/switch）——
 // 顶栏取消后终端切换/组管理/网络信息的落点。组动作复用 groupActions 清单（CardActionSheet）；
 // 网络信息沿用 tab 栏下拉的数据源（activeContainer 的懒加载缓存），仅当前组有意义，放全局区。
-const termSwitcherOpen = ref(false)
+const { isOpen: termSwitcherOpen } = usePageRoute('term-switch')
 const switcherRows = computed<TermSwitcherRow[]>(() =>
   groups.value.map((g) => ({
     id: g.id,
     label: groupLabel(g),
-    // 芯片空间紧：分屏数用短写（「3 块分屏」在横条上会顶掉组名）
-    sub: leafCount(g.root) > 1 ? `${leafCount(g.root)} 屏` : undefined,
+    sub: leafCount(g.root) > 1 ? `${leafCount(g.root)} 块分屏` : undefined,
     color: tabDotColor(g),
     busy: busyGroupIds.value.has(g.id),
     attention: quietAttention.value.has(g.id),
@@ -5144,22 +5143,21 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @open-base="emit('open-base')"
       @open-accounts="emit('open-accounts')"
       @open-batch="openBatch()"
-    >
-      <!-- 手机终端切换条（非模态）：底栏「终端」激活态再点开/收（组 chips + 当前组动作 +
-           所有终端 / 环境列表 / 网络信息）。挂进底栏做 absolute bottom-full 浮层——
-           底栏高度/安全区由底栏自己算，条不用猜；顶栏取消后这些功能的唯一手机入口，
-           popout 无底栏也不经此路径。 -->
-      <MobileTermSwitcher
-        v-model:open="termSwitcherOpen"
-        :rows="switcherRows"
-        :keyboard-open="kbRawGlobal"
-        @select="onSwitcherSelect"
-        @actions="onSwitcherActions"
-        @sessions="termSwitcherOpen = false; showSessions = true"
-        @environments="termSwitcherOpen = false; drawerOpen = true"
-        @network="openNetworkSheet"
-      />
-    </MobileBottomNav>
+    />
+
+    <!-- 手机终端切换页：底栏「终端」激活态再点进入（路由 /terminals/switch，mobileOnly），
+         系统后退即退出。整页列出本窗口的终端组 + 组动作 + 所有终端 / 环境列表 / 网络信息；
+         顶栏取消后这些功能的唯一手机入口，popout 无底栏也不经此路径。 -->
+    <MobileTermSwitcher
+      v-model:open="termSwitcherOpen"
+      :rows="switcherRows"
+      @select="onSwitcherSelect"
+      @close="closeGroupById($event)"
+      @actions="onSwitcherActions"
+      @sessions="showSessions = true"
+      @environments="drawerOpen = true"
+      @network="openNetworkSheet"
+    />
     <CardActionSheet
       v-model:open="switcherActionOpen"
       :title="switcherActionGroup ? groupLabel(switcherActionGroup) : ''"
