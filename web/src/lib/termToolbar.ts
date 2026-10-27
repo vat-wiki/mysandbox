@@ -67,6 +67,9 @@ export type ToolBtn =
   | { t: 'key'; id: string }
   // 自定义按键：label 显示在按钮上，seq 是发送给 PTY 的原始字节序列
   | { t: 'custom'; label: string; seq: string }
+  // 固定的指令：引用 quickCmds 的 id，按钮文字/命令随指令编辑同步；点一下 = 命令 + 回车。
+  // 解决「指令必须先进面板再点条目」的两级入口——常用指令固定后一键发送。
+  | { t: 'cmd'; id: string }
 
 // 「指令」面板条目：点条目发送 cmd + 回车。id 只服务列表 key 与拖拽（改名不换身份）。
 export interface QuickCmd {
@@ -142,7 +145,7 @@ function asArray(raw: unknown): unknown[] {
   return Array.isArray(raw) ? raw : []
 }
 
-function normalizeBtns(raw: unknown): ToolBtn[] {
+function normalizeBtns(raw: unknown, cmdIds?: Set<string>): ToolBtn[] {
   const out: ToolBtn[] = []
   const seen = new Set<string>()
   for (const b of asArray(raw) as Array<Record<string, unknown>>) {
@@ -156,6 +159,13 @@ function normalizeBtns(raw: unknown): ToolBtn[] {
     ) {
       out.push({ t: 'custom', label: b.label.trim(), seq: b.seq })
       seen.add('c:' + b.label.trim())
+    } else if (
+      b?.t === 'cmd' &&
+      typeof b.id === 'string' && cmdIds?.has(b.id) && !seen.has('cmd:' + b.id)
+    ) {
+      // 只认当前指令列表里还存在的 id：指令被删后引用自动失效（rmQuickCmd 也会主动解绑）
+      out.push({ t: 'cmd', id: b.id })
+      seen.add('cmd:' + b.id)
     }
   }
   return out.slice(0, TOOLBAR_MAX)
@@ -186,8 +196,10 @@ function loadConfig(): { keys: ToolBtn[]; cmds: QuickCmd[] } {
   // v3 存在即以它为准：空列表是合法状态（用户全删了），不能拿默认值兜底。
   // 例外：keys 数组非空但条目全不合法（坏数据）→ 落回默认布局。
   if (v3 && typeof v3 === 'object' && Array.isArray(v3.keys) && Array.isArray(v3.cmds)) {
-    const keys = normalizeBtns(v3.keys)
-    if (keys.length || v3.keys.length === 0) return { keys, cmds: normalizeCmds(v3.cmds) }
+    // 先归一化指令再校验按键里的 cmd 引用（id 必须存在）
+    const cmds = normalizeCmds(v3.cmds)
+    const keys = normalizeBtns(v3.keys, new Set(cmds.map((c) => c.id)))
+    if (keys.length || v3.keys.length === 0) return { keys, cmds }
   }
 
   // v2 → v3 迁移：按键保留；快捷短语（发送文本+回车）与旧快捷指令、v1 短语全部并进指令列表。
@@ -217,6 +229,27 @@ export function saveConfig() {
   } catch {
     /* 不可用就只本次生效 */
   }
+}
+
+// —— 指令固定到工具条（一键发送；完整列表仍在「指令」面板）——
+export function getQuickCmd(id: string): QuickCmd | undefined {
+  return quickCmds.value.find((c) => c.id === id)
+}
+export function isCmdPinned(id: string): boolean {
+  return toolButtons.value.some((b) => b.t === 'cmd' && b.id === id)
+}
+export function toggleCmdPin(id: string): 'pinned' | 'unpinned' | 'full' {
+  const at = toolButtons.value.findIndex((b) => b.t === 'cmd' && b.id === id)
+  if (at >= 0) {
+    toolButtons.value.splice(at, 1)
+    saveConfig()
+    return 'unpinned'
+  }
+  if (!getQuickCmd(id)) return 'unpinned'
+  if (toolButtons.value.length >= TOOLBAR_MAX) return 'full'
+  toolButtons.value.push({ t: 'cmd', id })
+  saveConfig()
+  return 'pinned'
 }
 
 export function rmBtn(i: number) {
@@ -260,7 +293,12 @@ export function updateQuickCmd(i: number, label: string, cmd: string): boolean {
 }
 
 export function rmQuickCmd(i: number) {
-  quickCmds.value.splice(i, 1)
+  const [removed] = quickCmds.value.splice(i, 1)
+  // 指令删了，工具条上固定它的按钮一并解绑（不留发不出去的幽灵键）
+  if (removed) {
+    const at = toolButtons.value.findIndex((b) => b.t === 'cmd' && b.id === removed.id)
+    if (at >= 0) toolButtons.value.splice(at, 1)
+  }
   saveConfig()
 }
 

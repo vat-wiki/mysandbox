@@ -5,8 +5,8 @@
 // 已消失、入口藏在末页这些「怪」点）。
 //
 // 页内两个平级分区：
-//   · 工具条按键：有序列表（前 14 个在第 1 页，溢出自动翻页），候选池点击追加；
-//   · 快捷指令：「指令」面板的条目，点行编辑、手柄调序。
+//   · 工具条按钮：有序列表（按键/自定义键 + 固定到工具条的指令；前 14 个在第 1 页，溢出自动翻页），候选池点击追加；
+//   · 快捷指令：「指令」面板的条目，点行编辑、手柄调序；行尾图钉固定到工具条 = 一键发送。
 // 页头下方常驻「布局预览」：与真实工具条共用 toolbarPages 分页 + .tb 样式（同尺寸），
 // 增删/拖拽即时反映，左右滑看分页；可收起给列表腾空间。
 // 快捷短语已并入指令（v3 迁移，见 lib/termToolbar.ts）。数据即时落 localStorage，只影响本浏览器。
@@ -22,7 +22,7 @@ import {
   DialogTitle as SheetTitle,
   DialogClose,
 } from 'reka-ui'
-import { ChevronDown, ChevronLeft, ChevronUp, CircleDot, GripVertical, Keyboard, Pencil, Plus, Trash2, X } from '@lucide/vue'
+import { ChevronDown, ChevronLeft, ChevronUp, CircleDot, GripVertical, Keyboard, Pencil, Pin, Plus, Trash2, X } from '@lucide/vue'
 import {
   toolButtons,
   quickCmds,
@@ -40,6 +40,9 @@ import {
   TOOLBAR_MAX,
   TB_PER_PAGE,
   toolbarPages,
+  getQuickCmd,
+  isCmdPinned,
+  toggleCmdPin,
   type ToolbarItem,
   type ToolBtn,
 } from '@/lib/termToolbar'
@@ -52,13 +55,19 @@ const cmdsSection = ref<HTMLElement | null>(null)
 
 // —— 按键/指令的展示文案 ——
 function btnKey(b: ToolBtn) {
-  return b.t === 'key' ? `k:${b.id}` : `c:${b.label}`
+  if (b.t === 'key') return `k:${b.id}`
+  if (b.t === 'custom') return `c:${b.label}`
+  return `cmd:${b.id}`
 }
 function btnLabel(b: ToolBtn) {
-  return b.t === 'key' ? (KEY_POOL[b.id]?.label ?? b.id) : b.label
+  if (b.t === 'key') return KEY_POOL[b.id]?.label ?? b.id
+  if (b.t === 'custom') return b.label
+  return getQuickCmd(b.id)?.label ?? '指令'
 }
 function btnDesc(b: ToolBtn) {
-  return b.t === 'key' ? (KEY_POOL[b.id]?.title ?? '') : `序列 ${formatSeq(b.seq)}`
+  if (b.t === 'key') return KEY_POOL[b.id]?.title ?? ''
+  if (b.t === 'custom') return `序列 ${formatSeq(b.seq)}`
+  return `指令：${getQuickCmd(b.id)?.cmd ?? ''}`
 }
 
 // —— 布局预览：真实工具条同尺寸 ——
@@ -73,6 +82,7 @@ const previewPages = computed(() => toolbarPages(toolButtons.value))
 function previewLabel(item: ToolbarItem) {
   if (item.t === 'key') return KEY_POOL[item.id]?.label ?? item.id
   if (item.t === 'custom') return item.label
+  if (item.t === 'cmd') return getQuickCmd(item.id)?.label ?? '指令'
   return item.t === 'cmds' ? '指令' : '⋯'
 }
 function onPreviewScroll() {
@@ -345,6 +355,20 @@ function onCmdSheetOpen(v: boolean) {
   if (!v) closeCmd()
 }
 
+// —— 固定指令到工具条：常用指令一键发送；固定项进按键列表参与排序/预览 ——
+function pinTitle(id: string) {
+  if (isCmdPinned(id)) return '从工具条移除'
+  return toolButtons.value.length >= TOOLBAR_MAX
+    ? `工具条已满（${TOOLBAR_MAX} 个），先移除再固定`
+    : '固定到工具条（一键发送）'
+}
+function togglePin(id: string) {
+  const wasPinned = isCmdPinned(id)
+  const r = toggleCmdPin(id)
+  // 新固定项追加在末尾：预览跟到最后一页（与添加按键同一反馈）
+  if (!wasPinned && r === 'pinned') void nextTick(() => goPreviewPage(previewPages.value.length - 1))
+}
+
 // 页面关闭：子 sheet 开着时先让子层处理（Esc/遮罩），别一键退掉整页
 function closePage() {
   if (pickerOpen.value || customOpen.value || cmdFormOpen.value) return
@@ -454,10 +478,12 @@ onBeforeUnmount(() => {
         <!-- —— 工具条按键 —— -->
         <section class="mt-5">
           <div class="flex items-baseline justify-between px-1">
-            <h2 class="text-sm font-semibold">工具条按键</h2>
+            <h2 class="text-sm font-semibold">工具条按钮</h2>
             <span class="text-[11px] tabular-nums text-muted-foreground">{{ toolButtons.length }}/{{ TOOLBAR_MAX }}</span>
           </div>
-          <p class="mt-1 px-1 text-xs text-muted-foreground">按住左侧手柄上下拖动调序；点 ✕ 移除。</p>
+          <p class="mt-1 px-1 text-xs text-muted-foreground">
+            按住左侧手柄上下拖动调序；点 ✕ 移除。固定到工具条的指令也在这一列表里，可一起排序。
+          </p>
 
           <ul class="mt-2 divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-card">
             <li
@@ -510,7 +536,7 @@ onBeforeUnmount(() => {
             <span class="text-[11px] tabular-nums text-muted-foreground">{{ quickCmds.length }}</span>
           </div>
           <p class="mt-1 px-1 text-xs text-muted-foreground">
-            「指令」面板里的条目（面板里点一下 = 发送整条命令并回车）；这里点行编辑，按住手柄调序。
+            面板里点条目 = 发送整条命令并回车；这里点行编辑。点行尾图钉固定到工具条，固定后一键发送，不必再进面板。
           </p>
 
           <ul class="mt-2 divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-card">
@@ -531,6 +557,17 @@ onBeforeUnmount(() => {
                 </span>
                 <Pencil class="size-3.5 shrink-0 text-muted-foreground/70" />
               </button>
+              <button
+                type="button"
+                class="tt-act disabled:opacity-40"
+                :class="isCmdPinned(c.id) ? 'tt-act-on' : 'text-muted-foreground'"
+                :disabled="!isCmdPinned(c.id) && toolButtons.length >= TOOLBAR_MAX"
+                :aria-pressed="isCmdPinned(c.id)"
+                :title="pinTitle(c.id)"
+                @click.stop="togglePin(c.id)"
+              >
+                <Pin class="size-4" :class="isCmdPinned(c.id) ? 'fill-current' : ''" />
+              </button>
               <button type="button" class="tt-act hover:text-red-400" title="删除" @click="rmCmd(i)">
                 <Trash2 class="size-4" />
               </button>
@@ -547,6 +584,9 @@ onBeforeUnmount(() => {
           >
             <Plus class="size-4" /> 新建指令
           </button>
+          <p v-if="toolButtons.length >= TOOLBAR_MAX" class="mt-1 px-1 text-[11px] text-amber-400">
+            工具条已满 {{ TOOLBAR_MAX }} 个，先移除再固定指令
+          </p>
         </section>
       </div>
     </DialogContent>
@@ -736,6 +776,10 @@ onBeforeUnmount(() => {
 .tt-act:active {
   background: rgba(255, 255, 255, 0.06);
   color: #e4e4e7;
+}
+/* 已固定到工具条的指令：图钉点亮（scoped 属性选择器会压过通用 text-* 工具类） */
+.tt-act.tt-act-on {
+  color: #fbbf24;
 }
 /* 子 sheet 的按钮：与工具条按键同语言 */
 .sheet-btn {

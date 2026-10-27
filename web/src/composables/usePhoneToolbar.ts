@@ -1,5 +1,5 @@
 import { ref, computed, watch, onBeforeUnmount, nextTick, type Ref } from 'vue'
-import { toolButtons, KEY_POOL, toolbarPages, type ToolbarItem, type ToolBtn } from '@/lib/termToolbar'
+import { toolButtons, getQuickCmd, KEY_POOL, toolbarPages, type ToolbarItem, type ToolBtn } from '@/lib/termToolbar'
 import { openToolbarSettings } from '@/lib/termToolbarNav'
 import { isPhone } from '@/composables/useDevice'
 import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
@@ -247,6 +247,11 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     deps.sendRaw(cmd + '\r')
     deps.emitEnter() // 命令语义，与工具条回车一致走 cwd 跟随
   }
+  // 工具条上固定的指令按钮：与面板点条目同语义（命令 + 回车 + cwd 跟随）
+  function runCmdBtn(id: string) {
+    const c = getQuickCmd(id)
+    if (c) runQuickCmd(c.cmd)
+  }
 
   // 工具条方向键长按连发：pointerdown 即发一次，400ms 后起 80ms 间隔连发；抬起/取消/
   // 移出（touch 有隐式指针捕获，pointerup 恒能到达）停止。只用于 ↑↓←→ 这类可重复键。
@@ -326,6 +331,7 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   // 不成手势就不拦截按钮点击），页面滑动有过渡动画；⋯ 设置入口作为列表最后一项参与
   // 分页，不再是常驻末格。页点指示器只在多于 1 页时出现。
   // ⋯ 设置与「指令」都是固定入口不进编排列表，恒跟在按钮末尾（⋯ 恒最后一项）。
+  // 工具条按钮 = 按键/自定义键 + 固定到工具条的指令（cmd 引用）；完整指令列表仍在面板里。
   // 分页走 lib/termToolbar.ts 的 toolbarPages——设置页的布局预览吃同一份结果，不会漂移。
   const toolPages = computed<ToolbarItem[][]>(() => toolbarPages(toolButtons.value))
   const tbPage = ref(0)
@@ -391,6 +397,7 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
     cmdsOpen,
     openCmdsConfig,
     runQuickCmd,
+    runCmdBtn,
     tbTouchStart,
     tbTouchEnd,
   }

@@ -21,7 +21,7 @@ import '@xterm/xterm/css/xterm.css'
 import { HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { RESTORED_TERM_IDS } from '@/lib/termlayout'
 import { isCoarse, isPhone } from '@/composables/useDevice'
-import { KEY_POOL } from '@/lib/termToolbar'
+import { KEY_POOL, getQuickCmd } from '@/lib/termToolbar'
 import { usePhoneToolbar } from '@/composables/usePhoneToolbar'
 import { useTermSocket } from '@/composables/useTermSocket'
 import { useTermSearch } from '@/composables/useTermSearch'
@@ -399,9 +399,14 @@ const {
   cmdsOpen,
   openCmdsConfig,
   runQuickCmd,
+  runCmdBtn,
   tbTouchStart,
   tbTouchEnd,
 } = tb
+// 固定到工具条的指令按钮：label 随指令编辑实时更新（id 稳定）
+function cmdLabel(id: string) {
+  return getQuickCmd(id)?.label ?? ''
+}
 
 // 字体探测串：终端会用到的 Cascadia 各分片都要触发加载。load() 不带 text 时只拉 latin
 // 分片（默认探测文本是 ASCII）；盲文（▐▛█▘▝）、框线（╭─╮│）、箭头等在独立分片里，未就绪时
@@ -795,14 +800,14 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
          按钮全部 @pointerdown.prevent：点按钮不抢终端 textarea 焦点（否则软键盘收起→refit 的
          term.focus() 又抢回 = 键盘闪一下，且正在输入的 composition 被中断吞字——粘滞 Ctrl 后
          敲字母不响应就是它）。prevent 不影响 click 派发，各按钮 @click 照常工作。
-         按钮只放按键（文本类动作走「指令」面板）；按键配置与指令配置地位平等，同在 ⋯ 设置的
-         『按键』『指令』两个 tab（存 lib/termToolbar.ts 模块级状态 + localStorage），7 列 grid
+         按钮 = 按键 + 固定到工具条的指令（完整指令列表仍在「指令」面板）；配置在全屏
+         TerminalToolbarPage（存 lib/termToolbar.ts 模块级状态 + localStorage），7 列 grid
          自然换行（对齐 Termux 一行 7 键）——「哪个键高频」由使用者编排，代码不硬编码。预置布局 =
          Termux 默认 extra-keys 两行（ESC / - HOME ↑ END 上页 / Tab Ctrl Alt ← ↓ → 下页）+ ⏎ ⇥。
          Ctrl/Alt 是粘滞修饰（点亮→下一个键带修饰发出→用掉即灭，可叠加 C-M-x；软键盘单字符在
          attachCustomKeyEventHandler 接管）。Esc 中断（红色加重）/ ↑↓ 菜单与输入历史（长按连发）/
-         「指令」面板（命名命令列表，点条目 = 整条命令+回车，面板只负责运行；增删改在 ⋯ 设置的
-         指令 tab）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
+         「指令」面板（命名命令列表，点条目 = 整条命令+回车，面板只负责运行；增删改在设置页的
+         指令分区，行尾图钉可把常用指令固定到工具条 = 一键发送）。滑屏滚动的是本地回滚缓冲，↑↓ 是发给程序的输入
          （agent 菜单/全屏 TUI 唯一导航方式）——两者语义不同。工具条固定 2 行 × 7 列为
          一页，键多时整个卡片横向轻扫翻页（页点指示器标位），⋯ 设置入口是列表末项
          参与分页（点开全屏 TerminalToolbarPage；设置菜单里也有同一个稳定入口）。
@@ -832,7 +837,7 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
         :style="{ width: `${toolPages.length * 100}%`, transform: `translateX(-${(tbPage * 100) / toolPages.length}%)` }"
       >
         <div v-for="(pg, pi) in toolPages" :key="pi" class="grid shrink-0 grid-cols-7 gap-1" :style="{ width: `${100 / toolPages.length}%` }">
-          <template v-for="b in pg" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : b.t === 'cmds' ? 'cmds' : 'settings'">
+          <template v-for="b in pg" :key="b.t === 'key' ? `k:${b.id}` : b.t === 'custom' ? `c:${b.label}` : b.t === 'cmd' ? `cmd:${b.id}` : b.t === 'cmds' ? 'cmds' : 'settings'">
             <button
               v-if="b.t === 'key'"
               type="button" class="tb" :class="{ 'tb-esc': b.id === 'esc', 'tb-on': (b.id === 'ctrl' && ctrlSticky) || (b.id === 'alt' && altSticky) }"
@@ -846,6 +851,11 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
               type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送自定义按键「${b.label}」`"
               @pointerdown.prevent @click="sendToolSeq(b.seq)"
             >{{ b.label }}</button>
+            <button
+              v-else-if="b.t === 'cmd'"
+              type="button" class="tb overflow-hidden text-ellipsis whitespace-nowrap" :title="`发送指令「${cmdLabel(b.id)}」并回车`"
+              @pointerdown.prevent @click="runCmdBtn(b.id)"
+            >{{ cmdLabel(b.id) }}</button>
             <button
               v-else-if="b.t === 'cmds'"
               type="button" class="tb" title="快捷指令：点开列表，一键发送整条命令并回车" @pointerdown.prevent @click="cmdsOpen = true"
