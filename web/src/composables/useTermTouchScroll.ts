@@ -53,13 +53,13 @@ export function useTermTouchScroll(deps: TermTouchScrollDeps) {
     // 像素 → 整行：余量留在 accPx，凑满一行才调 scrollLines（亚行位移不丢，下次继续凑）
     const scrollByPx = (px: number) => {
       accPx += px
-      const rows = Math.trunc(accPx / rowHeightOf())
+      const rowH = rowHeightOf()
+      const rows = Math.trunc(accPx / rowH)
       const term = deps.term()
-      if (rows !== 0 && term) {
-        accPx -= rows * rowHeightOf()
-        if (altWheel()) sendWheelRows(rows)
-        else term.scrollLines(rows)
-      }
+      if (rows === 0 || !term) return
+      accPx -= rows * rowH
+      if (altWheel()) sendWheelRows(rows)
+      else term.scrollLines(rows)
     }
     // 备用屏（全屏 TUI）+ 应用开了鼠标上报（claude 开 ?1000h/?1003h/?1006h，实测确认）：
     // 本地 scrollback 没内容可滚（ybase 恒 0），触摸位移转成 SGR 滚轮序列发给 PTY，
@@ -73,14 +73,25 @@ export function useTermTouchScroll(deps: TermTouchScrollDeps) {
         term.modes.mouseTrackingMode !== 'none'
       )
     }
+    // 一次位移可能凑出很多行（快滑时单个 touchmove 就是上百像素）。**必须全发出去**：
+    // 以前用 Math.min(|rows|, 6) 截断又不补，超出的部分直接蒸发 —— 同样一段手指位移，
+    // 慢拖 1:1 跟手、快滑只走一半，而且随手的快慢时有时无（2026-10-27 修）。
+    // 现在按 6 行一条消息切块发完（一条 WS 消息对应 PTY 一次 read，别拆太碎）。
+    const WHEEL_CHUNK = 6
     const sendWheelRows = (rows: number) => {
       const term = deps.term()
-      if (!term) return
+      if (!term || rows === 0) return
       const col = Math.ceil(term.cols / 2)
       const row = Math.ceil(term.rows / 2)
       const btn = rows < 0 ? 64 : 65 // 64=滚轮上（看更早），65=滚轮下
-      const n = Math.min(Math.abs(rows), 6) // 惯性高速限流，一次手势别刷爆 PTY
-      for (let i = 0; i < n; i++) deps.send(`\x1b[<${btn};${col};${row}M`)
+      let left = Math.abs(rows)
+      while (left > 0) {
+        const n = Math.min(left, WHEEL_CHUNK)
+        let seq = ''
+        for (let i = 0; i < n; i++) seq += `\x1b[<${btn};${col};${row}M`
+        deps.send(seq)
+        left -= n
+      }
     }
     const onStart = (e: TouchEvent) => {
       stopMomentum()
