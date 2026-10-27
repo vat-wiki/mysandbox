@@ -321,7 +321,7 @@ onBeforeUnmount(() => {
     <!-- max-h-none：基础类的 max-h-[85dvh] 会把铺满态（100vh）压回 85dvh，铺满必须放行到全视口；
          画布区自身 min-h-0 + overflow-hidden 兜住内容，不依赖基础类的 overflow-y-auto。 -->
     <DialogContent
-      class="flex h-[88vh] max-h-none w-[94vw] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-2xl shadow-black/80 max-md:h-[100dvh] max-md:max-h-none max-md:w-full max-md:rounded-none max-md:border-0 max-md:shadow-none"
+      class="flex h-[88vh] max-h-none w-[94vw] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-2xl shadow-black/80 max-md:h-[100dvh] max-md:max-h-none max-md:w-full max-md:rounded-none max-md:border-0 max-md:py-0 max-md:shadow-none"
       :class="anchored ? '!translate-x-0 !translate-y-0' : ''"
       :style="contentStyle"
       :show-close-button="false"

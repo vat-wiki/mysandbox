@@ -43,7 +43,9 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
           // 手机（max-md）一律渲染成整页而不是居中卡片：铺满视口、去圆角/边框/阴影、无缩放动画，
           // 只做轻微上推——「移动端不开 dialog 弹框」由底座兜底，各调用点不必逐个写 max-md:h-dvh。
           // 调用点自带的 max-md:*（h-dvh/rounded-none/pt-safe…）与之重复也无害（twMerge 去重）。
-          'max-md:top-0 max-md:left-0 max-md:h-dvh max-md:max-h-none max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none max-md:border-0 max-md:shadow-none max-md:px-4 max-md:pt-[max(env(safe-area-inset-top),1rem)] max-md:pb-[max(env(safe-area-inset-bottom),1rem)] max-md:data-[state=open]:zoom-in-100 max-md:data-[state=closed]:zoom-out-100 max-md:data-[state=open]:slide-in-from-bottom-2 max-md:data-[state=closed]:slide-out-to-bottom-2',
+          // 左右内边距沿用基础 p-6；只把上下换成长度与安全区取大——整页形态下内容要避开刘海与 home indicator。
+          // 自带 p-0 的整页（设置/批量/桌面/Claude 终端）用 max-md:py-0 抵消，避免整页里多出白边。
+          'max-md:top-0 max-md:left-0 max-md:h-dvh max-md:max-h-none max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none max-md:border-0 max-md:shadow-none max-md:pt-[max(env(safe-area-inset-top),1.5rem)] max-md:pb-[max(env(safe-area-inset-bottom),1.5rem)] max-md:data-[state=open]:zoom-in-100 max-md:data-[state=closed]:zoom-out-100 max-md:data-[state=open]:slide-in-from-bottom-2 max-md:data-[state=closed]:slide-out-to-bottom-2',
           props.class,
         )"
     >
