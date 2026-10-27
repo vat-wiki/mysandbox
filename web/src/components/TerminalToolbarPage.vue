@@ -7,10 +7,12 @@
 // 页内两个平级分区：
 //   · 工具条按键：有序列表（前 14 个在第 1 页，溢出自动翻页），候选池点击追加；
 //   · 快捷指令：「指令」面板的条目，点行编辑、手柄调序。
+// 页头下方常驻「布局预览」：与真实工具条共用 toolbarPages 分页 + .tb 样式（同尺寸），
+// 增删/拖拽即时反映，左右滑看分页；可收起给列表腾空间。
 // 快捷短语已并入指令（v3 迁移，见 lib/termToolbar.ts）。数据即时落 localStorage，只影响本浏览器。
 // 入口三处（设置菜单 / 工具条 ⋯ / 指令面板「配置」）统一走 lib/termToolbarNav.ts；
 // section=cmds 时滚到指令分区。
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import {
   DialogRoot,
@@ -20,7 +22,7 @@ import {
   DialogTitle as SheetTitle,
   DialogClose,
 } from 'reka-ui'
-import { ChevronLeft, CircleDot, GripVertical, Keyboard, Pencil, Plus, Trash2, X } from '@lucide/vue'
+import { ChevronDown, ChevronLeft, ChevronUp, CircleDot, GripVertical, Keyboard, Pencil, Plus, Trash2, X } from '@lucide/vue'
 import {
   toolButtons,
   quickCmds,
@@ -37,6 +39,8 @@ import {
   KEY_POOL,
   TOOLBAR_MAX,
   TB_PER_PAGE,
+  toolbarPages,
+  type ToolbarItem,
   type ToolBtn,
 } from '@/lib/termToolbar'
 
@@ -57,10 +61,74 @@ function btnDesc(b: ToolBtn) {
   return b.t === 'key' ? (KEY_POOL[b.id]?.title ?? '') : `序列 ${formatSeq(b.seq)}`
 }
 
+// —— 布局预览：真实工具条同尺寸 ——
+// 分页吃 lib/termToolbar.toolbarPages（与 usePhoneToolbar 同一份），样式复用 Terminal.vue
+// 的全局 .tb/.tb-esc（同高 36px、同字号/边框）。预览只读：网格 pointer-events:none，
+// 左右滑动交给外层 snap 容器；页点可点。
+const previewCollapsed = ref(false)
+const previewScroller = ref<HTMLDivElement | null>(null)
+const previewPage = ref(0)
+const previewPages = computed(() => toolbarPages(toolButtons.value))
+
+function previewLabel(item: ToolbarItem) {
+  if (item.t === 'key') return KEY_POOL[item.id]?.label ?? item.id
+  if (item.t === 'custom') return item.label
+  return item.t === 'cmds' ? '指令' : '⋯'
+}
+function onPreviewScroll() {
+  const el = previewScroller.value
+  if (!el) return
+  const w = el.clientWidth
+  if (w > 0) previewPage.value = Math.min(previewPages.value.length - 1, Math.max(0, Math.round(el.scrollLeft / w)))
+}
+function goPreviewPage(i: number) {
+  const page = Math.max(0, Math.min(previewPages.value.length - 1, i))
+  previewPage.value = page // 收起时也要记住页号（展开后按它复位）
+  const el = previewScroller.value
+  if (el && el.clientWidth > 0) el.scrollTo({ left: page * el.clientWidth, behavior: 'smooth' })
+}
+// 编辑按键时把预览带到该键所在页：拖动/新增后不用再手动翻页找变化
+function previewPageOf(i: number) {
+  return Math.max(0, Math.min(previewPages.value.length - 1, Math.floor(i / TB_PER_PAGE)))
+}
+function revealKeyPage(i: number) {
+  const p = previewPageOf(i)
+  if (p !== previewPage.value) goPreviewPage(p)
+}
+// 分页数变少（删键）时把预览页收回到最后一页
+watch(
+  () => previewPages.value.length,
+  (n) => {
+    if (previewPage.value <= n - 1) return
+    previewPage.value = Math.max(0, n - 1)
+    void nextTick(() => {
+      const el = previewScroller.value
+      if (el) el.scrollLeft = previewPage.value * el.clientWidth
+    })
+  },
+)
+// 展开/转屏后按当前页重新对位（v-show 收起期间 clientWidth 为 0，不能算）
+function syncPreviewScroll() {
+  const el = previewScroller.value
+  if (el && el.clientWidth > 0) el.scrollLeft = previewPage.value * el.clientWidth
+}
+watch(previewCollapsed, (collapsed) => {
+  if (!collapsed) void nextTick(syncPreviewScroll)
+})
+function onPreviewResize() {
+  syncPreviewScroll()
+}
+
 // —— 候选池（添加快捷键 sheet）——
 const pickerOpen = ref(false)
 const poolEntries = computed(() => Object.entries(KEY_POOL))
 const usedKeyIds = computed(() => new Set(toolButtons.value.flatMap((b) => (b.t === 'key' ? [b.id] : []))))
+function addKeyFromPicker(id: string) {
+  const before = toolButtons.value.length
+  addKeyBtn(id)
+  // 新键追加在末尾：预览跟到最后一页，关掉 sheet 就能看到它落在哪
+  if (toolButtons.value.length !== before) void nextTick(() => goPreviewPage(previewPages.value.length - 1))
+}
 
 // —— 列表拖拽调序（按键 / 指令共用一套 window 监听）——
 // 只有左侧手柄能起拖：行本体在指令区还要点击编辑，且列表必须能正常滚动。
@@ -94,6 +162,7 @@ function startDrag(kind: DragKind, i: number, ev: PointerEvent) {
   dragKind.value = kind
   dragIdx.value = i
   dragArmed.value = false
+  if (kind === 'keys') revealKeyPage(i)
   if (!raf) raf = requestAnimationFrame(autoScroll)
 }
 function moveItem(kind: DragKind, from: number, to: number) {
@@ -117,6 +186,7 @@ function hitTest() {
   moveItem(ds.kind, ds.idx, to)
   ds.idx = to
   dragIdx.value = to
+  if (ds.kind === 'keys') revealKeyPage(to)
 }
 function onPointerMove(ev: PointerEvent) {
   if (!ds || ev.pointerId !== ds.id) return
@@ -197,6 +267,7 @@ function addCustom() {
   if (!ckCanAdd.value) return
   addCustomKey(ckLabel.value || ckSeqRaw.value.trim(), parseSeq(ckSeqRaw.value))
   closeCustom()
+  void nextTick(() => goPreviewPage(previewPages.value.length - 1))
 }
 // 点遮罩/X 关闭时也必须停录制与 blur——否则 window 捕获阶段的录制监听会继续吞按键
 function onCustomSheetOpen(v: boolean) {
@@ -285,6 +356,7 @@ onMounted(() => {
   window.addEventListener('pointerup', endDrag)
   window.addEventListener('pointercancel', abortDrag)
   window.addEventListener('blur', abortDrag)
+  window.addEventListener('resize', onPreviewResize)
   window.addEventListener('keydown', recordKeyDown, { capture: true })
   if (props.section === 'cmds') {
     void nextTick(() => requestAnimationFrame(() => cmdsSection.value?.scrollIntoView({ block: 'start' })))
@@ -295,6 +367,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', endDrag)
   window.removeEventListener('pointercancel', abortDrag)
   window.removeEventListener('blur', abortDrag)
+  window.removeEventListener('resize', onPreviewResize)
   window.removeEventListener('keydown', recordKeyDown, { capture: true })
   finishDrag(true)
 })
@@ -319,6 +392,58 @@ onBeforeUnmount(() => {
         <DialogTitle class="min-w-0 flex-1 truncate text-base font-semibold">终端工具条</DialogTitle>
         <span class="pr-1 text-[11px] text-muted-foreground">仅本浏览器</span>
       </header>
+
+      <!-- 布局预览：常驻页头下方，与真实工具条同尺寸（.tb 36px）/ 同一份分页；
+           增删拖拽即时更新，左右滑看分页。收起后只留标题行，给列表让高度。 -->
+      <section class="shrink-0 border-b border-border/60 px-3 py-2">
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <p class="flex items-baseline gap-1.5 text-xs font-semibold">
+            布局预览
+            <span class="text-[11px] font-normal tabular-nums text-muted-foreground">
+              第 {{ previewPage + 1 }}/{{ previewPages.length }} 页 · 同尺寸
+            </span>
+          </p>
+          <button
+            type="button"
+            class="flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground outline-none active:bg-accent"
+            @click="previewCollapsed = !previewCollapsed"
+          >
+            {{ previewCollapsed ? '展开' : '收起' }}
+            <ChevronUp v-if="!previewCollapsed" class="size-3.5" />
+            <ChevronDown v-else class="size-3.5" />
+          </button>
+        </div>
+        <div v-show="!previewCollapsed" class="rounded-xl border border-border/60 bg-black p-2">
+          <div
+            ref="previewScroller"
+            class="flex snap-x snap-mandatory overflow-x-auto scroll-thin"
+            @scroll.passive="onPreviewScroll"
+          >
+            <div v-for="(pg, pi) in previewPages" :key="pi" class="w-full shrink-0 snap-center">
+              <div class="pointer-events-none grid grid-cols-7 gap-1">
+                <span
+                  v-for="(it, ii) in pg"
+                  :key="`${pi}:${ii}`"
+                  class="tb flex items-center justify-center overflow-hidden text-ellipsis whitespace-nowrap"
+                  :class="{ 'tb-esc': it.t === 'key' && it.id === 'esc' }"
+                >{{ previewLabel(it) }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="previewPages.length > 1" class="mt-0.5 flex justify-center gap-0.5">
+            <button
+              v-for="(_, i) in previewPages"
+              :key="i"
+              type="button"
+              class="flex size-5 items-center justify-center rounded-full outline-none"
+              :aria-label="`第 ${i + 1} 页`"
+              @click="goPreviewPage(i)"
+            >
+              <span class="size-1.5 rounded-full transition-colors" :class="i === previewPage ? 'bg-zinc-400' : 'bg-zinc-700'" />
+            </button>
+          </div>
+        </div>
+      </section>
 
       <div ref="scrollEl" class="min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-thin px-3 pb-[max(env(safe-area-inset-bottom),1.5rem)]">
         <p class="mt-3 rounded-lg bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -360,7 +485,7 @@ onBeforeUnmount(() => {
 
           <button
             type="button"
-            class="mt-2 flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-sm text-muted-foreground transition-colors active:bg-accent disabled:opacity-40"
+            class="mt-2 flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-sm text-muted-foreground outline-none transition-colors active:bg-accent disabled:opacity-40"
             :disabled="toolButtons.length >= TOOLBAR_MAX"
             @click="pickerOpen = true"
           >
@@ -371,7 +496,7 @@ onBeforeUnmount(() => {
           </p>
           <button
             type="button"
-            class="mt-1 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl text-xs text-muted-foreground transition-colors active:bg-accent"
+            class="mt-1 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl text-xs text-muted-foreground outline-none transition-colors active:bg-accent"
             @click="openCustom"
           >
             <Keyboard class="size-3.5" /> 自定义按键（转义序列 / 录制）
@@ -417,7 +542,7 @@ onBeforeUnmount(() => {
 
           <button
             type="button"
-            class="mt-2 flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-sm text-muted-foreground transition-colors active:bg-accent"
+            class="mt-2 flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-sm text-muted-foreground outline-none transition-colors active:bg-accent"
             @click="openCmdAdd"
           >
             <Plus class="size-4" /> 新建指令
@@ -450,7 +575,7 @@ onBeforeUnmount(() => {
             type="button"
             class="flex min-h-12 w-full items-center gap-2 rounded-xl px-3 text-left transition-colors active:bg-accent disabled:opacity-40"
             :disabled="usedKeyIds.has(id) || toolButtons.length >= TOOLBAR_MAX"
-            @click="addKeyBtn(id)"
+            @click="addKeyFromPicker(id)"
           >
             <span class="w-12 shrink-0 font-mono text-sm text-foreground">{{ e.label }}</span>
             <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">{{ e.title }}</span>

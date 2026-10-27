@@ -86,6 +86,17 @@ export const TOOLBAR_MAX = 24
 // Terminal.vue 的分页渲染与 TerminalToolbarPage 的顺序说明共用这个常数。
 export const TB_PER_PAGE = 14
 
+// 工具条最终渲染项 = 按键列表 + 固定入口（指令 / ⋯），按 TB_PER_PAGE 分页。
+// 真实工具条（usePhoneToolbar）与设置页的布局预览共用这一份分页逻辑——预览不能自己再算，
+// 否则改常量/固定入口顺序时两边会静默漂移。
+export type ToolbarItem = ToolBtn | { t: 'cmds' } | { t: 'settings' }
+export function toolbarPages(buttons: ToolBtn[]): ToolbarItem[][] {
+  const items: ToolbarItem[] = [...buttons, { t: 'cmds' }, { t: 'settings' }]
+  const out: ToolbarItem[][] = []
+  for (let i = 0; i < items.length; i += TB_PER_PAGE) out.push(items.slice(i, i + TB_PER_PAGE))
+  return out
+}
+
 // 预置布局 = Termux 默认 extra-keys 两行（各 7 键）逐位对齐：第一行 ESC / ^C / - HOME UP END PGUP，
 // 第二行 TAB CTRL ALT LEFT DOWN RIGHT PGDN（Ctrl/Alt 都是粘滞修饰键，交互见 Terminal.vue）。
 // 另补 Shift+Tab（切 agent 权限模式）与 ⏎（系统键盘收起时也能确认）。

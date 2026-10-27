@@ -1,5 +1,5 @@
 import { ref, computed, watch, onBeforeUnmount, nextTick, type Ref } from 'vue'
-import { toolButtons, KEY_POOL, TB_PER_PAGE, type ToolBtn } from '@/lib/termToolbar'
+import { toolButtons, KEY_POOL, toolbarPages, type ToolbarItem, type ToolBtn } from '@/lib/termToolbar'
 import { openToolbarSettings } from '@/lib/termToolbarNav'
 import { isPhone } from '@/composables/useDevice'
 import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
@@ -38,8 +38,6 @@ export interface PhoneToolbarDeps {
   refreshTerminal: () => void
   stepFontSize: (delta: number) => void
 }
-
-type TbItem = ToolBtn | { t: 'settings' } | { t: 'cmds' }
 
 export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   // —— 本实例是否持焦（工具条显隐 + 让位归属的闸）——
@@ -328,13 +326,8 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
   // 不成手势就不拦截按钮点击），页面滑动有过渡动画；⋯ 设置入口作为列表最后一项参与
   // 分页，不再是常驻末格。页点指示器只在多于 1 页时出现。
   // ⋯ 设置与「指令」都是固定入口不进编排列表，恒跟在按钮末尾（⋯ 恒最后一项）。
-  // 工具条按钮只放按键；文本类动作（指令）统一在「指令」面板里，配置走 ⋯ 的『指令』tab。
-  const toolItems = computed<TbItem[]>(() => [...toolButtons.value, { t: 'cmds' }, { t: 'settings' }])
-  const toolPages = computed<TbItem[][]>(() => {
-    const out: TbItem[][] = []
-    for (let i = 0; i < toolItems.value.length; i += TB_PER_PAGE) out.push(toolItems.value.slice(i, i + TB_PER_PAGE))
-    return out
-  })
+  // 分页走 lib/termToolbar.ts 的 toolbarPages——设置页的布局预览吃同一份结果，不会漂移。
+  const toolPages = computed<ToolbarItem[][]>(() => toolbarPages(toolButtons.value))
   const tbPage = ref(0)
   watch(
     () => toolPages.value.length,
