@@ -13,15 +13,6 @@
 // 权威滚动状态是 ydisp（整行坐标），viewport 每次渲染刷新都把 scrollTop 重置回 ydisp × 行高——
 // 像素直改会被吃掉、凑满一行才跳一格（实测一卡一卡）。滚轮同理是按行滚动，这里把触摸位移
 // 像素累积、凑整行调 scrollLines，与滚轮同路径、无对齐打架。
-//
-// ⚠️ 普通缓冲的「亚行补偿」（smoothScreen，`?smooth=0` 可关）：scrollLines 只能整行走，
-// 快滑时视觉是一格一格跳。补法是把**已经画好的那一层**（`.xterm-screen`，含 cursor/selection
-// 图层）按不足一行的余量整体 translate —— 纯合成器变换，零重绘、亚像素，于是在两次整行跨步
-// 之间画面能像原生一样连续跟手；跨行的瞬间 ydisp 前进一行 + 平移量归零，两件事在同一个任务里
-// 做（xterm 的重绘走 rAF 去抖，落在同一帧），净位移仍然连续。代价：朝运动方向那一侧会露出
-// ≤1 行的空白（内容正在进/出，视角上等同原生 overscroll 的露底），滚动停住时按「就近半行」
-// 吸附一次（≤½ 行，肉眼几乎看不出来）。**只对普通缓冲做**：备用屏内容是应用画回来的，重绘
-// 时机不可控，平移归零对不上应用那一帧就会撕扯（那条路暂不做）。
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { TerminalViewportHost } from '@/lib/termScrollRegion'
 
@@ -59,64 +50,16 @@ export function useTermTouchScroll(deps: TermTouchScrollDeps) {
       const rowsEl = term?.element?.querySelector('.xterm-rows') as HTMLElement | null
       return rowsEl && term ? rowsEl.getBoundingClientRect().height / term.rows : 20
     }
-    // —— 亚行补偿（普通缓冲）：把画好的那层按「不足一行」的余量平移，视觉上连续跟手 ——
-    // `?smooth=0` 可关（实验开关，回退用）。
-    const SMOOTH_ON = (() => {
-      try {
-        return new URLSearchParams(location.search).get('smooth') !== '0'
-      } catch {
-        return true
-      }
-    })()
-    let screenLayer: HTMLElement | null = null
-    let screenOffset = 0 // 当前平移量（px，正 = 画面上移）
-    const screenEl = (): HTMLElement | null => {
-      if (screenLayer?.isConnected) return screenLayer
-      screenLayer =
-        (deps.term()?.element?.querySelector('.xterm-screen') as HTMLElement | null) ?? null
-      return screenLayer
-    }
-    const applyScreenOffset = (px: number) => {
-      if (!SMOOTH_ON) return
-      const v = Math.round(px * 10) / 10 // 0.1px 量化：值没变就别碰样式
-      if (v === screenOffset) return
-      const el = screenEl()
-      if (!el) {
-        screenOffset = 0
-        return
-      }
-      screenOffset = v
-      if (v === 0) el.style.transform = ''
-      else {
-        el.style.willChange = 'transform'
-        el.style.transform = `translate3d(0, ${v}px, 0)`
-      }
-    }
-    // 停住时收尾：余量过半个行高就再滚一行（吸附到最近的整行），然后清掉像素偏移。
-    // 不做的话画面会永远停在半行上（留一条 ≤1 行的空白）。
-    const settleSmooth = () => {
-      if (!screenOffset) return
-      const rowH = rowHeightOf()
-      if (Math.abs(accPx) >= rowH / 2) deps.term()?.scrollLines(Math.sign(accPx))
-      accPx = 0
-      applyScreenOffset(0)
-    }
-
-    // 像素 → 整行：余量留在 accPx，凑满一行才调 scrollLines（亚行位移不丢，下次继续凑）；
-    // 不足一行的余量交给亚行补偿平移（备用屏没有本地内容可平移，恒为 0）
+    // 像素 → 整行：余量留在 accPx，凑满一行才调 scrollLines（亚行位移不丢，下次继续凑）
     const scrollByPx = (px: number) => {
       accPx += px
       const rowH = rowHeightOf()
       const rows = Math.trunc(accPx / rowH)
       const term = deps.term()
-      if (!term) return
-      if (rows !== 0) {
-        accPx -= rows * rowH
-        if (altWheel()) sendWheelRows(rows)
-        else term.scrollLines(rows)
-      }
-      // 备用屏（ybase 恒 0）平移等于画假动作，只有普通缓冲可以拿余量补偿
-      applyScreenOffset(term.buffer.active.type === 'alternate' ? 0 : -accPx)
+      if (rows === 0 || !term) return
+      accPx -= rows * rowH
+      if (altWheel()) sendWheelRows(rows)
+      else term.scrollLines(rows)
     }
     // 备用屏（全屏 TUI）+ 应用开了鼠标上报（claude 开 ?1000h/?1003h/?1006h，实测确认）：
     // 本地 scrollback 没内容可滚（ybase 恒 0），触摸位移转成 SGR 滚轮序列发给 PTY，
@@ -152,7 +95,6 @@ export function useTermTouchScroll(deps: TermTouchScrollDeps) {
     }
     const onStart = (e: TouchEvent) => {
       stopMomentum()
-      settleSmooth() // 上一手势如果没走到收尾（多指打断等），先把半行吸附掉
       tracking = e.touches.length === 1
       if (!tracking) return
       lastY = e.touches[0].clientY
@@ -180,10 +122,7 @@ export function useTermTouchScroll(deps: TermTouchScrollDeps) {
       if (!tracking) return
       tracking = false
       // 惯性 glide：按毫秒速度外推，指数衰减 τ≈0.3s（每秒剩 3%）——自然减速不急刹
-      if (Math.abs(vel) < 0.1) {
-        settleSmooth()
-        return
-      }
+      if (Math.abs(vel) < 0.1) return
       let last = performance.now()
       const step = (now: number) => {
         const dt = now - last
@@ -191,10 +130,7 @@ export function useTermTouchScroll(deps: TermTouchScrollDeps) {
         scrollByPx(vel * dt)
         vel *= Math.pow(0.03, dt / 1000)
         if (Math.abs(vel) > 0.02) momentumRaf = requestAnimationFrame(step)
-        else {
-          momentumRaf = 0
-          settleSmooth() // 惯性走完：把最后的半行吸附掉
-        }
+        else momentumRaf = 0
       }
       momentumRaf = requestAnimationFrame(step)
     }
@@ -204,7 +140,6 @@ export function useTermTouchScroll(deps: TermTouchScrollDeps) {
     root.addEventListener('touchcancel', onEnd, { capture: true })
     cleanup = () => {
       stopMomentum()
-      applyScreenOffset(0) // 卸载前清掉像素偏移（只影响视觉，不动内容）
       root.removeEventListener('touchstart', onStart, { capture: true })
       root.removeEventListener('touchmove', onMove, { capture: true })
       root.removeEventListener('touchend', onEnd, { capture: true })
