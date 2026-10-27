@@ -7,8 +7,9 @@
 // 数据在 lib/termToolbar.ts（localStorage 模块级单例——多终端实例共享一份）。
 // 运行行的 pointerdown.prevent 防抢终端焦点（软键盘收起闪一下 + composition 被吞）。
 // 非模态（壳 = BottomPanel）：不铺黑幕、不锁焦点，点面板外即收；层级压过工具条本体。
-import { ChevronRight, Settings2, X } from '@lucide/vue'
-import { quickCmds } from '@/lib/termToolbar'
+import { computed, ref } from 'vue'
+import { ChevronRight, Search, Settings2, X } from '@lucide/vue'
+import { quickCmds, recentCmds, type QuickCmd } from '@/lib/termToolbar'
 import BottomPanel from '@/components/mobile/BottomPanel.vue'
 
 defineProps<{ open: boolean }>()
@@ -17,6 +18,25 @@ const emit = defineEmits<{
   run: [cmd: string]
   config: []
 }>()
+
+// —— 搜索 + 最近 3 条置顶（完整列表不重复最近项）——
+const query = ref('')
+const q = computed(() => query.value.trim().toLowerCase())
+function matches(c: QuickCmd) {
+  return !q.value || c.label.toLowerCase().includes(q.value) || c.cmd.toLowerCase().includes(q.value)
+}
+const groups = computed<{ label: string; items: QuickCmd[] }[]>(() => {
+  const filtered = quickCmds.value.filter(matches)
+  if (q.value) return [{ label: '', items: filtered }]
+  const rec = recentCmds.value.slice(0, 3)
+  const recIds = new Set(rec.map((c) => c.id))
+  const rest = filtered.filter((c) => !recIds.has(c.id))
+  return [
+    ...(rec.length ? [{ label: '最近', items: rec }] : []),
+    ...(rest.length ? [{ label: rec.length ? '其他' : '', items: rest }] : []),
+  ]
+})
+const noResults = computed(() => !!q.value && !groups.value.some((g) => g.items.length))
 
 function close() {
   emit('update:open', false)
@@ -58,6 +78,28 @@ function openConfig() {
         </button>
       </div>
     </div>
+    <!-- 搜索：指令多时直接筛；无指令时不占位 -->
+    <div v-if="quickCmds.length" class="px-3 pb-2">
+      <div class="flex h-9 items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-2">
+        <Search class="size-3.5 shrink-0 text-muted-foreground" />
+        <input
+          v-model="query"
+          class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+          placeholder="搜索指令…"
+          spellcheck="false"
+          enterkeyhint="search"
+        />
+        <button
+          v-if="query"
+          type="button"
+          class="flex size-6 items-center justify-center rounded-full text-muted-foreground active:bg-accent"
+          @click="query = ''"
+        >
+          <X class="size-3.5" />
+          <span class="sr-only">清除</span>
+        </button>
+      </div>
+    </div>
     <div class="px-2 pb-1">
       <div v-if="!quickCmds.length" class="px-4 py-8 text-center">
         <p class="text-sm text-muted-foreground">还没有快捷指令</p>
@@ -68,20 +110,26 @@ function openConfig() {
           @click="openConfig"
         >去添加</button>
       </div>
-      <button
-        v-for="c in quickCmds"
-        :key="c.id"
-        type="button"
-        class="flex min-h-14 w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors active:bg-accent"
-        @pointerdown.prevent
-        @click="runCmd(c.cmd)"
-      >
-        <span class="min-w-0 flex-1">
-          <span class="block truncate text-sm font-medium">{{ c.label }}</span>
-          <span class="mt-0.5 block truncate font-mono text-xs text-muted-foreground">{{ c.cmd }}</span>
-        </span>
-        <ChevronRight class="size-4 shrink-0 text-muted-foreground/60" />
-      </button>
+      <p v-else-if="noResults" class="px-4 py-8 text-center text-sm text-muted-foreground">没有匹配的指令</p>
+      <template v-for="g in groups" :key="g.label || 'all'">
+        <div v-if="g.items.length">
+          <p v-if="g.label" class="px-3 pt-2 pb-1 text-[11px] font-semibold text-muted-foreground">{{ g.label }}</p>
+          <button
+            v-for="c in g.items"
+            :key="c.id"
+            type="button"
+            class="flex min-h-14 w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors active:bg-accent"
+            @pointerdown.prevent
+            @click="runCmd(c.cmd)"
+          >
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-sm font-medium">{{ c.label }}</span>
+              <span class="mt-0.5 block truncate font-mono text-xs text-muted-foreground">{{ c.cmd }}</span>
+            </span>
+            <ChevronRight class="size-4 shrink-0 text-muted-foreground/60" />
+          </button>
+        </div>
+      </template>
     </div>
     <!-- 显式取消：没有黑幕兜底后，别让用户只能靠「点空白」猜怎么退 -->
     <div class="mx-2 border-t border-border/60 pt-1 pb-0.5">

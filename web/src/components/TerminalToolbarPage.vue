@@ -34,6 +34,7 @@ import {
   TB_PER_PAGE,
   toolbarPages,
   getQuickCmd,
+  recentCmds,
   isCmdPinned,
   toggleCmdPin,
   type ToolbarItem,
@@ -71,6 +72,8 @@ const previewCollapsed = ref(false)
 const previewScroller = ref<HTMLDivElement | null>(null)
 const previewPage = ref(0)
 const previewPages = computed(() => toolbarPages(toolButtons.value))
+// 与真实工具条一致的「最近」条：未固定的最近指令（固定项已在按钮区，不重复）
+const previewRecent = computed(() => recentCmds.value.filter((c) => !isCmdPinned(c.id)).slice(0, 4))
 
 function previewLabel(item: ToolbarItem) {
   if (item.t === 'key') return KEY_POOL[item.id]?.label ?? item.id
@@ -431,6 +434,12 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div v-show="!previewCollapsed" class="rounded-xl border border-border/60 bg-black p-2">
+          <!-- 最近指令条（与实际工具条同为 28px；固定项不在这里，已在按键区） -->
+          <div v-if="previewRecent.length" class="mb-1 flex items-center gap-1 overflow-x-auto scroll-thin">
+            <span class="shrink-0 pl-1 text-[10px] text-zinc-500">最近</span>
+            <span v-for="c in previewRecent" :key="c.id" class="tb-cmd">{{ c.label }}</span>
+            <span class="tb-cmd">更多</span>
+          </div>
           <div
             ref="previewScroller"
             class="flex snap-x snap-mandatory overflow-x-auto scroll-thin"
@@ -464,8 +473,8 @@ onBeforeUnmount(() => {
 
       <div ref="scrollEl" class="min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-thin px-3 pb-[max(env(safe-area-inset-bottom),1.5rem)]">
         <p class="mt-3 rounded-lg bg-muted/50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-          工具条在软键盘弹出时显示，改动即时保存。列表顺序即按钮顺序：每页 2 行 × 7 键，前 {{ TB_PER_PAGE }} 个在第 1 页，
-          超出自动翻页；按键之后固定跟「指令」「⋯」两个入口（也参与分页）。
+          工具条在软键盘弹出时显示，改动即时保存。列表顺序即按钮顺序：每页 2 行 × 7 键，超出自动翻页；
+          末尾固定跟「指令」「⋯」。运行过的未固定指令会自动进上方「最近」条。
         </p>
 
         <!-- —— 工具条按键 —— -->
@@ -529,7 +538,8 @@ onBeforeUnmount(() => {
             <span class="text-[11px] tabular-nums text-muted-foreground">{{ quickCmds.length }}</span>
           </div>
           <p class="mt-1 px-1 text-xs text-muted-foreground">
-            面板里点条目 = 发送整条命令并回车；这里点行编辑。点行尾图钉固定到工具条，固定后一键发送，不必再进面板。
+            面板里点条目 = 发送整条命令并回车；这里点行编辑。点行尾图钉固定到工具条，固定后一键发送；
+            没固定的最近运行项会自动出现在工具条上方的「最近」条。
           </p>
 
           <ul class="mt-2 divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-card">
