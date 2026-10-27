@@ -1255,9 +1255,8 @@ function navigateMobileNav(target: MobileNavTarget) {
   ;(document.activeElement as HTMLElement | null)?.blur?.()
   if (target === 'terminal') {
     const alreadyTerminal = !showFiles.value && !aiOpen.value && mainView.value === 'terminal'
-    // 激活态再点 = 进终端切换页（iOS Safari 标签页同款「再点已激活页签出总览」）——
+    // 激活态再点 = 弹终端切换抽屉（iOS Safari 标签页同款「再点已激活页签出总览」）——
     // 顶栏取消后终端切换/组管理的唯一落点，也让底栏不再是点了没反应的 no-op。
-    // 它是路由页（/terminals/switch），退出走系统后退或页内「返回」。
     if (alreadyTerminal) {
       termSwitcherOpen.value = true
       return
@@ -2577,10 +2576,11 @@ function mobileGroupActionList(group: TermGroup) {
   return groupActions(group, containerRunning(group.containerId))
 }
 
-// —— 手机终端切换页（底栏「终端」再点进入，路由 /terminals/switch）——
+// —— 手机终端切换抽屉（底栏「终端」再点弹出）——
 // 顶栏取消后终端切换/组管理/网络信息的落点。组动作复用 groupActions 清单（CardActionSheet）；
 // 网络信息沿用 tab 栏下拉的数据源（activeContainer 的懒加载缓存），仅当前组有意义，放全局区。
-const { isOpen: termSwitcherOpen } = usePageRoute('term-switch')
+// 刻意不进路由、不做整页：它只是一次性选组，抽屉高度随内容（上限 78dvh）。
+const termSwitcherOpen = ref(false)
 const switcherRows = computed<TermSwitcherRow[]>(() =>
   groups.value.map((g) => ({
     id: g.id,
@@ -5145,17 +5145,17 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       @open-batch="openBatch()"
     />
 
-    <!-- 手机终端切换页：底栏「终端」激活态再点进入（路由 /terminals/switch，mobileOnly），
-         系统后退即退出。整页列出本窗口的终端组 + 组动作 + 所有终端 / 环境列表 / 网络信息；
-         顶栏取消后这些功能的唯一手机入口，popout 无底栏也不经此路径。 -->
+    <!-- 手机终端切换抽屉：底栏「终端」激活态再点弹出（带遮罩的底部面板，高度随内容）。
+         组列表 + 组动作 + 所有终端 / 环境列表 / 网络信息——顶栏取消后这些功能的唯一手机入口，
+         popout 无底栏也不经此路径。 -->
     <MobileTermSwitcher
       v-model:open="termSwitcherOpen"
       :rows="switcherRows"
       @select="onSwitcherSelect"
       @close="closeGroupById($event)"
       @actions="onSwitcherActions"
-      @sessions="showSessions = true"
-      @environments="drawerOpen = true"
+      @sessions="termSwitcherOpen = false; showSessions = true"
+      @environments="termSwitcherOpen = false; drawerOpen = true"
       @network="openNetworkSheet"
     />
     <CardActionSheet

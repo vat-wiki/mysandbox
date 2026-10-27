@@ -74,13 +74,6 @@ const pageRoutes: RouteRecordRaw[] = [
     meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
   },
   {
-    // 手机终端切换页（本窗口的终端组列表）。桌面终端 tab 条常驻，没有这个入口。
-    path: '/terminals/switch',
-    name: 'term-switch',
-    component: RouteAnchor,
-    meta: { layer: 'page', mobileOnly: true },
-  },
-  {
     path: '/containers/new',
     name: 'container-create',
     component: RouteAnchor,
