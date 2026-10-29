@@ -217,7 +217,9 @@ function openInPanel() {
         </DialogDescription>
       </DialogHeader>
 
-      <div class="flex min-h-0 flex-col gap-2 sm:flex-row md:h-[62vh]">
+      <!-- min-w-0：本 div 是 DialogContent grid 的 item，缺了它 min-width:auto 会让
+           grid 轨道被 md 内容的 min-content（长 token）撑爆，整框溢出对话框 -->
+      <div class="flex min-h-0 min-w-0 flex-col gap-2 sm:flex-row md:h-[62vh]">
         <!-- 左：文件树（懒展开；SKILL.md 首选自动打开）。手机收成顶部定高条 -->
         <div class="scroll-thin max-h-44 shrink-0 overflow-y-auto rounded border bg-card sm:max-h-none sm:h-full sm:w-56">
           <p v-if="treeErr" class="p-2 text-[11px] text-destructive">{{ treeErr }}</p>
@@ -251,8 +253,10 @@ function openInPanel() {
           </template>
         </div>
 
-        <!-- 右：预览（md 默认渲染视图，浮动按钮切源码；其余态占位/只读源码） -->
-        <div class="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded border bg-zinc-900">
+        <!-- 右：预览（md 默认渲染视图，浮动按钮切源码；其余态占位/只读源码）。
+             flex flex-col：MarkdownView 根节点是 flex-1 min-h-0 的滚动容器——父级不是
+             flex 时它高度塌成内容自然高，面板 overflow-hidden 直接剪掉下半截且滚不动 -->
+        <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded border bg-zinc-900">
           <template v-if="selLoading">
             <p class="flex items-center gap-1.5 p-3 text-xs text-muted-foreground">
               <Loader2 class="size-3 animate-spin" /> 读取中…
