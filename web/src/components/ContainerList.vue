@@ -348,7 +348,7 @@ watch(termExpanded, (v) => {
     /* localStorage 不可用就跳过 */
   }
 })
-// 活跃会话分区（桌面）：与上面三区同一收展语言。计数由 TermSessionList 扫描后上报
+// 活跃会话分区（桌面侧栏 + 手机环境抽屉）：与上面三区同一收展语言。计数由 TermSessionList 扫描后上报
 // （收起时不挂载、不扫描）；sessScan 只是递增触发器——变化即让列表重扫一轮。
 const sessExpanded = ref(loadBool('mysandbox:term-sess-open') || !('mysandbox:term-sess-open' in localStorage))
 watch(sessExpanded, (v) => {
@@ -2270,6 +2270,17 @@ function adoptSessions(list: TermSessionView[]) {
           grows: equalGrows(ids.length),
         }
   createGroup(cid, name, host ? 'host' : svc ? 'service' : ssh ? 'ssh' : undefined, root)
+}
+
+// 活跃会话分区（桌面侧栏 / 手机环境抽屉共用）的接入与恢复出口：手机上动作完成后
+// 关抽屉露出主列新组（与 openTerm 系列同语义）；桌面侧栏原地不动。
+function adoptFromList(list: TermSessionView[]) {
+  adoptSessions(list)
+  if (isPhone.value) drawerOpen.value = false
+}
+function restoreFromList(g: TermGroup) {
+  restoreHidden(g)
+  if (isPhone.value) drawerOpen.value = false
 }
 
 // —— tab 长按（触屏）= 右键 ——
@@ -4386,11 +4397,11 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         </div>
       </div>
 
-      <!-- 活跃会话分区（桌面）：与系统容器/应用容器/终端分区同款语言——图标 + 计数 +
-           整行收展（⟳ 重扫收进分区头右端）。收起时不挂载 TermSessionList（挂载即
-           跨容器 exec 扫描，无轮询），展开才扫一轮。含本窗口隐藏组恢复——主窗口不依赖
-           对话框也有找回入口；手机不显示，会话找回走切换器里的「所有终端」。 -->
-      <div v-if="!isPhone" class="shrink-0 border-t border-border">
+      <!-- 活跃会话分区（桌面侧栏 + 手机环境抽屉）：与系统容器/应用容器/终端分区同款
+           语言——图标 + 计数 + 整行收展（⟳ 重扫收进分区头右端）。收起时不挂载
+           TermSessionList（挂载即跨容器 exec 扫描，无轮询），展开才扫一轮。含本窗口
+           隐藏组恢复——主窗口不依赖对话框也有找回入口。 -->
+      <div class="shrink-0 border-t border-border">
         <div class="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
           <button
             type="button"
@@ -4431,8 +4442,8 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             :bare="true"
             :scan-key="sessScan"
             @count="sessCount = $event"
-            @adopt="adoptSessions"
-            @restore="restoreHidden"
+            @adopt="adoptFromList"
+            @restore="restoreFromList"
             @unauthorized="emit('unauthorized')"
           />
         </div>

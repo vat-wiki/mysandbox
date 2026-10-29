@@ -99,7 +99,7 @@ SSH 主机的文件面板，与容器/宿主/服务四足鼎立全量对齐（�
 
 - tab 布局（含隐藏列表）是**各浏览器自己的 localStorage 状态**（`mysandbox:term-tabs-v4` / `mysandbox:term-hidden`），不是服务端状态——换浏览器/窗口 tab 就「没了」。但会话本体（tmux）在服务端活着，所以找回走**服务端扫描**：`GET /api/terminal-sessions`（routes.ts 组合）并发扫全部运行中容器 + 宿主 socket（`listContainerSessions`/`listHostSessions`，allSettled 单容器失败按 0 会话降级），`DELETE /api/terminal-sessions/{host|container}/...` 结束孤儿会话。`termSessionKey`（api.ts）是两侧共用的去重 key：本窗口可见+隐藏组占用的 termId 不进远端列表。
 - **tab 右键「隐藏」≠ ✕**：隐藏 = 组从 `groups` 挪进 `hiddenGroups`（Terminal 卸载 → WS 断 = 纯 detach，会话保留）；✕ = kill 帧（真杀）。恢复时 seq 撞号取可见+隐藏 max+1。
-- **接入远端会话 = 复用 termId 建组**：后端 `new-session -A` 按 `mysandbox-<短id>-<termId>` 命中即 attach 回原会话（现场全保留）。跨窗口拿不回原分屏树（那是对方窗口的 localStorage），多会话「全部接入」合并成一个 ≤4 块的分屏组。UI 主体在 `TermSessionList.vue`（扫描/分组/接入/结束/隐藏组恢复，三处共用：侧栏终端区尾部块、rail「所有终端」分区浮层、对话框）；`TermSessionsDialog.vue` 只剩对话框壳（本机/SSH 卡片右键「全部终端会话」、手机切换器、popout 顶栏入口）。挂载即扫一轮、无轮询（扫描是跨容器 exec 风暴），刷新走手动。
+- **接入远端会话 = 复用 termId 建组**：后端 `new-session -A` 按 `mysandbox-<短id>-<termId>` 命中即 attach 回原会话（现场全保留）。跨窗口拿不回原分屏树（那是对方窗口的 localStorage），多会话「全部接入」合并成一个 ≤4 块的分屏组。UI 主体在 `TermSessionList.vue`（扫描/分组/接入/结束/隐藏组恢复，三处共用：侧栏/手机环境抽屉的「活跃会话」分区（bare 形态，分区头在 ContainerList）、rail「所有终端」分区浮层、对话框）；`TermSessionsDialog.vue` 只剩对话框壳（本机/SSH 卡片右键「全部终端会话」、手机切换器、popout 顶栏入口）。挂载即扫一轮、无轮询（扫描是跨容器 exec 风暴），刷新走手动。手机上分区也在环境抽屉尾部（与 PC 侧栏同一块模板），接入/恢复动作完成后关抽屉露主列新组（`adoptFromList`/`restoreFromList`，与 openTerm 系列同语义）。
 - kill 扫描/结束都要 `tmux -t =<精确名>`（tmux 的 -t 默认前缀/通配匹配，见 terminal.ts 里 reapOrphanClients 的教训注释）。
 
 ## 终端活动监测（`server/activity.ts`）
