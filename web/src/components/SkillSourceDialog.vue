@@ -120,9 +120,12 @@ async function pick(node: SkillNode) {
     toggleExpand(node)
     return
   }
-  if (node.type !== 'file' || selPath.value === node.path) return
-  selPath.value = node.path
+  if (node.type !== 'file') return
+  // 点了文件就收浮层（手机语义：选完即走）——含重复点当前文件的情形，别因
+  // selPath 相等提前 return 把浮层困住
   pickerOpen.value = false
+  if (selPath.value === node.path) return
+  selPath.value = node.path
   selView.value = null
   selErr.value = ''
   selLoading.value = true
@@ -210,7 +213,9 @@ function openInPanel() {
 
 <template>
   <Dialog :open="!!skill" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="sm:max-w-4xl max-md:h-dvh max-md:max-w-full max-md:grid-rows-[auto_auto_minmax(0,1fr)] max-md:gap-2 max-md:rounded-none max-md:border-0">
+    <!-- grid-cols minmax(0,1fr)：隐式列是 auto 轨道，max 按 max-content 撑——md 内容
+         一旦有宽 min-content（长 token）整框就溢出视口（v0.15.7 前的真实事故） -->
+    <DialogContent class="sm:max-w-4xl max-md:h-dvh max-md:max-w-full max-md:grid-rows-[auto_auto_minmax(0,1fr)] max-md:grid-cols-[minmax(0,1fr)] max-md:gap-2 max-md:rounded-none max-md:border-0">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-1.5 font-mono">
           <FileText class="size-4 shrink-0 text-muted-foreground" />

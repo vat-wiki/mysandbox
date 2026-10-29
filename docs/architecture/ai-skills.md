@@ -22,6 +22,13 @@
 - 容器 start 事件补发停机期间克隆的项目；规则删除/改去向 → 孤儿按清单收回。
 - 落点两处独立实体副本（无软链）见 [containers.md](containers.md)。
 
+### 技能源文件查看器（`web/src/components/SkillSourceDialog.vue`）
+
+卡片 ⋯ 菜单「源文件」打开的只读查看器：库是静态快照，编辑走「在文件面板打开」深链。数据面零新增端点——库目录在宿主文件系统上，直接走宿主文件 API（HOST_ID 哨兵）的 listFiles/readFile，与文件面板四足协议同一套（2MB 上限 / binary 判定单源）。布局：md≥768 左树右预览；手机整页对话框 + 「当前文件」条弹出覆盖式树浮层选文件（同一棵树两种形态，md/max-md 互补断点）。md 默认渲染视图（MarkdownView，与文件面板预览同一管线），浮动按钮切只读源码。
+
+- **DialogContent 手机整页的 grid 列必须 `max-md:grid-cols-[minmax(0,1fr)]`**：隐式 auto 轨道的 max 按 max-content 撑，md 内容一旦有宽 min-content（长 token）整框就溢出视口（v0.15.8 前的真实事故）；注意 tailwind-merge 对个别带逗号的 arbitrary 值可能吃类，改类后要在真机确认 computed `grid-template-columns`。
+- **MarkdownView 剥 YAML frontmatter**：SKILL.md 类文件开头的 `---` 元数据块 marked 不认识，会渲染成 setext 巨型标题并把长 token 算进 min-content（同上溢出的另一半根因）。
+
 ## TestLens 种子（`server/testlens.ts`）
 
 往目标 home 写 `~/.agent-browser/config.json`（cdp 地址）+ `~/.testlens.json`（CLI host），**文件即真相**（view 读实际文件不存 sidecar 状态），install 读-改-写只动 cdp/host 两键；容器内走服务名 `http://testlens:<port>`、本机换算 `localhost`（端口已发布到宿主）。

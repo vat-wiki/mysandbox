@@ -37,7 +37,17 @@ marked.use({
     },
   },
 })
-const mdHtml = computed(() => DOMPurify.sanitize(marked.parse(props.content, { async: false })))
+// YAML frontmatter 剥离：技能/文档类 md 常以 `---` 元数据块开头，marked 不认识它，
+// 会把整块当普通段落、闭合的 `---` 又反解析成 setext 标题——渲染成一条巨型标题，
+// 且元数据里的长 token（Bash(npx:) 之类）成了不可断词的 min-content，手机上直接把
+// 对话框 grid 轨道撑爆。只剥文件头部第一个完整块（`---` 开头 + 闭合行），中间出现
+// 的 `---` 分隔线不受影响。
+function stripFrontmatter(src: string): string {
+  const m = /^---[^\n]*\n[\s\S]*?\n(?:---|\.\.\.)[^\n]*\n?/.exec(src)
+  return m ? src.slice(m[0].length) : src
+}
+
+const mdHtml = computed(() => DOMPurify.sanitize(marked.parse(stripFrontmatter(props.content), { async: false })))
 const mdBody = ref<HTMLElement | null>(null)
 const mermaidViewerUrl = ref('')
 const mermaidViewerScale = ref(1)
@@ -332,6 +342,8 @@ onBeforeUnmount(() => {
   color: var(--color-foreground);
   font-size: 14px;
   line-height: 1.75;
+  /* 长 token（URL/代码字面量）超容器宽时折行，不把滚动容器的内容宽撑出去 */
+  overflow-wrap: break-word;
 }
 .md-body :deep(h1),
 .md-body :deep(h2),
