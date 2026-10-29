@@ -45,9 +45,11 @@ export function useTermSocket(deps: TermSocketDeps) {
   const { props, events } = deps
   const term = () => deps.term()
 
-  // 断线状态（终端上方覆盖条用）：'ok' | 'lost'。TCP 半开（后端挂死/NAT 超时）时 onclose
-  // 不会触发，靠心跳探测置 lost。会话在后端无限期保留（真 tmux 语义），重连即恢复。
-  const connState = ref<'ok' | 'lost'>('ok')
+  // 断线状态（终端上方覆盖条用）：'ok' | 'lost' | 'connecting'。TCP 半开（后端挂死/NAT
+  // 超时）时 onclose 不会触发，靠心跳探测置 lost。会话在后端无限期保留（真 tmux 语义），
+  // 重连即恢复。'connecting' = 重连在建（含服务端 attach/自动部署窗口）：隧道接入时这段
+  // 要 1.5~2s 且画面全程冻结，没有这条反馈用户只能看到「卡死」（2026-10-29）。
+  const connState = ref<'ok' | 'lost' | 'connecting'>('ok')
 
   let connectSeq = 0
   let ws: WebSocket | null = null
@@ -61,6 +63,9 @@ export function useTermSocket(deps: TermSocketDeps) {
   let closeBannerTimer: ReturnType<typeof setTimeout> | null = null
   let closeBannerShown = false
   let readySent = false
+  // 本组件是否已成功建过连（onopen 置位）：重连/刷新/懒挂载补连才显示「重连中」覆盖条，
+  // 首连（页面加载/新开终端）画面本来就在加载中，不需要额外状态条。
+  let hadConnection = false
   let currentBackend: 'tmux' | 'msmux' = 'tmux'
   // msmux 最新前台进程名；断线/重连后由 attach 元数据恢复。
   let foregroundCommand = ''
@@ -126,6 +131,9 @@ export function useTermSocket(deps: TermSocketDeps) {
   async function connectWs(quiet = false) {
     const seq = ++connectSeq
     wsQuiet = quiet
+    // 重连在建即置 connecting（清掉 lost 覆盖条、亮出「重连中」）：服务端 attach/自动
+    // 部署窗口可能长达数秒，覆盖条留着直到首帧到达。首连不置（hadConnection 为假）。
+    if (hadConnection) connState.value = 'connecting'
     const token = authToken()
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     // SSH 远端 shell 由远端自己决定（不传 shell）；其余目标沿用 defaultShell。
@@ -181,7 +189,9 @@ export function useTermSocket(deps: TermSocketDeps) {
     inputFlushTimer = setTimeout(markInputReady, 2_000)
 
     ws.onopen = () => {
-      connState.value = 'ok'
+      // 不在这里置 'ok'：mux 路径 onopen（升级完成）后服务端还要 attach/可能自动部署
+      // 才有首帧，connecting 覆盖条要留到 onmessage 首帧才收。
+      hadConnection = true
       // 重连成功：取消未落笔的断线横幅；若横幅已写出（慢重连），补一行「已重连」闭环，
       // 别让回滚末尾那行「已断开 (1006)」成了最后状态。
       if (closeBannerTimer) {
@@ -248,8 +258,12 @@ export function useTermSocket(deps: TermSocketDeps) {
             term()?.writeln('\x1b[2m>> 会话已结束（shell 退出）；点击重连会开新会话\x1b[0m')
           }
           // 控制帧是 attach 完成后的随附物（history/title/cwd/foreground 都在 attach 成功
-          // 后补发）：到此即可放行 stdin。error 帧的下一步是 1011，不开闸。
-          if (m.type !== 'error') markInputReady()
+          // 后补发）：到此即可放行 stdin。error 帧的下一步是 1011，不开闸——连接状态留给
+          // onclose 置 lost（error 之后必是 1011/1008，不会停在 connecting）。
+          if (m.type !== 'error') {
+            connState.value = 'ok'
+            markInputReady()
+          }
         } catch {
           /* 非法控制帧忽略 */
         }
@@ -258,6 +272,7 @@ export function useTermSocket(deps: TermSocketDeps) {
       // 终端数据帧 = 有输出：登记最后输出时刻（「无输出提醒」用，见 lib/terminalActivity）。
       // 非激活 tab 已 detach（懒挂载）不再收流，登记只对当前激活 tab 生效；历史回填（文本帧）
       // 不算。prime 窗口内的帧只点亮光晕、不进提醒资格（attach 重绘/初始 prompt 是打开自带画面）。
+      connState.value = 'ok'
       noteTermOutput(props.termId)
       const bytes = new Uint8Array(ev.data as ArrayBuffer)
       term()?.write(bytes)
@@ -325,7 +340,6 @@ export function useTermSocket(deps: TermSocketDeps) {
       clearInterval(hbTimer)
       hbTimer = null
     }
-    connState.value = 'ok'
     void connectWs(quiet)
   }
 
@@ -373,7 +387,6 @@ export function useTermSocket(deps: TermSocketDeps) {
       closeBannerTimer = null
     }
     closeBannerShown = false
-    connState.value = 'ok'
     void connectWs(true) // 程序性重连：不要往刚清空的 buffer 写「连接/断开」横幅
   }
 
@@ -413,7 +426,6 @@ export function useTermSocket(deps: TermSocketDeps) {
   /** 切回本 tab 时用：没有 socket 或已 CLOSING/CLOSED 就补一次静默连接（CONNECTING 不重入）。 */
   function ensureConnected() {
     if (ws && ws.readyState <= WebSocket.OPEN) return
-    connState.value = 'ok'
     void connectWs(true)
   }
 

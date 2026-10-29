@@ -904,10 +904,31 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-black" />
       连接已断开 · 点击重连
     </button>
+    <!-- 重连中覆盖条：点击重连/自愈到首帧之间的窗口（隧道接入要 1.5~2s），给个进行中
+         反馈别让冻结画面看着像卡死。250ms 延迟显形——内网快重连（~50ms）永远不到显形
+         拍，只有真的慢了才出现（纯 CSS，连上即整条卸载，无退出动画）。 -->
+    <div
+      v-else-if="connState === 'connecting'"
+      class="connecting-bar pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 bg-slate-600/90 px-3 py-1 text-xs font-medium text-white"
+    >
+      <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+      重连中…
+    </div>
   </div>
 </template>
 
 <style>
+/* 「重连中」覆盖条延迟显形：opacity 动画 250ms 才到 1，快重连在显形前整条卸载
+   （v-else-if 切走），内网 ~50ms 的连接永远看不到它；慢连接（隧道 1.5~2s）才出现。 */
+.connecting-bar {
+  opacity: 0;
+  animation: connecting-bar-in 0ms linear 250ms forwards;
+}
+@keyframes connecting-bar-in {
+  to {
+    opacity: 1;
+  }
+}
 /* 触屏工具条按钮：紧凑但命中区 ≥40px（高度 h-9），等宽字排布稳定。
    user-select/callout：长按连发期间不能弹出系统选择/放大镜；touch-action:manipulation
    消双击缩放延迟（主行固定不滚，无横滚冲突）。 */
