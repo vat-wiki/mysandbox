@@ -20,6 +20,7 @@ import {
 } from '@/lib/api'
 import { langForFilename } from '@/lib/monaco'
 import { extOf } from '@/lib/preview'
+import MarkdownView from '@/components/MarkdownView.vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { FolderOpen, Folder, ChevronDown, ChevronRight, Loader2, FileText, Eye, FileCode } from 'lucide-vue-next'

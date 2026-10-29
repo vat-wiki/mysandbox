@@ -1821,7 +1821,12 @@ async function locateContainerPath(
     if (si >= 0) activeIdx.value = si
     else createGroup(sname, sname, 'service')
   } else openTerm(c)
+  // showFiles 的 setter 是 router.push（异步导航）——nextTick 等不到 FilePanel 挂载，
+  // 面板首开时 filePanelRef 还是 null，下面的 locate 会被静默丢掉（面板落在默认目录，
+  // 深链定位失效）。这里显式 await 同一导航（setter 已 push 过则去重秒回），面板挂上
+  // 后再定位。
   showFiles.value = true
+  await router.push({ name: 'files', params: { target: encodeURIComponent(c.id) } })
   await nextTick()
   const dir = kind === 'dir' ? path : dirname(path)
   filePanelRef.value?.locate(c.id, dir)
