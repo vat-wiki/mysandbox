@@ -32,14 +32,16 @@ const emit = defineEmits<{
 
 <template>
   <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-lg max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
+    <!-- 手机整页形态：grid 行 auto/auto/1fr，列表吃掉返回行+标题之外的剩余高度（内部滚动），
+         底下不再留半屏空白；桌面仍 55vh 上限 + 容器自身滚动。 -->
+    <DialogContent class="max-w-lg max-md:[grid-template-rows:auto_auto_1fr] max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
           <TerminalSquare class="size-4" /> 所有终端
         </DialogTitle>
       </DialogHeader>
 
-      <div class="-mx-1 max-h-[55vh] overflow-y-auto px-1 scroll-thin">
+      <div class="-mx-1 max-h-[55vh] overflow-y-auto px-1 scroll-thin max-md:max-h-none min-h-0">
         <TermSessionList
           :hidden="hidden"
           :attention-ids="attentionIds"

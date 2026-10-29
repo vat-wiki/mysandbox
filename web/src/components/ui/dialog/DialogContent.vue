@@ -45,7 +45,9 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
           // 调用点自带的 max-md:*（h-dvh/rounded-none/pt-safe…）与之重复也无害（twMerge 去重）。
           // 左右内边距沿用基础 p-6；只把上下换成长度与安全区取大——整页形态下内容要避开刘海与 home indicator。
           // 自带 p-0 的整页（设置/批量/桌面/Claude 终端）用 max-md:py-0 抵消，避免整页里多出白边。
-          'max-md:top-0 max-md:left-0 max-md:h-dvh max-md:max-h-none max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none max-md:border-0 max-md:shadow-none max-md:pt-[max(env(safe-area-inset-top),1.5rem)] max-md:pb-[max(env(safe-area-inset-bottom),1.5rem)] max-md:data-[state=open]:zoom-in-100 max-md:data-[state=closed]:zoom-out-100 max-md:data-[state=open]:slide-in-from-bottom-2 max-md:data-[state=closed]:slide-out-to-bottom-2',
+          // content-start：grid 默认 align-content:stretch 会把剩余高度均摊进 auto 行——整页
+          // 形态下「返回」行与标题各自被撑出上百 px 空隙（桌面容器高随内容，从未暴露）。
+          'max-md:top-0 max-md:left-0 max-md:content-start max-md:h-dvh max-md:max-h-none max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none max-md:border-0 max-md:shadow-none max-md:pt-[max(env(safe-area-inset-top),1.5rem)] max-md:pb-[max(env(safe-area-inset-bottom),1.5rem)] max-md:data-[state=open]:zoom-in-100 max-md:data-[state=closed]:zoom-out-100 max-md:data-[state=open]:slide-in-from-bottom-2 max-md:data-[state=closed]:slide-out-to-bottom-2',
           props.class,
         )"
     >
