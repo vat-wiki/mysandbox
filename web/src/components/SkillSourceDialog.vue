@@ -7,7 +7,8 @@
 // 布局：左文件树（懒展开，SKILL.md 首选自动打开）+ 右预览。md 文件默认渲染视图
 // （MarkdownView，与文件面板预览同一套管线：相对图片 / mermaid / 排版 CSS），右下角
 // 浮动按钮切源码（Monaco 只读）；其余文件恒源码。手机上对话框铺满全屏（项目惯例
-// max-md:h-dvh），文件树收到顶部定高条，预览占余下全部。
+// max-md:h-dvh），文件树收成「当前文件」条 + 覆盖式浮层：预览占满余下视口，点条弹出
+// 全屏树浮层选文件、选完自动收起（同一棵树两处形态，md 断点切分，无重叠区间）。
 import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import {
   listFiles,
@@ -23,7 +24,7 @@ import { extOf } from '@/lib/preview'
 import MarkdownView from '@/components/MarkdownView.vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { FolderOpen, Folder, ChevronDown, ChevronRight, Loader2, FileText, Eye, FileCode } from 'lucide-vue-next'
+import { FolderOpen, Folder, ChevronDown, ChevronRight, Loader2, FileText, Eye, FileCode, X } from 'lucide-vue-next'
 
 // Monaco 壳懒加载（monaco 本体是共享 chunk，多个入口不重复下载——见 CodeEditor 头注）。
 const CodeEditor = defineAsyncComponent(() => import('@/components/CodeEditor.vue'))
@@ -60,6 +61,9 @@ const selPath = ref('')
 const selView = ref<FileView | null>(null)
 const selErr = ref('')
 const selLoading = ref(false)
+
+// 手机端文件树浮层开关（md 起树是常驻左列，此状态无效果）。选完文件自动收起。
+const pickerOpen = ref(false)
 
 const visibleNodes = computed(() => {
   const out: { node: SkillNode; depth: number }[] = []
@@ -118,6 +122,7 @@ async function pick(node: SkillNode) {
   }
   if (node.type !== 'file' || selPath.value === node.path) return
   selPath.value = node.path
+  pickerOpen.value = false
   selView.value = null
   selErr.value = ''
   selLoading.value = true
@@ -145,6 +150,7 @@ watch(
     selPath.value = ''
     selView.value = null
     selErr.value = ''
+    pickerOpen.value = false
     try {
       const v = await listFiles(HOST_ID, s.path)
       tree.value = toNodes(v.entries, s.path)
@@ -188,6 +194,13 @@ const selPlaceholder = computed(() => {
 // 渲染视图的空内容占位（md 空文件渲染出来是白板，给一句说明）。
 const mdEmpty = computed(() => !!selView.value && !selView.value.binary && !(selView.value.content ?? '').trim())
 
+// 当前文件相对技能根的路径（手机「当前文件」条展示用；绝对路径太长挤不出可读信息）。
+const selRelPath = computed(() => {
+  if (!props.skill || !selPath.value) return ''
+  const root = `${props.skill.path}/`
+  return selPath.value.startsWith(root) ? selPath.value.slice(root.length) : selPath.value
+})
+
 function openInPanel() {
   if (!props.skill) return
   emit('locate', props.skill.path)
@@ -218,39 +231,65 @@ function openInPanel() {
       </DialogHeader>
 
       <!-- min-w-0：本 div 是 DialogContent grid 的 item，缺了它 min-width:auto 会让
-           grid 轨道被 md 内容的 min-content（长 token）撑爆，整框溢出对话框 -->
-      <div class="flex min-h-0 min-w-0 flex-col gap-2 sm:flex-row md:h-[62vh]">
-        <!-- 左：文件树（懒展开；SKILL.md 首选自动打开）。手机收成顶部定高条 -->
-        <div class="scroll-thin max-h-44 shrink-0 overflow-y-auto rounded border bg-card sm:max-h-none sm:h-full sm:w-56">
-          <p v-if="treeErr" class="p-2 text-[11px] text-destructive">{{ treeErr }}</p>
-          <p v-else-if="!tree.length" class="flex items-center gap-1.5 p-2 text-[11px] text-muted-foreground">
-            <Loader2 class="size-3 animate-spin" /> 读取文件树…
-          </p>
-          <template v-else>
-            <button
-              v-for="{ node, depth } in visibleNodes"
-              :key="node.key"
-              type="button"
-              class="flex w-full items-center gap-1 py-1 pr-2 text-left text-[11px] transition-colors"
-              :class="selPath === node.path ? 'bg-primary/10' : 'hover:bg-accent/40'"
-              :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
-              :title="node.path"
-              @click="node.type === 'dir' ? toggleExpand(node) : pick(node)"
-            >
-              <span
-                v-if="node.type === 'dir'"
-                class="flex size-4 shrink-0 items-center justify-center text-muted-foreground/60"
+           grid 轨道被 md 内容的 min-content（长 token）撑爆，整框溢出对话框。
+           relative：手机树浮层 absolute inset-0 的定位基准 -->
+      <div class="relative flex min-h-0 min-w-0 flex-col gap-2 md:h-[62vh] md:flex-row">
+        <!-- 手机：一行「当前文件」条，点开树浮层 -->
+        <button
+          type="button"
+          class="flex w-full shrink-0 items-center gap-1.5 rounded border bg-card px-2 py-1.5 text-left text-[11px] md:hidden"
+          @click="pickerOpen = true"
+        >
+          <FileText class="size-3 shrink-0 text-muted-foreground/70" />
+          <span class="min-w-0 flex-1 truncate font-mono">{{ selRelPath || '选择文件…' }}</span>
+          <ChevronDown class="size-3.5 shrink-0 text-muted-foreground" />
+        </button>
+
+        <!-- 左：文件树（懒展开；SKILL.md 首选自动打开）。手机收成覆盖预览的浮层
+             （absolute inset-0 + 选完/× 收起），md 起是常驻左列——同一棵树两种形态，
+             断点用 md/max-md 互补，无重叠区间 -->
+        <div
+          class="flex shrink-0 flex-col rounded border bg-card max-md:absolute max-md:inset-0 max-md:z-20 max-md:rounded-none max-md:border-0 max-md:bg-background md:h-full md:w-56"
+          :class="pickerOpen ? 'max-md:flex' : 'max-md:hidden'"
+        >
+          <!-- 浮层头（仅手机）：标题 + 收起 -->
+          <div class="flex items-center justify-between border-b px-3 py-1.5 md:hidden">
+            <span class="text-xs font-medium">选择文件</span>
+            <Button variant="ghost" size="icon" class="size-7" title="收起" @click="pickerOpen = false">
+              <X class="size-4" />
+            </Button>
+          </div>
+          <div class="scroll-thin min-h-0 flex-1 overflow-y-auto">
+            <p v-if="treeErr" class="p-2 text-[11px] text-destructive">{{ treeErr }}</p>
+            <p v-else-if="!tree.length" class="flex items-center gap-1.5 p-2 text-[11px] text-muted-foreground">
+              <Loader2 class="size-3 animate-spin" /> 读取文件树…
+            </p>
+            <template v-else>
+              <button
+                v-for="{ node, depth } in visibleNodes"
+                :key="node.key"
+                type="button"
+                class="flex w-full items-center gap-1 py-1 pr-2 text-left text-[11px] transition-colors"
+                :class="selPath === node.path ? 'bg-primary/10' : 'hover:bg-accent/40'"
+                :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
+                :title="node.path"
+                @click="node.type === 'dir' ? toggleExpand(node) : pick(node)"
               >
-                <Loader2 v-if="node.loading" class="size-3 animate-spin" />
-                <component :is="expanded.has(node.key) ? ChevronDown : ChevronRight" v-else class="size-3" />
-              </span>
-              <span v-else class="size-4 shrink-0" />
-              <Folder v-if="node.type === 'dir'" class="size-3 shrink-0 text-muted-foreground/70" />
-              <FileText v-else class="size-3 shrink-0 text-muted-foreground/70" />
-              <span class="min-w-0 flex-1 truncate" :class="node.type === 'dir' ? '' : 'font-mono'">{{ node.name }}</span>
-              <span v-if="node.type === 'file'" class="shrink-0 text-[9px] text-muted-foreground/40">{{ fmtSize(node.size) }}</span>
-            </button>
-          </template>
+                <span
+                  v-if="node.type === 'dir'"
+                  class="flex size-4 shrink-0 items-center justify-center text-muted-foreground/60"
+                >
+                  <Loader2 v-if="node.loading" class="size-3 animate-spin" />
+                  <component :is="expanded.has(node.key) ? ChevronDown : ChevronRight" v-else class="size-3" />
+                </span>
+                <span v-else class="size-4 shrink-0" />
+                <Folder v-if="node.type === 'dir'" class="size-3 shrink-0 text-muted-foreground/70" />
+                <FileText v-else class="size-3 shrink-0 text-muted-foreground/70" />
+                <span class="min-w-0 flex-1 truncate" :class="node.type === 'dir' ? '' : 'font-mono'">{{ node.name }}</span>
+                <span v-if="node.type === 'file'" class="shrink-0 text-[9px] text-muted-foreground/40">{{ fmtSize(node.size) }}</span>
+              </button>
+            </template>
+          </div>
         </div>
 
         <!-- 右：预览（md 默认渲染视图，浮动按钮切源码；其余态占位/只读源码）。
