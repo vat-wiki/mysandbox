@@ -111,7 +111,12 @@ export function useTermClipboard(deps: TermClipboardDeps) {
         const fgCommand = deps.foreground()
         if (!fgCommand || SHELL_COMMANDS.has(fgCommand)) return false
         const fg = await getTermFg(containerId, deps.termId(), 'msmux')
-        return fg.bridge
+        // ^V 转发和 tmux 分支一样不能省：剪贴板已推到宿主暂存区，但 claude 只有收到
+        // Ctrl+V 才会去调 xclip shim 取图——漏发就是「判据全过、静默无事发生」
+        // （v0.9.0 迁移时 msmux 分支漏了这行，容器 mux 会话图片粘贴失效到 v0.15.11）。
+        if (!fg.bridge) return false
+        deps.send('\x16')
+        return true
       }
       const fg = await getTermFg(containerId, deps.termId())
       // 前台是普通 shell：^V 会被解释成 quoted-insert 白吃一个键，粘贴落空 → 路径粘贴。
