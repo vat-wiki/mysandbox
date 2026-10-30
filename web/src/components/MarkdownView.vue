@@ -66,9 +66,31 @@ function setMermaidZoom(view: HTMLElement, value: number) {
   view.style.setProperty('--mermaid-zoom', clampMermaidZoom(value).toString())
 }
 
-function zoomMermaidView(view: HTMLElement, delta: number) {
+// 缩放以锚点（视口 client 坐标）为不动点：缩放前后锚点压着的 SVG 内容点钉在同一屏幕
+// 位置——量锚点在旧 SVG 里的相对比例，改完 zoom 后按新尺寸反推 scroll 补偿。锚点缺省
+// 取 stage 视口中心（工具条按钮用）；滚轮缩放传鼠标位置。补偿量被滚动边界钳住时自然
+// 退化为贴边（全图可见、无溢出可滚时回退居中收缩，与主流看图行为一致）。
+function zoomMermaidView(view: HTMLElement, delta: number, ax?: number, ay?: number) {
   const current = Number(view.style.getPropertyValue('--mermaid-zoom') || 1)
-  setMermaidZoom(view, current + delta)
+  const next = clampMermaidZoom(current + delta)
+  if (next === current) return
+  const stage = view.querySelector<HTMLElement>('.mermaid-stage')
+  const svg = view.querySelector<SVGElement>('svg')
+  if (!stage || !svg) {
+    setMermaidZoom(view, next)
+    return
+  }
+  const stageRect = stage.getBoundingClientRect()
+  const cx = ax ?? stageRect.left + stageRect.width / 2
+  const cy = ay ?? stageRect.top + stageRect.height / 2
+  const svgRect = svg.getBoundingClientRect()
+  const rx = svgRect.width > 0 ? (cx - svgRect.left) / svgRect.width : 0.5
+  const ry = svgRect.height > 0 ? (cy - svgRect.top) / svgRect.height : 0.5
+  setMermaidZoom(view, next)
+  // setProperty 同步触发样式重算，这里量到的已是新布局（含滚动条出现/消失的宽度变化）
+  const after = svg.getBoundingClientRect()
+  stage.scrollLeft += after.left - (cx - rx * after.width)
+  stage.scrollTop += after.top - (cy - ry * after.height)
 }
 
 // 工具条不进 Markdown HTML（v-html 内容每次会被 DOMPurify 重洗），
@@ -123,12 +145,12 @@ function onMermaidAction(event: MouseEvent) {
   else if (action === 'fullscreen') openMermaidViewer(view)
 }
 
-// 滚轮直接缩放内嵌图；拖拽把缩放后的溢出交回 Markdown 滚动容器。
+// 滚轮缩放以鼠标为不动点（见 zoomMermaidView）；拖拽把缩放后的溢出交回 stage 自己滚。
 function onMermaidWheel(event: WheelEvent) {
   const view = (event.target as HTMLElement).closest<HTMLElement>('.mermaid-view')
   if (!view) return
   event.preventDefault()
-  zoomMermaidView(view, event.deltaY < 0 ? 0.2 : -0.2)
+  zoomMermaidView(view, event.deltaY < 0 ? 0.2 : -0.2, event.clientX, event.clientY)
 }
 
 // 只拖图表视口，不劫持 Markdown 其他区域；工具条按钮仍走 click。
