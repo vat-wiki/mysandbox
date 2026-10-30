@@ -271,6 +271,9 @@ async function hydrateMdMermaid() {
     }
   }
 }
+// immediate 必须带：两个调用方（文件面板 / 技能源查看器）都是内容就绪后才挂载本组件，
+// 挂载后 content 往往不再变化——没有 immediate 的话首屏这次渲染永远不会触发图片/mermaid
+// 水合，图表停在占位源码（要等内容再变一次才有第二拍）。immediate 补上挂载首拍。
 watch(
   mdHtml,
   () =>
@@ -278,6 +281,7 @@ watch(
       hydrateMdImages()
       void hydrateMdMermaid()
     }),
+  { immediate: true },
 )
 onBeforeUnmount(() => {
   clearMdBlobs()
