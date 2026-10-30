@@ -527,6 +527,11 @@ onBeforeUnmount(() => {
   /* 上下间距在这里扛（原 pre.mermaid 的 margin 挪过来）：margin 若留在 pre 上会进
      stage 的 scrollHeight，zoom 1 时平白多出一条纵向滚动 */
   margin: 0.9em 0;
+  /* 宽度必须显式 100%：auto 宽的 aspect-ratio 盒会把 max-height 当 transferred
+     size suggestion 传导到宽度上（Chrome 实装）——纵向大图（宽高比 < 1）一被 70vh
+     封顶，宽度就跟着缩成 70vh×宽高比的窄柱，视口裁掉半张图、工具条飘到右边空白。
+     百分比宽度是 definite size 不吃传导：宽度恒铺满，aspect-ratio 只定高度。 */
+  width: 100%;
   overflow: auto;
   aspect-ratio: var(--mmd-ar, auto);
   max-height: 70vh;
