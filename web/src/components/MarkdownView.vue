@@ -557,6 +557,12 @@ onBeforeUnmount(() => {
 .md-body :deep(pre.mermaid) {
   display: flex;
   justify-content: safe center;
+  /* 纵向也居中 + 撑满 stage 视口：pre 边框盒（通用 pre 规则带的）就是用户眼里的
+     「视口」——高度若跟内容走，缩小后边框盒缩成一小块浮在恒定视口顶部，看起来
+     像视口塌了、下面还拖一截看不见的空白。min-height 撑满视口（border-box），
+     内容小则居中、大则照常撑出滚动，边框始终框住整个视口。 */
+  align-items: safe center;
+  min-height: 100%;
   background: transparent;
   padding: 1em 0.5em;
   /* margin 挪去 stage（见上），--mmd-ar 按 offset 量尺寸时不含 margin 才严丝合缝 */
