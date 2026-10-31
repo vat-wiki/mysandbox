@@ -51,6 +51,8 @@ CLI 子命令：`mysandbox [--port] [--host]`，`mysandbox base <动作>`（模�
 
 **提交前 bump 版本号**：改根 `package.json` 的 `version`（默认 patch 一档；成块的功能/行为变更升 minor）。界面版本号（侧栏品牌块 / 手机终端切换 sheet）与 `/api/health` 都读它，漏 bump 界面就停在旧版本号；同一 commit 带上，别攒。
 
+**收尾三连：bump → build → restart，缺一不可**。mysandbox 服务跑的是 `dist/` 产物——`npm run build` 只更新磁盘，不重启就还跑旧后端；只重启不 build 则重启了个寂寞。改了 `server/**` 的完整收尾是 `npm run build && systemctl --user restart mysandbox`（纯 `web/**` 改动可免重启，web/dist 按请求读文件）。顺序不能反：vite 构建时把 package.json 的 version 烤进前端 bundle，先 build 后 bump 会让 bundle 与 `/api/health` 版本永久不匹配——「新版本 v0.15.x」浮动胶囊刷新也消不掉。诊断：`curl -s http://127.0.0.1:7321/api/health` 的 version 与 `web/dist/assets/` entry bundle 里 grep 版本号，哪边旧一目了然。
+
 ## 安全模型（红线，详版见 [security.md](docs/architecture/security.md)）
 
 **拿到 token 等于拿到宿主属主用户的完整权限**（容器内 uid 1000 直通宿主属主用户——D1，详见 [security.md](docs/architecture/security.md)）。红线不变：
