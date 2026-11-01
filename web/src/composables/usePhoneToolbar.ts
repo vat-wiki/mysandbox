@@ -41,6 +41,8 @@ export interface PhoneToolbarDeps {
   toolScrollEnd: (top: boolean) => void
   /** 剪贴板粘贴（含被拒时的兜底弹框，Terminal 自持） */
   toolPaste: () => Promise<void> | void
+  /** 拉起系统相册/文件选择器（工具条「传图」键；Terminal 自持 input[type=file]，选中走图片粘贴链路） */
+  toolUpload: () => void
   /** 复制当前选区并清选区 */
   copySelection: () => void
   refreshTerminal: () => void
@@ -305,6 +307,9 @@ export function usePhoneToolbar(deps: PhoneToolbarDeps) {
         break
       case 'paste':
         void deps.toolPaste()
+        break
+      case 'upload':
+        deps.toolUpload()
         break
       case 'copy':
         deps.copySelection()

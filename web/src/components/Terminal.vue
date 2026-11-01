@@ -182,6 +182,7 @@ const {
   onContextMenu,
   toolPaste,
   toolPasteConfirm,
+  sendImageFiles,
   onFallbackPaste,
   onFallbackInput,
 } = clipboard
@@ -365,6 +366,20 @@ function toolScrollEnd(top: boolean) {
   else term?.scrollToBottom()
 }
 
+// —— 工具条「传图」：拉起系统相册/文件选择器（accept=image/* 直接进相册），选中即走
+// 图片粘贴链路（剪贴板桥优先，否则落盘发路径）。移动端软键盘没有「复制图片」能力，
+// 这是手机上把图喂给 CLI 的主通道；桌面不显示工具条，Ctrl+V 原链路不变。
+const uploadInput = ref<HTMLInputElement | null>(null)
+function openUploadPicker() {
+  uploadInput.value?.click()
+}
+function onUploadChange(e: Event) {
+  const inp = e.target as HTMLInputElement
+  const files = Array.from(inp.files ?? [])
+  inp.value = '' // 清空才能下次选中同一张图仍触发 change
+  if (files.length) void sendImageFiles(files)
+}
+
 // —— 手机软键盘 + 触屏工具条（usePhoneToolbar 整体归属，边界规则见其头注）——
 // 焦点闸 / 键盘让位（kbInset/kbMask）/ 粘滞修饰 / 分页 / 长按连发 / 设置入口全在 composable；
 // 这里只注入终端本体能力（发键/滚动/粘贴/复制/刷新/字号）。按键与指令的配置统一在
@@ -377,6 +392,7 @@ const tb = usePhoneToolbar({
   toolScroll,
   toolScrollEnd,
   toolPaste,
+  toolUpload: openUploadPicker,
   copySelection,
   refreshTerminal,
   stepFontSize,
@@ -877,6 +893,9 @@ defineExpose({ kill, reconnect, refresh: refreshTerminal, screenHash, sendInput 
          配置跳全屏「终端工具条」页的指令分区（lib/termToolbarNav.ts），不再就地弹管理表单。
          数据 localStorage（lib/termToolbar.ts），多终端实例共享同一份。 -->
     <QuickCmdsSheet v-model:open="cmdsOpen" @run="runQuickCmd" @config="openCmdsConfig" />
+    <!-- 传图选择器：工具条「传图」键以 JS click() 拉起（accept=image/* 手机直接进相册）；
+         change 后清空 value，允许下次重选同一张图。 -->
+    <input ref="uploadInput" type="file" accept="image/*" multiple class="hidden" @change="onUploadChange" />
     <!-- 粘贴兜底输入：浏览器剪贴板 API 不可用/被拒时自动弹（桌面 http://IP 访问、Firefox
          readText 拒绝、iOS Safari 均落这里）。textarea 里系统级粘贴（Ctrl+V / 长按）不走
          clipboard API，永远可用；@paste/@input 捕获到粘贴动作即自动发送，按钮仅作兜底。 -->

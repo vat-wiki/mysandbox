@@ -160,6 +160,14 @@ export function useTermClipboard(deps: TermClipboardDeps) {
     }
   }
 
+  // 选定图片文件的统一出口（Ctrl+V 剪贴板图片 / 兜底弹框 / 工具条「传图」共用）：
+  // 桥优先（100% 原生体验）：推剪贴板 + 转发 ^V，前台 CLI（claude 等）自己调
+  // xclip shim 走原生附加；没桥/前台是 shell → 落路径粘贴。
+  async function sendImageFiles(files: File[]) {
+    if (await tryBridgePaste(files[0])) return
+    await pasteImageFiles(files)
+  }
+
   async function pasteClipboard() {
     if (!deps.connected()) return
     if (navigator.clipboard) {
@@ -175,10 +183,7 @@ export function useTermClipboard(deps: TermClipboardDeps) {
             if (t) files.push(new File([await item.getType(t)], 'clipboard', { type: t }))
           }
           if (files.length) {
-            // 桥优先（100% 原生体验）：推剪贴板 + 转发 ^V，前台 CLI（claude 等）自己调
-            // xclip shim 走原生附加；没桥/前台是 shell → 落路径粘贴。
-            if (await tryBridgePaste(files[0])) return
-            await pasteImageFiles(files)
+            await sendImageFiles(files)
             return
           }
         } catch {
@@ -276,6 +281,7 @@ export function useTermClipboard(deps: TermClipboardDeps) {
     copyText,
     copySelection,
     pasteClipboard,
+    sendImageFiles,
     onTermPaste,
     onContextMenu,
     toolPaste,

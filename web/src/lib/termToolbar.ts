@@ -13,6 +13,7 @@ export type PoolAct =
   | { kind: 'scrollEnd'; top: boolean }
   | { kind: 'refresh' }
   | { kind: 'paste' }
+  | { kind: 'upload' }
   | { kind: 'copy' }
   | { kind: 'ctrl' }
   | { kind: 'alt' }
@@ -56,6 +57,9 @@ export const KEY_POOL: Record<string, PoolEntry> = {
   bottom: { label: '底', title: '滚回最新输出（只滚本地回滚区）', act: { kind: 'scrollEnd', top: false } },
   redraw: { label: '刷新', title: '刷新终端（重新拉取 tmux 历史并重绘；会回到最新输出）', act: { kind: 'refresh' } },
   paste: { label: '粘贴', title: '粘贴剪贴板内容', act: { kind: 'paste' } },
+  // 传图：移动端软键盘普遍没有「复制图片」能力（相册里的图进不了剪贴板），触屏补一条
+  // 上传通道——拉起系统相册/文件选择器，选中即走与 Ctrl+V 图片粘贴相同的链路。
+  upload: { label: '传图', title: '上传图片：从相册/文件选图，粘贴到终端（落盘后发送路径）', act: { kind: 'upload' } },
   copy: { label: '复制', title: '复制选中内容', act: { kind: 'copy' } },
   ctrl: { label: 'Ctrl', title: 'Ctrl 粘滞修饰（Termux 式）：点亮后下一个按键带 Ctrl 发出（^A / ^← 等），用掉即灭', act: { kind: 'ctrl' } },
   alt: { label: 'Alt', title: 'Alt 粘滞修饰（Termux 式）：点亮后下一个按键带 Alt 前缀发出（M-a / M-← 等），用掉即灭', act: { kind: 'alt' } },
@@ -125,6 +129,7 @@ const DEFAULT_BTNS: ToolBtn[] = [
   { t: 'key', id: 'enter' },
   { t: 'key', id: 'stab' },
   { t: 'key', id: 'redraw' },
+  { t: 'key', id: 'upload' },
 ]
 // 首次进入的指令样例（原工具条短语「继续」并入这里）
 const DEFAULT_CMDS: QuickCmd[] = [{ id: 'qc-default-continue', label: '继续', cmd: '继续' }]
