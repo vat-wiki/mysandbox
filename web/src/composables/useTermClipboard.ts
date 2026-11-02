@@ -5,6 +5,7 @@ import { nextTick, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import type { Terminal as XTerm } from '@xterm/xterm'
 import { getTermFg, pushTerminalClipboard, resolveTermPath, writeFileBase64 } from '@/lib/api'
+import { shrinkImage } from '@/lib/imageShrink'
 
 export interface TermClipboardDeps {
   term: () => XTerm | null
@@ -168,9 +169,11 @@ export function useTermClipboard(deps: TermClipboardDeps) {
   }
 
   // 选定图片文件的统一出口（Ctrl+V 剪贴板图片 / 兜底弹框 / 工具条「传图」共用）：
-  // 桥优先（100% 原生体验）：推剪贴板 + 转发 ^V，前台 CLI（claude 等）自己调
-  // xclip shim 走原生附加；没桥/前台是 shell → 落路径粘贴。
-  async function sendImageFiles(files: File[]) {
+  // 先前端压缩（手机截图/照片动辄数 MB，见 imageShrink 头注），再桥优先（100% 原生体验）：
+  // 推剪贴板 + 转发 ^V，前台 CLI（claude 等）自己调 xclip shim 走原生附加；
+  // 没桥/前台是 shell → 落路径粘贴。
+  async function sendImageFiles(rawFiles: File[]) {
+    const files = await Promise.all(rawFiles.map(shrinkImage))
     if (await tryBridgePaste(files[0])) return
     await pasteImageFiles(files)
   }
@@ -218,7 +221,8 @@ export function useTermClipboard(deps: TermClipboardDeps) {
     if (!files.length) return
     e.preventDefault()
     e.stopPropagation()
-    void pasteImageFiles(files)
+    // 桌面 Ctrl+V 原生 paste 也过压缩（大截图同样受益）；异步压缩前先拦住事件
+    void Promise.all(files.map(shrinkImage)).then((shrunk) => pasteImageFiles(shrunk))
   }
 
   // 右键：有选区复制（并清选区）、无选区粘贴。.prevent 阻止浏览器原生右键菜单。
