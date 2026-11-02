@@ -5,6 +5,8 @@
 // 底部 sheet 本来就是移动端语汇（2026-10-27 回补遮罩：去掉黑幕后点哪儿都像能继续操作，
 // 反而比模态更难用）。
 // 层级用语义化档位（字面量类，Tailwind 要能扫到），不要传任意 z 值。
+// 根层显式 pointer-events:auto：宿主若是 reka modal Dialog（如工具条设置页），body 会被设
+// pointer-events:none，teleport 到 body 的本组件会继承到——不补回去整个 sheet 点不动、滚不动。
 </script>
 
 <script setup lang="ts">
@@ -41,7 +43,7 @@ function close() {
       leave-from-class="translate-y-0 opacity-100"
       leave-to-class="translate-y-3 opacity-0"
     >
-      <div v-if="open" class="fixed inset-0" :class="zClass">
+      <div v-if="open" class="pointer-events-auto fixed inset-0" :class="zClass">
         <!-- 遮罩：短时聚焦选择需要压暗底层；点它即收（等于「取消」） -->
         <div class="absolute inset-0 bg-black/70" @click="close" />
         <div
