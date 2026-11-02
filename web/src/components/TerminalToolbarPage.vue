@@ -391,7 +391,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Dialog :open="true" @update:open="(v: boolean) => v || closePage()">
+  <!-- modal=false：本页只是拿 Dialog 当全屏页容器。modal 语义（FocusScope 焦点陷阱 + body
+       pointer-events:none + 滚动锁）反而坏事——teleport 到 body 的 BottomPanel 子 sheet
+       在 DialogContent 之外：pointer-events:auto（v0.15.18）只能让点按/滚动落到 sheet 上，
+       输入框一聚焦仍会被焦点陷阱拽回页内首个可聚焦元素（页头「返回」），表现为「没法输入」。 -->
+  <Dialog :open="true" :modal="false" @update:open="(v: boolean) => v || closePage()">
     <DialogContent
       :show-close-button="false"
       class="z-[100] flex max-h-[85dvh] w-full max-w-lg flex-col gap-0 overflow-hidden border-border/60 bg-background p-0 max-md:h-dvh max-md:max-h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0"

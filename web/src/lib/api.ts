@@ -1203,10 +1203,13 @@ export const writeFile = (id: string, path: string, content: string, baseMtime?:
   }) as Promise<{ ok: true; mtime?: number }>
 // 二进制写（encoding:'base64'）：终端图片粘贴用——图片二进制过不了 JSON 字符串，
 // 以 base64 文本走同一端点，服务端解码落盘（上限 12MB 解码后字节，见 server/files.ts）。
+// 超时给 120s：手机截图 PNG 常到数 MB、base64 再膨胀 4/3，api() 默认 10s 在弱网/远端
+// 链路必超时（实测「传图」报超时的根源）；120s 按 12MB 上限 × 兆级弱网带宽留足余量。
 export const writeFileBase64 = (id: string, path: string, base64: string) =>
   api(`${filesBase(id)}/file`, {
     method: 'PUT',
     body: JSON.stringify({ path, content: base64, encoding: 'base64' }),
+    signal: AbortSignal.timeout(120_000),
   }) as Promise<{ ok: true; mtime?: number }>
 export const getTermCwd = (id: string, termId: string) =>
   api(`${filesBase(id)}/cwd?termId=${encodeURIComponent(termId)}`) as Promise<{ cwd: string }>

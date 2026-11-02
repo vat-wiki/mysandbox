@@ -156,7 +156,14 @@ export function useTermClipboard(deps: TermClipboardDeps) {
       deps.send(paths.join(' '))
       toast.success(paths.length === 1 ? `图片已粘贴：${paths[0]}` : `已粘贴 ${paths.length} 张图片到 ${home}/.claude-pastes/`)
     } catch (e) {
-      toast.error(`图片粘贴失败：${e instanceof Error ? e.message : String(e)}`)
+      // 超时单独翻译：DOMException 的「signal timed out」用户看不懂，点明是图大/网慢
+      const msg =
+        e instanceof DOMException && e.name === 'TimeoutError'
+          ? '上传超时（图片过大或网络慢），可重试或换小图'
+          : e instanceof Error
+            ? e.message
+            : String(e)
+      toast.error(`图片粘贴失败：${msg}`)
     }
   }
 
