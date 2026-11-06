@@ -67,3 +67,29 @@
 - TestLens 部署（127.0.0.1:10004）实为 docker-proxy → mytest 容器内服务；浏览器在容器 netns。**凡是「本机服务」地址一律换成容器侧可达的宿主网桥地址**：`10.88.10.1:7321` 与 `10.88.0.1:7321` 均验证可达（任选其一写进约定）。
 - `~/.testlens.json` 的 host 钉着 `10.88.10.1:10004`（另一套部署语义），TestLens API 一律显式传 `http://127.0.0.1:10004`。
 - ⚠️ **宿主 sysctl 改动留痕**：本轮排障把 `vm.mmap_rnd_bits` 32→28（sudo sysctl -w，运行时生效、未持久化）。要持久化需写 `/etc/sysctl.d/`（待用户确认后做），否则宿主 reboot 后容器内 chromium 起不来、全部轮次 503。
+
+---
+
+## 修复记录（2026-11-07 · TestLens 0.3.1）
+
+上表问题在 TestLens `fix(runs/browser)` 一轮内修复（commit 40d9ecd，镜像 testlens:0.3.1），逐项落点：
+
+| # | 修复 |
+| --- | --- |
+| P0-1 | `POST /api/runs` 开轮前**浏览器侧 URL 可达性探测**（server 与 Chrome 同 netns，fetch 即浏览器视角；不可达 400 拒开且不租实例，`skipUrlProbe:true` 可跳）；waitSession 失败的报错带 tab 当前 url（chrome-error 页不再匿名） |
+| P0-2 | 503 message 自带失败原因：spawn 错误 / chrome exit code / stdout+stderr 尾部（8KB 环形）；段错误+零输出时给 `vm.mmap_rnd_bits` 指向性提示。根因一已从环境侧根治：sysctl 28 **已持久化** `/etc/sysctl.d/99-vm-mmap-rnd-bits.conf`；Dockerfile 换 **node:22** 基础镜像，compose 的 node22bin 顶替 hack 摘除。根因二（孤儿 Chrome 占坑）本轮复查已不存在 |
+| P1-3 | mark 响应带 `matchedNode`（命中回显）；新增 `GET /api/runs/:id/coverage` 轻量单轮覆盖率 |
+| P1-4/10 | `agent-browser.md` §3 写死 find text 匹配规则（纯文本叶子、菜单/summary 不可靠）+ **菜单/弹层一律用 ref** + eval 挂临时属性兜底 |
+| P1-5/21 | `agent-browser.md` §6.1：`type` 首参是选择器（裸调用静默无效）；裸输入用 `keyboard type`（先 click 聚焦） |
+| P1-6 | `agent-browser.md` §8：目检截图前等 6s 或临时 `PUT /api/browser/burn-in {"on":false}`（徽标 6s 淡出） |
+| P1-7 | `POST /api/runs` 支持 `Idempotency-Key` 头（30min 回放缓存）；api.md 写明「503 后先查 runs 列表」 |
+| P1-8 | `GET /api/runs/:id` 补 `nodes[]` 与 `cdp` |
+| P1-9 | **run 归属保护**：mark/finish 校验创建者 token，跨调用方 403；未开鉴权部署全 anon 保持互通（api.md 写明） |
+| P1-11 | mark 响应带 `duplicate` 重复告警 |
+| P1-12/17~20/22 | `agent-browser.md` §6.2（mouse 无 click）§6.3（reka 菜单活不过两条命令→pushState 兜底）§6.4（set device 触摸仿真不生效→租 mobile 实例）§5（eval var 持久→IIFE）§6（滚动期间坐标漂移）§3（`dev·1` 中间点） |
+| P2-13 | instances 面鉴权：`TESTLENS_AUTH_TOKEN` 开启时 `/api/*` 本就全覆盖（auth.ts），本轮确认为「未开鉴权部署」的表现，api.md 已注明 CDP token 即凭据 |
+| P2-14 | `agent-browser.md` §6.1 注明 password 打码，排障靠间接状态 |
+| P2-15 | api.md 头部补「无 jq 用 node -e / python3 -m json.tool」 |
+| P2-16 | api.md feedback 行补 `kind`/`status` 完整枚举 |
+
+技能文档三处同步：testlens 仓库 `skills/testlens-v2/`（真源）→ `~/.claude/skills/testlens-v2/` 与 `~/.agents/skills/testlens-v2/`（已安装副本，已完成）。
