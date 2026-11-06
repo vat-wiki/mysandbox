@@ -21,6 +21,7 @@
 - **订阅单向：只订阅库，不订阅来源**——库内容一变安装位置自动跟走。
 - 容器 start 事件补发停机期间克隆的项目；规则删除/改去向 → 孤儿按清单收回。
 - 落点两处独立实体副本（无软链）见 [containers.md](containers.md)。
+- 位置治理（卸载/切范围/清缺失）两条入口：卡头「N 处」popover（单技能就地）+ 头部「已装」统一管理弹框（`SkillsHubTab.vue`，全部规则 × 成员技能一张表）。规则 CRUD 的 HTTP 响应即全量同步（`hubView` 顺带跑）——卸载/清缺失即时生效，UI 文案勿写「下次同步」。
 
 ### 技能源文件查看器（`web/src/components/SkillSourceDialog.vue`）
 

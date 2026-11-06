@@ -10,9 +10,10 @@
 //    chip 统一管）。全局与按位置两套入口不冲突——底层都是同一条规则模型，全局只是
 //    to=~/.agents/skills + all=true 的特例。
 // ③ 卡头右上 ⋯ 菜单收低频动作：更新（显式重拉快照并分发）、移除（confirm）。
-// ④ 位置治理（查看/范围切换/卸载/清缺失）收敛进卡头「N 处」计数弹出的轻量
-//    Popover——一行一个位置，就地操作；不设独立的规则清单面板（库缺失残留
-//    自愈：同步的有效集 = 与库的交集，残留无害）。
+// ④ 位置治理（查看/范围切换/卸载/清缺失）两条路：卡头「N 处」计数弹出的轻量
+//    Popover（一行一个位置，单技能就地操作）+ 头部「已装」统一管理弹框（全部
+//    规则 × 成员技能一张表，跨技能统一卸载/切范围/清缺失）。库缺失残留自愈：
+//    同步的有效集 = 与库的交集，残留无害。
 // 库语义：静态快照——来源改动不自动进库，更新/入库/出库都是显式动作且自带分发。
 // 安装位置订阅库：库一变自动跟走；容器新建/重启全自动追平。规则 CRUD 的响应即
 // 全量同步（hubView 顺带跑），卸载后的清理、孤儿收回都在这一次同步里落地。
@@ -74,6 +75,7 @@ import {
   Check,
   X,
   FileText,
+  PackageOpen,
 } from 'lucide-vue-next'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import SkillPickList from '@/components/SkillPickList.vue'
@@ -196,8 +198,8 @@ async function toggleScope(r: SkillRuleResult) {
   }
 }
 
-// 卸载 = 从该位置摘掉当前技能（规则保留——位置级删除在底部安装位置条）。
-// 响应即全量同步，摘掉的下一次清理从容器收回。
+// 卸载 = 从该位置摘掉当前技能（规则保留）。PATCH 响应即全量同步——卸载即时生效，
+// 容器上的副本当场收回（文案别说「下次同步」，那是误导）。
 const unloadingRule = ref('')
 async function unloadSkill(r: SkillRuleResult, name: string) {
   if (unloadingRule.value) return
@@ -207,7 +209,7 @@ async function unloadSkill(r: SkillRuleResult, name: string) {
     hub.value = await updateSkillRule(r.id, {
       skills: declaredOf(r).filter((n) => n !== name),
     })
-    toast(`已卸载：${name} ✕ ${r.to}（下次同步从容器清理）`)
+    toast(`已卸载：${name}（${r.to}），已同步清理`)
   } catch (e) {
     fail(e)
   } finally {
@@ -262,9 +264,20 @@ async function doInstall(name: string) {
 // 卡头「N 处」计数弹出的位置 Popover（key = 技能名，同时只开一个）。
 const spotsFor = ref<string | null>(null)
 
+// 已装管理弹框（头部「已装」）：全部规则 × 成员技能统一一张表——卸载/切范围/清缺失
+// 就地完成，不用逐卡找「N 处」popover。组 = 有成员的规则；✕ 卸载复用 unloadSkill
+// （PATCH 响应即全量同步，即时生效）；卸掉最后一名成员的规则组自动消失。
+const managedOpen = ref(false)
+const managedTotal = computed(() => (hub.value?.rules ?? []).reduce((n, r) => n + r.skills.length, 0))
+const managedGroups = computed(() =>
+  (hub.value?.rules ?? [])
+    .filter((r) => r.skills.length)
+    .map((r) => ({ rule: r, missing: ruleMissing(r) })),
+)
+
 // 全局安装 = 库技能铺到 ~/.agents/skills（~/.claude/skills 孪生跟铺，两处独立
 // 实体副本无软链）——本机 + 全部受管容器。入口收在头部「全局安装」按钮：弹框里库技能多选、双向同步——勾上 =
-// 装，取消勾选 = 从全局摘掉（规则/位置保留，下次同步从各处清理）。保存是一次规则
+// 装，取消勾选 = 从全局摘掉（保存响应即全量同步，摘掉即刻从各处清理）。保存是一次规则
 // 技能集替换（PATCH skills），范围顺手拉回 all=true（规则可能被范围切换动过）；
 // 库里已缺失的残留不在列表里、保持原样（清理走卡头「N 处」popover 的「清缺失」）。
 const globalOpen = ref(false)
@@ -306,7 +319,7 @@ async function saveGlobal() {
     }
     globalOpen.value = false
     const parts = [added.length ? `新增 ${added.length}` : '', removed.length ? `移除 ${removed.length}` : ''].filter(Boolean)
-    toast(parts.length ? `全局安装已更新（${parts.join('，')}）${removed.length ? '——移除的下次同步从各处清理' : ''}` : '全局技能集未变化')
+    toast(parts.length ? `全局安装已更新（${parts.join('，')}），已同步生效` : '全局技能集未变化')
   } catch (e) {
     fail(e)
     globalErr.value = e instanceof Error ? e.message : String(e)
@@ -796,6 +809,15 @@ async function cleanMissing(r: SkillRuleResult) {
           variant="ghost"
           size="xs"
           class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
+          title="已装技能统一管理：逐位置卸载 / 切范围 / 清缺失"
+          @click="managedOpen = true"
+        >
+          <PackageOpen class="size-3.5" /> 已装<span v-if="managedTotal" class="text-[10px] text-muted-foreground">·{{ managedTotal }}</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          class="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
           title="勾选 = 装到全局（~/.agents/skills 与 ~/.claude/skills 两处，本机 + 全部受管容器）"
           @click="openGlobal"
         >
@@ -1063,7 +1085,7 @@ async function cleanMissing(r: SkillRuleResult) {
                     variant="ghost"
                     size="icon-xs"
                     class="shrink-0 text-muted-foreground/50 hover:text-destructive"
-                    title="卸载该位置；下次同步清理"
+                    title="从该位置卸载（即时同步清理）"
                     :disabled="!!unloadingRule"
                     @click="unloadSkill(r, s.name)"
                   >
@@ -1095,7 +1117,7 @@ async function cleanMissing(r: SkillRuleResult) {
                   <RefreshCw /> {{ updatingSkill === s.name ? '更新中…' : '更新' }}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" title="各处安装会在下次同步时清理" @click="delReg = s">
+                <DropdownMenuItem variant="destructive" title="出库；各处安装随后自动清理" @click="delReg = s">
                   <Trash2 /> 移除
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -1241,7 +1263,7 @@ async function cleanMissing(r: SkillRuleResult) {
     </Dialog>
 
     <!-- 全局安装弹框：库技能多选、双向同步——勾上 = 装到 ~/.agents/skills（本机+
-         全部受管容器），取消勾选 = 从全局摘掉（下次同步清理）。保存 = 一次规则
+         全部受管容器），取消勾选 = 从全局摘掉（保存即同步清理）。保存 = 一次规则
          技能集替换（PATCH），响应即全量同步。按位置安装与它不冲突——底层同一条
          规则模型，全局只是 to=~/.agents/skills + all=true 的特例。 -->
     <Dialog :open="globalOpen" @update:open="(v: boolean) => v || (globalOpen = false)">
@@ -1279,6 +1301,91 @@ async function cleanMissing(r: SkillRuleResult) {
       </DialogContent>
     </Dialog>
 
+    <!-- 已装管理弹框：全部安装位置 × 成员技能统一一张表——组头 = 去向 + 范围 chip +
+         清缺失（amber），成员行 = 技能名 + ✕ 卸载。卸载/切范围都即时生效（PATCH 响应
+         即全量同步），与卡头「N 处」popover 同一套动作（unloadSkill/toggleScope/
+         cleanMissing 复用），只是换了跨技能的全量视角。 -->
+    <Dialog :open="managedOpen" @update:open="(v: boolean) => v || (managedOpen = false)">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>已装管理</DialogTitle>
+          <DialogDescription>
+            全部安装位置 × 技能——✕ 卸载、点范围切换，操作即时同步生效
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="space-y-2">
+          <div
+            v-if="!managedGroups.length"
+            class="rounded-md border border-dashed px-4 py-6 text-center text-xs leading-relaxed text-muted-foreground"
+          >
+            还没有安装——卡脚「安装」或头部「全局安装」。
+          </div>
+          <div
+            v-for="g in managedGroups"
+            :key="g.rule.id"
+            class="overflow-hidden rounded-md border"
+          >
+            <div class="flex items-center gap-1.5 border-b bg-muted/30 px-2 py-1.5">
+              <span class="min-w-0 flex-1 truncate font-mono text-[11px]" :title="g.rule.to">{{ g.rule.to }}</span>
+              <button
+                type="button"
+                class="shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors"
+                :class="g.rule.all
+                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'"
+                title="切换本机/全部容器与已有该项目的机器"
+                @click="toggleScope(g.rule)"
+              >
+                {{ g.rule.all ? '本机+全部容器' : '有该项目' }}
+              </button>
+              <button
+                v-if="g.missing"
+                type="button"
+                class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] text-amber-600 dark:text-amber-400"
+                title="库里已不存在的残留引用——点击清掉"
+                @click="cleanMissing(g.rule)"
+              >{{ g.missing }} 缺失</button>
+            </div>
+            <div class="p-1">
+              <div
+                v-for="s in g.rule.skills"
+                :key="s.name"
+                class="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-accent/40"
+              >
+                <span
+                  class="min-w-0 flex-1 truncate font-mono text-xs"
+                  :class="!s.ok ? 'text-muted-foreground/60 line-through' : ''"
+                  :title="s.error || s.name"
+                >{{ s.name }}</span>
+                <Badge
+                  v-if="!s.ok"
+                  variant="outline"
+                  class="shrink-0 border-transparent bg-destructive/10 px-1 text-[10px] text-destructive"
+                  title="库里已不存在"
+                >缺失</Badge>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  class="shrink-0 text-muted-foreground/50 hover:text-destructive"
+                  title="卸载（即时同步清理）"
+                  :disabled="!!unloadingRule"
+                  @click="unloadSkill(g.rule, s.name)"
+                >
+                  <Loader2 v-if="unloadingRule === g.rule.id" class="size-3.5 animate-spin" />
+                  <X v-else class="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end">
+          <Button variant="outline" size="xs" @click="managedOpen = false">关闭</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+
     <ConfirmDialog
       v-if="regConfirm"
       title="覆盖添加"
@@ -1291,7 +1398,7 @@ async function cleanMissing(r: SkillRuleResult) {
     <ConfirmDialog
       v-if="delReg"
       title="移除技能"
-      :description="`把「${delReg.name}」从技能库移除？安装位置里的引用会变「缺失」，下次同步时清理。`"
+      :description="`把「${delReg.name}」从技能库移除？各处安装随后自动清理。`"
       confirm-text="移除"
       variant="destructive"
       @confirm="doDeleteReg"
