@@ -322,13 +322,17 @@ export async function listContainerSessions(cfg: Config, id: string): Promise<Te
 // 会话对话框的「结束会话」：真杀（幂等，会话已不在则报错忽略）。= 前缀精确匹配——
 // tmux 的 -t 默认按前缀/通配匹配（见 reapOrphanClients 注释的教训），裸名字有误伤邻会话面。
 // activeCount 同步清，别让本进程的多窗口计数泄漏。
-export async function killContainerSession(cfg: Config, id: string, termId: string): Promise<void> {
+// 返回是否真杀到了 tmux 会话：false = 容器 tmux 里没有（可能是 msmux 后端会话，
+// 见 routes.ts container DELETE 的 mux 回落——feedback #50 的「静默假成功」）。
+export async function killContainerSession(cfg: Config, id: string, termId: string): Promise<boolean> {
   const session = sessionName(id, termId);
   activeCount.delete(session);
   try {
     await containerMux(cfg, id).killSession(session, 5_000);
+    return true;
   } catch {
     /* 会话/容器已没了就忽略 */
+    return false;
   }
 }
 

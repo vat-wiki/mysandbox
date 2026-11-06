@@ -171,7 +171,18 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
   app.delete('/api/terminal-sessions/container/:id/:termId', async (req) => {
     const { id, termId } = req.params as { id: string; termId: string };
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
-    await killContainerSession(cfg, id, termId);
+    const killed = await killContainerSession(cfg, id, termId);
+    // 容器 tmux 没杀到 ≠ 会话不存在：msmux 后端会话不在容器 tmux 里（名字同款
+    // mysandbox-<termId>，但归目标侧 daemon 管）。不回落 mux 的话这里对 msmux 会话
+    // 是静默空操作还报 ok（feedback #50：清理假成功，会话仍活着）。
+    // 真「哪里都不存在」时 mux kill 也报错，按幂等清理语义维持 ok:true。
+    if (!killed) {
+      try {
+        await killMuxSession(cfg, `c:${id}`, termId);
+      } catch {
+        /* 会话确实不存在 / 目标离线且兜底失败：幂等 ok */
+      }
+    }
     return { ok: true };
   });
 

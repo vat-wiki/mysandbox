@@ -1016,6 +1016,15 @@ const filePanes = computed(() => {
   return leafIds(g.root).map((termId, i) => ({ termId, label: `${groupLabel(g)} #${i + 1}` }))
 })
 const fileTermId = computed(() => filePanes.value[filePaneIdx.value]?.termId ?? null)
+// 跟随源 pane：仅「跟随态」（面板目标 = 活跃组目标）才把活跃组的 pane 给面板——
+// 独立深链浏览（路由目标 ≠ 活跃组）时面板没有可跟随的终端，把活跃 pane 的 termId
+// 灌进去会出现容器 termId 打宿主 cwd API 的错配（feedback #46：404 死循环 + 误览宿主目录）。
+const fileFollowTermId = computed(() => {
+  if (!showFiles.value) return null
+  const g = activeGroup.value
+  if (!g || filePanelTarget.value !== fileTargetId(g)) return null
+  return fileTermId.value
+})
 // 「曾是组目标」记账：组的目标哨兵一旦出现在 groups 里就留痕。路由化后面板目标由
 // /files/:target 承载，组被关掉（✕/隐藏/容器或服务被删的修剪）时路由还停在死哨兵上
 // ——面板永远「终端会话未就绪」且切 tab 救不回（下面的深链守卫会跳过同步）。有这份
@@ -1023,8 +1032,14 @@ const fileTermId = computed(() => filePanes.value[filePaneIdx.value]?.termId ?? 
 const everGroupTargets = new Set<string>()
 // 用户切换终端 tab 时，面板仍保持“跟随当前终端组”的语义：同步路由目标。直接深链的
 // 目标没有对应终端组时不抢焦点，让面板独立浏览该目标。
+// 路由同步只在 workspace/files 上做（feedback #43）：popout 的 showFiles 是 localStorage
+// 标志不是路由派生，URL 停在 /ai 等页面路由时（从 /ai 开独立窗口/popout 里点过 AI），
+// 首屏种子建组会经这条 watcher 把 /ai 自动顶成 /files/__host__——页面路由不该被面板
+// 跟随劫持。主窗口面板开着时路由恒为 files，行为不变。
 watch(activeGroup, (g) => {
   if (!showFiles.value || !g) return
+  const routeName = String(route.name)
+  if (routeName !== 'files' && routeName !== 'workspace') return
   const oldTarget = routeFileTarget.value
   // HOST_ID 恒算「活的」：组全关后的回退目标就是它（无组时 filePanelTarget 同口径），
   // 不是独立深链——回退后新开终端组要恢复跟随，不能停在死哨兵上。
@@ -5135,7 +5150,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
       :container-id="filePanelTarget"
       :container-name="filePanelTargetName"
       :panes="filePanes"
-      :term-id="fileTermId"
+      :term-id="fileFollowTermId"
       :has-terminal="!!activeGroup"
       :browse-mode="fileBrowseMode"
       @browse-mode="setFileBrowseMode"

@@ -302,6 +302,13 @@ function refit() {
 
 // 切到本 tab：等 display 生效后重算尺寸并聚焦；非激活期间 WS 已 detach（懒挂载，见
 // detachWs），这里重连，resume=1 增量回填补上断开窗口的输出（buffer 零重复）。
+// 离开 ≥30s 的切回改走全量刷新（feedback #48）：离开期间后端持续输出（claude 等长
+// TUI 任务重绘密集），resume 增量拼回与既有网格/光标状态错位会把历史写花——resume=0
+// 全量回填 + 重画当前屏是确定态，等价 Ctrl+L。短切换保持增量路径（零闪烁零代价）。
+// 守卫 ended()：会话已终结（shell 退出）的 tab 不自动刷新——refresh 的 resume=0 重连
+// 对 mux 目标带 create:1，会静默开出全新会话。
+const AWAY_FULL_REFRESH_MS = 30_000
+let deactivatedAt = 0
 watch(
   () => props.active,
   (a) => {
@@ -316,10 +323,16 @@ watch(
         } catch {
           /* noop */
         }
-        sock.ensureConnected()
-        refit()
+        const awayMs = deactivatedAt ? Date.now() - deactivatedAt : 0
+        if (awayMs >= AWAY_FULL_REFRESH_MS && !sock.ended()) {
+          refreshTerminal()
+        } else {
+          sock.ensureConnected()
+          refit()
+        }
       })
     } else {
+      deactivatedAt = Date.now()
       detachWs()
     }
   },

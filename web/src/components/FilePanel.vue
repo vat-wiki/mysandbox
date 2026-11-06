@@ -665,6 +665,11 @@ function followGuard(): string | null {
 // ——切换那一拍的检查若被丢掉，新目标要等 5s 兜底轮询才被看见（实测秒级延迟主源）。
 let followBusy = false
 let followPending = false
+// 连续 404 计数（feedback #44/#46 同族）：目标会话真没了时（失效 termId / 跟随错配），
+// 5s 轮询无限重试只会刷错误日志挂横幅。连续 6 拍（~30s）未命中 → 自动暂停跟随
+// （亮既有的「已暂停跟随」黄条，点恢复即重试）；会话未建好的短暂 404 不受影响。
+let followMiss = 0
+const FOLLOW_MISS_LIMIT = 6
 async function followCheck() {
   if (followBusy) {
     followPending = true
@@ -699,6 +704,7 @@ async function followCheck() {
     }
     if (`${props.containerId}|${props.termId}` !== at) return
     noSession.value = false
+    followMiss = 0
     // 查询在途期间跟随被关掉（手动导航/locate/reveal）：这份 cwd 是旧跟随目标的遗物，
     // 回写会把刚定位好的面板拽走——与 loadSeq/sig 同类的过期响应守卫
     if (!follow.value) return
@@ -711,8 +717,14 @@ async function followCheck() {
       emit('close')
       return
     }
-    // 终端会话还没建好/容器重启中：温和提示，继续轮询等它回来
+    // 终端会话还没建好/容器重启中：温和提示，继续轮询等它回来。
+    // 连续多拍仍 404 = 会话真没了（失效 termId/跟随错配）：别无限刷（feedback #44/#46），
+    // 自动暂停跟随，交给「已暂停跟随」黄条让用户显式决定恢复与否。
     noSession.value = true
+    if (e instanceof ApiError && e.code === 'not_found' && ++followMiss >= FOLLOW_MISS_LIMIT) {
+      followMiss = 0
+      pauseFollow()
+    }
   } finally {
     followBusy = false
     if (followPending) {
@@ -820,6 +832,7 @@ watch(
     skillProbeSeq.clear()
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
     q.value = '' // 搜索是当前目录视图，切容器一并清掉
+    followMiss = 0 // 新目标新账：上一目标的 404 连击不计入
     tick()
   },
 )
@@ -828,6 +841,7 @@ watch(
 watch(
   () => props.termId,
   () => {
+    followMiss = 0 // 换跟随源重置 404 连击（feedback #44/#46）
     if (follow.value) void followCheck()
   },
 )
@@ -955,6 +969,7 @@ function commitPath() {
 function resumeFollow() {
   follow.value = true
   noSession.value = false
+  followMiss = 0
   tick()
 }
 function refresh() {

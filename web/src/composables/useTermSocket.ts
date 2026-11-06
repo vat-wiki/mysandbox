@@ -467,5 +467,8 @@ export function useTermSocket(deps: TermSocketDeps) {
     isOpen: () => !!ws && ws.readyState === WebSocket.OPEN,
     backend: () => currentBackend,
     foreground: () => foregroundCommand,
+    // 会话已终结（shell 退出）：自动全量刷新要跳过（refresh 的 resume=0 重连对 mux
+    // 目标带 create:1，会静默开出全新会话——切回已退出的 tab 不该这样）。
+    ended: () => sessionEnded,
   }
 }
