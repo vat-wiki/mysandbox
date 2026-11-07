@@ -815,23 +815,6 @@ const showCreate = computed({
   get: () => route.name === 'container-create',
   set: (open) => (open ? openRoute('container-create') : closePageRoute()),
 })
-// 弹框关闭后的焦点归还（feedback #60）：新建弹框是路由式开合（无 DialogTrigger），
-// reka-ui 关闭时没有触发元素可还原，焦点落 body，键盘用户得重新 Tab 全遍历。
-// 打开瞬间（路由已切、弹框未挂载抢焦点前）记下触发元素，关闭时还回去；
-// rail 弹层里的触发钮会随 closeRailSection 卸载，此时退回分区头的常驻新建钮。
-const createTriggerRef = ref<HTMLElement | null>(null)
-const createTriggerEl = ref<HTMLElement | null>(null)
-watch(showCreate, (open) => {
-  if (open) {
-    createTriggerEl.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    return
-  }
-  void nextTick(() => {
-    const el = createTriggerEl.value?.isConnected ? createTriggerEl.value : createTriggerRef.value
-    el?.focus()
-    createTriggerEl.value = null
-  })
-})
 // 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
 // 侧栏不再有选择态；路由化后刷新也能回到当前批量流程入口。
 const showBatch = computed({
@@ -920,6 +903,25 @@ watch(popoutFilesOpen, (v) => {
 })
 const route = useRoute()
 const router = useRouter()
+// 弹框关闭后的焦点归还（feedback #60）：新建弹框是路由式开合（无 DialogTrigger），
+// reka-ui 关闭时没有触发元素可还原，焦点落 body，键盘用户得重新 Tab 全遍历。
+// 打开瞬间（路由已切、弹框未挂载抢焦点前）记下触发元素，关闭时还回去；
+// rail 弹层里的触发钮会随 closeRailSection 卸载，此时退回分区头的常驻新建钮。
+// 注意必须放在 route 声明之后：watch 注册即求值 showCreate getter，getter 闭包引用
+// route——放前面会在 setup 期踩 TDZ（v0.15.30 全黑屏的根因）。
+const createTriggerRef = ref<HTMLElement | null>(null)
+const createTriggerEl = ref<HTMLElement | null>(null)
+watch(showCreate, (open) => {
+  if (open) {
+    createTriggerEl.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    return
+  }
+  void nextTick(() => {
+    const el = createTriggerEl.value?.isConnected ? createTriggerEl.value : createTriggerRef.value
+    el?.focus()
+    createTriggerEl.value = null
+  })
+})
 const routeFileTarget = computed(() =>
   route.name === 'files' && typeof route.params.target === 'string' ? decodeURIComponent(route.params.target) : '',
 )
