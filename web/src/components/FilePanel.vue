@@ -27,6 +27,7 @@ import {
   type SearchHit,
 } from '@/lib/api'
 import { toast } from 'vue-sonner'
+import { isPhone } from '@/composables/useDevice'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -1726,7 +1727,8 @@ function fmtSize(n: number): string {
           @contextmenu="onCtxMenu"
         >
           <p v-if="!hasTerminal" class="px-3 py-6 text-center text-xs text-muted-foreground">
-            先在左侧打开终端
+            <!-- 手机没有「左侧」（侧栏是抽屉，底栏才是常驻导航），按布局断层给文案（feedback #58） -->
+            {{ isPhone ? '先在底栏终端页签打开终端，从环境列表选择容器' : '先在左侧打开终端' }}
           </p>
           <template v-else>
             <p v-if="err" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
@@ -2022,7 +2024,9 @@ function fmtSize(n: number): string {
         "
         @navigate="openDir"
       />
-      <p v-else class="px-3 py-8 text-center text-xs text-muted-foreground">先在左侧打开终端</p>
+      <p v-else class="px-3 py-8 text-center text-xs text-muted-foreground">
+        {{ isPhone ? '先在底栏终端页签打开终端，从环境列表选择容器' : '先在左侧打开终端' }}
+      </p>
     </div>
 
     <!-- 视图切换固定在面板底部：目录是上下文，文件/Git 是同一目录的两种看板。 -->
