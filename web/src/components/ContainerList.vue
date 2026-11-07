@@ -4961,7 +4961,17 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground"
           >
             <TerminalIcon class="size-8 opacity-40" />
-            <p class="text-sm">{{ props.popout ? '该窗口还没有终端' : '点击左侧容器打开菜单，终端在首项' }}</p>
+            <!-- 手机侧栏是抽屉不是常驻列（isPhone <md），「左侧容器」指不到——按布局断层给文案；
+                 桌面/独立窗口保持原语义。手机路径：底栏「终端」激活态再点 → 切换抽屉选环境。 -->
+            <p class="text-sm">
+              {{
+                props.popout
+                  ? '该窗口还没有终端'
+                  : isPhone
+                    ? '点击底部终端页签，从环境列表选择容器'
+                    : '点击左侧容器打开菜单，终端在首项'
+              }}
+            </p>
             <p class="text-xs opacity-70">同一容器可分屏（每组最多 {{ MAX_GROUP_PANES }} 块）</p>
           </div>
         </div>
