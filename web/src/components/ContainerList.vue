@@ -815,6 +815,23 @@ const showCreate = computed({
   get: () => route.name === 'container-create',
   set: (open) => (open ? openRoute('container-create') : closePageRoute()),
 })
+// 弹框关闭后的焦点归还（feedback #60）：新建弹框是路由式开合（无 DialogTrigger），
+// reka-ui 关闭时没有触发元素可还原，焦点落 body，键盘用户得重新 Tab 全遍历。
+// 打开瞬间（路由已切、弹框未挂载抢焦点前）记下触发元素，关闭时还回去；
+// rail 弹层里的触发钮会随 closeRailSection 卸载，此时退回分区头的常驻新建钮。
+const createTriggerRef = ref<HTMLElement | null>(null)
+const createTriggerEl = ref<HTMLElement | null>(null)
+watch(showCreate, (open) => {
+  if (open) {
+    createTriggerEl.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    return
+  }
+  void nextTick(() => {
+    const el = createTriggerEl.value?.isConnected ? createTriggerEl.value : createTriggerRef.value
+    el?.focus()
+    createTriggerEl.value = null
+  })
+})
 // 批量配置对话框开关。容器选择在对话框内完成（containers prop 传全集，默认全选），
 // 侧栏不再有选择态；路由化后刷新也能回到当前批量流程入口。
 const showBatch = computed({
@@ -3824,6 +3841,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             <RefreshCw :class="loading ? 'animate-spin' : ''" />
           </Button>
           <Button
+            ref="createTriggerRef"
             variant="ghost"
             size="icon-xs"
             :disabled="baseReady === false"
