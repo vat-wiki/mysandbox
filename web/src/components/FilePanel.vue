@@ -46,6 +46,7 @@ import {
 import NameDialog from '@/components/NameDialog.vue'
 import { onSandboxEvent, setWatchDirs, type SandboxEvent } from '@/lib/events'
 import { gatePoll } from '@/lib/linkQuality'
+import { isTermReady } from '@/lib/termReady'
 import { openCodeServer } from '@/lib/codeserver'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import FilePanelGit from '@/components/FilePanelGit.vue'
@@ -671,6 +672,12 @@ let followPending = false
 // （亮既有的「已暂停跟随」黄条，点恢复即重试）；会话未建好的短暂 404 不受影响。
 let followMiss = 0
 const FOLLOW_MISS_LIMIT = 6
+// 会话建连宽限（feedback #64）：终端新建时 tmux/msmux 会话要等 WS attach 完成才在服务端
+// 存在（实测几百 ms），窗口期内的 cwd 查询注定 404。isTermReady=false 且目标刚切换不久时
+// 跳过本拍不发请求，会话就绪（Terminal 收到首帧）后下一拍自然恢复。宽限期兜底 3s：会话
+// 真起不来（容器停了/后端故障）时照旧走 404 路径，noSession 提示与跟随暂停不受影响。
+const TERM_ATTACH_GRACE_MS = 3_000
+let followSince = Date.now()
 async function followCheck() {
   if (followBusy) {
     followPending = true
@@ -678,6 +685,7 @@ async function followCheck() {
   }
   if (menuOpen.value || nameDialog.value || delTarget.value) return
   if (!follow.value || !props.termId || !props.containerId) return
+  if (!isTermReady(props.termId) && Date.now() - followSince < TERM_ATTACH_GRACE_MS) return
   followBusy = true
   try {
     // 发请求瞬间锚定 props 快照：切换刚落地时两组 props 可能还没到齐（termId 先行、
@@ -834,6 +842,7 @@ watch(
     lastSig = '' // 防止旧签名恰好压住新容器的首拉
     q.value = '' // 搜索是当前目录视图，切容器一并清掉
     followMiss = 0 // 新目标新账：上一目标的 404 连击不计入
+    followSince = Date.now() // 新容器新宽限：等目标终端 attach 完成（feedback #64）
     tick()
   },
 )
@@ -843,6 +852,7 @@ watch(
   () => props.termId,
   () => {
     followMiss = 0 // 换跟随源重置 404 连击（feedback #44/#46）
+    followSince = Date.now() // 新 pane 新宽限：等 attach 完成，别抢跑 404（feedback #64）
     if (follow.value) void followCheck()
   },
 )

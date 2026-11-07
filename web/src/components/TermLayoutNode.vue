@@ -9,6 +9,7 @@ import PaneDivider from '@/components/PaneDivider.vue'
 import { containerColor } from '@/lib/utils'
 import { ApiError, getTermCwd, serviceFileId, sshTargetName } from '@/lib/api'
 import { muxAgentAvailable } from '@/lib/mux'
+import { isTermReady } from '@/lib/termReady'
 import { gatePoll } from '@/lib/linkQuality'
 import {
   TERM_OPS,
@@ -121,6 +122,12 @@ let cwdSeq = 0
 let cwdTimer: ReturnType<typeof setInterval> | null = null
 let cwdRun = 0
 let muxCwd = false
+// 会话建连宽限（feedback #64，同 FilePanel.followCheck）：终端新建到 tmux/msmux 会话
+// 在服务端就位之间有个 attach 窗口，抢跑的 cwd 查询注定 404。isTermReady=false 时先不发，
+// 500ms 后快重试（不等 5s 轮询，就绪即拿到）；3s 兜底放宽——会话真起不来照旧 404 占位。
+const TERM_ATTACH_GRACE_MS = 3_000
+const TERM_ATTACH_RETRY_MS = 500
+let cwdSince = Date.now()
 // 连续 404 计数（feedback #44）：失效 termId 的 cwd 轮询此前 5s 一拍无限重试、
 // 永不放弃。会话未建好也会有短暂 404，所以连续 3 拍（~15s）仍 not_found 才判死，
 // 停掉本 pane 的轮询；可见性开关（startCwdPoll）与 muxCwd 状态变化会重开并归零。
@@ -135,6 +142,14 @@ async function pollCwd() {
   const l = leaf.value
   const seq = ++cwdSeq
   if (!l) return
+  // attach 窗口内不发注定 404 的查询：快重试等待就绪（seq 守卫防换 leaf/卸载后的陈旧重试），
+  // 宽限耗尽后照常发——真起不来的会话走下面 404 占位路径。
+  if (!isTermReady(l.termId) && Date.now() - cwdSince < TERM_ATTACH_GRACE_MS) {
+    setTimeout(() => {
+      if (seq === cwdSeq) void pollCwd()
+    }, TERM_ATTACH_RETRY_MS)
+    return
+  }
   try {
     // 服务组走 's:' 前缀切 /api/services/<name>/cwd（docker exec 进容器查会话 shell 的
     // cwd，标记注入与扫描见 server/serviceFiles.ts / hostTerminal.ts）。SSH 组
@@ -164,6 +179,7 @@ function onCwd(path: string) {
 // 「只有叶子才启轮询」由调用点（cwdVisible watch 只在 leaf 分支创建）保证。
 function stopCwdPoll() {
   cwdRun++
+  cwdSeq++ // 作废在途请求与 attach 等待的重试（seq 守卫见 pollCwd）
   cwdMiss = 0 // 重开时重新给「会话未建好」的宽限
   if (cwdTimer) {
     clearInterval(cwdTimer)

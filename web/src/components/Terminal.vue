@@ -20,6 +20,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { HOST_ID, sshGroupId, serviceFileId } from '@/lib/api'
 import { RESTORED_TERM_IDS } from '@/lib/termlayout'
+import { markTermReady } from '@/lib/termReady'
 import { isCoarse, isPhone } from '@/composables/useDevice'
 import { KEY_POOL, getQuickCmd } from '@/lib/termToolbar'
 import { usePhoneToolbar } from '@/composables/usePhoneToolbar'
@@ -118,7 +119,12 @@ const sock = useTermSocket({
     title: (t) => emit('title', t),
     cwd: (p) => emit('cwd', p),
     foreground: (c) => emit('foreground', c),
-    ready: () => emit('ready'),
+    // 登记就绪（feedback #64）：首帧 = attach 已完成、服务端会话必然存在——文件面板
+    // 跟随 / pane 头部的 cwd 轮询据此跳过会话未建好窗口期的拍子，不再抢跑一发 404。
+    ready: () => {
+      markTermReady(props.termId)
+      emit('ready')
+    },
   },
   term: () => term,
   restoredTermIds,

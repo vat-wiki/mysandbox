@@ -7,10 +7,16 @@
 // 层级用语义化档位（字面量类，Tailwind 要能扫到），不要传任意 z 值。
 // 根层显式 pointer-events:auto：宿主若是 reka modal Dialog（如工具条设置页），body 会被设
 // pointer-events:none，teleport 到 body 的本组件会继承到——不补回去整个 sheet 点不动、滚不动。
+
+// Esc 关闭的叠层序（feedback #65）：自绘 sheet 没有 reka FocusScope 的 onEscapeKeyDown，
+// Esc 在 BottomPanel 补。多个 sheet 同开时一次 Esc 只关最顶一个——token 栈，开时入栈、
+// 关/卸载时出栈，keydown 时核对栈顶。（终端键位发送走 xterm textarea 的捕获处理，不会
+// 冒泡到这里，见 onEscKeydown 的编辑元素守卫。）
+const escStack: symbol[] = []
 </script>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -31,6 +37,48 @@ const zClass = computed(() =>
 function close() {
   emit('update:open', false)
 }
+
+const escToken = Symbol('bottom-panel')
+function onEscKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || e.defaultPrevented) return
+  // 只响应栈顶（最顶层的 sheet）：底层 sheet 不因穿透的 Esc 被连带收掉。
+  if (escStack[escStack.length - 1] !== escToken) return
+  // 编辑元素里的 Esc 不劫持（也不拦传播）：输入框/文本域/可编辑区域 Esc 常是「取消/退出」
+  // 的应用语义（工具条设置页的表单等）；终端 textarea 的按键由 xterm 捕获转发前台程序。
+  // 这些场景放行到各自的 target 处理器。
+  const t = e.target as HTMLElement | null
+  if (
+    t &&
+    (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
+  ) {
+    return
+  }
+  e.preventDefault()
+  // 捕获阶段拦下就收：document 捕获先于一切 bubble 监听（ContainerList 的 Esc 关文件
+  // tab、reka Dialog 的关窗、快捷键录制之外的 window 级处理）——sheet 开着时 Esc 只归
+  // sheet，一次按键不穿透关两层。
+  e.stopPropagation()
+  close()
+}
+watch(
+  () => props.open,
+  (v) => {
+    if (v) {
+      escStack.push(escToken)
+      document.addEventListener('keydown', onEscKeydown, true)
+    } else {
+      const i = escStack.indexOf(escToken)
+      if (i >= 0) escStack.splice(i, 1)
+      document.removeEventListener('keydown', onEscKeydown, true)
+    }
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => {
+  const i = escStack.indexOf(escToken)
+  if (i >= 0) escStack.splice(i, 1)
+  document.removeEventListener('keydown', onEscKeydown, true)
+})
 </script>
 
 <template>
