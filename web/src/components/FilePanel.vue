@@ -1732,6 +1732,15 @@ function fmtSize(n: number): string {
             <p v-if="err" class="m-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
               {{ err }}
             </p>
+            <!-- 跟随开着但没有可跟随的 pane（面板目标 ≠ 活跃组目标，termId 为空）：这是
+                 「等待路由追平/等待用户切组」的中间态，不是空目录——空目录文案会误导
+                 （feedback #57 的残留观感），给明确引导。 -->
+            <p
+              v-else-if="follow && !termId && !path && !loading"
+              class="px-3 py-6 text-center text-xs text-muted-foreground"
+            >
+              未跟随终端目录 · 输入路径即可浏览，切换终端页签恢复跟随
+            </p>
             <p
               v-else-if="!entries.length && !loading"
               class="px-3 py-6 text-center text-xs text-muted-foreground"

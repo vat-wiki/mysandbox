@@ -18,6 +18,7 @@
 - **轮询失效自愈**：pane cwd 轮询（TermLayoutNode）连续 3 拍 `not_found`（约 15s）判死停轮（宽限覆盖会话未建好的短暂 404），可见性/状态变化重开时归零；文件面板跟随轮询同款连续 6 拍（约 30s）自动「已暂停跟随」（黄条，交互恢复即重计）——失效 termId 不再 5s 一拍无限重试（#44/#46，v0.15.24）。
 - **msmux 会话的 cwd 数据源**：`/api/containers/:id/cwd` 与 `/api/host-terminal/cwd` 都**先问 agent 元数据**（daemon 的前台进程 cwd），老 tmux 会话回落 `pane_current_path`。只查 tmux 的话 mux 会话恒 404——跟随退化成「只靠 OSC 7」，面板打开空白、切 pane 后不再恢复（2026-10-26 修）。相对路径链接的基准目录同源：容器 `/resolve` 用 agent cwd 兜底、宿主 `/resolve` 同理，否则 mux 模式下 Ctrl+点击相对路径恒 404。
 - **刷新不暂停跟随**：面板把当前路径 replace 进 `?path=`（自写，非用户深链），挂载恢复路径时不能走 `locate()` 的「暂停跟随」分支——否则刷新一次就永久停在「已暂停跟随终端目录」黄条，表现为跟随功能时灵时不灵。
+- **目标路由同步与 ?term= 写侧要并成一次导航**：文件路由开着时新建/切换终端组，`watch(activeGroup)` 的 `/files/:target` replace 与 `activeTermKey` 写侧的 `?term=` replace 同帧先后发出——vue-router 并发导航后者胜，纯 query 的原地 replace 会把先发的 params replace **取消掉**，路由停在旧 target（#57：`/files/__host__` 深链下开 dev 终端，路由永不追平 → `fileFollowTermId` 恒 null → 面板永远 …/空目录，只有 F5 能救）。修法（v0.15.28）：目标同步经 `replaceFilesTarget()` 把待落 target 记进 `pendingFileTargetNav`，term 写侧读到就把它并入同一次 replace（params+query 一起落）。FilePanel 端另有兜底：跟随开着但无可跟随 pane（termId 空、路径空）时列表区给「未跟随终端目录」引导而非误导性「空目录」。
 - **Git 独立视图**：目录路径行下切「文件 / Git」，Git 占满整列，内分「变更 / 历史」；历史走 `git/history`（四端同协议，解析单源 `gitpanel.ts`），按当前/任选分支分页读提交。
 
 ## peer exec（容器间命令互通，`server/peer.ts`）

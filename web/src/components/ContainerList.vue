@@ -1031,6 +1031,21 @@ const fileFollowTermId = computed(() => {
 // ——面板永远「终端会话未就绪」且切 tab 救不回（下面的深链守卫会跳过同步）。有这份
 // 记账才能区分「跟随的组没了」（回退活跃组）与「真深链目标」（保持独立浏览不动）。
 const everGroupTargets = new Set<string>()
+// 文件路由目标同步（watch(activeGroup) 与下方花名册恢复共用）：发起 replace 前把待落
+// 目标记在 pendingFileTargetNav。原因：同帧里 activeGroup 变化还会触发 ?term= 写侧
+// （注册更晚、同一 flush 里后发），vue-router 并发导航后者胜——纯 query 的原地
+// replace 会把这里先发的 params replace 取消掉，路由停在旧 target 上（feedback #57：
+// /files/__host__ 深链下新开终端组，路由永不追平 → 面板拿不到跟随 pane，永远 …/空目录，
+// 刷新才能恢复）。term 写侧读到这份记账就把 target 并进同一次导航，谁后发都无损。
+let pendingFileTargetNav: string | null = null
+function replaceFilesTarget(target: string) {
+  pendingFileTargetNav = target
+  void router
+    .replace({ name: 'files', params: { target: encodeURIComponent(target) } })
+    .finally(() => {
+      if (pendingFileTargetNav === target) pendingFileTargetNav = null
+    })
+}
 // 用户切换终端 tab 时，面板仍保持“跟随当前终端组”的语义：同步路由目标。直接深链的
 // 目标没有对应终端组时不抢焦点，让面板独立浏览该目标。
 // 路由同步只在 workspace/files 上做（feedback #43）：popout 的 showFiles 是 localStorage
@@ -1048,7 +1063,7 @@ watch(activeGroup, (g) => {
   if (!oldAlive && !everGroupTargets.has(oldTarget)) return
   const target = fileTargetId(g)
   if (target !== oldTarget) {
-    void router.replace({ name: 'files', params: { target: encodeURIComponent(target) } })
+    replaceFilesTarget(target)
   }
 })
 watch(routeFileTarget, (target) => {
@@ -1070,7 +1085,7 @@ watch(
     if (target !== HOST_ID && !everGroupTargets.has(target)) return
     const next = activeGroup.value ? fileTargetId(activeGroup.value) : HOST_ID
     if (next !== target) {
-      void router.replace({ name: 'files', params: { target: encodeURIComponent(next) } })
+      replaceFilesTarget(next)
     }
   },
   { immediate: true },
@@ -2205,7 +2220,14 @@ watch(activeTermKey, (key) => {
   const q = { ...route.query }
   if (key) q.term = key
   else delete q.term
-  void router.replace({ query: q })
+  // 同帧有目标同步待落（pendingFileTargetNav，见其注释）就把 target 并进同一次
+  // replace——否则这里的原地 query replace 会取消目标同步的导航，/files/:target 滞留。
+  const pending = pendingFileTargetNav
+  void router.replace(
+    pending
+      ? { name: 'files', params: { target: encodeURIComponent(pending) }, query: q }
+      : { query: q },
+  )
 })
 watch(
   () => route.query.term,
