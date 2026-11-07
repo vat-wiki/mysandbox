@@ -204,6 +204,8 @@ export async function registerRoutes(app: FastifyInstance, cfg: Config): Promise
     const { termId } = req.params as { termId: string };
     const target = (req.query as { target?: string }).target ?? '';
     if (!TERMID_RE.test(termId)) throw badRequest('invalid termId');
+    // 会话已不存在时 killMuxSession 按幂等成功处理（feedback #56），不会走到 400；
+    // 这里只剩通道故障（agent 掉线 / 执行失败）与参数错误。
     try {
       await killMuxSession(cfg, target, termId);
     } catch (e) {

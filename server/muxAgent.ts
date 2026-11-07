@@ -545,7 +545,19 @@ export function muxAgentTargets(): string[] {
   return [...agents.keys()];
 }
 
+// 幂等清理语义（feedback #56）：kill 的目标是「让会话消失」——会话已在 daemon 侧消失
+// （shell 正常退出 / 别处已关 / 前端陈旧 tab 关闭）时目标状态已达成，按成功处理而不是把
+// 「no such session」抛成 400（此前关页签会对此反复报错，看着像失败实际无事可做）。
+// 真·通道故障（agent 掉线、执行通道失败、参数校验不过）仍原样上抛，由调用方提示。
 export async function killMuxSession(cfg: Config, target: string, termId: string): Promise<void> {
+  try {
+    await killMuxSessionOnce(cfg, target, termId);
+  } catch (e) {
+    if (!/no such session/i.test(e instanceof Error ? e.message : String(e))) throw e;
+  }
+}
+
+async function killMuxSessionOnce(cfg: Config, target: string, termId: string): Promise<void> {
   if (!TERMID_RE.test(termId)) throw new Error('invalid termId');
   if (!/^(host|c:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}|s:[A-Za-z0-9][A-Za-z0-9_.-]{0,62}|ssh:[A-Za-z0-9][A-Za-z0-9_.-]{0,62})$/.test(target)) {
     throw new Error('invalid mux target');

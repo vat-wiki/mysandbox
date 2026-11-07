@@ -4947,7 +4947,12 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
             class="absolute inset-0 flex"
             :style="kbPanelStyle"
           >
-            <!-- 布局树根：TermLayoutNode 递归渲染叶子/split；所有组常驻 DOM，v-show 切换 -->
+            <!-- 布局树根：TermLayoutNode 递归渲染叶子/split；所有组常驻 DOM，v-show 切换
+                 （保 xterm scrollback/会话状态，刻意不卸载——TestLens #56 观察到的「失焦后
+                 0 尺寸副本」即它们）。副本数有硬上界：打开组数 × MAX_GROUP_PANES（4）；
+                 非激活/不可见叶子零负担：cwd 轮询按 visible 闸停（TermLayoutNode
+                 startCwdPoll）、WS 懒挂载只随激活 tab（ContainerList 顶部注释）、手机
+                 键盘工具条 Teleport 层 v-if="isPhone" 桌面不渲染。无监听器泄漏。 -->
             <TermLayoutNode
               :node="g.root"
               :group="g"
