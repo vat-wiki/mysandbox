@@ -141,6 +141,7 @@ import {
   equalGrows,
   leafCount,
   leafIds,
+  minWidthPx,
   newSplitId,
   normalizeRoot,
   ordinalOf,
@@ -1439,6 +1440,16 @@ function onEditorSplitDragEnd() {
 function toggleEditorFocus() {
   editorFocused.value = !editorFocused.value
 }
+// 编辑器列在场时给终端主列托底最小宽（feedback #52）：此前主列 flex-1 + min-w-0、
+// 编辑器列 shrink-0 固定 % 宽，挤压全部由终端吸收——分屏多 pane 被 50% 编辑器列压到
+// 每 pane ~150px。现按活跃组布局树算可读下限（横排相加/竖排取最大，见 minWidthPx），
+// 编辑器列改为可收缩（min-w 托底 240），不够分时压编辑器而不是压终端。
+// 手机不受此约束（编辑器列是全屏覆盖、侧栏是抽屉，无三列协商）；专注态主列已藏起，
+// minWidth 挂着也无害，不再特判。
+const termMinW = computed(() => {
+  if (isPhone.value || !editorTabs.value.length || !activeGroup.value) return 0
+  return minWidthPx(activeGroup.value.root)
+})
 // —— 手机半屏文件 sheet（终端页同屏看文件）——
 // tab X：pane 冲刷后自己 close；这里不直接摘（冲刷失败/冲突要留在原处裁决）
 function closeFileTab(t: EditorTab) {
@@ -4512,8 +4523,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
     </aside>
 
     <!-- 右侧终端主区：tab 栏 + 分屏，占满剩余空间。编辑器专注时整列让位藏起
-         （v-show 在外层——内层藏的话 tab 栏/工作区容器仍占 flex-1 平分宽度）。 -->
-    <div v-show="!editorFocused" class="flex min-w-0 flex-1 flex-col max-md:pb-[calc(2.5rem+env(safe-area-inset-bottom))]">
+         （v-show 在外层——内层藏的话 tab 栏/工作区容器仍占 flex-1 平分宽度）。
+         minWidth：编辑器列在场时按活跃组布局树托底（见 termMinW，feedback #52）——
+         编辑器列可收缩后，挤压优先落在编辑器侧。 -->
+    <div
+      v-show="!editorFocused"
+      class="flex min-w-0 flex-1 flex-col max-md:pb-[calc(2.5rem+env(safe-area-inset-bottom))]"
+      :style="termMinW ? { minWidth: termMinW + 'px' } : undefined"
+    >
       <div
         v-if="!props.popout && baseReady === false"
         class="flex items-center gap-3 border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
@@ -4989,7 +5006,7 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
            不动）。所以激活 pane 必须挂 z-10，恒压在所有兄弟 pane（含穿透绘制）之上。 -->
     <div
       v-show="editorTabs.length && (!isPhone || mainView === 'file')"
-      class="relative flex min-h-0 shrink-0 flex-col border-r border-border bg-background max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-r-0 max-md:pb-[calc(2.5rem+env(safe-area-inset-bottom))]"
+      class="relative flex min-h-0 flex-col border-r border-border bg-background min-w-[240px] max-md:absolute max-md:inset-0 max-md:z-30 max-md:border-r-0 max-md:pb-[calc(2.5rem+env(safe-area-inset-bottom))]"
       :style="isPhone || editorFocused ? undefined : { width: editorSplitPct + '%' }"
       :class="!isPhone && editorFocused ? 'flex-1' : ''"
     >

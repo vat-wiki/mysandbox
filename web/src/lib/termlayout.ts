@@ -12,6 +12,19 @@ export type LayoutDir = 'row' | 'col'
 // 硬编码常量而非配置——这是交互语义（一块终端的可读下限），不是可调参数。
 export const MAX_GROUP_PANES = 4
 
+// 终端 pane 的可读最小宽度（px）：与编辑器列做宽度协商时的底线（feedback #52）——
+// 编辑器页签打开后终端主列不能再被挤到提示符剧烈换行；不够分时压编辑器列。
+// 只约束「布局协商」，不约束组内分隔条手动拖动（那是用户显式意图，下限仍是 120）。
+export const PANE_MIN_W = 240
+
+// 布局树在水平方向上的最小像素宽：叶子 = PANE_MIN_W；row 分叉 = 子级之和（横排各占
+// 一份宽度）；col 分叉 = 子级之最大（竖排共享同一宽度）。嵌套布局取路径最宽需求。
+export function minWidthPx(node: LayoutNode): number {
+  if (node.kind === 'leaf') return PANE_MIN_W
+  const ws = node.children.map(minWidthPx)
+  return node.dir === 'row' ? ws.reduce((a, b) => a + b, 0) : Math.max(...ws)
+}
+
 export interface LeafNode {
   kind: 'leaf'
   termId: string
