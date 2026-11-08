@@ -46,10 +46,11 @@ const emit = defineEmits<{
 }>()
 
 // api.ts 的 10s 超时抛 DOMException(name='TimeoutError', message='signal timed out')，
-// 裸 message 用户看不懂——按场景翻译成人话（先例：useTermClipboard 的上传超时），
-// 其余错误沿用原 message。
-function errText(e: unknown, timeoutMsg: string): string {
+// 后端停机/网络断开时 fetch 抛 TypeError('Failed to fetch')——两类裸 message 用户都
+// 看不懂，按场景翻译成人话（先例：useTermClipboard 的上传超时），其余错误沿用原 message。
+function errText(e: unknown, timeoutMsg: string, netMsg: string): string {
   if (e instanceof DOMException && e.name === 'TimeoutError') return timeoutMsg
+  if (e instanceof TypeError && e.message.includes('Failed to fetch')) return netMsg
   return e instanceof Error ? e.message : String(e)
 }
 
@@ -67,7 +68,7 @@ async function load() {
       emit('unauthorized')
       return
     }
-    err.value = errText(e, '会话列表加载超时，请重试')
+    err.value = errText(e, '会话列表加载超时，请重试', '会话列表加载失败，请检查连接')
   } finally {
     loading.value = false
   }
@@ -214,7 +215,7 @@ async function doKill() {
       emit('unauthorized')
       return
     }
-    err.value = errText(e, '结束会话超时，请重试')
+    err.value = errText(e, '结束会话超时，请重试', '结束会话失败，请检查连接')
   }
 }
 </script>
