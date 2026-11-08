@@ -45,6 +45,14 @@ const emit = defineEmits<{
   (e: 'count', n: number): void
 }>()
 
+// api.ts 的 10s 超时抛 DOMException(name='TimeoutError', message='signal timed out')，
+// 裸 message 用户看不懂——按场景翻译成人话（先例：useTermClipboard 的上传超时），
+// 其余错误沿用原 message。
+function errText(e: unknown, timeoutMsg: string): string {
+  if (e instanceof DOMException && e.name === 'TimeoutError') return timeoutMsg
+  return e instanceof Error ? e.message : String(e)
+}
+
 // ---- 服务端会话扫描 ----
 const sessions = ref<TermSessionView[]>([])
 const loading = ref(false)
@@ -59,7 +67,7 @@ async function load() {
       emit('unauthorized')
       return
     }
-    err.value = e instanceof Error ? e.message : String(e)
+    err.value = errText(e, '会话列表加载超时，请重试')
   } finally {
     loading.value = false
   }
@@ -206,7 +214,7 @@ async function doKill() {
       emit('unauthorized')
       return
     }
-    err.value = e instanceof Error ? e.message : String(e)
+    err.value = errText(e, '结束会话超时，请重试')
   }
 }
 </script>
