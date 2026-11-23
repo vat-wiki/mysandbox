@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Git 中心面板：内网 bare 仓库的管理 + 代码浏览。
 // 仓库落在 ~/.mysandbox/repos/<name>.git；clone/push 走 /git/* 的 Smart HTTP（无 token），
-// 本面板的读写走 /api/git-center/*（有 token）。桌面 dialog / 手机整页，与账户面板同壳。
+// 本面板的读写走 /api/git-center/*（有 token）。桌面右侧非模态抽屉（不遮罩、不锁焦点，
+// 终端仍可用），手机全宽整页——与服务抽屉同款 reka 原语，但刻意不用居中弹框。
 import { ref, computed, onMounted, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -16,8 +17,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+// 抽屉壳走 reka 原语（同 ServicesPanel）：定位类与 ui/dialog 的居中卡片完全相悖，
+// 反覆盖不如自绘。desktop 关掉 modal = 无遮罩/无焦点陷阱，终端可继续操作。
+import {
+  DialogRoot,
+  DialogPortal,
+  DialogContent as DrawerContent,
+  DialogTitle as DrawerTitle,
+  DialogClose,
+} from 'reka-ui'
+import { isPhone } from '@/composables/useDevice'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import { ArrowLeft, Copy, File, Folder, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Tag, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, Copy, File, Folder, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Tag, Trash2, X } from 'lucide-vue-next'
 import {
   Unauthorized,
   listGitRepos, createGitRepo, deleteGitRepo, getGitRepoDetail,
@@ -217,19 +228,29 @@ async function doDelete(): Promise<void> {
 </script>
 
 <template>
-  <Dialog :open="true" @update:open="(v: boolean) => v || emit('close')">
-    <DialogContent class="max-w-4xl max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
-      <DialogHeader>
-        <DialogTitle>{{ current ? `仓库 / ${current}` : 'Git 中心' }}</DialogTitle>
-        <DialogDescription>
-          {{ current
-            ? '内网 bare 仓库 · clone/push 无需 token'
-            : '内网代码仓库 · 存于 ~/.mysandbox/repos · 无权限限制，能连到端口即可读写' }}
-        </DialogDescription>
-      </DialogHeader>
+  <DialogRoot :open="true" :modal="isPhone" @update:open="(v: boolean) => v || emit('close')">
+    <DialogPortal>
+      <DrawerContent
+        class="fixed inset-y-0 right-0 z-50 flex h-dvh w-full flex-col overflow-hidden border-l bg-background shadow-2xl outline-none duration-200 data-[state=open]:animate-in data-[state=open]:slide-in-from-right sm:max-w-3xl"
+        @interact-outside="(e: Event) => e.preventDefault()"
+      >
+        <div class="flex shrink-0 items-start gap-2 border-b px-4 py-3">
+          <div class="min-w-0 flex-1">
+            <DrawerTitle class="text-sm font-semibold leading-tight">{{ current ? `仓库 / ${current}` : 'Git 中心' }}</DrawerTitle>
+            <p class="mt-0.5 truncate text-[11px] text-muted-foreground">
+              {{ current
+                ? '内网 bare 仓库 · clone/push 无需 token'
+                : '内网代码仓库 · 存于 ~/.mysandbox/repos · 无权限限制，能连到端口即可读写' }}
+            </p>
+          </div>
+          <DialogClose as-child>
+            <Button variant="ghost" size="icon-xs" title="关闭抽屉"><X /></Button>
+          </DialogClose>
+        </div>
 
+        <div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-3">
       <!-- 仓库列表 -->
-      <div v-if="!current" class="flex min-h-0 flex-col gap-3">
+      <div v-if="!current" class="flex flex-col gap-3">
         <div class="flex items-center justify-between gap-2">
           <p class="text-xs text-muted-foreground">共 {{ repos.length }} 个仓库</p>
           <div class="flex gap-1.5">
@@ -239,7 +260,7 @@ async function doDelete(): Promise<void> {
             <Button size="xs" @click="openCreate"><Plus /> 新建仓库</Button>
           </div>
         </div>
-        <div class="scroll-thin flex max-h-[58vh] min-h-0 flex-col gap-1.5 overflow-y-auto">
+        <div class="flex flex-col gap-1.5">
           <div
             v-for="r in repos"
             :key="r.name"
@@ -297,6 +318,7 @@ async function doDelete(): Promise<void> {
               class="max-w-[9rem] rounded border border-border bg-background px-1.5 py-1 text-xs"
               @change="switchRef(refName)"
             >
+              <option v-if="!detail?.branches.length" :value="refName">{{ refName }}</option>
               <option v-for="b in detail?.branches ?? []" :key="'b' + b.name" :value="b.name">{{ b.name }}</option>
               <option v-for="g in detail?.tags ?? []" :key="'t' + g.name" :value="g.name">{{ g.name }}</option>
             </select>
@@ -304,7 +326,7 @@ async function doDelete(): Promise<void> {
         </div>
 
         <!-- 代码 / 文件 -->
-        <div v-if="tab === 'code'" class="scroll-thin min-h-0 max-h-[52vh] overflow-y-auto">
+        <div v-if="tab === 'code'" class="flex flex-col">
           <div v-if="path" class="mb-2 flex items-center gap-1 text-xs text-muted-foreground">
             <button type="button" class="hover:text-foreground" @click="goUp">..</button>
             <span>/</span><span class="truncate text-foreground">{{ path }}</span>
@@ -336,7 +358,7 @@ async function doDelete(): Promise<void> {
         </div>
 
         <!-- 提交历史 -->
-        <div v-else-if="tab === 'commits'" class="scroll-thin min-h-0 max-h-[52vh] overflow-y-auto">
+        <div v-else-if="tab === 'commits'" class="flex flex-col">
           <p v-if="!commits.length" class="py-8 text-center text-sm text-muted-foreground">没有提交记录。</p>
           <button
             v-for="c in commits"
@@ -356,7 +378,7 @@ async function doDelete(): Promise<void> {
         </div>
 
         <!-- 分支 / 标签 -->
-        <div v-else-if="tab === 'refs'" class="scroll-thin grid min-h-0 max-h-[52vh] grid-cols-1 gap-3 overflow-y-auto sm:grid-cols-2">
+        <div v-else-if="tab === 'refs'" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div class="rounded-lg border p-3">
             <p class="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><GitBranch class="size-3.5" /> 分支</p>
             <button v-for="b in detail?.branches ?? []" :key="b.name" type="button"
@@ -380,7 +402,7 @@ async function doDelete(): Promise<void> {
         </div>
 
         <!-- 提交差异 -->
-        <div v-else class="scroll-thin min-h-0 max-h-[52vh] overflow-y-auto">
+        <div v-else class="flex flex-col">
           <p class="mb-2 text-xs text-muted-foreground">
             {{ diff?.from }} → {{ diff?.to }} · {{ diff?.files.length }} 个文件变更
           </p>
@@ -392,8 +414,10 @@ async function doDelete(): Promise<void> {
           <pre class="scroll-thin mt-3 overflow-x-auto rounded border bg-muted/20 p-2 text-[11px] leading-relaxed"><code><span v-for="(l, i) in patchLines" :key="i" :class="lineClass(l)">{{ l }}{{ '\n' }}</span></code></pre>
         </div>
       </div>
-    </DialogContent>
-  </Dialog>
+        </div>
+      </DrawerContent>
+    </DialogPortal>
+  </DialogRoot>
 
   <!-- 新建仓库 -->
   <Dialog :open="showCreate" @update:open="(v: boolean) => v || (showCreate = false)">

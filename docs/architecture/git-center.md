@@ -2,7 +2,7 @@
 
 侧边栏底行的 Git 中心入口，提供一个「只有仓库」的内网 GitHub：仓库落在产品单一根 `~/.mysandbox/repos/<name>.git`（`server/config.ts` 的 `REPOS_DIR`），与 `ai/`、`logs/`、`tls/` 同级；无账号、无组织、无权限、无 Issue/PR。能连到 mysandbox 端口的人都能 clone/push。
 
-实现集中在 `server/gitCenter.ts`（CLI 装配见 `server/index.ts`），前端是 `web/src/components/GitCenterPanel.vue` + `pageRoutes` 的 `git-center`（桌面 dialog / 手机整页）。
+实现集中在 `server/gitCenter.ts`（CLI 装配见 `server/index.ts`），前端是 `web/src/components/GitCenterPanel.vue` + `pageRoutes` 的 `git-center`（桌面右侧非模态抽屉 / 手机全宽整页）。抽屉不遮罩、不锁焦点、外部点击不自动关，终端在仓库面板开着时仍可用；X / Esc 关闭。
 
 ## 两个面，鉴权刻意分开
 
