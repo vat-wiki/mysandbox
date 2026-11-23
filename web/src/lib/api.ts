@@ -1513,3 +1513,80 @@ export const clusterPullTemplate = (machineId: string) =>
   postJson('/api/cluster/template/pull', { machineId }, 600_000) as Promise<{ ok: boolean; error?: string }>
 export const clusterSyncSkills = (machineId: string) =>
   postJson('/api/cluster/skills/sync', { machineId }, 120_000) as Promise<{ ok: boolean; installed: string[]; error?: string }>
+
+// —— Git 中心（内网 bare 仓库托管；server/gitCenter.ts）——
+// 管理/浏览走 /api/git-center/*（带 token）；clone/push 走独立的 /git/<name>.git（无 token）。
+export interface GitCenterRepo {
+  name: string
+  description: string
+  updatedAt: number
+  empty: boolean
+}
+export interface GitCenterRef {
+  name: string
+  hash: string
+  date: string
+}
+export interface GitCenterDetail {
+  defaultBranch: string
+  branches: GitCenterRef[]
+  tags: GitCenterRef[]
+  commitCount: number
+  lastCommit: { hash: string; short: string; author: string; date: string; subject: string } | null
+}
+export interface GitCenterTreeEntry {
+  name: string
+  path: string
+  type: 'tree' | 'blob' | 'commit'
+  size: number
+}
+export interface GitCenterTree {
+  ref: string
+  path: string
+  empty?: boolean
+  entries: GitCenterTreeEntry[]
+}
+export interface GitCenterFile {
+  path: string
+  binary: boolean
+  content: string
+  size: number
+  truncated: boolean
+}
+export interface GitCenterCommits {
+  ref: string
+  unborn?: boolean
+  commits: GitCommit[]
+  hasMore: boolean
+}
+export interface GitCenterDiff {
+  from: string
+  to: string
+  patch: string
+  files: { path: string; additions: number; deletions: number }[]
+}
+export const listGitRepos = () => api('/api/git-center/repos') as Promise<{ items: GitCenterRepo[] }>
+export const createGitRepo = (name: string, description = '') =>
+  postJson('/api/git-center/repos', { name, description }) as Promise<{ name: string }>
+export const deleteGitRepo = (name: string) =>
+  api(`/api/git-center/repos/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<{ ok: true }>
+export const getGitRepoDetail = (name: string) =>
+  api(`/api/git-center/repos/${encodeURIComponent(name)}`) as Promise<GitCenterDetail>
+export const getGitRepoTrees = (name: string, ref: string, path = '') =>
+  api(
+    `/api/git-center/repos/${encodeURIComponent(name)}/tree?ref=${encodeURIComponent(ref)}` +
+      (path ? `&path=${encodeURIComponent(path)}` : ''),
+  ) as Promise<GitCenterTree>
+export const getGitRepoFile = (name: string, ref: string, path: string) =>
+  api(
+    `/api/git-center/repos/${encodeURIComponent(name)}/file?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}`,
+  ) as Promise<GitCenterFile>
+export const getGitRepoCommits = (name: string, ref: string, limit = 50) =>
+  api(
+    `/api/git-center/repos/${encodeURIComponent(name)}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}`,
+  ) as Promise<GitCenterCommits>
+export const getGitRepoDiff = (name: string, to: string, from = '') =>
+  api(
+    `/api/git-center/repos/${encodeURIComponent(name)}/diff?to=${encodeURIComponent(to)}` +
+      (from ? `&from=${encodeURIComponent(from)}` : ''),
+  ) as Promise<GitCenterDiff>

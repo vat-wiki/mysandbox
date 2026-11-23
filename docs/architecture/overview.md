@@ -18,6 +18,7 @@
 | `hostTerminal.ts` | `/ws/host-terminal` + `/api/host-terminal/cwd` | 宿主 PTY（见 [terminals.md](terminals.md)） |
 | `sshTerminal.ts` | `/ws/ssh-terminal` + `/api/ssh/targets*` | SSH 主机终端（见 [terminals.md](terminals.md)） |
 | `desktop.ts` | `/ws/desktop` + `/ws/desktop-vnc` | 容器图形桌面（见 [desktop.md](desktop.md)） |
+| `gitCenter.ts` | `/git/*` + `/api/git-center/*` | 内网 bare 仓库托管：Smart HTTP clone/push（无 token）+ 管理/代码浏览（有 token，见 [git-center.md](git-center.md)） |
 | `proxy.ts` | `/proxy/*` | Web 代理（见 [web-proxy.md](web-proxy.md)） |
 
 SSE 进度流的公共实现在 `sse.ts`。

@@ -15,6 +15,7 @@
 | [web-proxy.md](architecture/web-proxy.md) | Web 代理：门面、鉴权、TLS、socket 激活、泛解析 | **碰代理先读它** |
 | [ai-skills.md](architecture/ai-skills.md) | AI 工具与技能中心：模型供应商×绑定、技能库分发、TestLens | 碰 `aiconfig`/`skillSync`/`skills.ts` |
 | [web.md](architecture/web.md) | web/ 前端约定：shadcn-vue、弱网轮询、Monaco 接法、版本号 | 改 `web/` 之前 |
+| [git-center.md](architecture/git-center.md) | Git 中心：内网 bare 仓库、Smart HTTP 与代码浏览；两个面的鉴权边界 | 碰 `server/gitCenter.ts` 或 Git 中心 UI |
 
 ## 迁移与专项记录（migrations/）
 

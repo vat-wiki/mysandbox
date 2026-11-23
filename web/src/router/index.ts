@@ -109,6 +109,13 @@ const pageRoutes: RouteRecordRaw[] = [
     component: RouteAnchor,
     meta: { layer: 'page', desktop: 'workspace', mobile: 'page' },
   },
+  // Git 中心：桌面 dialog / 手机整页（同账户管理、模板面板的路由承载形态）。
+  {
+    path: '/git-center',
+    name: 'git-center',
+    component: RouteAnchor,
+    meta: { layer: 'page', desktop: 'dialog', mobile: 'page' },
+  },
 ]
 
 export const routes: RouteRecordRaw[] = [

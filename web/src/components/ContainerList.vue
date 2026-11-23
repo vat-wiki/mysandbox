@@ -120,7 +120,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings, Network, ArrowRightLeft, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ChevronDown, ChevronUp, History, KeyRound } from 'lucide-vue-next'
+import { Terminal as TerminalIcon, MoreHorizontal, RefreshCw, X, FolderOpen, Monitor, Globe, Plus, Settings, Network, ArrowRightLeft, Container, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ChevronDown, ChevronUp, History, KeyRound, GitBranch } from 'lucide-vue-next'
 import CreateDialog from '@/components/CreateDialog.vue'
 import BatchDialog from '@/components/BatchDialog.vue'
 import AiWorkspace from '@/components/AiWorkspace.vue'
@@ -185,6 +185,8 @@ const emit = defineEmits<{
   (e: 'unauthorized'): void
   (e: 'open-base'): void
   (e: 'open-accounts'): void
+  // Git 中心（内网 bare 仓库托管）：侧栏底行/rail 底列共用入口
+  (e: 'open-git-center'): void
   // 打开服务抽屉；create=true 表示来自 ＋（App 直开创建对话框，不拉抽屉）；
   // select=服务名表示来自卡片点击（抽屉打开即定位到该服务详情）
   (e: 'open-services', create?: boolean, select?: string): void
@@ -3770,6 +3772,14 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
           >
             <FolderOpen class="size-4" />
           </button>
+          <button
+            type="button"
+            class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+            title="Git 中心（内网仓库）"
+            @click="emit('open-git-center')"
+          >
+            <GitBranch class="size-4" />
+          </button>
           <SettingsMenu
             side="right"
             align="end"
@@ -4531,6 +4541,15 @@ function scheduleEventRefresh(which: 'ct' | 'svc') {
         >
           <PanelLeftClose class="size-3.5 shrink-0" />
           <span class="min-w-0 truncate text-xs">{{ isPhone ? '关闭环境选择' : '收起侧栏' }}</span>
+        </button>
+        <!-- Git 中心：手机抽屉里也保留（不放进 v-if="!isPhone" 的桌面专用按钮组） -->
+        <button
+          type="button"
+          class="flex w-10 items-center justify-center border-l border-border/60 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title="Git 中心（内网仓库）"
+          @click="emit('open-git-center')"
+        >
+          <GitBranch class="size-3.5" />
         </button>
         <template v-if="!isPhone">
           <button

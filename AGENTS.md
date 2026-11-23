@@ -21,6 +21,7 @@ mysandbox：本地 dev 容器的网页控制台。后端 fastify，管理 **unpr
 | `aiconfig`/`skillSync`/技能库/TestLens | [ai-skills.md](docs/architecture/ai-skills.md) |
 | desktop/code-server | [desktop.md](docs/architecture/desktop.md) |
 | `web/` 前端 | [web.md](docs/architecture/web.md) |
+| `server/gitCenter.ts` / Git 中心 UI | [git-center.md](docs/architecture/git-center.md) |
 | 横切设计（路由/缓存/指标/配置） | [overview.md](docs/architecture/overview.md) |
 
 **每次功能/行为变化都要同步对应文档**（改了哪个模块就更新对应主题页；新主题先想清楚归 architecture/migrations/notes 哪类，并登记进 `docs/index.md` 与上表）。

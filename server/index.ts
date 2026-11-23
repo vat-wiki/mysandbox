@@ -22,6 +22,7 @@ import { registerHostFileRoutes } from './hostFiles.js';
 import { registerBaseRoutes } from './base.js';
 import { registerAiRoutes } from './ai.js';
 import { registerSkillRoutes } from './skills.js';
+import { registerGitCenterRoutes, registerGitHttp } from './gitCenter.js';
 import { registerServices } from './services.js';
 import { registerServiceFileRoutes } from './serviceFiles.js';
 import { makeRewriteUrl, registerProxy, proxyUnauthorizedHtml } from './proxy.js';
@@ -220,6 +221,10 @@ export async function buildServer(cfg: Config) {
   await registerHostFileRoutes(app);
   await registerBaseRoutes(app, cfg);
   registerServices(app, cfg);
+  // Git 中心：/api/git-center/* 走上面的 token hook；/git/* 是独立的 Smart HTTP
+  // 端点，刻意不进 hook——内网无权限仓库（docs/architecture/git-center.md）。
+  registerGitCenterRoutes(app);
+  registerGitHttp(app, cfg.listen.port);
   // AI 路由（server/ai.ts）：AI 工具与技能中心（/api/ai/* + /api/testlens/*）。
   await registerAiRoutes(app, cfg);
   // 技能中心路由（server/skills.ts）：技能库/分发规则/已装清单（/api/skills/*）。

@@ -63,6 +63,9 @@ export const CONFIG_DIR = MYSANDBOX_DIR;
 export const CONFIG_FILE = join(CONFIG_DIR, 'config.yaml');
 export const STATE_DIR = MYSANDBOX_DIR;
 export const STATE_FILE = join(STATE_DIR, 'state.json');
+// Git 中心：内网 bare 仓库统一落在 ~/.mysandbox/repos/<name>.git，
+// 与 ai/、logs/、tls/ 同级——备份/搬机跟着单一根走（docs/architecture/git-center.md）。
+export const REPOS_DIR = join(MYSANDBOX_DIR, 'repos');
 
 export const ConfigSchema = z.object({
   // 容器引擎（engine 抽象见 server/engine/types.ts；wsl2 设计见 docs/migrations/wsl2-migration.md）。

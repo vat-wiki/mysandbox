@@ -22,6 +22,7 @@ import StaleVersionPill from '@/components/StaleVersionPill.vue'
 import { Toaster } from '@/components/ui/sonner'
 const ServicesPanel = defineAsyncComponent(() => import('@/components/ServicesPanel.vue'))
 const AccountsPanel = defineAsyncComponent(() => import('@/components/AccountsPanel.vue'))
+const GitCenterPanel = defineAsyncComponent(() => import('@/components/GitCenterPanel.vue'))
 
 const token = ref<string | null>(getToken())
 const checking = ref(false)
@@ -177,6 +178,16 @@ function closeAccounts() {
   if (typeof history.state?.back === 'string') void router.back()
   else void router.replace({ name: 'workspace' })
 }
+// Git 中心（内网仓库托管）：路由承载开合，与账户/模板面板同语义。
+const showGitCenter = computed(() => route.name === 'git-center')
+function openGitCenter() {
+  void router.push({ name: 'git-center' })
+}
+function closeGitCenter() {
+  if (route.name !== 'git-center') return
+  if (typeof history.state?.back === 'string') void router.back()
+  else void router.replace({ name: 'workspace' })
+}
 function closeBase() {
   if (route.name !== 'base') return
   if (typeof history.state?.back === 'string') void router.back()
@@ -270,10 +281,12 @@ onUnmounted(() => {
         @open-base="openBase"
         @open-accounts="openAccounts"
         @open-services="openServices"
+        @open-git-center="openGitCenter"
         @open-handled="onOpenHandled"
       />
       <BasePanel v-if="showBasePanel" @close="closeBase" @changed="refreshBaseStatus" />
       <AccountsPanel v-if="showAccountsPanel" @close="closeAccounts" />
+      <GitCenterPanel v-if="showGitCenter" @close="closeGitCenter" />
       <TerminalToolbarPage
         v-if="ready && showToolbarPage"
         :section="toolbarPageSection"
