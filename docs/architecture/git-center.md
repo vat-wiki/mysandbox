@@ -45,3 +45,22 @@
 `GitCenterPanel.vue`：仓库列表 → 新建/删除 → 仓库详情。详情页有四个标签：代码（目录面包屑 + README 渲染 + 文件查看）、提交（点提交进 diff）、分支/标签（点击切 ref）、变更对比（numstat + 着色 patch）。README 渲染复用 `marked` + `DOMPurify`（与 `MarkdownView.vue` 同一套，但不走它的容器文件下载管线——仓库 blob 由 `/api/git-center/*/file` 提供）。clone 地址由 `location.origin` 拼出，不落后端配置，vhost/TLS 门面下自动跟着访问域名走。
 
 仓库名为 64 字符内的 `字母/数字/._-`，API 接受带或不带 `.git` 后缀，磁盘上统一 `<name>.git`。空仓库首次 clone 后本地分支名跟随客户端 `init.defaultBranch`，可能与裸仓的 `main` 不同——此时 `git push -u origin HEAD:main` 即可。
+
+分支/标签切换用 shadcn `Select`（reka portal），不用原生 `<select>`——原生弹层由 OS 自绘，深色主题下白底违和（同 `BasePanel` 的既有约定）。
+
+## 同步到 GitHub
+
+仓库详情有「同步到 GitHub」按钮，新建表单也可勾「创建后立即设置 GitHub 同步」。表单填 `owner/repo`（或完整 GitHub URL）+ PAT，可选「不存在时自动创建」和「私有」。后端两个端点：
+
+| 端点 | 作用 |
+| --- | --- |
+| `GET /api/git-center/repos/:name/github` | 读上次同步目标（无则 `meta: null`） |
+| `POST /api/git-center/repos/:name/github` | 建仓（可选）+ `git push --mirror` 全量镜像 |
+
+设计要点：
+
+- **PAT 不落盘、不进命令行**：push 时经 `GIT_CONFIG_COUNT=1` / `GIT_CONFIG_KEY_0=http.https://github.com/.extraheader` / `GIT_CONFIG_VALUE_0=AUTHORIZATION: basic base64(x-access-token:<PAT>)` 注入，remote URL 仍是干净的 `https://github.com/owner/repo.git`。`repos/.github.json`（0600）只记 `owner/repo/lastSyncAt`，前端据此预填。
+- **自动建仓**：先 `GET /api.github.com/user` 判断 owner 是自己还是组织，再走 `POST /user/repos` 或 `POST /orgs/:owner/repos`；`422 already exists` 视为成功继续 push（可能手工建过）。默认私有，取消勾选则公开。
+- **失败可诊断**：GitHub API 的非 2xx 把 response `message` 原话回前端；push 失败把 git stderr 原话回前端（`github_push_failed`）。受保护分支、PAT 权限不足等由 GitHub 侧拒绝并原样呈现。
+- **推送是 mirror**（强推全部 ref），GitHub 侧已有同分支历史时以本地裸仓为准。PAT 每次输入、不复用。
+

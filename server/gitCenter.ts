@@ -7,11 +7,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readdir, readFile, stat, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, rm, writeFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPOS_DIR } from './config.js';
-import { badRequest, conflict, notFound } from './errors.js';
+import { HttpError, badRequest, conflict, notFound } from './errors.js';
 import {
   assertBranchName,
   assertGitRelPath,
@@ -161,6 +161,107 @@ function queryOf(req: FastifyRequest): Record<string, string | undefined> {
   return (req.query ?? {}) as Record<string, string | undefined>;
 }
 
+// —— GitHub 同步（显式操作，不在建仓时自动发生）——
+// PAT 只在单次请求的内存里：经 GIT_CONFIG_* 注入 http extraheader，不进 remote URL、
+// 不进命令行、不落盘；同步目标记在 repos/.github.json（0600），只存 owner/repo。
+const GITHUB_META_FILE = join(REPOS_DIR, '.github.json');
+interface GithubMeta {
+  owner: string;
+  repo: string;
+  lastSyncAt: string;
+}
+type GithubMetas = Record<string, GithubMeta>;
+
+async function readGithubMetas(): Promise<GithubMetas> {
+  try {
+    const v: unknown = JSON.parse(await readFile(GITHUB_META_FILE, 'utf8'));
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as GithubMetas) : {};
+  } catch {
+    return {};
+  }
+}
+async function writeGithubMetas(metas: GithubMetas): Promise<void> {
+  await ensureRoot();
+  await writeFile(GITHUB_META_FILE, JSON.stringify(metas, null, 2), { mode: 0o600 });
+  await chmod(GITHUB_META_FILE, 0o600);
+}
+
+function parseGithubTarget(raw: unknown): { owner: string; repo: string } {
+  let s = String(raw ?? '').trim();
+  const url = /(?:^|\/)github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec(s);
+  if (url) s = `${url[1]}/${url[2]}`;
+  const parts = s.split('/').filter(Boolean);
+  if (parts.length !== 2) throw badRequest('GitHub 仓库格式应为 owner/repo 或完整 URL');
+  const [owner, rawRepo] = parts;
+  const repo = rawRepo.replace(/\.git$/, '');
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}$/.test(owner)) throw badRequest('GitHub 用户名/组织名不合法');
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(repo)) throw badRequest('GitHub 仓库名不合法');
+  return { owner, repo };
+}
+
+interface GithubApiResult {
+  status: number;
+  body: Record<string, unknown>;
+}
+async function githubApi(path: string, token: string, init: RequestInit = {}): Promise<GithubApiResult> {
+  const res = await fetch(`https://api.github.com${path}`, {
+    method: init.method ?? 'GET',
+    body: init.body,
+    headers: {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${token}`,
+      'x-github-api-version': '2022-11-28',
+      ...(init.body ? { 'content-type': 'application/json' } : {}),
+      ...(init.headers ?? {}),
+    },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const body: unknown = await res.json().catch(() => ({}));
+  return { status: res.status, body: body && typeof body === 'object' ? (body as Record<string, unknown>) : {} };
+}
+const githubMessage = (r: GithubApiResult, fallback: string): string =>
+  String(r.body.message ?? '').trim() || `${fallback}（HTTP ${r.status}）`;
+
+async function ensureGithubRepo(owner: string, repo: string, token: string, create: boolean, privateRepo: boolean): Promise<{ created: boolean; url: string }> {
+  const url = `https://github.com/${owner}/${repo}`;
+  if (!create) return { created: false, url };
+  // 个人仓库 POST /user/repos；组织仓库 POST /orgs/:org/repos。先问 /user 判归属。
+  const who = await githubApi('/user', token);
+  if (who.status !== 200) throw badRequest(githubMessage(who, 'GitHub token 无效'));
+  const isSelf = String(who.body.login ?? '').toLowerCase() === owner.toLowerCase();
+  const path = isSelf ? '/user/repos' : `/orgs/${encodeURIComponent(owner)}/repos`;
+  const r = await githubApi(path, token, {
+    method: 'POST',
+    body: JSON.stringify({ name: repo, private: privateRepo }),
+  });
+  if (r.status === 201) return { created: true, url };
+  // 已存在不算失败（可能之前同步过或手工建过），继续 push。
+  if (r.status === 422 && /already exists/i.test(String(r.body.message ?? ''))) return { created: false, url };
+  throw badRequest(githubMessage(r, 'GitHub 创建仓库失败'));
+}
+
+async function pushToGithub(dir: string, owner: string, repo: string, token: string): Promise<void> {
+  const auth = Buffer.from(`x-access-token:${token}`).toString('base64');
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${auth}`,
+  };
+  try {
+    await execFileAsync('git', ['--git-dir', dir, 'push', '--mirror', `https://github.com/${owner}/${repo}.git`], {
+      env,
+      timeout: 180_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException & { stderr?: string | Buffer };
+    const msg = (err.stderr ? String(err.stderr) : err.message || 'git push 失败').trim();
+    throw new HttpError(500, msg, 'github_push_failed');
+  }
+}
+
 // —— 管理 / 代码浏览 API ——
 export function registerGitCenterRoutes(app: FastifyInstance): void {
   app.get('/api/git-center/repos', async () => ({ items: await listRepos() }));
@@ -189,6 +290,30 @@ export function registerGitCenterRoutes(app: FastifyInstance): void {
   app.get('/api/git-center/repos/:name', async (req) => {
     const { dir } = await requireRepo((req.params as { name: string }).name);
     return repoDetail(dir);
+  });
+
+  // 记住上次同步目标（不存 token），供前端预填；没同步过返回 null。
+  app.get('/api/git-center/repos/:name/github', async (req) => {
+    const { name } = await requireRepo((req.params as { name: string }).name);
+    return { meta: (await readGithubMetas())[name] ?? null };
+  });
+
+  // 同步到 GitHub：可选自动建仓（个人/组织分别走不同 API），随后 --mirror 推送全部 ref。
+  app.post('/api/git-center/repos/:name/github', async (req) => {
+    const { name, dir } = await requireRepo((req.params as { name: string }).name);
+    const b = (req.body ?? {}) as { target?: unknown; token?: unknown; create?: unknown; private?: unknown };
+    const { owner, repo } = parseGithubTarget(b.target);
+    const token = qstr(b.token).trim();
+    if (token.length < 8) throw badRequest('请填写 GitHub Personal Access Token（classic 或 fine-grained）');
+    const create = b.create !== false;
+    const privateRepo = b.private !== false;
+    const { created, url } = await ensureGithubRepo(owner, repo, token, create, privateRepo);
+    await pushToGithub(dir, owner, repo, token);
+    const meta: GithubMeta = { owner, repo, lastSyncAt: new Date().toISOString() };
+    const metas = await readGithubMetas();
+    metas[name] = meta;
+    await writeGithubMetas(metas);
+    return { ok: true, url, created, meta };
   });
 
   // 目录树：ref 为空段 = 根；子目录用 <ref>:<path> 当 tree-ish，ls-tree -z 抗特殊文件名。

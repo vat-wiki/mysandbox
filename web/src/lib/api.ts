@@ -1590,3 +1590,21 @@ export const getGitRepoDiff = (name: string, to: string, from = '') =>
     `/api/git-center/repos/${encodeURIComponent(name)}/diff?to=${encodeURIComponent(to)}` +
       (from ? `&from=${encodeURIComponent(from)}` : ''),
   ) as Promise<GitCenterDiff>
+export interface GitCenterGithubMeta {
+  owner: string
+  repo: string
+  lastSyncAt: string
+}
+export interface GitCenterGithubResult {
+  ok: true
+  url: string
+  created: boolean
+  meta: GitCenterGithubMeta
+}
+export const getGitRepoGithub = (name: string) =>
+  api(`/api/git-center/repos/${encodeURIComponent(name)}/github`) as Promise<{ meta: GitCenterGithubMeta | null }>
+export const syncGitRepoToGithub = (
+  name: string,
+  body: { target: string; token: string; create: boolean; private: boolean },
+) =>
+  postJson(`/api/git-center/repos/${encodeURIComponent(name)}/github`, body, 180_000) as Promise<GitCenterGithubResult>

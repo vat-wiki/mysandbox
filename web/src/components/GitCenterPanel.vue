@@ -10,6 +10,14 @@ import { toast } from 'vue-sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -28,13 +36,15 @@ import {
 } from 'reka-ui'
 import { isPhone } from '@/composables/useDevice'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import { ArrowLeft, Copy, File, Folder, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Tag, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, Copy, File, Folder, Github, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Tag, Trash2, X } from 'lucide-vue-next'
 import {
   Unauthorized,
   listGitRepos, createGitRepo, deleteGitRepo, getGitRepoDetail,
   getGitRepoTrees, getGitRepoFile, getGitRepoCommits, getGitRepoDiff,
+  getGitRepoGithub, syncGitRepoToGithub,
   type GitCenterRepo, type GitCenterDetail, type GitCenterTree,
   type GitCenterTreeEntry, type GitCenterFile, type GitCenterCommits, type GitCenterDiff, type GitCommit,
+  type GitCenterGithubMeta,
 } from '@/lib/api'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -52,6 +62,16 @@ const file = ref<GitCenterFile | null>(null)
 const commits = ref<GitCommit[]>([])
 const hasMore = ref(false)
 const diff = ref<GitCenterDiff | null>(null)
+// GitHub 同步：只记目标，不存 token（token 仅在提交那一次请求里用）
+const githubMeta = ref<GitCenterGithubMeta | null>(null)
+const showSync = ref(false)
+const syncTarget = ref('')
+const syncToken = ref('')
+const syncCreate = ref(true)
+const syncPrivate = ref(true)
+const syncErr = ref('')
+const syncing = ref(false)
+const syncAfterCreate = ref(false)
 
 marked.setOptions({ gfm: true, breaks: true })
 
@@ -123,6 +143,16 @@ async function openRepo(name: string): Promise<void> {
   } catch (e) {
     toast.error(e instanceof Error ? e.message : String(e))
   }
+  void loadGithubMeta()
+}
+
+async function loadGithubMeta(): Promise<void> {
+  if (!current.value) return
+  try {
+    githubMeta.value = (await getGitRepoGithub(current.value)).meta
+  } catch {
+    githubMeta.value = null
+  }
 }
 
 function closeRepo(): void {
@@ -130,6 +160,7 @@ function closeRepo(): void {
   detail.value = null
   tree.value = null
   file.value = null
+  githubMeta.value = null
 }
 
 function enterDir(entry: GitCenterTreeEntry): void {
@@ -143,6 +174,11 @@ function goUp(): void {
   path.value = segs.join('/')
   file.value = null
   void loadTree()
+}
+function onRefChange(v: string): void {
+  if (!v || v === refName.value) return
+  refName.value = v
+  void switchRef(v)
 }
 async function switchRef(name: string): Promise<void> {
   refName.value = name
@@ -184,6 +220,37 @@ async function copyClone(): Promise<void> {
   }
 }
 
+// —— 同步到 GitHub ——
+function openSync(): void {
+  syncTarget.value = githubMeta.value ? `${githubMeta.value.owner}/${githubMeta.value.repo}` : ''
+  syncToken.value = ''
+  syncCreate.value = true
+  syncPrivate.value = true
+  syncErr.value = ''
+  showSync.value = true
+}
+async function doSync(): Promise<void> {
+  if (!current.value) return
+  syncing.value = true
+  syncErr.value = ''
+  try {
+    const r = await syncGitRepoToGithub(current.value, {
+      target: syncTarget.value.trim(),
+      token: syncToken.value,
+      create: syncCreate.value,
+      private: syncPrivate.value,
+    })
+    showSync.value = false
+    syncToken.value = ''
+    githubMeta.value = r.meta
+    toast.success(r.created ? `已在 GitHub 创建并同步 ${r.url}` : `已同步到 ${r.url}`)
+  } catch (e) {
+    syncErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    syncing.value = false
+  }
+}
+
 // —— 新建 / 删除 ——
 const showCreate = ref(false)
 const formName = ref('')
@@ -194,6 +261,7 @@ function openCreate(): void {
   formName.value = ''
   formDesc.value = ''
   formErr.value = ''
+  syncAfterCreate.value = false
   showCreate.value = true
 }
 async function doCreate(): Promise<void> {
@@ -205,6 +273,7 @@ async function doCreate(): Promise<void> {
     toast.success(`仓库 ${r.name} 已创建`)
     await refresh()
     await openRepo(r.name)
+    if (syncAfterCreate.value) openSync()
   } catch (e) {
     formErr.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -296,6 +365,11 @@ async function doDelete(): Promise<void> {
       <div v-else class="flex min-h-0 flex-col gap-3">
         <div class="flex flex-wrap items-center gap-2">
           <Button variant="ghost" size="xs" @click="closeRepo"><ArrowLeft /> 返回列表</Button>
+          <Button variant="outline" size="xs" :title="githubMeta
+            ? `上次同步 ${githubMeta.owner}/${githubMeta.repo} · ${fmtTime(githubMeta.lastSyncAt)}`
+            : '将此裸仓库镜像推送到 GitHub'" @click="openSync">
+            <Github /> 同步到 GitHub
+          </Button>
           <div class="ml-auto flex min-w-0 items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1">
             <code class="min-w-0 truncate text-[11px]">{{ cloneUrl }}</code>
             <Button variant="ghost" size="icon-xs" title="复制 clone 地址" @click="copyClone"><Copy /></Button>
@@ -313,15 +387,17 @@ async function doDelete(): Promise<void> {
           </Button>
           <div class="ml-auto flex items-center gap-1.5 pl-2 text-xs text-muted-foreground">
             <GitBranch class="size-3.5" />
-            <select
-              v-model="refName"
-              class="max-w-[9rem] rounded border border-border bg-background px-1.5 py-1 text-xs"
-              @change="switchRef(refName)"
-            >
-              <option v-if="!detail?.branches.length" :value="refName">{{ refName }}</option>
-              <option v-for="b in detail?.branches ?? []" :key="'b' + b.name" :value="b.name">{{ b.name }}</option>
-              <option v-for="g in detail?.tags ?? []" :key="'t' + g.name" :value="g.name">{{ g.name }}</option>
-            </select>
+            <!-- shadcn Select（reka portal）：原生 <select> 由 OS 自绘，深色下白底违和 -->
+            <Select :model-value="refName" @update:model-value="(v) => onRefChange(String(v))">
+              <SelectTrigger class="h-7 w-[9rem] text-xs"><span class="truncate">{{ refName }}</span></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem v-if="!detail?.branches.length" :value="refName">{{ refName }}</SelectItem>
+                  <SelectItem v-for="b in detail?.branches ?? []" :key="'b' + b.name" :value="b.name">{{ b.name }}</SelectItem>
+                  <SelectItem v-for="g in detail?.tags ?? []" :key="'t' + g.name" :value="g.name">{{ g.name }}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -435,11 +511,55 @@ async function doDelete(): Promise<void> {
           <Label for="repo-desc">描述（可选）</Label>
           <Input id="repo-desc" v-model="formDesc" placeholder="这个仓库是做什么的" autocomplete="off" />
         </div>
+        <label class="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox :model-value="syncAfterCreate" @update:model-value="(v) => (syncAfterCreate = !!v)" />
+          创建后立即设置 GitHub 同步
+        </label>
         <p v-if="formErr" role="alert" class="text-sm text-destructive">{{ formErr }}</p>
         <div class="flex justify-end gap-2">
           <Button variant="outline" size="sm" @click="showCreate = false">取消</Button>
           <Button size="sm" :disabled="saving || !formName.trim()" @click="doCreate">
             {{ saving ? '创建中…' : '创建' }}
+          </Button>
+        </div>
+      </div>
+    </DialogContent>
+  </Dialog>
+
+  <!-- 同步到 GitHub -->
+  <Dialog :open="showSync" @update:open="(v: boolean) => v || (showSync = false)">
+    <DialogContent class="max-w-md max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
+      <DialogHeader>
+        <DialogTitle>同步到 GitHub</DialogTitle>
+        <DialogDescription>
+          将 {{ current }}.git 的全部分支与标签镜像推送到 GitHub。Token 仅用于本次请求，不会保存。
+        </DialogDescription>
+      </DialogHeader>
+      <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-1.5">
+          <Label for="gh-target">GitHub 仓库</Label>
+          <Input id="gh-target" v-model="syncTarget" placeholder="owner/repo 或 https://github.com/owner/repo" autocomplete="off" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <Label for="gh-token">Personal Access Token</Label>
+          <Input id="gh-token" v-model="syncToken" type="password" placeholder="ghp_… / github_pat_…" autocomplete="off" />
+          <p class="text-[11px] text-muted-foreground">需要 repo 权限（fine-grained 需 Contents 读写）。不会写入配置或日志。</p>
+        </div>
+        <div class="flex flex-col gap-2 rounded-md border p-2.5">
+          <label class="flex cursor-pointer items-center gap-2 text-xs">
+            <Checkbox :model-value="syncCreate" @update:model-value="(v) => (syncCreate = !!v)" />
+            仓库不存在时自动创建
+          </label>
+          <label class="flex cursor-pointer items-center gap-2 text-xs" :class="!syncCreate ? 'opacity-50' : ''">
+            <Checkbox :model-value="syncPrivate" :disabled="!syncCreate" @update:model-value="(v) => (syncPrivate = !!v)" />
+            新建为私有仓库
+          </label>
+        </div>
+        <p v-if="syncErr" role="alert" class="max-h-32 overflow-y-auto whitespace-pre-wrap text-xs text-destructive scroll-thin">{{ syncErr }}</p>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" :disabled="syncing" @click="showSync = false">取消</Button>
+          <Button size="sm" :disabled="syncing || !syncTarget.trim() || syncToken.length < 8" @click="doSync">
+            {{ syncing ? '同步中…' : '开始同步' }}
           </Button>
         </div>
       </div>
