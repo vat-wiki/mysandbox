@@ -10,7 +10,9 @@ import { promisify } from 'node:util';
 import { mkdir, readdir, readFile, stat, rm, writeFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPOS_DIR } from './config.js';
+import { REPOS_DIR, type Config } from './config.js';
+import { defaultRouteIp } from './proxy.js';
+import { isGitDaemonRunning } from './gitDaemon.js';
 import { HttpError, badRequest, conflict, notFound } from './errors.js';
 import {
   assertBranchName,
@@ -262,8 +264,20 @@ async function pushToGithub(dir: string, owner: string, repo: string, token: str
   }
 }
 
+// 对外 clone 地址：内网用默认路由 IP（不是容器桥网关），同时给 HTTP 与 git://。
+// IP 只探测一次并缓存——/proc/net/route 每次读没必要，且多端面板同时打开会重复读。
+let lanIpCache: Promise<string | null> | null = null;
+const lanIp = (): Promise<string | null> => (lanIpCache ??= defaultRouteIp());
+async function cloneUrls(name: string, cfg: Config): Promise<{ http: string; git: string }> {
+  const ip = (await lanIp()) ?? '127.0.0.1';
+  return {
+    http: `http://${ip}:${cfg.listen.port}/git/${name}.git`,
+    git: `git://${ip}:${cfg.gitDaemon.port}/${name}.git`,
+  };
+}
+
 // —— 管理 / 代码浏览 API ——
-export function registerGitCenterRoutes(app: FastifyInstance): void {
+export function registerGitCenterRoutes(app: FastifyInstance, cfg: Config): void {
   app.get('/api/git-center/repos', async () => ({ items: await listRepos() }));
 
   app.post('/api/git-center/repos', async (req) => {
@@ -288,8 +302,12 @@ export function registerGitCenterRoutes(app: FastifyInstance): void {
   });
 
   app.get('/api/git-center/repos/:name', async (req) => {
-    const { dir } = await requireRepo((req.params as { name: string }).name);
-    return repoDetail(dir);
+    const { name, dir } = await requireRepo((req.params as { name: string }).name);
+    return {
+      ...(await repoDetail(dir)),
+      cloneUrls: await cloneUrls(name, cfg),
+      gitAvailable: isGitDaemonRunning(),
+    };
   });
 
   // 记住上次同步目标（不存 token），供前端预填；没同步过返回 null。

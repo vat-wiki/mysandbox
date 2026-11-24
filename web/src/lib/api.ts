@@ -1533,6 +1533,9 @@ export interface GitCenterDetail {
   tags: GitCenterRef[]
   commitCount: number
   lastCommit: { hash: string; short: string; author: string; date: string; subject: string } | null
+  // 后端按默认路由 IP 生成的双协议 clone 地址；gitAvailable=false 表示 daemon 没起来
+  cloneUrls: { http: string; git: string }
+  gitAvailable: boolean
 }
 export interface GitCenterTreeEntry {
   name: string

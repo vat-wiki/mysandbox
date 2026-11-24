@@ -75,7 +75,9 @@ const syncAfterCreate = ref(false)
 
 marked.setOptions({ gfm: true, breaks: true })
 
-const cloneUrl = computed(() => (current.value ? `${location.origin}/git/${current.value}.git` : ''))
+// 后端按默认路由 IP 同时给 HTTP 与 git://；拿不到时用当前访问域名兜底 HTTP 口径。
+const httpCloneUrl = computed(() => detail.value?.cloneUrls.http ?? (current.value ? `${location.origin}/git/${current.value}.git` : ''))
+const gitCloneUrl = computed(() => detail.value?.cloneUrls.git ?? '')
 const patchLines = computed(() => (diff.value?.patch ?? '').replace(/\n$/, '').split('\n'))
 const fileHtml = computed(() => {
   if (!file.value || file.value.binary || !/\.md$/i.test(file.value.path)) return ''
@@ -211,10 +213,11 @@ watch(tab, (v) => {
   if (v === 'commits' && !commits.value.length) void loadCommits()
 })
 
-async function copyClone(): Promise<void> {
+async function copyText(text: string, label: string): Promise<void> {
+  if (!text) return
   try {
-    await navigator.clipboard.writeText(cloneUrl.value)
-    toast.success('clone 地址已复制')
+    await navigator.clipboard.writeText(text)
+    toast.success(`${label} clone 地址已复制`)
   } catch {
     toast.error('复制失败，请手动选中地址')
   }
@@ -370,9 +373,23 @@ async function doDelete(): Promise<void> {
             : '将此裸仓库镜像推送到 GitHub'" @click="openSync">
             <Github /> 同步到 GitHub
           </Button>
-          <div class="ml-auto flex min-w-0 items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1">
-            <code class="min-w-0 truncate text-[11px]">{{ cloneUrl }}</code>
-            <Button variant="ghost" size="icon-xs" title="复制 clone 地址" @click="copyClone"><Copy /></Button>
+          <div class="ml-auto flex min-w-0 flex-col gap-1 rounded-md border bg-muted/40 px-2 py-1.5">
+            <div class="flex items-center gap-1.5">
+              <span class="w-8 shrink-0 text-[10px] text-muted-foreground">HTTP</span>
+              <code class="min-w-0 flex-1 truncate text-[11px]">{{ httpCloneUrl }}</code>
+              <Button variant="ghost" size="icon-xs" title="复制 HTTP clone 地址" @click="copyText(httpCloneUrl, 'HTTP')"><Copy /></Button>
+            </div>
+            <div class="flex items-center gap-1.5" :class="detail?.gitAvailable === false ? 'opacity-50' : ''">
+              <span class="w-8 shrink-0 text-[10px] text-muted-foreground">GIT</span>
+              <code class="min-w-0 flex-1 truncate text-[11px]">{{ detail?.gitAvailable === false ? 'git daemon 未运行' : gitCloneUrl }}</code>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                title="复制原生 git:// clone 地址"
+                :disabled="detail?.gitAvailable === false"
+                @click="copyText(gitCloneUrl, 'git://')"
+              ><Copy /></Button>
+            </div>
           </div>
         </div>
 

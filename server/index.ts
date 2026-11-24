@@ -223,7 +223,7 @@ export async function buildServer(cfg: Config) {
   registerServices(app, cfg);
   // Git 中心：/api/git-center/* 走上面的 token hook；/git/* 是独立的 Smart HTTP
   // 端点，刻意不进 hook——内网无权限仓库（docs/architecture/git-center.md）。
-  registerGitCenterRoutes(app);
+  registerGitCenterRoutes(app, cfg);
   registerGitHttp(app, cfg.listen.port);
   // AI 路由（server/ai.ts）：AI 工具与技能中心（/api/ai/* + /api/testlens/*）。
   await registerAiRoutes(app, cfg);

@@ -203,6 +203,18 @@ export const ConfigSchema = z.object({
       trustLan: z.boolean().default(false),
     })
     .default({ vhost: 'auto', ip: 'auto', trustLan: false }),
+  // Git daemon（server/gitDaemon.ts）：原生 git:// 协议，默认 9418，服务
+  // ~/.mysandbox/repos 下的 bare 仓库。内网 clone 常用 IP + git://（比 Smart HTTP
+  // 少一跳），且 daemon 的匿名 push 与「无权限内网库」语义一致；关掉后只剩 /git/*。
+  gitDaemon: z
+    .object({
+      enabled: z.boolean().default(true),
+      host: z.string().default('0.0.0.0'),
+      port: z.number().int().default(9418),
+      // 允许匿名 push（git daemon 默认只读）；内网无权限库的刻意取舍。
+      receivePack: z.boolean().default(true),
+    })
+    .default({ enabled: true, host: '0.0.0.0', port: 9418, receivePack: true }),
   // peer API（server/peer.ts）：容器间命令互通的转发枢纽。绑网关 IP 的迷你 HTTP
   // 服务（POST /exec 由宿主代为 lxc-attach / docker exec / 直接 spawn），容器内
   // `mysandbox exec <目标> -- 命令` 走它，免 SSH。端口可配（peer.json 随种子刷新，
@@ -346,6 +358,7 @@ export async function loadConfig(): Promise<LoadResult> {
       firewall: parsed.firewall,
       dockerApi: parsed.dockerApi,
       android: parsed.android,
+      gitDaemon: parsed.gitDaemon,
       proxy: parsed.proxy,
       peer: parsed.peer,
       mux: parsed.mux,

@@ -134,6 +134,16 @@ android:
   host: 127.0.0.1
   port: 5037
 
+# Git daemon（server/gitDaemon.ts）：原生 git:// 协议，服务 ~/.mysandbox/repos 下的
+# bare 仓库。内网 clone 常用 IP + git://（比 Smart HTTP 少一跳），默认全网卡监听 9418；
+# 自管网段（LXC/services）ufw 已有全端口 blanket，外部网段需自行在 firewall.allow 放行
+# 9418。receivePack 允许匿名 push，与「无权限内网库」一致；关掉则只读。
+gitDaemon:
+  enabled: true
+  host: 0.0.0.0
+  port: 9418
+  receivePack: true
+
 # peer API（server/peer.ts）——容器间命令互通的转发枢纽：在系统容器里
 # `mysandbox exec <目标> -- 命令` 可在宿主 / 其他系统容器 / 应用容器上执行命令
 # （宿主代为 lxc-attach / docker exec），目标: host | c:<容器名> | s:<服务名>，

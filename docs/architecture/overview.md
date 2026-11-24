@@ -21,7 +21,7 @@
 | `gitCenter.ts` | `/git/*` + `/api/git-center/*` | 内网 bare 仓库托管：Smart HTTP clone/push（无 token）+ 管理/代码浏览（有 token，见 [git-center.md](git-center.md)） |
 | `proxy.ts` | `/proxy/*` | Web 代理（见 [web-proxy.md](web-proxy.md)） |
 
-SSE 进度流的公共实现在 `sse.ts`。
+SSE 进度流的公共实现在 `sse.ts`。后台常驻的还有 `gitDaemon.ts`（原生 git:// 协议，9418，服务 `~/.mysandbox/repos`，随主进程存亡，失败非致命；与 `/git/*` Smart HTTP 并存，见 [git-center.md](git-center.md)）。
 
 ## 关键设计
 

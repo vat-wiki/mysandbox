@@ -15,7 +15,7 @@ import { startPeerApi, runExecCommand, runTargetsCommand } from './peer.js';
 import { startHeartbeat } from './cluster.js';
 import { applyAiAll, startAiConfigEvents } from './aiconfig.js';
 import { sweepAgentNotify, startAgentNotifyEvents } from './agentNotify.js';
-import { proxyBases } from './proxy.js';
+import { defaultRouteIp, proxyBases } from './proxy.js';
 import { log, LOG_DIR } from './logger.js';
 import { guardStdio } from './pty.js';
 import { sweepContainerCli } from './container-cli.js';
@@ -26,6 +26,7 @@ import { ensureComposeRoot } from './serviceCompose.js';
 import { startDockerApiBridge } from './dockerApi.js';
 import { startAndroidAdbBridge } from './androidBridge.js';
 import { startMuxAgentBridge } from './muxBridge.js';
+import { startGitDaemon } from './gitDaemon.js';
 import { runMuxCommand } from './muxDeploy.js';
 import { getVersion } from './version.js';
 
@@ -295,6 +296,9 @@ async function main(): Promise<void> {
   // msmux agent 回连桥：网关 IP:agentPort → 本机控制台端口（WebSocket 字节透传），
   // 让只监听 localhost 的部署也能收到容器/服务目标的主动回连。
   startMuxAgentBridge(config);
+  // Git 中心原生协议：git daemon（9418，服务 ~/.mysandbox/repos）。失败非致命，
+  // 面板的 /git/* Smart HTTP 仍可用；clone 地址两种协议都会展示。
+  startGitDaemon(config);
   startHeartbeat(config);
   await app.listen({ host: config.listen.host, port: config.listen.port });
   log.info({ logFile: LOG_DIR }, 'file logging active (daily rotate, 14d retention; also on journald)');
@@ -312,6 +316,14 @@ async function main(): Promise<void> {
       const portPart = config.listen.tls ? '' : (config.listen.port === 80 ? '' : `:${config.listen.port}`);
       process.stdout.write(`>> web UI(域名): ${scheme}://${bases[0].base}${portPart}\n`);
     }
+  }
+  if (config.gitDaemon.enabled) {
+    const ip = config.gitDaemon.host === '0.0.0.0' ? (await defaultRouteIp()) ?? '127.0.0.1' : config.gitDaemon.host;
+    process.stdout.write(`>> git://:  git://${ip}:${config.gitDaemon.port}/\n`);
+    process.stderr.write(
+      `>> WARNING: git daemon at ${ip}:${config.gitDaemon.port} is anonymous ` +
+        `${config.gitDaemon.receivePack ? 'read/write' : 'read-only'} — keep untrusted networks out.\n`,
+    );
   }
   if (firstRun || tokenGenerated) {
     process.stdout.write(`>> first run — config written: ${CONFIG_FILE}\n`);

@@ -13,6 +13,14 @@
 
 `/git/*` 不在 `/api/`、`/ws/`、`/proxy/` 前缀内，全局 hook 对未带凭证的非这些前缀请求本就放行（见 `server/index.ts` 的 onRequest 末尾），所以不需要为它开任何后门或改 hook。这是有意的安全取舍：**拿到网络可达性 = 拿到仓库读写权**，但仓库文件只是 `~/.mysandbox/repos` 下的普通数据，不给宿主 shell（区别于主 token 等价宿主属主用户，见 [security.md](security.md)）。服务默认只绑 `127.0.0.1`；要内网访问需 `--host` 并接受 CLI 告警，权限边界由网络层（ufw 等）承担。
 
+### 原生 git:// 协议（git daemon）
+
+内网按 IP clone 时更常用原生协议，因此另起一个 `git daemon`（`server/gitDaemon.ts`），默认监听 `0.0.0.0:9418`，`--base-path=~/.mysandbox/repos --export-all --reuseaddr`。配置项 `gitDaemon: { enabled, host, port, receivePack }`；`receivePack` 默认 true（允许匿名 push，与无权限库语义一致），关掉则只读。它是 spawn 出来的子进程，随 mysandbox 主进程存亡（`process.on('exit')` 收割，SIGINT/SIGTERM 走 hostTerminal.ts 的全局处理器）；端口占用/git 缺失只 warn 不致命，此时 UI 的 git:// 行置灰。
+
+ufw：自管网段（LXC/services）已有全端口 blanket，9418 无需新规则；外部网段要访问需在 `firewall.allow` 追加 `port: 9418`。CLI 启动时会打印 `git://<默认路由IP>:9418/` 并给出匿名读写告警。
+
+`GET /api/git-center/repos/:name` 额外返回 `cloneUrls: { http, git }` 与 `gitAvailable`：IP 取 `defaultRouteIp()`（默认路由接口的 IPv4，**不是**容器桥网关 `gatewayOf`），进程内缓存一次；HTTP 地址用 `listen.port`，git 地址用 `gitDaemon.port`。前端两行分别展示、各自可复制，不改 URL 就不必猜端口。
+
 ## Smart HTTP 的实现方式
 
 直接把请求转成 CGI 环境交给 `git http-backend`，让 git 自己处理 advertise-refs、upload-pack、receive-pack、pack 协商与 dumb 端点；比手写四个端点完整。关键环境：
@@ -42,7 +50,7 @@
 
 ## 前端
 
-`GitCenterPanel.vue`：仓库列表 → 新建/删除 → 仓库详情。详情页有四个标签：代码（目录面包屑 + README 渲染 + 文件查看）、提交（点提交进 diff）、分支/标签（点击切 ref）、变更对比（numstat + 着色 patch）。README 渲染复用 `marked` + `DOMPurify`（与 `MarkdownView.vue` 同一套，但不走它的容器文件下载管线——仓库 blob 由 `/api/git-center/*/file` 提供）。clone 地址由 `location.origin` 拼出，不落后端配置，vhost/TLS 门面下自动跟着访问域名走。
+`GitCenterPanel.vue`：仓库列表 → 新建/删除 → 仓库详情。详情页有四个标签：代码（目录面包屑 + README 渲染 + 文件查看）、提交（点提交进 diff）、分支/标签（点击切 ref）、变更对比（numstat + 着色 patch）。README 渲染复用 `marked` + `DOMPurify`（与 `MarkdownView.vue` 同一套，但不走它的容器文件下载管线——仓库 blob 由 `/api/git-center/*/file` 提供）。clone 地址由后端按默认路由 IP 下发 HTTP / git:// 两行（见上节），前端只在后端不可达时用 `location.origin` 兜底 HTTP 行。
 
 仓库名为 64 字符内的 `字母/数字/._-`，API 接受带或不带 `.git` 后缀，磁盘上统一 `<name>.git`。空仓库首次 clone 后本地分支名跟随客户端 `init.defaultBranch`，可能与裸仓的 `main` 不同——此时 `git push -u origin HEAD:main` 即可。
 
