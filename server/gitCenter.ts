@@ -100,9 +100,11 @@ interface RepoItem {
   description: string;
   updatedAt: number;
   empty: boolean;
+  // 列表项也带双协议地址：前端据此生成批量克隆脚本，无需另开接口。
+  cloneUrls: { http: string; git: string };
 }
 
-async function listRepos(): Promise<RepoItem[]> {
+async function listRepos(cfg: Config): Promise<RepoItem[]> {
   await ensureRoot();
   const entries = await readdir(REPOS_DIR, { withFileTypes: true });
   const items: RepoItem[] = [];
@@ -116,7 +118,7 @@ async function listRepos(): Promise<RepoItem[]> {
     const description = rawDesc.startsWith('Unnamed repository') ? '' : rawDesc.trim();
     const last = await gitTry(dir, ['for-each-ref', '--count=1', '--sort=-committerdate', '--format=%(committerdate:unix)', 'refs/heads']);
     const updatedAt = Number(last?.trim() || 0) || (await stat(join(dir, 'HEAD'))).mtimeMs / 1000;
-    items.push({ name, description, updatedAt, empty: !last?.trim() });
+    items.push({ name, description, updatedAt, empty: !last?.trim(), cloneUrls: await cloneUrls(name, cfg) });
   }
   items.sort((a, b) => b.updatedAt - a.updatedAt);
   return items;
@@ -278,7 +280,7 @@ async function cloneUrls(name: string, cfg: Config): Promise<{ http: string; git
 
 // —— 管理 / 代码浏览 API ——
 export function registerGitCenterRoutes(app: FastifyInstance, cfg: Config): void {
-  app.get('/api/git-center/repos', async () => ({ items: await listRepos() }));
+  app.get('/api/git-center/repos', async () => ({ items: await listRepos(cfg) }));
 
   app.post('/api/git-center/repos', async (req) => {
     const b = (req.body ?? {}) as { name?: unknown; description?: unknown };

@@ -37,7 +37,7 @@ ufw：自管网段（LXC/services）已有全端口 blanket，9418 无需新规�
 
 | 端点 | 作用 |
 | --- | --- |
-| `GET /api/git-center/repos` | 仓库列表（名称/描述/最近提交时间/是否空仓） |
+| `GET /api/git-center/repos` | 仓库列表（名称/描述/最近提交时间/是否空仓/双协议 cloneUrls） |
 | `POST /api/git-center/repos` | 建裸仓（`--initial-branch=main` + receivepack 配置 + description） |
 | `DELETE /api/git-center/repos/:name` | 删仓（前端要求输入仓库名确认） |
 | `GET /api/git-center/repos/:name` | 默认分支、分支/标签、提交数、最近提交 |
@@ -55,6 +55,8 @@ ufw：自管网段（LXC/services）已有全端口 blanket，9418 无需新规�
 仓库名为 64 字符内的 `字母/数字/._-`，API 接受带或不带 `.git` 后缀，磁盘上统一 `<name>.git`。空仓库首次 clone 后本地分支名跟随客户端 `init.defaultBranch`，可能与裸仓的 `main` 不同——此时 `git push -u origin HEAD:main` 即可。
 
 分支/标签切换用 shadcn `Select`（reka portal），不用原生 `<select>`——原生弹层由 OS 自绘，深色主题下白底违和（同 `BasePanel` 的既有约定）。
+
+列表头还有「批量克隆」：点击后弹出脚本预览，可在 `git://` / HTTP 两种协议间切换，复制整段或下载 `mysandbox-clone-all.sh`。脚本**完全由前端根据列表项的 `cloneUrls` 本地生成**，不新增后端接口、脚本里不含 token；在目标机器执行会建 `mysandbox-repos/` 并逐个 clone，已存在的目录跳过、失败的仓库打到 stderr。这样内网多台机器想「一口气拉全部仓库」时不用逐条复制 URL。
 
 ## 同步到 GitHub
 

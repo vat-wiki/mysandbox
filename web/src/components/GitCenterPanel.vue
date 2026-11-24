@@ -36,7 +36,7 @@ import {
 } from 'reka-ui'
 import { isPhone } from '@/composables/useDevice'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import { ArrowLeft, Copy, File, Folder, Github, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Tag, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, Copy, Download, File, Folder, Github, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Tag, Trash2, X } from 'lucide-vue-next'
 import {
   Unauthorized,
   listGitRepos, createGitRepo, deleteGitRepo, getGitRepoDetail,
@@ -72,8 +72,45 @@ const syncPrivate = ref(true)
 const syncErr = ref('')
 const syncing = ref(false)
 const syncAfterCreate = ref(false)
+// 批量克隆：脚本完全在前端由列表项的 cloneUrls 生成，不新增接口、不携带 token
+const showBulk = ref(false)
+const bulkProtocol = ref<'git' | 'http'>('git')
 
 marked.setOptions({ gfm: true, breaks: true })
+
+const bulkScript = computed(() => {
+  const proto = bulkProtocol.value
+  const lines = [
+    '#!/bin/sh',
+    '# mysandbox Git 中心 · 批量克隆全部仓库',
+    `# 协议：${proto === 'git' ? 'git:// 原生协议（9418）' : 'Smart HTTP（7321）'}`,
+    '# 用法：在你想存放仓库的目录执行 sh clone-all.sh',
+    '',
+    'mkdir -p mysandbox-repos',
+    'cd mysandbox-repos || exit 1',
+    '',
+  ]
+  if (!repos.value.length) lines.push('echo "当前没有仓库可克隆"')
+  for (const r of repos.value) {
+    const url = r.cloneUrls[proto]
+    lines.push(`if [ -d '${r.name}' ]; then`)
+    lines.push(`  echo '跳过 ${r.name}（目录已存在）'`)
+    lines.push('else')
+    lines.push(`  git clone '${url}' || echo '克隆失败：${r.name}' >&2`)
+    lines.push('fi')
+  }
+  return lines.join('\n')
+})
+
+function downloadBulk(): void {
+  const blob = new Blob([bulkScript.value + '\n'], { type: 'text/x-shellscript;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'mysandbox-clone-all.sh'
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 // 后端按默认路由 IP 同时给 HTTP 与 git://；拿不到时用当前访问域名兜底 HTTP 口径。
 const httpCloneUrl = computed(() => detail.value?.cloneUrls.http ?? (current.value ? `${location.origin}/git/${current.value}.git` : ''))
@@ -329,6 +366,9 @@ async function doDelete(): Promise<void> {
             <Button variant="ghost" size="icon-xs" title="刷新" :disabled="loading" @click="refresh">
               <RefreshCw :class="loading ? 'animate-spin' : ''" />
             </Button>
+            <Button variant="outline" size="xs" :disabled="!repos.length" @click="showBulk = true">
+              <Download /> 批量克隆
+            </Button>
             <Button size="xs" @click="openCreate"><Plus /> 新建仓库</Button>
           </div>
         </div>
@@ -538,6 +578,36 @@ async function doDelete(): Promise<void> {
           <Button size="sm" :disabled="saving || !formName.trim()" @click="doCreate">
             {{ saving ? '创建中…' : '创建' }}
           </Button>
+        </div>
+      </div>
+    </DialogContent>
+  </Dialog>
+
+  <!-- 批量克隆脚本：从列表项的 cloneUrls 本地生成，复制/下载后在目标机器执行 -->
+  <Dialog :open="showBulk" @update:open="(v: boolean) => v || (showBulk = false)">
+    <DialogContent class="max-w-2xl max-md:h-dvh max-md:max-w-full max-md:rounded-none max-md:border-0">
+      <DialogHeader>
+        <DialogTitle>批量克隆全部仓库</DialogTitle>
+        <DialogDescription>
+          脚本在本机生成，不含 token；复制到目标机器上执行即可，已存在的目录会跳过。
+        </DialogDescription>
+      </DialogHeader>
+      <div class="flex flex-col gap-3">
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-muted-foreground">协议</span>
+          <Button variant="ghost" size="xs" :class="bulkProtocol === 'git' ? 'bg-accent/60 text-foreground' : 'text-muted-foreground'" @click="bulkProtocol = 'git'">
+            git://（原生 · 9418）
+          </Button>
+          <Button variant="ghost" size="xs" :class="bulkProtocol === 'http' ? 'bg-accent/60 text-foreground' : 'text-muted-foreground'" @click="bulkProtocol = 'http'">
+            HTTP（7321）
+          </Button>
+          <span class="ml-auto text-[11px] text-muted-foreground">共 {{ repos.length }} 个仓库</span>
+        </div>
+        <pre class="scroll-thin max-h-[45vh] overflow-auto rounded-md border bg-muted/30 p-3 text-[11px] leading-relaxed"><code>{{ bulkScript }}</code></pre>
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" size="sm" @click="showBulk = false">关闭</Button>
+          <Button variant="outline" size="sm" @click="downloadBulk"><Download /> 下载 .sh</Button>
+          <Button size="sm" @click="copyText(bulkScript, '批量克隆脚本')"><Copy /> 复制脚本</Button>
         </div>
       </div>
     </DialogContent>

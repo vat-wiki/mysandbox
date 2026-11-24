@@ -1521,6 +1521,7 @@ export interface GitCenterRepo {
   description: string
   updatedAt: number
   empty: boolean
+  cloneUrls: { http: string; git: string }
 }
 export interface GitCenterRef {
   name: string
